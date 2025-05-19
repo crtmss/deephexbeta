@@ -6,13 +6,15 @@ export default class WorldScene extends Phaser.Scene {
         super('WorldScene');
     }
 
-    preload() {}
-
-    create() {
+    async create() {
         this.hexSize = 32;
         this.mapWidth = 25;
         this.mapHeight = 25;
-        
+
+        // Multiplayer info
+        const { roomCode, playerName, isHost } = this.scene.settings.data;
+        console.log('[Multiplayer] Joined Room:', roomCode, '| Player:', playerName, '| Host:', isHost);
+
         const { getLobbyState } = await import('../net/LobbyManager.js');
         const { data: lobbyData, error } = await getLobbyState(roomCode);
         if (error || !lobbyData?.state?.seed) {
@@ -21,15 +23,72 @@ export default class WorldScene extends Phaser.Scene {
         }
         this.seed = lobbyData.state.seed;
 
+        const { subscribeToGame } = await import('../net/SyncManager.js');
+        const { supabase } = await import('../net/SupabaseClient.js');
+
+        this.playerName = playerName;
+        this.roomCode = roomCode;
+
+        this.syncPlayerMove = async (unit) => {
+            const { data: lobbyData, error: fetchError } = await supabase
+                .from('lobbies')
+                .select('state')
+                .eq('room_code', roomCode)
+                .single();
+
+            if (fetchError) return;
+
+            const updatedState = {
+                ...lobbyData.state,
+                units: {
+                    ...lobbyData.state.units,
+                    [playerName]: { q: unit.q, r: unit.r }
+                },
+                currentTurn: this.getNextPlayer(lobbyData.state.players, playerName)
+            };
+
+            await supabase
+                .from('lobbies')
+                .update({ state: updatedState })
+                .eq('room_code', roomCode);
+        };
+
+        this.getNextPlayer = (list, current) => {
+            const idx = list.indexOf(current);
+            return list[(idx + 1) % list.length];
+        };
+
+        subscribeToGame(roomCode, (newState) => {
+            if (!newState.units) return;
+
+            for (const name in newState.units) {
+                if (name === playerName) continue;
+                const other = newState.units[name];
+                const existing = this.players.find(p => p.playerName === name);
+                if (existing) {
+                    const { x, y } = this.hexToPixel(other.q, other.r, this.hexSize);
+                    existing.setPosition(x, y);
+                    existing.q = other.q;
+                    existing.r = other.r;
+                }
+            }
+
+            if (newState.currentTurn !== playerName) {
+                this.selectedUnit = null;
+            }
+
+            if (this.turnText) {
+                this.turnText.setText('Player Turn: ' + newState.currentTurn);
+            }
+        });
 
         this.hexMap = new HexMap(this.mapWidth, this.mapHeight, this.seed);
         this.mapData = this.hexMap.getMap();
 
         this.selectedUnit = null;
-        this.currentTurnIndex = 0;
         this.movingPath = [];
+        this.currentTurnIndex = 0;
 
-        // Draw map and cache graphics
         this.tileMap = {};
         this.mapData.forEach(hex => {
             const { q, r, terrain } = hex;
@@ -38,7 +97,6 @@ export default class WorldScene extends Phaser.Scene {
             this.drawHex(q, r, x, y, this.hexSize, color);
         });
 
-        // Spawn players
         this.players = [];
         const safeTiles = this.mapData.filter(hex => !['water', 'mountain'].includes(hex.terrain));
         Phaser.Utils.Array.Shuffle(safeTiles);
@@ -49,6 +107,7 @@ export default class WorldScene extends Phaser.Scene {
             const unit = this.add.circle(x, y, 12, 0xff0000).setDepth(10);
             unit.q = tile.q;
             unit.r = tile.r;
+            unit.playerName = i === 0 ? playerName : `P${i+1}`;
             unit.setInteractive();
             unit.on('pointerdown', () => {
                 if (this.players[this.currentTurnIndex] === unit) {
@@ -58,7 +117,6 @@ export default class WorldScene extends Phaser.Scene {
             this.players.push(unit);
         }
 
-        // Enemy logic (same as before)
         this.enemies = [];
         const enemyTiles = safeTiles.slice(4, 14);
         for (let tile of enemyTiles) {
@@ -76,7 +134,6 @@ export default class WorldScene extends Phaser.Scene {
             loop: true
         });
 
-        // Input for movement
         this.input.on('pointerdown', pointer => {
             if (!this.selectedUnit || this.players[this.currentTurnIndex] !== this.selectedUnit) return;
             const { worldX, worldY } = pointer;
@@ -91,7 +148,22 @@ export default class WorldScene extends Phaser.Scene {
                 tile => ['water', 'mountain'].includes(tile.terrain)
             );
 
-            this.movingPath = path.slice(1); // skip current
+            this.movingPath = path.slice(1);
+        });
+
+        this.displayTurnText();
+
+        this.endTurnButton = this.add.text(1050, 20, 'End Turn', {
+            fontSize: '22px',
+            backgroundColor: '#222',
+            color: '#fff',
+            padding: { x: 12, y: 6 }
+        }).setInteractive().setDepth(100);
+
+        this.endTurnButton.on('pointerdown', () => {
+            if (this.selectedUnit === this.players[this.currentTurnIndex]) {
+                this.endTurn();
+            }
         });
     }
 
@@ -100,17 +172,13 @@ export default class WorldScene extends Phaser.Scene {
             const next = this.movingPath.shift();
             const { x, y } = this.hexToPixel(next.q, next.r, this.hexSize);
             this.selectedUnit.setPosition(x, y);
+            this.selectedUnit.q = next.q;
+            this.selectedUnit.r = next.r;
             if (this.movingPath.length === 0) {
                 this.syncPlayerMove(this.selectedUnit);
                 this.endTurn();
-                
-        // Check for player-enemy collisions after every movement
-        this.checkCombat();
-
+                this.checkCombat();
             }
-            this.selectedUnit.q = next.q;
-            this.selectedUnit.r = next.r;
-            this.selectedUnit.r = next.r;
         }
     }
 
@@ -135,6 +203,34 @@ export default class WorldScene extends Phaser.Scene {
                 }
             }
         });
+    }
+
+    checkCombat() {
+        for (const player of this.players) {
+            for (const enemy of this.enemies) {
+                if (player.q === enemy.q && player.r === enemy.r) {
+                    console.log('Combat triggered at', player.q, player.r);
+                    this.scene.start('CombatScene');
+                    return;
+                }
+            }
+        }
+    }
+
+    displayTurnText() {
+        const playerText = this.add.text(10, 10, 'Player Turn: 1', {
+            fontSize: '20px',
+            fill: '#ffffff'
+        }).setDepth(100);
+        this.turnText = playerText;
+    }
+
+    endTurn() {
+        this.currentTurnIndex = (this.currentTurnIndex + 1) % this.players.length;
+        this.selectedUnit = null;
+        if (this.turnText) {
+            this.turnText.setText('Player Turn: ' + (this.currentTurnIndex + 1));
+        }
     }
 
     hexToPixel(q, r, size) {
@@ -205,32 +301,3 @@ export default class WorldScene extends Phaser.Scene {
         }
     }
 }
-
-
-    displayTurnText() {
-        const playerText = this.add.text(10, 10, 'Player Turn: 1', {
-            fontSize: '20px',
-            fill: '#ffffff'
-        }).setDepth(100);
-        this.turnText = playerText;
-    }
-
-    endTurn() {
-        this.currentTurnIndex = (this.currentTurnIndex + 1) % this.players.length;
-        this.selectedUnit = null;
-        if (this.turnText) {
-            this.turnText.setText('Player Turn: ' + (this.currentTurnIndex + 1));
-        }
-    }
-
-    checkCombat() {
-        for (const player of this.players) {
-            for (const enemy of this.enemies) {
-                if (player.q === enemy.q && player.r === enemy.r) {
-                    console.log('Combat triggered at', player.q, player.r);
-                    this.scene.start('CombatScene');
-                    return;
-                }
-            }
-        }
-    }
