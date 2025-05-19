@@ -10,16 +10,6 @@ const terrainTypes = {
   swamp: { movementCost: 3, color: '#4E342E' }
 };
 
-// File: game/map.js
-
-const terrainTypes = {
-  grassland: { movementCost: 1, color: '#34a853' },
-  sand: { movementCost: 2, color: '#FFF59D' },
-  mud: { movementCost: 3, color: '#795548' },
-  mountain: { movementCost: Infinity, color: '#9E9E9E', impassable: true },
-  water: { movementCost: Infinity, color: '#4da6ff', impassable: true }
-};
-
 function seededRandom(seed) {
   if (!seed || typeof seed !== 'string') seed = 'defaultseed';
   let x = 0;
@@ -122,26 +112,25 @@ function generateMap(rows = 25, cols = 25, seed = 'defaultseed') {
     }
   }
 
-  return map;
+  return map.flat();
 }
 
-
 export default class HexMap {
-    constructor(width, height, seed) {
-        this.width = width;
-        this.height = height;
-        this.seed = seed;
-        this.map = [];
-        this.generateMap();
-    }
+  constructor(width, height, seed) {
+    this.width = width;
+    this.height = height;
+    this.seed = seed;
+    this.map = [];
+    this.generateMap();
+  }
 
-    generateMap() {
-        const randSeed = cyrb128(this.seed);
-        const rand = sfc32(...randSeed);
-        this.map = generateMap(this.width, this.height, rand);
-    }
+  generateMap() {
+    const randSeed = cyrb128(this.seed);
+    const rand = sfc32(...randSeed);
+    this.map = generateMap(this.width, this.height, rand);
+  }
 
-    getMap() {
-        return this.map;
-    }
+  getMap() {
+    return this.map;
+  }
 }
