@@ -7,7 +7,20 @@ export default class LobbyScene extends Phaser.Scene {
 
     preload() {}
 
-    create() {
+    async create() {
+
+        const { supabase } = await import('../net/SupabaseClient.js');
+        try {
+            const { error: pingError } = await supabase.from('lobbies').select('id').limit(1);
+            if (pingError) {
+                console.error('[Supabase ERROR] Cannot connect:', pingError.message);
+            } else {
+                console.log('[Supabase OK] Connection active.');
+            }
+        } catch (err) {
+            console.error('[Supabase EXCEPTION] Connection check failed:', err.message);
+        }
+
         this.add.text(500, 60, 'DeepHex Multiplayer Lobby', {
             fontSize: '28px',
             fill: '#ffffff'
@@ -22,6 +35,7 @@ export default class LobbyScene extends Phaser.Scene {
         codeInput.setOrigin(0.5);
 
         const hostBtn = this.add.dom(540, 330, 'button', {
+            zIndex: 1000,
             backgroundColor: '#006400',
             color: '#fff',
             fontSize: '18px',
@@ -31,6 +45,7 @@ export default class LobbyScene extends Phaser.Scene {
         }, 'Host Game');
 
         const joinBtn = this.add.dom(720, 330, 'button', {
+            zIndex: 1000,
             backgroundColor: '#1E90FF',
             color: '#fff',
             fontSize: '18px',
