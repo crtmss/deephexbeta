@@ -14,11 +14,11 @@ export default class LobbyScene extends Phaser.Scene {
         });
 
         this.add.text(460, 130, 'Your Name:', { fontSize: '18px', fill: '#ffffff' });
-        const nameInput = this.add.dom(640, 160, 'input');
+        const nameInput = this.add.dom(640, 160, 'input', 'maxlength="16"');
         nameInput.setOrigin(0.5);
 
         this.add.text(430, 220, 'Room Code (4 letters):', { fontSize: '18px', fill: '#ffffff' });
-        const codeInput = this.add.dom(640, 250, 'input');
+        const codeInput = this.add.dom(640, 250, 'input', 'maxlength="4" pattern="[A-Za-z]{4}"');
         codeInput.setOrigin(0.5);
 
         const hostBtn = this.add.dom(540, 330, 'button', {
@@ -45,7 +45,11 @@ export default class LobbyScene extends Phaser.Scene {
             const code = codeInput.node.value.trim().toUpperCase();
             if (!name || code.length !== 4) return alert('Enter name and 4-letter room code');
             const { data, error } = await createLobby(name, code);
-            if (!error) this.scene.start('WorldScene', { playerName: name, roomCode: code, isHost: true });
+            if (error) {
+                alert('Failed to create lobby: ' + (error.message || error));
+                return;
+            }
+            this.scene.start('WorldScene', { playerName: name, roomCode: code, isHost: true });
         });
 
         joinBtn.addListener('click');
@@ -54,8 +58,11 @@ export default class LobbyScene extends Phaser.Scene {
             const code = codeInput.node.value.trim().toUpperCase();
             if (!name || code.length !== 4) return alert('Enter name and 4-letter room code');
             const { data, error } = await joinLobby(name, code);
-            if (!error) this.scene.start('WorldScene', { playerName: name, roomCode: code, isHost: false });
+            if (error) {
+                alert('Failed to join lobby: ' + (error.message || error));
+                return;
+            }
+            this.scene.start('WorldScene', { playerName: name, roomCode: code, isHost: false });
         });
     }
 }
-    
