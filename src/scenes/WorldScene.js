@@ -168,19 +168,19 @@ export default class WorldScene extends Phaser.Scene {
     }
 
     update() {
-        if (this.movingPath.length > 0 && this.selectedUnit) {
-            const next = this.movingPath.shift();
-            const { x, y } = this.hexToPixel(next.q, next.r, this.hexSize);
-            this.selectedUnit.setPosition(x, y);
-            this.selectedUnit.q = next.q;
-            this.selectedUnit.r = next.r;
-            if (this.movingPath.length === 0) {
-                this.syncPlayerMove(this.selectedUnit);
-                this.endTurn();
-                this.checkCombat();
-            }
+    if (Array.isArray(this.movingPath) && this.movingPath.length > 0 && this.selectedUnit) {
+        const next = this.movingPath.shift();
+        const { x, y } = this.hexToPixel(next.q, next.r, this.hexSize);
+        this.selectedUnit.setPosition(x, y);
+        this.selectedUnit.q = next.q;
+        this.selectedUnit.r = next.r;
+        if (this.movingPath.length === 0) {
+            this.syncPlayerMove(this.selectedUnit);
+            this.endTurn();
+            this.checkCombat();
         }
     }
+}
 
     moveEnemies() {
         const directions = [
