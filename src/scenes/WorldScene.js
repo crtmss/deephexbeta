@@ -109,6 +109,7 @@ export default class WorldScene extends Phaser.Scene {
             unit.r = tile.r;
             unit.playerName = i === 0 ? playerName : `P${i+1}`;
             unit.fillColor = unit.playerName === playerName ? 0xff0000 : 0x0000ff;
+            unit.fillColor = unit.playerName === playerName ? 0xff0000 : 0x0000ff;
             unit.setInteractive();
             unit.on('pointerdown', () => {
                 if (this.players[this.currentTurnIndex] === unit) {
@@ -262,8 +263,29 @@ export default class WorldScene extends Phaser.Scene {
         return { q: rx, r: rz };
     }
 
+    
     drawHex(q, r, x, y, size, color) {
         const graphics = this.add.graphics({ x: 0, y: 0 });
+        graphics.lineStyle(1, 0x000000);
+        graphics.fillStyle(color, 1);
+        const corners = [];
+        for (let i = 0; i < 6; i++) {
+            const angle = Phaser.Math.DegToRad(60 * i - 30); // flat top
+            const px = x + size * Math.cos(angle);
+            const py = y + size * Math.sin(angle);
+            corners.push({ x: px, y: py });
+        }
+        graphics.beginPath();
+        graphics.moveTo(corners[0].x, corners[0].y);
+        for (let i = 1; i < corners.length; i++) {
+            graphics.lineTo(corners[i].x, corners[i].y);
+        }
+        graphics.closePath();
+        graphics.fillPath();
+        graphics.strokePath();
+        this.tileMap[`${q},${r}`] = graphics;
+    }
+    );
         graphics.lineStyle(1, 0x000000);
         graphics.fillStyle(color, 1);
         const corners = [];
