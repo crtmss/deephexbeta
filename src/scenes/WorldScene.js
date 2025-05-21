@@ -1,3 +1,5 @@
+// deephexbeta/src/scenes/WorldScene.js
+
 import HexMap from '../engine/HexMap.js';
 import { findPath } from '../engine/AStar.js';
 
@@ -34,9 +36,7 @@ export default class WorldScene extends Phaser.Scene {
                 .select('state')
                 .eq('room_code', roomCode)
                 .single();
-
             if (fetchError) return;
-
             const updatedState = {
                 ...lobbyData.state,
                 units: {
@@ -45,7 +45,6 @@ export default class WorldScene extends Phaser.Scene {
                 },
                 currentTurn: this.getNextPlayer(lobbyData.state.players, playerName)
             };
-
             await supabase
                 .from('lobbies')
                 .update({ state: updatedState })
@@ -59,7 +58,6 @@ export default class WorldScene extends Phaser.Scene {
 
         subscribeToGame(roomCode, (newState) => {
             if (!newState.units) return;
-
             for (const name in newState.units) {
                 if (name === playerName) continue;
                 const other = newState.units[name];
@@ -71,11 +69,9 @@ export default class WorldScene extends Phaser.Scene {
                     existing.r = other.r;
                 }
             }
-
             if (newState.currentTurn !== playerName) {
                 this.selectedUnit = null;
             }
-
             if (this.turnText) {
                 this.turnText.setText('Player Turn: ' + newState.currentTurn);
             }
@@ -87,8 +83,8 @@ export default class WorldScene extends Phaser.Scene {
         this.selectedUnit = null;
         this.movingPath = [];
         this.currentTurnIndex = 0;
-
         this.tileMap = {};
+
         this.mapData.forEach(hex => {
             const { q, r, terrain } = hex;
             const { x, y } = this.hexToPixel(q, r, this.hexSize);
@@ -106,7 +102,7 @@ export default class WorldScene extends Phaser.Scene {
             const unit = this.add.circle(x, y, 12, 0xff0000).setDepth(10);
             unit.q = tile.q;
             unit.r = tile.r;
-            unit.playerName = i === 0 ? playerName : `P${i+1}`;
+            unit.playerName = i === 0 ? playerName : `P${i + 1}`;
             unit.fillColor = unit.playerName === playerName ? 0xff0000 : 0x0000ff;
             unit.setInteractive();
             unit.on('pointerdown', () => {
@@ -133,14 +129,12 @@ export default class WorldScene extends Phaser.Scene {
             const clickedHex = this.pixelToHex(worldX - 400, worldY - 100);
             const target = this.mapData.find(h => h.q === clickedHex.q && h.r === clickedHex.r);
             if (!target || ['water', 'mountain'].includes(target.terrain)) return;
-
             const path = findPath(
                 { q: this.selectedUnit.q, r: this.selectedUnit.r },
                 { q: clickedHex.q, r: clickedHex.r },
                 this.mapData,
                 tile => ['water', 'mountain'].includes(tile.terrain)
             );
-
             this.movingPath = path.slice(1);
         });
 
@@ -178,7 +172,6 @@ export default class WorldScene extends Phaser.Scene {
             { dq: +1, dr: 0 }, { dq: -1, dr: 0 }, { dq: 0, dr: +1 },
             { dq: 0, dr: -1 }, { dq: +1, dr: -1 }, { dq: -1, dr: +1 }
         ];
-
         this.enemies.forEach(enemy => {
             Phaser.Utils.Array.Shuffle(directions);
             for (const dir of directions) {
@@ -196,18 +189,6 @@ export default class WorldScene extends Phaser.Scene {
         });
     }
 
-    checkCombat() {
-        for (const player of this.players) {
-            for (const enemy of this.enemies) {
-                if (player.q === enemy.q && player.r === enemy.r) {
-                    console.log('Combat triggered at', player.q, player.r);
-                    this.scene.start('CombatScene');
-                    return;
-                }
-            }
-        }
-    }
-
     displayTurnText() {
         const playerText = this.add.text(10, 10, 'Player Turn: 1', {
             fontSize: '20px',
@@ -222,19 +203,20 @@ export default class WorldScene extends Phaser.Scene {
         if (this.turnText) {
             this.turnText.setText('Player Turn: ' + (this.currentTurnIndex + 1));
         }
-        this.moveEnemies(); // enemy movement on turn end
+        this.moveEnemies();
     }
 
     hexToPixel(q, r, size) {
-        const x = size * Math.sqrt(3) * (q + r / 2);
-        const y = size * 3/2 * r;
-        return { x: x + 400, y: y + 100 };
+        const x = size * 3/2 * q;
+        const y = size * Math.sqrt(3) * (r + 0.5 * (q & 1));
+        return { x: x + 100, y: y + 100 };
     }
 
     pixelToHex(x, y) {
-        const size = this.hexSize;
-        const q = (x * Math.sqrt(3)/3 - y / 3) / size;
-        const r = y * 2/3 / size;
+        x -= 100;
+        y -= 100;
+        const q = (2/3 * x) / this.hexSize;
+        const r = (-1/3 * x + Math.sqrt(3)/3 * y) / this.hexSize;
         return this.roundHex(q, r);
     }
 
@@ -242,19 +224,15 @@ export default class WorldScene extends Phaser.Scene {
         let x = q;
         let z = r;
         let y = -x - z;
-
         let rx = Math.round(x);
         let ry = Math.round(y);
         let rz = Math.round(z);
-
         const dx = Math.abs(rx - x);
         const dy = Math.abs(ry - y);
         const dz = Math.abs(rz - z);
-
         if (dx > dy && dx > dz) rx = -ry - rz;
         else if (dy > dz) ry = -rx - rz;
         else rz = -rx - ry;
-
         return { q: rx, r: rz };
     }
 
@@ -277,7 +255,6 @@ export default class WorldScene extends Phaser.Scene {
         graphics.closePath();
         graphics.fillPath();
         graphics.strokePath();
-
         this.tileMap[`${q},${r}`] = graphics;
     }
 
