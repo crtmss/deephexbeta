@@ -11,7 +11,6 @@ export default class WorldScene extends Phaser.Scene {
         this.mapWidth = 25;
         this.mapHeight = 25;
 
-        // Multiplayer info
         const { roomCode, playerName, isHost } = this.scene.settings.data;
         console.log('[Multiplayer] Joined Room:', roomCode, '| Player:', playerName, '| Host:', isHost);
 
@@ -109,7 +108,6 @@ export default class WorldScene extends Phaser.Scene {
             unit.r = tile.r;
             unit.playerName = i === 0 ? playerName : `P${i+1}`;
             unit.fillColor = unit.playerName === playerName ? 0xff0000 : 0x0000ff;
-            unit.fillColor = unit.playerName === playerName ? 0xff0000 : 0x0000ff;
             unit.setInteractive();
             unit.on('pointerdown', () => {
                 if (this.players[this.currentTurnIndex] === unit) {
@@ -128,8 +126,6 @@ export default class WorldScene extends Phaser.Scene {
             enemy.r = tile.r;
             this.enemies.push(enemy);
         }
-
-        
 
         this.input.on('pointerdown', pointer => {
             if (!this.selectedUnit || this.players[this.currentTurnIndex] !== this.selectedUnit) return;
@@ -158,26 +154,24 @@ export default class WorldScene extends Phaser.Scene {
         }).setInteractive().setDepth(100);
 
         this.endTurnButton.on('pointerdown', () => {
-            if (this.selectedUnit === this.players[this.currentTurnIndex]) {
-                this.endTurn();
-            }
+            this.endTurn();
         });
     }
 
     update() {
-    if (Array.isArray(this.movingPath) && this.movingPath.length > 0 && this.selectedUnit) {
-        const next = this.movingPath.shift();
-        const { x, y } = this.hexToPixel(next.q, next.r, this.hexSize);
-        this.selectedUnit.setPosition(x, y);
-        this.selectedUnit.q = next.q;
-        this.selectedUnit.r = next.r;
-        if (this.movingPath.length === 0) {
-            this.syncPlayerMove(this.selectedUnit);
-            this.endTurn();
-            this.checkCombat();
+        if (Array.isArray(this.movingPath) && this.movingPath.length > 0 && this.selectedUnit) {
+            const next = this.movingPath.shift();
+            const { x, y } = this.hexToPixel(next.q, next.r, this.hexSize);
+            this.selectedUnit.setPosition(x, y);
+            this.selectedUnit.q = next.q;
+            this.selectedUnit.r = next.r;
+            if (this.movingPath.length === 0) {
+                this.syncPlayerMove(this.selectedUnit);
+                this.endTurn();
+                this.checkCombat();
+            }
         }
     }
-}
 
     moveEnemies() {
         const directions = [
@@ -228,6 +222,7 @@ export default class WorldScene extends Phaser.Scene {
         if (this.turnText) {
             this.turnText.setText('Player Turn: ' + (this.currentTurnIndex + 1));
         }
+        this.moveEnemies(); // enemy movement on turn end
     }
 
     hexToPixel(q, r, size) {
@@ -263,35 +258,13 @@ export default class WorldScene extends Phaser.Scene {
         return { q: rx, r: rz };
     }
 
-    
-drawHex(q, r, x, y, size, color) {
-    const graphics = this.add.graphics({ x: 0, y: 0 });
-    graphics.lineStyle(1, 0x000000);
-    graphics.fillStyle(color, 1);
-    const corners = [];
-    for (let i = 0; i < 6; i++) {
-        const angle = Phaser.Math.DegToRad(60 * i - 30); // flat-top correction
-        const px = x + size * Math.cos(angle);
-        const py = y + size * Math.sin(angle);
-        corners.push({ x: px, y: py });
-    }
-    graphics.beginPath();
-    graphics.moveTo(corners[0].x, corners[0].y);
-    for (let i = 1; i < corners.length; i++) {
-        graphics.lineTo(corners[i].x, corners[i].y);
-    }
-    graphics.closePath();
-    graphics.fillPath();
-    graphics.strokePath();
-
-    this.tileMap[`${q},${r}`] = graphics;
-}
- 
+    drawHex(q, r, x, y, size, color) {
+        const graphics = this.add.graphics({ x: 0, y: 0 });
         graphics.lineStyle(1, 0x000000);
         graphics.fillStyle(color, 1);
         const corners = [];
         for (let i = 0; i < 6; i++) {
-            const angle = Phaser.Math.DegToRad(60 * i);
+            const angle = Phaser.Math.DegToRad(60 * i - 30);
             const px = x + size * Math.cos(angle);
             const py = y + size * Math.sin(angle);
             corners.push({ x: px, y: py });
