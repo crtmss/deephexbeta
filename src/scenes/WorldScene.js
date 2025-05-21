@@ -99,15 +99,15 @@ export default class WorldScene extends Phaser.Scene {
         for (let i = 0; i < 4 && i < safeTiles.length; i++) {
             const tile = safeTiles[i];
             const { x, y } = this.hexToPixel(tile.q, tile.r, this.hexSize);
-            const unit = this.add.circle(x, y, 12, 0xff0000).setDepth(10);
+            const unit = this.add.circle(x, y, 12, i === 0 ? 0xff0000 : 0x0000ff).setDepth(10);
             unit.q = tile.q;
             unit.r = tile.r;
             unit.playerName = i === 0 ? playerName : `P${i + 1}`;
-            unit.fillColor = unit.playerName === playerName ? 0xff0000 : 0x0000ff;
             unit.setInteractive();
             unit.on('pointerdown', () => {
-                if (this.players[this.currentTurnIndex] === unit) {
+                if (unit.playerName === this.playerName && this.players[this.currentTurnIndex] === unit) {
                     this.selectedUnit = unit;
+                    console.log('unit selected:', unit.playerName);
                 }
             });
             this.players.push(unit);
@@ -126,7 +126,7 @@ export default class WorldScene extends Phaser.Scene {
         this.input.on('pointerdown', pointer => {
             if (!this.selectedUnit || this.players[this.currentTurnIndex] !== this.selectedUnit) return;
             const { worldX, worldY } = pointer;
-            const clickedHex = this.pixelToHex(worldX - 400, worldY - 100);
+            const clickedHex = this.pixelToHex(worldX, worldY);
             const target = this.mapData.find(h => h.q === clickedHex.q && h.r === clickedHex.r);
             if (!target || ['water', 'mountain'].includes(target.terrain)) return;
             const path = findPath(
@@ -140,7 +140,7 @@ export default class WorldScene extends Phaser.Scene {
 
         this.displayTurnText();
 
-        this.endTurnButton = this.add.text(1050, 20, 'End Turn', {
+        this.endTurnButton = this.add.text(1150, 10, 'End Turn', {
             fontSize: '22px',
             backgroundColor: '#222',
             color: '#fff',
@@ -150,6 +150,8 @@ export default class WorldScene extends Phaser.Scene {
         this.endTurnButton.on('pointerdown', () => {
             this.endTurn();
         });
+
+        this.cameras.main.setBounds(0, 0, this.mapWidth * this.hexSize * 1.5, this.mapHeight * this.hexSize * 1.5);
     }
 
     update() {
@@ -209,12 +211,12 @@ export default class WorldScene extends Phaser.Scene {
     hexToPixel(q, r, size) {
         const x = size * 3/2 * q;
         const y = size * Math.sqrt(3) * (r + 0.5 * (q & 1));
-        return { x: x + 100, y: y + 100 };
+        return { x: x + 50, y: y + 50 };
     }
 
     pixelToHex(x, y) {
-        x -= 100;
-        y -= 100;
+        x -= 50;
+        y -= 50;
         const q = (2/3 * x) / this.hexSize;
         const r = (-1/3 * x + Math.sqrt(3)/3 * y) / this.hexSize;
         return this.roundHex(q, r);
@@ -242,7 +244,7 @@ export default class WorldScene extends Phaser.Scene {
         graphics.fillStyle(color, 1);
         const corners = [];
         for (let i = 0; i < 6; i++) {
-            const angle = Phaser.Math.DegToRad(60 * i - 30);
+            const angle = Phaser.Math.DegToRad(60 * i - 30); // flat-top orientation
             const px = x + size * Math.cos(angle);
             const py = y + size * Math.sin(angle);
             corners.push({ x: px, y: py });
