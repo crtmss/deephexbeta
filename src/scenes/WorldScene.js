@@ -108,6 +108,7 @@ export default class WorldScene extends Phaser.Scene {
             unit.q = tile.q;
             unit.r = tile.r;
             unit.playerName = i === 0 ? playerName : `P${i+1}`;
+            unit.fillColor = unit.playerName === playerName ? 0xff0000 : 0x0000ff;
             unit.setInteractive();
             unit.on('pointerdown', () => {
                 if (this.players[this.currentTurnIndex] === unit) {
@@ -127,12 +128,7 @@ export default class WorldScene extends Phaser.Scene {
             this.enemies.push(enemy);
         }
 
-        this.time.addEvent({
-            delay: 2000,
-            callback: this.moveEnemies,
-            callbackScope: this,
-            loop: true
-        });
+        
 
         this.input.on('pointerdown', pointer => {
             if (!this.selectedUnit || this.players[this.currentTurnIndex] !== this.selectedUnit) return;
