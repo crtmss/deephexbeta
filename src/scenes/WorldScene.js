@@ -9,7 +9,7 @@ export default class WorldScene extends Phaser.Scene {
     }
 
     async create() {
-        this.hexSize = 32;
+        this.hexSize = 24; // Smaller size so entire map fits
         this.mapWidth = 25;
         this.mapHeight = 25;
 
@@ -99,15 +99,19 @@ export default class WorldScene extends Phaser.Scene {
         for (let i = 0; i < 4 && i < safeTiles.length; i++) {
             const tile = safeTiles[i];
             const { x, y } = this.hexToPixel(tile.q, tile.r, this.hexSize);
-            const unit = this.add.circle(x, y, 12, i === 0 ? 0xff0000 : 0x0000ff).setDepth(10);
+            const unit = this.add.circle(x, y, 10, 0xff0000).setDepth(10);
             unit.q = tile.q;
             unit.r = tile.r;
             unit.playerName = i === 0 ? playerName : `P${i + 1}`;
+            unit.fillColor = unit.playerName === playerName ? 0xff0000 : 0x0000ff;
             unit.setInteractive();
             unit.on('pointerdown', () => {
-                if (unit.playerName === this.playerName && this.players[this.currentTurnIndex] === unit) {
+                if (this.selectedUnit === unit) {
+                    console.log('Unit deselected:', unit.playerName);
+                    this.selectedUnit = null;
+                } else if (this.players[this.currentTurnIndex] === unit) {
                     this.selectedUnit = unit;
-                    console.log('unit selected:', unit.playerName);
+                    console.log('Unit selected:', unit.playerName);
                 }
             });
             this.players.push(unit);
@@ -117,7 +121,7 @@ export default class WorldScene extends Phaser.Scene {
         const enemyTiles = safeTiles.slice(4, 14);
         for (let tile of enemyTiles) {
             const { x, y } = this.hexToPixel(tile.q, tile.r, this.hexSize);
-            const enemy = this.add.circle(x, y, 10, 0x0000ff).setDepth(10);
+            const enemy = this.add.circle(x, y, 8, 0x0000ff).setDepth(10);
             enemy.q = tile.q;
             enemy.r = tile.r;
             this.enemies.push(enemy);
@@ -126,7 +130,7 @@ export default class WorldScene extends Phaser.Scene {
         this.input.on('pointerdown', pointer => {
             if (!this.selectedUnit || this.players[this.currentTurnIndex] !== this.selectedUnit) return;
             const { worldX, worldY } = pointer;
-            const clickedHex = this.pixelToHex(worldX, worldY);
+            const clickedHex = this.pixelToHex(worldX - 100, worldY - 100);
             const target = this.mapData.find(h => h.q === clickedHex.q && h.r === clickedHex.r);
             if (!target || ['water', 'mountain'].includes(target.terrain)) return;
             const path = findPath(
@@ -140,7 +144,7 @@ export default class WorldScene extends Phaser.Scene {
 
         this.displayTurnText();
 
-        this.endTurnButton = this.add.text(1150, 10, 'End Turn', {
+        this.endTurnButton = this.add.text(1050, 20, 'End Turn', {
             fontSize: '22px',
             backgroundColor: '#222',
             color: '#fff',
@@ -150,8 +154,6 @@ export default class WorldScene extends Phaser.Scene {
         this.endTurnButton.on('pointerdown', () => {
             this.endTurn();
         });
-
-        this.cameras.main.setBounds(0, 0, this.mapWidth * this.hexSize * 1.5, this.mapHeight * this.hexSize * 1.5);
     }
 
     update() {
@@ -167,6 +169,23 @@ export default class WorldScene extends Phaser.Scene {
                 this.checkCombat();
             }
         }
+    }
+
+    displayTurnText() {
+        const playerText = this.add.text(10, 10, 'Player Turn: 1', {
+            fontSize: '20px',
+            fill: '#ffffff'
+        }).setDepth(100);
+        this.turnText = playerText;
+    }
+
+    endTurn() {
+        this.currentTurnIndex = (this.currentTurnIndex + 1) % this.players.length;
+        this.selectedUnit = null;
+        if (this.turnText) {
+            this.turnText.setText('Player Turn: ' + (this.currentTurnIndex + 1));
+        }
+        this.moveEnemies();
     }
 
     moveEnemies() {
@@ -191,47 +210,24 @@ export default class WorldScene extends Phaser.Scene {
         });
     }
 
-    displayTurnText() {
-        const playerText = this.add.text(10, 10, 'Player Turn: 1', {
-            fontSize: '20px',
-            fill: '#ffffff'
-        }).setDepth(100);
-        this.turnText = playerText;
-    }
-
-    endTurn() {
-        this.currentTurnIndex = (this.currentTurnIndex + 1) % this.players.length;
-        this.selectedUnit = null;
-        if (this.turnText) {
-            this.turnText.setText('Player Turn: ' + (this.currentTurnIndex + 1));
-        }
-        this.moveEnemies();
-    }
-
     hexToPixel(q, r, size) {
         const x = size * 3/2 * q;
         const y = size * Math.sqrt(3) * (r + 0.5 * (q & 1));
-        return { x: x + 50, y: y + 50 };
+        return { x: x + 100, y: y + 100 };
     }
 
     pixelToHex(x, y) {
-        x -= 50;
-        y -= 50;
+        x -= 100;
+        y -= 100;
         const q = (2/3 * x) / this.hexSize;
         const r = (-1/3 * x + Math.sqrt(3)/3 * y) / this.hexSize;
         return this.roundHex(q, r);
     }
 
     roundHex(q, r) {
-        let x = q;
-        let z = r;
-        let y = -x - z;
-        let rx = Math.round(x);
-        let ry = Math.round(y);
-        let rz = Math.round(z);
-        const dx = Math.abs(rx - x);
-        const dy = Math.abs(ry - y);
-        const dz = Math.abs(rz - z);
+        let x = q, z = r, y = -x - z;
+        let rx = Math.round(x), ry = Math.round(y), rz = Math.round(z);
+        const dx = Math.abs(rx - x), dy = Math.abs(ry - y), dz = Math.abs(rz - z);
         if (dx > dy && dx > dz) rx = -ry - rz;
         else if (dy > dz) ry = -rx - rz;
         else rz = -rx - ry;
@@ -244,7 +240,7 @@ export default class WorldScene extends Phaser.Scene {
         graphics.fillStyle(color, 1);
         const corners = [];
         for (let i = 0; i < 6; i++) {
-            const angle = Phaser.Math.DegToRad(60 * i - 30); // flat-top orientation
+            const angle = Phaser.Math.DegToRad(60 * i - 30);
             const px = x + size * Math.cos(angle);
             const py = y + size * Math.sin(angle);
             corners.push({ x: px, y: py });
