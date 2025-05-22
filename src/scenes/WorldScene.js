@@ -1,5 +1,8 @@
 // deephexbeta/src/scenes/WorldScene.js
 
+import HexMap from '../engine/HexMap.js';
+import { findPath } from '../engine/AStar.js';
+
 export default class WorldScene extends Phaser.Scene {
     constructor() {
         super('WorldScene');
