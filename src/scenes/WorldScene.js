@@ -9,7 +9,7 @@ export default class WorldScene extends Phaser.Scene {
     }
 
     async create() {
-        this.hexSize = 24; // Smaller size so entire map fits
+        this.hexSize = 24;
         this.mapWidth = 25;
         this.mapHeight = 25;
 
@@ -79,11 +79,10 @@ export default class WorldScene extends Phaser.Scene {
 
         this.hexMap = new HexMap(this.mapWidth, this.mapHeight, this.seed);
         this.mapData = this.hexMap.getMap();
-
+        this.tileMap = {};
         this.selectedUnit = null;
         this.movingPath = [];
         this.currentTurnIndex = 0;
-        this.tileMap = {};
 
         this.mapData.forEach(hex => {
             const { q, r, terrain } = hex;
@@ -99,16 +98,15 @@ export default class WorldScene extends Phaser.Scene {
         for (let i = 0; i < 4 && i < safeTiles.length; i++) {
             const tile = safeTiles[i];
             const { x, y } = this.hexToPixel(tile.q, tile.r, this.hexSize);
-            const unit = this.add.circle(x, y, 10, 0xff0000).setDepth(10);
+            const unit = this.add.circle(x, y, 10, i === 0 ? 0xff0000 : 0x0000ff).setDepth(10);
             unit.q = tile.q;
             unit.r = tile.r;
             unit.playerName = i === 0 ? playerName : `P${i + 1}`;
-            unit.fillColor = unit.playerName === playerName ? 0xff0000 : 0x0000ff;
             unit.setInteractive();
             unit.on('pointerdown', () => {
                 if (this.selectedUnit === unit) {
-                    console.log('Unit deselected:', unit.playerName);
                     this.selectedUnit = null;
+                    console.log('Unit deselected:', unit.playerName);
                 } else if (this.players[this.currentTurnIndex] === unit) {
                     this.selectedUnit = unit;
                     console.log('Unit selected:', unit.playerName);
@@ -130,12 +128,13 @@ export default class WorldScene extends Phaser.Scene {
         this.input.on('pointerdown', pointer => {
             if (!this.selectedUnit || this.players[this.currentTurnIndex] !== this.selectedUnit) return;
             const { worldX, worldY } = pointer;
-            const clickedHex = this.pixelToHex(worldX - 100, worldY - 100);
+            const clickedHex = this.pixelToHex(worldX, worldY);
             const target = this.mapData.find(h => h.q === clickedHex.q && h.r === clickedHex.r);
             if (!target || ['water', 'mountain'].includes(target.terrain)) return;
+
             const path = findPath(
                 { q: this.selectedUnit.q, r: this.selectedUnit.r },
-                { q: clickedHex.q, r: clickedHex.r },
+                { q: target.q, r: target.r },
                 this.mapData,
                 tile => ['water', 'mountain'].includes(tile.terrain)
             );
@@ -144,16 +143,13 @@ export default class WorldScene extends Phaser.Scene {
 
         this.displayTurnText();
 
-        this.endTurnButton = this.add.text(1050, 20, 'End Turn', {
+        this.endTurnButton = this.add.text(1150, 20, 'End Turn', {
             fontSize: '22px',
             backgroundColor: '#222',
             color: '#fff',
             padding: { x: 12, y: 6 }
         }).setInteractive().setDepth(100);
-
-        this.endTurnButton.on('pointerdown', () => {
-            this.endTurn();
-        });
+        this.endTurnButton.on('pointerdown', () => this.endTurn());
     }
 
     update() {
@@ -171,12 +167,15 @@ export default class WorldScene extends Phaser.Scene {
         }
     }
 
+    checkCombat() {
+        console.log('[Combat] Check not implemented.');
+    }
+
     displayTurnText() {
-        const playerText = this.add.text(10, 10, 'Player Turn: 1', {
+        this.turnText = this.add.text(10, 10, 'Player Turn: 1', {
             fontSize: '20px',
             fill: '#ffffff'
         }).setDepth(100);
-        this.turnText = playerText;
     }
 
     endTurn() {
@@ -211,16 +210,16 @@ export default class WorldScene extends Phaser.Scene {
     }
 
     hexToPixel(q, r, size) {
-        const x = size * 3/2 * q;
-        const y = size * Math.sqrt(3) * (r + 0.5 * (q & 1));
-        return { x: x + 100, y: y + 100 };
+        const x = size * Math.sqrt(3) * (q + 0.5 * (r & 1));
+        const y = size * 1.5 * r;
+        return { x: x + 20, y: y + 20 };
     }
 
     pixelToHex(x, y) {
-        x -= 100;
-        y -= 100;
-        const q = (2/3 * x) / this.hexSize;
-        const r = (-1/3 * x + Math.sqrt(3)/3 * y) / this.hexSize;
+        x -= 20;
+        y -= 20;
+        const q = ((x * Math.sqrt(3)/3) - (y / 3)) / this.hexSize;
+        const r = y * 2/3 / this.hexSize;
         return this.roundHex(q, r);
     }
 
@@ -228,7 +227,7 @@ export default class WorldScene extends Phaser.Scene {
         let x = q, z = r, y = -x - z;
         let rx = Math.round(x), ry = Math.round(y), rz = Math.round(z);
         const dx = Math.abs(rx - x), dy = Math.abs(ry - y), dz = Math.abs(rz - z);
-        if (dx > dy && dx > dz) rx = -ry - rz;
+        if (dx > dy && dx > dz) rx = -ry -rz;
         else if (dy > dz) ry = -rx - rz;
         else rz = -rx - ry;
         return { q: rx, r: rz };
@@ -240,7 +239,7 @@ export default class WorldScene extends Phaser.Scene {
         graphics.fillStyle(color, 1);
         const corners = [];
         for (let i = 0; i < 6; i++) {
-            const angle = Phaser.Math.DegToRad(60 * i - 30);
+            const angle = Phaser.Math.DegToRad(60 * i); // FIXED for flat-topped hex
             const px = x + size * Math.cos(angle);
             const py = y + size * Math.sin(angle);
             corners.push({ x: px, y: py });
