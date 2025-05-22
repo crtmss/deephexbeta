@@ -212,11 +212,19 @@ export default class WorldScene extends Phaser.Scene {
     }
 
     // Pointy-top hex layout (vertical columns)
-    hexToPixel(q, r, size) {
-        const x = size * Math.sqrt(3) * q;
-        const y = size * 1.5 * r;
+hexToPixel(q, r, size) {
+    const width = Math.sqrt(3) * size;
+    const height = 2 * size;
+    const x = q * width;
+    const y = r * (3 / 4) * height;
+
+    // Shift odd rows by half a hex width
+    if (r % 2 !== 0) {
+        return { x: x + width / 2 + 20, y: y + 20 };
+    } else {
         return { x: x + 20, y: y + 20 };
     }
+}
 
     pixelToHex(x, y) {
         x -= 20;
