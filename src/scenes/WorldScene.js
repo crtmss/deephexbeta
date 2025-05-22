@@ -1,8 +1,5 @@
 // deephexbeta/src/scenes/WorldScene.js
 
-import HexMap from '../engine/HexMap.js';
-import { findPath } from '../engine/AStar.js';
-
 export default class WorldScene extends Phaser.Scene {
     constructor() {
         super('WorldScene');
@@ -37,6 +34,7 @@ export default class WorldScene extends Phaser.Scene {
                 .eq('room_code', roomCode)
                 .single();
             if (fetchError) return;
+
             const updatedState = {
                 ...lobbyData.state,
                 units: {
@@ -45,6 +43,7 @@ export default class WorldScene extends Phaser.Scene {
                 },
                 currentTurn: this.getNextPlayer(lobbyData.state.players, playerName)
             };
+
             await supabase
                 .from('lobbies')
                 .update({ state: updatedState })
@@ -209,8 +208,9 @@ export default class WorldScene extends Phaser.Scene {
         });
     }
 
+    // Pointy-top hex layout (vertical columns)
     hexToPixel(q, r, size) {
-        const x = size * Math.sqrt(3) * (q + 0.5 * (r & 1));
+        const x = size * Math.sqrt(3) * q;
         const y = size * 1.5 * r;
         return { x: x + 20, y: y + 20 };
     }
@@ -218,7 +218,7 @@ export default class WorldScene extends Phaser.Scene {
     pixelToHex(x, y) {
         x -= 20;
         y -= 20;
-        const q = ((x * Math.sqrt(3)/3) - (y / 3)) / this.hexSize;
+        const q = (x * Math.sqrt(3)/3 - y / 3) / this.hexSize;
         const r = y * 2/3 / this.hexSize;
         return this.roundHex(q, r);
     }
@@ -227,7 +227,7 @@ export default class WorldScene extends Phaser.Scene {
         let x = q, z = r, y = -x - z;
         let rx = Math.round(x), ry = Math.round(y), rz = Math.round(z);
         const dx = Math.abs(rx - x), dy = Math.abs(ry - y), dz = Math.abs(rz - z);
-        if (dx > dy && dx > dz) rx = -ry -rz;
+        if (dx > dy && dx > dz) rx = -ry - rz;
         else if (dy > dz) ry = -rx - rz;
         else rz = -rx - ry;
         return { q: rx, r: rz };
@@ -239,7 +239,7 @@ export default class WorldScene extends Phaser.Scene {
         graphics.fillStyle(color, 1);
         const corners = [];
         for (let i = 0; i < 6; i++) {
-            const angle = Phaser.Math.DegToRad(60 * i); // FIXED for flat-topped hex
+            const angle = Phaser.Math.DegToRad(60 * i + 30); // Pointy-top
             const px = x + size * Math.cos(angle);
             const py = y + size * Math.sin(angle);
             corners.push({ x: px, y: py });
