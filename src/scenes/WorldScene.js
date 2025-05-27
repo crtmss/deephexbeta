@@ -1,3 +1,5 @@
+// deephexbeta/src/scenes/WorldScene.js
+
 import HexMap from '../engine/HexMap.js';
 import { findPath } from '../engine/AStar.js';
 
@@ -35,7 +37,6 @@ export default class WorldScene extends Phaser.Scene {
                 .eq('room_code', roomCode)
                 .single();
             if (fetchError) return;
-
             const updatedState = {
                 ...lobbyData.state,
                 units: {
@@ -44,7 +45,6 @@ export default class WorldScene extends Phaser.Scene {
                 },
                 currentTurn: this.getNextPlayer(lobbyData.state.players, playerName)
             };
-
             await supabase
                 .from('lobbies')
                 .update({ state: updatedState })
@@ -81,6 +81,7 @@ export default class WorldScene extends Phaser.Scene {
         this.mapData = this.hexMap.getMap();
         this.tileMap = {};
         this.selectedUnit = null;
+        this.selectedHex = null;
         this.movingPath = [];
         this.currentTurnIndex = 0;
 
@@ -104,7 +105,7 @@ export default class WorldScene extends Phaser.Scene {
             unit.playerName = i === 0 ? playerName : `P${i + 1}`;
             unit.setInteractive();
             unit.on('pointerdown', (pointer) => {
-                pointer.event.stopPropagation(); // prevents click event bubbling to map
+                pointer.event.stopPropagation();
                 if (this.selectedUnit === unit) {
                     this.selectedUnit = null;
                     console.log('Unit deselected:', unit.playerName);
@@ -134,13 +135,29 @@ export default class WorldScene extends Phaser.Scene {
             const target = this.mapData.find(h => h.q === clickedHex.q && h.r === clickedHex.r);
             if (!target || ['water', 'mountain'].includes(target.terrain)) return;
 
+            // Remove previous highlight
+            if (this.selectedHexGraphic) {
+                this.selectedHexGraphic.destroy();
+                this.selectedHexGraphic = null;
+            }
+
+            // Highlight clicked hex
+            const { x, y } = this.hexToPixel(target.q, target.r, this.hexSize);
+            this.selectedHexGraphic = this.add.graphics({ x: 0, y: 0 });
+            this.selectedHexGraphic.lineStyle(2, 0xffff00);
+            this.selectedHexGraphic.strokeCircle(x, y, this.hexSize * 0.8);
+
+            // Store hex and move 1 step toward it
+            this.selectedHex = target;
             const path = findPath(
                 { q: this.selectedUnit.q, r: this.selectedUnit.r },
                 { q: target.q, r: target.r },
                 this.mapData,
                 tile => ['water', 'mountain'].includes(tile.terrain)
             );
-            this.movingPath = path.slice(1);
+            if (path.length > 1) {
+                this.movingPath = [path[1]]; // only next step
+            }
         });
 
         this.displayTurnText();
@@ -163,7 +180,6 @@ export default class WorldScene extends Phaser.Scene {
             this.selectedUnit.r = next.r;
             if (this.movingPath.length === 0) {
                 this.syncPlayerMove(this.selectedUnit);
-                this.endTurn();
                 this.checkCombat();
             }
         }
@@ -183,6 +199,10 @@ export default class WorldScene extends Phaser.Scene {
     endTurn() {
         this.currentTurnIndex = (this.currentTurnIndex + 1) % this.players.length;
         this.selectedUnit = null;
+        if (this.selectedHexGraphic) {
+            this.selectedHexGraphic.destroy();
+            this.selectedHexGraphic = null;
+        }
         if (this.turnText) {
             this.turnText.setText('Player Turn: ' + (this.currentTurnIndex + 1));
         }
