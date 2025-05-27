@@ -211,20 +211,13 @@ export default class WorldScene extends Phaser.Scene {
         });
     }
 
-    // Pointy-top hex layout (vertical columns)
-hexToPixel(q, r, size) {
-    const width = Math.sqrt(3) * size;
-    const height = 2 * size;
-    const x = q * width;
-    const y = r * (3 / 4) * height;
-
-    // Shift odd rows by half a hex width
-    if (r % 2 !== 0) {
-        return { x: x + width / 2 + 20, y: y + 20 };
-    } else {
+    hexToPixel(q, r, size) {
+        const width = Math.sqrt(3) * size;
+        const height = 2 * size;
+        const x = q * width + (r % 2) * (width / 2);
+        const y = r * (3 / 4) * height;
         return { x: x + 20, y: y + 20 };
     }
-}
 
     pixelToHex(x, y) {
         x -= 20;
@@ -250,7 +243,7 @@ hexToPixel(q, r, size) {
         graphics.fillStyle(color, 1);
         const corners = [];
         for (let i = 0; i < 6; i++) {
-            const angle = Phaser.Math.DegToRad(60 * i + 30); // Pointy-top
+            const angle = Phaser.Math.DegToRad(60 * i + 30);
             const px = x + size * Math.cos(angle);
             const py = y + size * Math.sin(angle);
             corners.push({ x: px, y: py });
