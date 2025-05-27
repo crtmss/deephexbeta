@@ -1,5 +1,3 @@
-// deephexbeta/src/scenes/WorldScene.js
-
 import HexMap from '../engine/HexMap.js';
 import { findPath } from '../engine/AStar.js';
 
@@ -105,11 +103,12 @@ export default class WorldScene extends Phaser.Scene {
             unit.r = tile.r;
             unit.playerName = i === 0 ? playerName : `P${i + 1}`;
             unit.setInteractive();
-            unit.on('pointerdown', () => {
+            unit.on('pointerdown', (pointer) => {
+                pointer.event.stopPropagation(); // prevents click event bubbling to map
                 if (this.selectedUnit === unit) {
                     this.selectedUnit = null;
                     console.log('Unit deselected:', unit.playerName);
-                } else if (this.players[this.currentTurnIndex] === unit) {
+                } else if (unit.playerName === this.playerName) {
                     this.selectedUnit = unit;
                     console.log('Unit selected:', unit.playerName);
                 }
@@ -128,7 +127,8 @@ export default class WorldScene extends Phaser.Scene {
         }
 
         this.input.on('pointerdown', pointer => {
-            if (!this.selectedUnit || this.players[this.currentTurnIndex] !== this.selectedUnit) return;
+            if (!this.selectedUnit) return;
+
             const { worldX, worldY } = pointer;
             const clickedHex = this.pixelToHex(worldX, worldY);
             const target = this.mapData.find(h => h.q === clickedHex.q && h.r === clickedHex.r);
