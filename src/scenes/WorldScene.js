@@ -37,7 +37,6 @@ export default class WorldScene extends Phaser.Scene {
                 .eq('room_code', roomCode)
                 .single();
             if (fetchError) return;
-
             const updatedState = {
                 ...lobbyData.state,
                 units: {
@@ -46,7 +45,6 @@ export default class WorldScene extends Phaser.Scene {
                 },
                 currentTurn: this.getNextPlayer(lobbyData.state.players, playerName)
             };
-
             await supabase
                 .from('lobbies')
                 .update({ state: updatedState })
@@ -84,7 +82,6 @@ export default class WorldScene extends Phaser.Scene {
         this.tileMap = {};
         this.selectedUnit = null;
         this.selectedHex = null;
-        this.selectedHexGraphic = null;
         this.movingPath = [];
         this.currentTurnIndex = 0;
 
@@ -138,19 +135,17 @@ export default class WorldScene extends Phaser.Scene {
             const target = this.mapData.find(h => h.q === clickedHex.q && h.r === clickedHex.r);
             if (!target || ['water', 'mountain'].includes(target.terrain)) return;
 
-            // Remove previous highlight
             if (this.selectedHexGraphic) {
                 this.selectedHexGraphic.destroy();
                 this.selectedHexGraphic = null;
             }
 
-            // Highlight clicked hex
             const { x, y } = this.hexToPixel(target.q, target.r, this.hexSize);
-            this.selectedHexGraphic = this.add.graphics();
+            this.selectedHexGraphic = this.add.graphics({ x: 0, y: 0 });
             this.selectedHexGraphic.lineStyle(2, 0xffff00);
             this.selectedHexGraphic.strokeCircle(x, y, this.hexSize * 0.8);
 
-            // Pathfinding: move only 1 step toward the clicked hex
+            this.selectedHex = target;
             const path = findPath(
                 { q: this.selectedUnit.q, r: this.selectedUnit.r },
                 { q: target.q, r: target.r },
@@ -233,19 +228,18 @@ export default class WorldScene extends Phaser.Scene {
         });
     }
 
+    // Pointy-top, odd-r layout
     hexToPixel(q, r, size) {
-        const width = Math.sqrt(3) * size;
-        const height = 2 * size;
-        const x = q * width + (r % 2) * (width / 2);
-        const y = r * (3 / 4) * height;
+        const x = size * Math.sqrt(3) * (q + 0.5 * (r & 1));
+        const y = size * 1.5 * r;
         return { x: x + 20, y: y + 20 };
     }
 
     pixelToHex(x, y) {
         x -= 20;
         y -= 20;
-        const q = (x * Math.sqrt(3) / 3 - y / 3) / this.hexSize;
-        const r = y * 2 / 3 / this.hexSize;
+        const q = ((x * Math.sqrt(3) / 3) - (y / 3)) / this.hexSize;
+        const r = y * 2/3 / this.hexSize;
         return this.roundHex(q, r);
     }
 
