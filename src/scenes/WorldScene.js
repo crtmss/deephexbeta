@@ -228,7 +228,7 @@ export default class WorldScene extends Phaser.Scene {
         });
     }
 
-    // Pointy-top, odd-r layout
+    // Pointy-top, odd-r offset layout
     hexToPixel(q, r, size) {
         const x = size * Math.sqrt(3) * (q + 0.5 * (r & 1));
         const y = size * 1.5 * r;
@@ -244,12 +244,22 @@ export default class WorldScene extends Phaser.Scene {
     }
 
     roundHex(q, r) {
-        let x = q, z = r, y = -x - z;
-        let rx = Math.round(x), ry = Math.round(y), rz = Math.round(z);
-        const dx = Math.abs(rx - x), dy = Math.abs(ry - y), dz = Math.abs(rz - z);
+        const x = q;
+        const z = r;
+        const y = -x - z;
+
+        let rx = Math.round(x);
+        let ry = Math.round(y);
+        let rz = Math.round(z);
+
+        const dx = Math.abs(rx - x);
+        const dy = Math.abs(ry - y);
+        const dz = Math.abs(rz - z);
+
         if (dx > dy && dx > dz) rx = -ry - rz;
         else if (dy > dz) ry = -rx - rz;
         else rz = -rx - ry;
+
         return { q: rx, r: rz };
     }
 
