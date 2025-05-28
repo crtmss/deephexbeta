@@ -37,6 +37,7 @@ export default class WorldScene extends Phaser.Scene {
                 .eq('room_code', roomCode)
                 .single();
             if (fetchError) return;
+
             const updatedState = {
                 ...lobbyData.state,
                 units: {
@@ -45,6 +46,7 @@ export default class WorldScene extends Phaser.Scene {
                 },
                 currentTurn: this.getNextPlayer(lobbyData.state.players, playerName)
             };
+
             await supabase
                 .from('lobbies')
                 .update({ state: updatedState })
@@ -82,6 +84,7 @@ export default class WorldScene extends Phaser.Scene {
         this.tileMap = {};
         this.selectedUnit = null;
         this.selectedHex = null;
+        this.selectedHexGraphic = null;
         this.movingPath = [];
         this.currentTurnIndex = 0;
 
@@ -143,12 +146,11 @@ export default class WorldScene extends Phaser.Scene {
 
             // Highlight clicked hex
             const { x, y } = this.hexToPixel(target.q, target.r, this.hexSize);
-            this.selectedHexGraphic = this.add.graphics({ x: 0, y: 0 });
+            this.selectedHexGraphic = this.add.graphics();
             this.selectedHexGraphic.lineStyle(2, 0xffff00);
             this.selectedHexGraphic.strokeCircle(x, y, this.hexSize * 0.8);
 
-            // Store hex and move 1 step toward it
-            this.selectedHex = target;
+            // Pathfinding: move only 1 step toward the clicked hex
             const path = findPath(
                 { q: this.selectedUnit.q, r: this.selectedUnit.r },
                 { q: target.q, r: target.r },
@@ -156,7 +158,7 @@ export default class WorldScene extends Phaser.Scene {
                 tile => ['water', 'mountain'].includes(tile.terrain)
             );
             if (path.length > 1) {
-                this.movingPath = [path[1]]; // only next step
+                this.movingPath = [path[1]];
             }
         });
 
@@ -242,8 +244,8 @@ export default class WorldScene extends Phaser.Scene {
     pixelToHex(x, y) {
         x -= 20;
         y -= 20;
-        const q = (x * Math.sqrt(3)/3 - y / 3) / this.hexSize;
-        const r = y * 2/3 / this.hexSize;
+        const q = (x * Math.sqrt(3) / 3 - y / 3) / this.hexSize;
+        const r = y * 2 / 3 / this.hexSize;
         return this.roundHex(q, r);
     }
 
