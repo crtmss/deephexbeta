@@ -1,3 +1,5 @@
+// deephexbeta/src/engine/HexMap.js
+
 // HexMap.js - Generates hex island map with terrain
 import { cyrb128, sfc32 } from './PRNG.js';
 
@@ -32,6 +34,7 @@ function generateMap(rows = 25, cols = 25, seed = 'defaultseed') {
     }))
   );
 
+  // Add water borders
   for (let r = 0; r < rows; r++) {
     for (let q = 0; q < cols; q++) {
       if (r < 2 || r >= rows - 2 || q < 2 || q >= cols - 2) {
@@ -48,44 +51,55 @@ function generateMap(rows = 25, cols = 25, seed = 'defaultseed') {
       .filter(([x, y]) => map[y] && map[y][x]);
   }
 
-  function placeBiome(type, size) {
-    let placed = 0;
+  function placeBiome(type, minSize, maxSize, instances) {
+    let placedTotal = 0;
     let attempts = 0;
 
-    while (placed < size && attempts < 500) {
-      const q = Math.floor(rand() * cols);
-      const r = Math.floor(rand() * rows);
-      const tile = map[r][q];
+    for (let i = 0; i < instances; i++) {
+      let size = minSize + Math.floor(rand() * (maxSize - minSize + 1));
+      let placed = 0;
+      attempts = 0;
 
-      if (tile.type !== 'grassland') {
-        attempts++;
-        continue;
-      }
+      while (placed < size && attempts < 500) {
+        const q = Math.floor(rand() * cols);
+        const r = Math.floor(rand() * rows);
+        const tile = map[r][q];
 
-      const queue = [[q, r]];
-      let count = 0;
-
-      while (queue.length && placed < size) {
-        const [x, y] = queue.shift();
-        const t = map[y][x];
-        if (t.type === 'grassland') {
-          Object.assign(t, { type, ...terrainTypes[type] });
-          placed++;
-          count++;
+        if (tile.type !== 'grassland') {
+          attempts++;
+          continue;
         }
 
-        if (count < 15) {
-          neighbors(x, y).forEach(([nx, ny]) => {
-            const nTile = map[ny][nx];
-            if (nTile.type === 'grassland') queue.push([nx, ny]);
-          });
+        const queue = [[q, r]];
+        let count = 0;
+
+        while (queue.length && placed < size) {
+          const [x, y] = queue.shift();
+          const t = map[y][x];
+          if (t.type === 'grassland') {
+            Object.assign(t, { type, ...terrainTypes[type] });
+            placed++;
+            placedTotal++;
+            count++;
+          }
+
+          if (count < size) {
+            neighbors(x, y).forEach(([nx, ny]) => {
+              const nTile = map[ny][nx];
+              if (nTile.type === 'grassland') queue.push([nx, ny]);
+            });
+          }
         }
+
+        break;
       }
     }
   }
 
-  placeBiome('mud', 30);
-  placeBiome('sand', 30);
+  // Smaller but more frequent biomes
+  placeBiome('mud', 5, 9, 4);
+  placeBiome('sand', 5, 9, 4);
+  placeBiome('swamp', 5, 9, 3);
 
   const mountainChains = 6 + Math.floor(rand() * 3);
   for (let i = 0; i < mountainChains; i++) {
@@ -97,7 +111,7 @@ function generateMap(rows = 25, cols = 25, seed = 'defaultseed') {
       const tile = map[r][q];
 
       const distFromP1 = Math.sqrt((q - 2) ** 2 + (r - 2) ** 2);
-      const distFromP2 = Math.sqrt((q - 22) ** 2 + (r - 22) ** 2);
+      const distFromP2 = Math.sqrt((q - cols + 2) ** 2 + (r - rows + 2) ** 2);
 
       if (tile.type === 'grassland' && distFromP1 > 3 && distFromP2 > 3) {
         Object.assign(tile, { type: 'mountain', ...terrainTypes.mountain });
