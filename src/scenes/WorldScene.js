@@ -13,44 +13,29 @@ export default class WorldScene extends Phaser.Scene {
         this.mapWidth = 25;
         this.mapHeight = 25;
 
-        // Enable camera dragging
-// Enable camera dragging
-this.input.setDefaultCursor('grab');
-this.isDragging = false;
-
-const mapPixelWidth = this.hexSize * Math.sqrt(3) * (this.mapWidth + 0.5);
-const mapPixelHeight = this.hexSize * 1.5 * (this.mapHeight + 1);
-this.cameras.main.setBounds(0, 0, mapPixelWidth, mapPixelHeight);
-
-this.input.on('pointerdown', pointer => {
-    if (pointer.rightButtonDown()) {
-        this.isDragging = true;
-        this.input.setDefaultCursor('grabbing');
-        this.dragStartX = pointer.x;
-        this.dragStartY = pointer.y;
-        this.cameraStartX = this.cameras.main.scrollX;
-        this.cameraStartY = this.cameras.main.scrollY;
-    }
-});
-
-this.input.on('pointerup', pointer => {
-    if (this.isDragging) {
-        this.isDragging = false;
         this.input.setDefaultCursor('grab');
-    }
-});
+        this.isDragging = false;
 
-this.input.on('pointermove', pointer => {
-    if (this.isDragging) {
-        const dx = pointer.x - this.dragStartX;
-        const dy = pointer.y - this.dragStartY;
-        this.cameras.main.scrollX = this.cameraStartX - dx;
-        this.cameras.main.scrollY = this.cameraStartY - dy;
-    }
-});
-        this.input.on('pointerup', () => {
-            this.isDragging = false;
-            this.input.setDefaultCursor('grab');
+        const mapPixelWidth = this.hexSize * Math.sqrt(3) * (this.mapWidth + 0.5);
+        const mapPixelHeight = this.hexSize * 1.5 * (this.mapHeight + 1);
+        this.cameras.main.setBounds(0, 0, mapPixelWidth, mapPixelHeight);
+
+        this.input.on('pointerdown', pointer => {
+            if (pointer.rightButtonDown()) {
+                this.isDragging = true;
+                this.input.setDefaultCursor('grabbing');
+                this.dragStartX = pointer.x;
+                this.dragStartY = pointer.y;
+                this.cameraStartX = this.cameras.main.scrollX;
+                this.cameraStartY = this.cameras.main.scrollY;
+            }
+        });
+
+        this.input.on('pointerup', pointer => {
+            if (this.isDragging) {
+                this.isDragging = false;
+                this.input.setDefaultCursor('grab');
+            }
         });
 
         this.input.on('pointermove', pointer => {
@@ -133,6 +118,7 @@ this.input.on('pointermove', pointer => {
         this.selectedHex = null;
         this.movingPath = [];
         this.currentTurnIndex = 0;
+        this.pathGraphics = this.add.graphics({ x: 0, y: 0 });
 
         this.mapData.forEach(hex => {
             const { q, r, type: terrain } = hex;
@@ -190,6 +176,7 @@ this.input.on('pointermove', pointer => {
                 this.selectedHexGraphic.destroy();
                 this.selectedHexGraphic = null;
             }
+            this.pathGraphics.clear();
 
             const { x, y } = this.hexToPixel(target.q, target.r, this.hexSize);
             this.selectedHexGraphic = this.add.graphics({ x: 0, y: 0 });
@@ -203,8 +190,20 @@ this.input.on('pointermove', pointer => {
                 this.mapData,
                 tile => ['water', 'mountain'].includes(tile.type)
             );
+
             if (path.length > 1) {
                 this.movingPath = [path[1]];
+
+                // Draw path line
+                this.pathGraphics.lineStyle(3, 0x00ffff, 1);
+                for (let i = 0; i < path.length - 1; i++) {
+                    const from = this.hexToPixel(path[i].q, path[i].r, this.hexSize);
+                    const to = this.hexToPixel(path[i + 1].q, path[i + 1].r, this.hexSize);
+                    this.pathGraphics.beginPath();
+                    this.pathGraphics.moveTo(from.x, from.y);
+                    this.pathGraphics.lineTo(to.x, to.y);
+                    this.pathGraphics.strokePath();
+                }
             }
         });
 
@@ -229,6 +228,7 @@ this.input.on('pointermove', pointer => {
             if (this.movingPath.length === 0) {
                 this.syncPlayerMove(this.selectedUnit);
                 this.checkCombat();
+                this.pathGraphics.clear(); // Clear path after movement finishes
             }
         }
     }
