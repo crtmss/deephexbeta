@@ -13,6 +13,28 @@ export default class WorldScene extends Phaser.Scene {
         this.mapWidth = 25;
         this.mapHeight = 25;
 
+        // Enable camera dragging
+        this.input.setDefaultCursor('grab');
+        this.cameras.main.setBounds(0, 0, 1600, 1600);
+        this.input.on('pointerdown', pointer => {
+            if (pointer.rightButtonDown()) {
+                this.isDragging = true;
+                this.dragStartX = pointer.x;
+                this.dragStartY = pointer.y;
+                this.cameraStartX = this.cameras.main.scrollX;
+                this.cameraStartY = this.cameras.main.scrollY;
+            }
+        });
+        this.input.on('pointerup', () => this.isDragging = false);
+        this.input.on('pointermove', pointer => {
+            if (this.isDragging) {
+                const dx = pointer.x - this.dragStartX;
+                const dy = pointer.y - this.dragStartY;
+                this.cameras.main.scrollX = this.cameraStartX - dx;
+                this.cameras.main.scrollY = this.cameraStartY - dy;
+            }
+        });
+
         const { roomCode, playerName, isHost } = this.scene.settings.data;
         console.log('[Multiplayer] Joined Room:', roomCode, '| Player:', playerName, '| Host:', isHost);
 
@@ -128,12 +150,11 @@ export default class WorldScene extends Phaser.Scene {
         }
 
         this.input.on('pointerdown', pointer => {
+            if (pointer.rightButtonDown()) return;
             if (!this.selectedUnit) return;
-            const { worldX, worldY } = pointer;
-            const clickedHex = this.pixelToHex(worldX, worldY);
-            console.log(`[DEBUG] Clicked pixel: (${worldX.toFixed(1)}, ${worldY.toFixed(1)})`);
-            console.log(`[DEBUG] Calculated hex: q=${clickedHex.q}, r=${clickedHex.r}`);
 
+            const worldPoint = pointer.positionToCamera(this.cameras.main);
+            const clickedHex = this.pixelToHex(worldPoint.x, worldPoint.y);
             const target = this.mapData.find(h => h.q === clickedHex.q && h.r === clickedHex.r);
             if (!target || ['water', 'mountain'].includes(target.type)) return;
 
@@ -168,17 +189,6 @@ export default class WorldScene extends Phaser.Scene {
             padding: { x: 12, y: 6 }
         }).setInteractive().setDepth(100);
         this.endTurnButton.on('pointerdown', () => this.endTurn());
-
-        // === CAMERA SCROLLING SUPPORT ===
-        const totalWidth = this.hexSize * Math.sqrt(3) * this.mapWidth + 40;
-        const totalHeight = this.hexSize * 1.5 * this.mapHeight + 40;
-        this.cameras.main.setBounds(0, 0, totalWidth, totalHeight);
-        this.input.setDefaultCursor('grab');
-        this.input.on('pointermove', (pointer) => {
-            if (!pointer.isDown) return;
-            this.cameras.main.scrollX -= (pointer.x - pointer.prevPosition.x);
-            this.cameras.main.scrollY -= (pointer.y - pointer.prevPosition.y);
-        });
     }
 
     update() {
@@ -203,7 +213,7 @@ export default class WorldScene extends Phaser.Scene {
         this.turnText = this.add.text(10, 10, 'Player Turn: 1', {
             fontSize: '20px',
             fill: '#ffffff'
-        }).setScrollFactor(0).setDepth(100);
+        }).setDepth(100);
     }
 
     endTurn() {
@@ -244,14 +254,14 @@ export default class WorldScene extends Phaser.Scene {
     hexToPixel(q, r, size) {
         const x = size * Math.sqrt(3) * (q + 0.5 * (r & 1));
         const y = size * 1.5 * r;
-        return { x: x + 20, y: y + 20 };
+        return { x: Math.round(x + 20), y: Math.round(y + 20) };
     }
 
     pixelToHex(x, y) {
         x -= 20;
         y -= 20;
-        const q = ((x * Math.sqrt(3) / 3) - (y / 3)) / this.hexSize;
-        const r = y * 2 / 3 / this.hexSize;
+        const r = y / (this.hexSize * 1.5);
+        const q = (x - (r & 1) * this.hexSize * Math.sqrt(3) / 2) / (this.hexSize * Math.sqrt(3));
         return this.roundHex(q, r);
     }
 
