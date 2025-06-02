@@ -16,16 +16,23 @@ export default class WorldScene extends Phaser.Scene {
         // Enable camera dragging
         this.input.setDefaultCursor('grab');
         this.cameras.main.setBounds(0, 0, 1600, 1600);
+
         this.input.on('pointerdown', pointer => {
             if (pointer.rightButtonDown()) {
                 this.isDragging = true;
+                this.input.setDefaultCursor('grabbing');
                 this.dragStartX = pointer.x;
                 this.dragStartY = pointer.y;
                 this.cameraStartX = this.cameras.main.scrollX;
                 this.cameraStartY = this.cameras.main.scrollY;
             }
         });
-        this.input.on('pointerup', () => this.isDragging = false);
+
+        this.input.on('pointerup', () => {
+            this.isDragging = false;
+            this.input.setDefaultCursor('grab');
+        });
+
         this.input.on('pointermove', pointer => {
             if (this.isDragging) {
                 const dx = pointer.x - this.dragStartX;
@@ -127,6 +134,7 @@ export default class WorldScene extends Phaser.Scene {
             unit.playerName = i === 0 ? playerName : `P${i + 1}`;
             unit.setInteractive();
             unit.on('pointerdown', (pointer) => {
+                if (pointer.rightButtonDown()) return;
                 pointer.event.stopPropagation();
                 if (this.selectedUnit === unit) {
                     this.selectedUnit = null;
