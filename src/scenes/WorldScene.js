@@ -104,7 +104,7 @@ export default class WorldScene extends Phaser.Scene {
             unit.r = tile.r;
             unit.playerName = i === 0 ? playerName : `P${i + 1}`;
             unit.setInteractive();
-            unit.on('', (pointer) => {
+            unit.on('pointerdown', (pointer) => {
                 pointer.event.stopPropagation();
                 if (this.selectedUnit === unit) {
                     this.selectedUnit = null;
@@ -128,51 +128,42 @@ export default class WorldScene extends Phaser.Scene {
         }
 
         this.input.on('pointerdown', pointer => {
-        if (!this.selectedUnit) return;
+            if (!this.selectedUnit) return;
 
-        const { worldX, worldY } = pointer;
+            const { worldX, worldY } = pointer;
 
-    // Convert pixel to hex
-        const clickedHex = this.pixelToHex(worldX, worldY);
+            const clickedHex = this.pixelToHex(worldX, worldY);
+            console.log(`[DEBUG] Clicked pixel: (${worldX.toFixed(1)}, ${worldY.toFixed(1)})`);
+            console.log(`[DEBUG] Calculated hex: q=${clickedHex.q}, r=${clickedHex.r}`);
 
-    // DEBUG OUTPUT
-        console.log(`[DEBUG] Clicked pixel: (${worldX.toFixed(1)}, ${worldY.toFixed(1)})`);
-        console.log(`[DEBUG] Calculated hex: q=${clickedHex.q}, r=${clickedHex.r}`);
+            const debugPos = this.hexToPixel(clickedHex.q, clickedHex.r, this.hexSize);
+            const debugCircle = this.add.circle(debugPos.x, debugPos.y, 5, 0xff00ff).setDepth(30);
+            this.time.delayedCall(1000, () => debugCircle.destroy());
 
-    // Visual debug marker on the clicked hex center
-        const debugPos = this.hexToPixel(clickedHex.q, clickedHex.r, this.hexSize);
-        const debugCircle = this.add.circle(debugPos.x, debugPos.y, 5, 0xff00ff).setDepth(30);
-        this.time.delayedCall(1000, () => debugCircle.destroy());
+            const target = this.mapData.find(h => h.q === clickedHex.q && h.r === clickedHex.r);
+            if (!target || ['water', 'mountain'].includes(target.terrain)) return;
 
-    // Look up the tile in map data
-        const target = this.mapData.find(h => h.q === clickedHex.q && h.r === clickedHex.r);
-        if (!target || ['water', 'mountain'].includes(target.terrain)) return;
+            if (this.selectedHexGraphic) {
+                this.selectedHexGraphic.destroy();
+                this.selectedHexGraphic = null;
+            }
 
-    // Clear any old selection graphic
-        if (this.selectedHexGraphic) {
-            this.selectedHexGraphic.destroy();
-            this.selectedHexGraphic = null;
-    }
+            const { x, y } = this.hexToPixel(target.q, target.r, this.hexSize);
+            this.selectedHexGraphic = this.add.graphics({ x: 0, y: 0 });
+            this.selectedHexGraphic.lineStyle(2, 0xffff00);
+            this.selectedHexGraphic.strokeCircle(x, y, this.hexSize * 0.8);
 
-    // Draw new selection circle
-        const { x, y } = this.hexToPixel(target.q, target.r, this.hexSize);
-        this.selectedHexGraphic = this.add.graphics({ x: 0, y: 0 });
-        this.selectedHexGraphic.lineStyle(2, 0xffff00);
-        this.selectedHexGraphic.strokeCircle(x, y, this.hexSize * 0.8);
-
-    // Pathfinding
-        this.selectedHex = target;
-        const path = findPath(
-            { q: this.selectedUnit.q, r: this.selectedUnit.r },
-            { q: target.q, r: target.r },
-            this.mapData,
-            tile => ['water', 'mountain'].includes(tile.terrain)
-    );
-
-    if (path.length > 1) {
-        this.movingPath = [path[1]];
-    }
-});
+            this.selectedHex = target;
+            const path = findPath(
+                { q: this.selectedUnit.q, r: this.selectedUnit.r },
+                { q: target.q, r: target.r },
+                this.mapData,
+                tile => ['water', 'mountain'].includes(tile.terrain)
+            );
+            if (path.length > 1) {
+                this.movingPath = [path[1]];
+            }
+        });
 
         this.displayTurnText();
 
@@ -256,7 +247,7 @@ export default class WorldScene extends Phaser.Scene {
         x -= 20;
         y -= 20;
         const q = ((x * Math.sqrt(3) / 3) - (y / 3)) / this.hexSize;
-        const r = y * 2/3 / this.hexSize;
+        const r = y * 2 / 3 / this.hexSize;
         return this.roundHex(q, r);
     }
 
