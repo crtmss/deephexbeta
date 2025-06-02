@@ -136,10 +136,6 @@ export default class WorldScene extends Phaser.Scene {
             console.log(`[DEBUG] Clicked pixel: (${worldX.toFixed(1)}, ${worldY.toFixed(1)})`);
             console.log(`[DEBUG] Calculated hex: q=${clickedHex.q}, r=${clickedHex.r}`);
 
-            const debugPos = this.hexToPixel(clickedHex.q, clickedHex.r, this.hexSize);
-            const debugCircle = this.add.circle(debugPos.x, debugPos.y, 5, 0xff00ff).setDepth(30);
-            this.time.delayedCall(1000, () => debugCircle.destroy());
-
             const target = this.mapData.find(h => h.q === clickedHex.q && h.r === clickedHex.r);
             if (!target || ['water', 'mountain'].includes(target.terrain)) return;
 
@@ -246,8 +242,9 @@ export default class WorldScene extends Phaser.Scene {
     pixelToHex(x, y) {
         x -= 20;
         y -= 20;
-        const q = ((x * Math.sqrt(3) / 3) - (y / 3)) / this.hexSize;
-        const r = y * 2 / 3 / this.hexSize;
+
+        const r = y / (this.hexSize * 1.5);
+        const q = (x - (r & 1) * this.hexSize * Math.sqrt(3) / 2) / (this.hexSize * Math.sqrt(3));
         return this.roundHex(q, r);
     }
 
