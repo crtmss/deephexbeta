@@ -1,4 +1,4 @@
-// deephexbeta/src/scenes/WorldScene.js
+    // deephexbeta/src/scenes/WorldScene.js
 
 import HexMap from '../engine/HexMap.js';
 import { findPath } from '../engine/AStar.js';
@@ -86,11 +86,11 @@ export default class WorldScene extends Phaser.Scene {
         this.currentTurnIndex = 0;
 
         this.mapData.forEach(hex => {
-            const { q, r, terrain } = hex;
+            const { q, r, type: terrain } = hex;
             const { x, y } = this.hexToPixel(q, r, this.hexSize);
-            const color = this.getColorForTerrain(terrain);
+             const color = this.getColorForTerrain(terrain);
             this.drawHex(q, r, x, y, this.hexSize, color);
-        });
+});
 
         this.players = [];
         const safeTiles = this.mapData.filter(hex => !['water', 'mountain'].includes(hex.terrain));
