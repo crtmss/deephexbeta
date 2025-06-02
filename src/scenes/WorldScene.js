@@ -14,20 +14,40 @@ export default class WorldScene extends Phaser.Scene {
         this.mapHeight = 25;
 
         // Enable camera dragging
+// Enable camera dragging
+this.input.setDefaultCursor('grab');
+this.isDragging = false;
+
+const mapPixelWidth = this.hexSize * Math.sqrt(3) * (this.mapWidth + 0.5);
+const mapPixelHeight = this.hexSize * 1.5 * (this.mapHeight + 1);
+this.cameras.main.setBounds(0, 0, mapPixelWidth, mapPixelHeight);
+
+this.input.on('pointerdown', pointer => {
+    if (pointer.rightButtonDown()) {
+        this.isDragging = true;
+        this.input.setDefaultCursor('grabbing');
+        this.dragStartX = pointer.x;
+        this.dragStartY = pointer.y;
+        this.cameraStartX = this.cameras.main.scrollX;
+        this.cameraStartY = this.cameras.main.scrollY;
+    }
+});
+
+this.input.on('pointerup', pointer => {
+    if (this.isDragging) {
+        this.isDragging = false;
         this.input.setDefaultCursor('grab');
-        this.cameras.main.setBounds(0, 0, 1600, 1600);
+    }
+});
 
-        this.input.on('pointerdown', pointer => {
-            if (pointer.rightButtonDown()) {
-                this.isDragging = true;
-                this.input.setDefaultCursor('grabbing');
-                this.dragStartX = pointer.x;
-                this.dragStartY = pointer.y;
-                this.cameraStartX = this.cameras.main.scrollX;
-                this.cameraStartY = this.cameras.main.scrollY;
-            }
-        });
-
+this.input.on('pointermove', pointer => {
+    if (this.isDragging) {
+        const dx = pointer.x - this.dragStartX;
+        const dy = pointer.y - this.dragStartY;
+        this.cameras.main.scrollX = this.cameraStartX - dx;
+        this.cameras.main.scrollY = this.cameraStartY - dy;
+    }
+});
         this.input.on('pointerup', () => {
             this.isDragging = false;
             this.input.setDefaultCursor('grab');
