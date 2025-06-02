@@ -1,4 +1,4 @@
-    // deephexbeta/src/scenes/WorldScene.js
+// deephexbeta/src/scenes/WorldScene.js
 
 import HexMap from '../engine/HexMap.js';
 import { findPath } from '../engine/AStar.js';
@@ -88,12 +88,12 @@ export default class WorldScene extends Phaser.Scene {
         this.mapData.forEach(hex => {
             const { q, r, type: terrain } = hex;
             const { x, y } = this.hexToPixel(q, r, this.hexSize);
-             const color = this.getColorForTerrain(terrain);
+            const color = this.getColorForTerrain(terrain);
             this.drawHex(q, r, x, y, this.hexSize, color);
-});
+        });
 
         this.players = [];
-        const safeTiles = this.mapData.filter(hex => !['water', 'mountain'].includes(hex.terrain));
+        const safeTiles = this.mapData.filter(hex => !['water', 'mountain'].includes(hex.type));
         Phaser.Utils.Array.Shuffle(safeTiles);
 
         for (let i = 0; i < 4 && i < safeTiles.length; i++) {
@@ -129,15 +129,13 @@ export default class WorldScene extends Phaser.Scene {
 
         this.input.on('pointerdown', pointer => {
             if (!this.selectedUnit) return;
-
             const { worldX, worldY } = pointer;
-
             const clickedHex = this.pixelToHex(worldX, worldY);
             console.log(`[DEBUG] Clicked pixel: (${worldX.toFixed(1)}, ${worldY.toFixed(1)})`);
             console.log(`[DEBUG] Calculated hex: q=${clickedHex.q}, r=${clickedHex.r}`);
 
             const target = this.mapData.find(h => h.q === clickedHex.q && h.r === clickedHex.r);
-            if (!target || ['water', 'mountain'].includes(target.terrain)) return;
+            if (!target || ['water', 'mountain'].includes(target.type)) return;
 
             if (this.selectedHexGraphic) {
                 this.selectedHexGraphic.destroy();
@@ -154,7 +152,7 @@ export default class WorldScene extends Phaser.Scene {
                 { q: this.selectedUnit.q, r: this.selectedUnit.r },
                 { q: target.q, r: target.r },
                 this.mapData,
-                tile => ['water', 'mountain'].includes(tile.terrain)
+                tile => ['water', 'mountain'].includes(tile.type)
             );
             if (path.length > 1) {
                 this.movingPath = [path[1]];
@@ -170,6 +168,17 @@ export default class WorldScene extends Phaser.Scene {
             padding: { x: 12, y: 6 }
         }).setInteractive().setDepth(100);
         this.endTurnButton.on('pointerdown', () => this.endTurn());
+
+        // === CAMERA SCROLLING SUPPORT ===
+        const totalWidth = this.hexSize * Math.sqrt(3) * this.mapWidth + 40;
+        const totalHeight = this.hexSize * 1.5 * this.mapHeight + 40;
+        this.cameras.main.setBounds(0, 0, totalWidth, totalHeight);
+        this.input.setDefaultCursor('grab');
+        this.input.on('pointermove', (pointer) => {
+            if (!pointer.isDown) return;
+            this.cameras.main.scrollX -= (pointer.x - pointer.prevPosition.x);
+            this.cameras.main.scrollY -= (pointer.y - pointer.prevPosition.y);
+        });
     }
 
     update() {
@@ -194,7 +203,7 @@ export default class WorldScene extends Phaser.Scene {
         this.turnText = this.add.text(10, 10, 'Player Turn: 1', {
             fontSize: '20px',
             fill: '#ffffff'
-        }).setDepth(100);
+        }).setScrollFactor(0).setDepth(100);
     }
 
     endTurn() {
@@ -221,7 +230,7 @@ export default class WorldScene extends Phaser.Scene {
                 const newQ = enemy.q + dir.dq;
                 const newR = enemy.r + dir.dr;
                 const tile = this.mapData.find(t => t.q === newQ && t.r === newR);
-                if (tile && !['water', 'mountain'].includes(tile.terrain)) {
+                if (tile && !['water', 'mountain'].includes(tile.type)) {
                     const { x, y } = this.hexToPixel(newQ, newR, this.hexSize);
                     enemy.setPosition(x, y);
                     enemy.q = newQ;
@@ -232,7 +241,6 @@ export default class WorldScene extends Phaser.Scene {
         });
     }
 
-    // Pointy-top, odd-r offset layout
     hexToPixel(q, r, size) {
         const x = size * Math.sqrt(3) * (q + 0.5 * (r & 1));
         const y = size * 1.5 * r;
@@ -242,9 +250,8 @@ export default class WorldScene extends Phaser.Scene {
     pixelToHex(x, y) {
         x -= 20;
         y -= 20;
-
-        const r = y / (this.hexSize * 1.5);
-        const q = (x - (r & 1) * this.hexSize * Math.sqrt(3) / 2) / (this.hexSize * Math.sqrt(3));
+        const q = ((x * Math.sqrt(3) / 3) - (y / 3)) / this.hexSize;
+        const r = y * 2 / 3 / this.hexSize;
         return this.roundHex(q, r);
     }
 
