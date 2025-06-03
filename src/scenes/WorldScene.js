@@ -192,7 +192,7 @@ export default class WorldScene extends Phaser.Scene {
             );
 
             if (path.length > 1) {
-                this.movingPath = [path[1]];
+                this.movingPath = path.slice(1);
 
                 // Draw path line
                 this.pathGraphics.lineStyle(3, 0x00ffff, 1);
