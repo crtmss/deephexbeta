@@ -191,21 +191,24 @@ export default class WorldScene extends Phaser.Scene {
                 tile => ['water', 'mountain'].includes(tile.type)
             );
 
-            if (path.length > 1) {
-                this.movingPath = path.slice(1);
+if (path.length > 1) {
+    this.movingPath = path.slice(1);
 
-                // Draw path line
-                this.pathGraphics.lineStyle(3, 0x00ffff, 1);
-                for (let i = 0; i < path.length - 1; i++) {
-                    const from = this.hexToPixel(path[i].q, path[i].r, this.hexSize);
-                    const to = this.hexToPixel(path[i + 1].q, path[i + 1].r, this.hexSize);
-                    this.pathGraphics.beginPath();
-                    this.pathGraphics.moveTo(from.x, from.y);
-                    this.pathGraphics.lineTo(to.x, to.y);
-                    this.pathGraphics.strokePath();
-                }
-            }
-        });
+    // Draw predicted path line
+    this.pathGraphics.clear(); // Clear previous path
+    this.pathGraphics.lineStyle(3, 0x00ffff, 1);
+    this.pathGraphics.beginPath();
+
+    const start = this.hexToPixel(path[0].q, path[0].r, this.hexSize);
+    this.pathGraphics.moveTo(start.x, start.y);
+
+    for (let i = 1; i < path.length; i++) {
+        const point = this.hexToPixel(path[i].q, path[i].r, this.hexSize);
+        this.pathGraphics.lineTo(point.x, point.y);
+    }
+
+    this.pathGraphics.strokePath();
+}
 
         this.displayTurnText();
 
