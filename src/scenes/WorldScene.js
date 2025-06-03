@@ -12,7 +12,6 @@ export default class WorldScene extends Phaser.Scene {
         this.hexSize = 24;
         this.mapWidth = 25;
         this.mapHeight = 25;
-
         this.input.setDefaultCursor('grab');
         this.isDragging = false;
         this.moveCooldown = false;
@@ -49,14 +48,9 @@ export default class WorldScene extends Phaser.Scene {
         });
 
         const { roomCode, playerName, isHost } = this.scene.settings.data;
-        console.log('[Multiplayer] Joined Room:', roomCode, '| Player:', playerName, '| Host:', isHost);
-
         const { getLobbyState } = await import('../net/LobbyManager.js');
         const { data: lobbyData, error } = await getLobbyState(roomCode);
-        if (error || !lobbyData?.state?.seed) {
-            console.error('Failed to fetch lobby seed:', error);
-            return;
-        }
+        if (error || !lobbyData?.state?.seed) return;
         this.seed = lobbyData.state.seed;
 
         const { subscribeToGame } = await import('../net/SyncManager.js');
@@ -67,10 +61,7 @@ export default class WorldScene extends Phaser.Scene {
 
         this.syncPlayerMove = async (unit) => {
             const { data: lobbyData, error: fetchError } = await supabase
-                .from('lobbies')
-                .select('state')
-                .eq('room_code', roomCode)
-                .single();
+                .from('lobbies').select('state').eq('room_code', roomCode).single();
             if (fetchError) return;
             const updatedState = {
                 ...lobbyData.state,
@@ -80,10 +71,7 @@ export default class WorldScene extends Phaser.Scene {
                 },
                 currentTurn: this.getNextPlayer(lobbyData.state.players, playerName)
             };
-            await supabase
-                .from('lobbies')
-                .update({ state: updatedState })
-                .eq('room_code', roomCode);
+            await supabase.from('lobbies').update({ state: updatedState }).eq('room_code', roomCode);
         };
 
         this.getNextPlayer = (list, current) => {
@@ -119,7 +107,7 @@ export default class WorldScene extends Phaser.Scene {
         this.selectedHex = null;
         this.movingPath = [];
         this.currentTurnIndex = 0;
-        this.pathGraphics = this.add.graphics({ x: 0, y: 0 });
+        this.pathGraphics = this.add.graphics({ x: 0, y: 0 }).setDepth(50);
 
         this.mapData.forEach(hex => {
             const { q, r, type: terrain } = hex;
@@ -143,13 +131,7 @@ export default class WorldScene extends Phaser.Scene {
             unit.on('pointerdown', (pointer) => {
                 if (pointer.rightButtonDown()) return;
                 pointer.event.stopPropagation();
-                if (this.selectedUnit === unit) {
-                    this.selectedUnit = null;
-                    console.log('Unit deselected:', unit.playerName);
-                } else if (unit.playerName === this.playerName) {
-                    this.selectedUnit = unit;
-                    console.log('Unit selected:', unit.playerName);
-                }
+                this.selectedUnit = this.selectedUnit === unit ? null : unit;
             });
             this.players.push(unit);
         }
@@ -174,8 +156,6 @@ export default class WorldScene extends Phaser.Scene {
             if (!target || ['water', 'mountain'].includes(target.type)) return;
 
             if (this.selectedHexGraphic) this.selectedHexGraphic.destroy();
-            this.pathGraphics.clear();
-
             const { x, y } = this.hexToPixel(target.q, target.r, this.hexSize);
             this.selectedHexGraphic = this.add.graphics({ x: 0, y: 0 });
             this.selectedHexGraphic.lineStyle(2, 0xffff00);
@@ -189,27 +169,22 @@ export default class WorldScene extends Phaser.Scene {
                 tile => ['water', 'mountain'].includes(tile.type)
             );
 
-if (path.length > 1) {
-    this.movingPath = path.slice(1);
+            if (path.length > 1) {
+                this.movingPath = path.slice(1);
 
-    // Draw full path line
-    this.pathGraphics.clear();
-    this.pathGraphics.lineStyle(3, 0x00ffff, 1);
-    this.pathGraphics.beginPath();
-    
-    const start = this.hexToPixel(path[0].q, path[0].r, this.hexSize);
-    this.pathGraphics.moveTo(start.x, start.y);
+                this.pathGraphics.clear();
+                this.pathGraphics.lineStyle(3, 0x00ffff, 1);
+                this.pathGraphics.beginPath();
+                const start = this.hexToPixel(path[0].q, path[0].r, this.hexSize);
+                this.pathGraphics.moveTo(start.x, start.y);
+                for (let i = 1; i < path.length; i++) {
+                    const pt = this.hexToPixel(path[i].q, path[i].r, this.hexSize);
+                    this.pathGraphics.lineTo(pt.x, pt.y);
+                }
+                this.pathGraphics.strokePath();
 
-    for (let i = 1; i < path.length; i++) {
-        const pt = this.hexToPixel(path[i].q, path[i].r, this.hexSize);
-        this.pathGraphics.lineTo(pt.x, pt.y);
-    }
-
-    this.pathGraphics.strokePath();
-
-    this.startStepMovement();
-}
-
+                this.startStepMovement();
+            }
         });
 
         this.displayTurnText();
@@ -226,7 +201,6 @@ if (path.length > 1) {
     startStepMovement() {
         if (!this.selectedUnit || this.movingPath.length === 0) return;
         this.moveCooldown = true;
-
         this.time.addEvent({
             delay: 300,
             repeat: this.movingPath.length - 1,
@@ -236,7 +210,6 @@ if (path.length > 1) {
                 this.selectedUnit.setPosition(x, y);
                 this.selectedUnit.q = next.q;
                 this.selectedUnit.r = next.r;
-
                 if (this.movingPath.length === 0) {
                     this.moveCooldown = false;
                     this.syncPlayerMove(this.selectedUnit);
@@ -313,19 +286,15 @@ if (path.length > 1) {
         const x = q;
         const z = r;
         const y = -x - z;
-
         let rx = Math.round(x);
         let ry = Math.round(y);
         let rz = Math.round(z);
-
         const dx = Math.abs(rx - x);
         const dy = Math.abs(ry - y);
         const dz = Math.abs(rz - z);
-
         if (dx > dy && dx > dz) rx = -ry - rz;
         else if (dy > dz) ry = -rx - rz;
         else rz = -rx - ry;
-
         return { q: rx, r: rz };
     }
 
