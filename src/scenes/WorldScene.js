@@ -15,6 +15,7 @@ export default class WorldScene extends Phaser.Scene {
 
         this.input.setDefaultCursor('grab');
         this.isDragging = false;
+        this.moveCooldown = false;
 
         const mapPixelWidth = this.hexSize * Math.sqrt(3) * (this.mapWidth + 0.5);
         const mapPixelHeight = this.hexSize * 1.5 * (this.mapHeight + 1);
@@ -165,17 +166,14 @@ export default class WorldScene extends Phaser.Scene {
 
         this.input.on('pointerdown', pointer => {
             if (pointer.rightButtonDown()) return;
-            if (!this.selectedUnit) return;
+            if (!this.selectedUnit || this.moveCooldown) return;
 
             const worldPoint = pointer.positionToCamera(this.cameras.main);
             const clickedHex = this.pixelToHex(worldPoint.x, worldPoint.y);
             const target = this.mapData.find(h => h.q === clickedHex.q && h.r === clickedHex.r);
             if (!target || ['water', 'mountain'].includes(target.type)) return;
 
-            if (this.selectedHexGraphic) {
-                this.selectedHexGraphic.destroy();
-                this.selectedHexGraphic = null;
-            }
+            if (this.selectedHexGraphic) this.selectedHexGraphic.destroy();
             this.pathGraphics.clear();
 
             const { x, y } = this.hexToPixel(target.q, target.r, this.hexSize);
@@ -194,6 +192,7 @@ export default class WorldScene extends Phaser.Scene {
             if (path.length > 1) {
                 this.movingPath = path.slice(1);
 
+                // Draw path line
                 this.pathGraphics.lineStyle(3, 0x00ffff, 1);
                 for (let i = 0; i < path.length - 1; i++) {
                     const from = this.hexToPixel(path[i].q, path[i].r, this.hexSize);
@@ -203,6 +202,8 @@ export default class WorldScene extends Phaser.Scene {
                     this.pathGraphics.lineTo(to.x, to.y);
                     this.pathGraphics.strokePath();
                 }
+
+                this.startStepMovement(); // begin step-by-step
             }
         });
 
@@ -217,20 +218,31 @@ export default class WorldScene extends Phaser.Scene {
         this.endTurnButton.on('pointerdown', () => this.endTurn());
     }
 
-    update() {
-        if (Array.isArray(this.movingPath) && this.movingPath.length > 0 && this.selectedUnit) {
-            const next = this.movingPath.shift();
-            const { x, y } = this.hexToPixel(next.q, next.r, this.hexSize);
-            this.selectedUnit.setPosition(x, y);
-            this.selectedUnit.q = next.q;
-            this.selectedUnit.r = next.r;
-            if (this.movingPath.length === 0) {
-                this.syncPlayerMove(this.selectedUnit);
-                this.checkCombat();
-                this.pathGraphics.clear();
+    startStepMovement() {
+        if (!this.selectedUnit || this.movingPath.length === 0) return;
+        this.moveCooldown = true;
+
+        this.time.addEvent({
+            delay: 300,
+            repeat: this.movingPath.length - 1,
+            callback: () => {
+                const next = this.movingPath.shift();
+                const { x, y } = this.hexToPixel(next.q, next.r, this.hexSize);
+                this.selectedUnit.setPosition(x, y);
+                this.selectedUnit.q = next.q;
+                this.selectedUnit.r = next.r;
+
+                if (this.movingPath.length === 0) {
+                    this.moveCooldown = false;
+                    this.syncPlayerMove(this.selectedUnit);
+                    this.checkCombat();
+                    this.pathGraphics.clear();
+                }
             }
-        }
+        });
     }
+
+    update() {}
 
     checkCombat() {
         console.log('[Combat] Check not implemented.');
