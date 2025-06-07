@@ -19,7 +19,7 @@ export default class WorldScene extends Phaser.Scene {
         const mapPixelWidth = this.hexSize * Math.sqrt(3) * (this.mapWidth + 0.5);
         const mapPixelHeight = this.hexSize * 1.5 * (this.mapHeight + 1);
         this.cameras.main.setBounds(0, 0, mapPixelWidth, mapPixelHeight);
-        this.cameras.main.setZoom(1.0); // adjust as needed to fit entire map
+        this.cameras.main.setZoom(1.0);
 
         this.input.on('pointerdown', pointer => {
             if (pointer.rightButtonDown()) {
@@ -76,6 +76,13 @@ export default class WorldScene extends Phaser.Scene {
             await supabase.from('lobbies').update({ state: updatedState }).eq('room_code', roomCode);
         };
 
+        this.syncEnemies = async () => {
+            const enemyData = this.enemies.map(e => ({ q: e.q, r: e.r }));
+            await supabase.from('lobbies').update({
+                state: { ...this.lobbyState, enemies: enemyData }
+            }).eq('room_code', roomCode);
+        };
+
         this.getNextPlayer = (list, current) => {
             const idx = list.indexOf(current);
             return list[(idx + 1) % list.length];
@@ -83,24 +90,36 @@ export default class WorldScene extends Phaser.Scene {
 
         subscribeToGame(roomCode, (newState) => {
             this.lobbyState = newState;
-            if (!newState.units) return;
-            for (const name in newState.units) {
-                if (name === playerName) continue;
-                const other = newState.units[name];
-                const existing = this.players.find(p => p.playerName === name);
-                if (existing) {
-                    const { x, y } = this.hexToPixel(other.q, other.r, this.hexSize);
-                    existing.setPosition(x, y);
-                    existing.q = other.q;
-                    existing.r = other.r;
-                } else {
-                    const { x, y } = this.hexToPixel(other.q, other.r, this.hexSize);
-                    const unit = this.add.circle(x, y, 10, 0x0000ff).setDepth(10);
-                    unit.q = other.q;
-                    unit.r = other.r;
-                    unit.playerName = name;
-                    this.players.push(unit);
+            if (newState.units) {
+                for (const name in newState.units) {
+                    if (name === playerName) continue;
+                    const other = newState.units[name];
+                    const existing = this.players.find(p => p.playerName === name);
+                    if (existing) {
+                        const { x, y } = this.hexToPixel(other.q, other.r, this.hexSize);
+                        existing.setPosition(x, y);
+                        existing.q = other.q;
+                        existing.r = other.r;
+                    } else {
+                        const { x, y } = this.hexToPixel(other.q, other.r, this.hexSize);
+                        const unit = this.add.circle(x, y, 10, 0x0000ff).setDepth(10);
+                        unit.q = other.q;
+                        unit.r = other.r;
+                        unit.playerName = name;
+                        this.players.push(unit);
+                    }
                 }
+            }
+            if (newState.enemies && !isHost) {
+                this.enemies.forEach((enemy, i) => {
+                    if (newState.enemies[i]) {
+                        const pos = newState.enemies[i];
+                        const { x, y } = this.hexToPixel(pos.q, pos.r, this.hexSize);
+                        enemy.setPosition(x, y);
+                        enemy.q = pos.q;
+                        enemy.r = pos.r;
+                    }
+                });
             }
             if (newState.currentTurn !== playerName) {
                 this.selectedUnit = null;
@@ -149,19 +168,24 @@ export default class WorldScene extends Phaser.Scene {
                 ...(this.lobbyState.units || {}),
                 [playerName]: { q: spawnTile.q, r: spawnTile.r }
             };
-            await supabase.from('lobbies').update({
-                state: { ...this.lobbyState, units: updatedUnits }
-            }).eq('room_code', roomCode);
-        }
 
-        this.enemies = [];
-        const enemyTiles = safeTiles.slice(0, 10);
-        for (let tile of enemyTiles) {
-            const { x, y } = this.hexToPixel(tile.q, tile.r, this.hexSize);
-            const enemy = this.add.circle(x, y, 8, 0x0000ff).setDepth(10);
-            enemy.q = tile.q;
-            enemy.r = tile.r;
-            this.enemies.push(enemy);
+            // Spawn enemies if host
+            this.enemies = [];
+            const enemyTiles = safeTiles.slice(0, 10);
+            for (let tile of enemyTiles) {
+                const { x, y } = this.hexToPixel(tile.q, tile.r, this.hexSize);
+                const enemy = this.add.circle(x, y, 8, 0x0000ff).setDepth(10);
+                enemy.q = tile.q;
+                enemy.r = tile.r;
+                this.enemies.push(enemy);
+            }
+
+            await supabase.from('lobbies').update({
+                state: { ...this.lobbyState, units: updatedUnits, enemies: this.enemies.map(e => ({ q: e.q, r: e.r })) }
+            }).eq('room_code', roomCode);
+        } else {
+            this.enemies = Array.from({ length: 10 }, () =>
+                this.add.circle(0, 0, 8, 0x0000ff).setDepth(10));
         }
 
         this.input.on('pointerdown', pointer => {
@@ -262,7 +286,7 @@ export default class WorldScene extends Phaser.Scene {
         if (this.turnText) {
             this.turnText.setText('Player Turn: ...');
         }
-        this.moveEnemies();
+        if (this.isHost) this.moveEnemies();
     }
 
     moveEnemies() {
@@ -285,6 +309,7 @@ export default class WorldScene extends Phaser.Scene {
                 }
             }
         });
+        this.syncEnemies();
     }
 
     hexToPixel(q, r, size) {
