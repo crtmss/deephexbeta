@@ -1,35 +1,19 @@
 // deephexbeta/src/scenes/WorldSceneMap.js
 
-export function drawHexMap(scene) {
-    scene.tileMap = {};
-    scene.mapData.forEach(hex => {
-        const { q, r, type: terrain } = hex;
-        const { x, y } = hexToPixel(q, r, scene.hexSize);
-        const color = getColorForTerrain(terrain);
-        drawHex(q, r, x, y, scene.hexSize, color, scene);
-    });
+import HexMap from '../engine/HexMap.js';
+
+export function generateHexMap(width, height, seed) {
+    const hexMap = new HexMap(width, height, seed);
+    return hexMap.getMap();
 }
 
-export function drawHex(q, r, x, y, size, color, scene) {
-    const graphics = scene.add.graphics({ x: 0, y: 0 });
-    graphics.lineStyle(1, 0x000000);
-    graphics.fillStyle(color, 1);
-    const corners = [];
-    for (let i = 0; i < 6; i++) {
-        const angle = Phaser.Math.DegToRad(60 * i + 30);
-        const px = x + size * Math.cos(angle);
-        const py = y + size * Math.sin(angle);
-        corners.push({ x: px, y: py });
-    }
-    graphics.beginPath();
-    graphics.moveTo(corners[0].x, corners[0].y);
-    for (let i = 1; i < corners.length; i++) {
-        graphics.lineTo(corners[i].x, corners[i].y);
-    }
-    graphics.closePath();
-    graphics.fillPath();
-    graphics.strokePath();
-    scene.tileMap[`${q},${r}`] = graphics;
+export function drawHexMap() {
+    this.mapData.forEach(hex => {
+        const { q, r, type } = hex;
+        const { x, y } = this.hexToPixel(q, r, this.hexSize);
+        const color = this.getColorForTerrain(type);
+        this.drawHex(q, r, x, y, this.hexSize, color);
+    });
 }
 
 export function hexToPixel(q, r, size) {
@@ -60,6 +44,28 @@ export function roundHex(q, r) {
     else if (dy > dz) ry = -rx - rz;
     else rz = -rx - ry;
     return { q: rx, r: rz };
+}
+
+export function drawHex(q, r, x, y, size, color) {
+    const graphics = this.add.graphics({ x: 0, y: 0 });
+    graphics.lineStyle(1, 0x000000);
+    graphics.fillStyle(color, 1);
+    const corners = [];
+    for (let i = 0; i < 6; i++) {
+        const angle = Phaser.Math.DegToRad(60 * i + 30);
+        const px = x + size * Math.cos(angle);
+        const py = y + size * Math.sin(angle);
+        corners.push({ x: px, y: py });
+    }
+    graphics.beginPath();
+    graphics.moveTo(corners[0].x, corners[0].y);
+    for (let i = 1; i < corners.length; i++) {
+        graphics.lineTo(corners[i].x, corners[i].y);
+    }
+    graphics.closePath();
+    graphics.fillPath();
+    graphics.strokePath();
+    this.tileMap[`${q},${r}`] = graphics;
 }
 
 export function getColorForTerrain(terrain) {
