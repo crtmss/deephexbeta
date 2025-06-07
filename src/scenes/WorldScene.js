@@ -96,7 +96,7 @@ export default class WorldScene extends Phaser.Scene {
         subscribeToGameUpdates.call(this);
 
         // Setup UI and controls
-        setupCameraAndDrag.call(this);
+        setupCameraControls(this);
         setupTurnUI.call(this);
         setupPointerActions.call(this);
     }
