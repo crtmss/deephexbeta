@@ -19,6 +19,7 @@ export default class WorldScene extends Phaser.Scene {
         const mapPixelWidth = this.hexSize * Math.sqrt(3) * (this.mapWidth + 0.5);
         const mapPixelHeight = this.hexSize * 1.5 * (this.mapHeight + 1);
         this.cameras.main.setBounds(0, 0, mapPixelWidth, mapPixelHeight);
+        this.cameras.main.setZoom(1.0); // adjust as needed to fit entire map
 
         this.input.on('pointerdown', pointer => {
             if (pointer.rightButtonDown()) {
@@ -52,6 +53,7 @@ export default class WorldScene extends Phaser.Scene {
         const { data: lobbyData, error } = await getLobbyState(roomCode);
         if (error || !lobbyData?.state?.seed) return;
         this.seed = lobbyData.state.seed;
+        this.lobbyState = lobbyData.state;
 
         const { subscribeToGame } = await import('../net/SyncManager.js');
         const { supabase } = await import('../net/SupabaseClient.js');
@@ -80,6 +82,7 @@ export default class WorldScene extends Phaser.Scene {
         };
 
         subscribeToGame(roomCode, (newState) => {
+            this.lobbyState = newState;
             if (!newState.units) return;
             for (const name in newState.units) {
                 if (name === playerName) continue;
@@ -90,6 +93,13 @@ export default class WorldScene extends Phaser.Scene {
                     existing.setPosition(x, y);
                     existing.q = other.q;
                     existing.r = other.r;
+                } else {
+                    const { x, y } = this.hexToPixel(other.q, other.r, this.hexSize);
+                    const unit = this.add.circle(x, y, 10, 0x0000ff).setDepth(10);
+                    unit.q = other.q;
+                    unit.r = other.r;
+                    unit.playerName = name;
+                    this.players.push(unit);
                 }
             }
             if (newState.currentTurn !== playerName) {
@@ -120,13 +130,13 @@ export default class WorldScene extends Phaser.Scene {
         const safeTiles = this.mapData.filter(hex => !['water', 'mountain'].includes(hex.type));
         Phaser.Utils.Array.Shuffle(safeTiles);
 
-        for (let i = 0; i < 4 && i < safeTiles.length; i++) {
-            const tile = safeTiles[i];
-            const { x, y } = this.hexToPixel(tile.q, tile.r, this.hexSize);
-            const unit = this.add.circle(x, y, 10, i === 0 ? 0xff0000 : 0x0000ff).setDepth(10);
-            unit.q = tile.q;
-            unit.r = tile.r;
-            unit.playerName = i === 0 ? playerName : `P${i + 1}`;
+        if (isHost) {
+            const spawnTile = safeTiles.pop();
+            const { x, y } = this.hexToPixel(spawnTile.q, spawnTile.r, this.hexSize);
+            const unit = this.add.circle(x, y, 10, 0xff0000).setDepth(10);
+            unit.q = spawnTile.q;
+            unit.r = spawnTile.r;
+            unit.playerName = playerName;
             unit.setInteractive();
             unit.on('pointerdown', (pointer) => {
                 if (pointer.rightButtonDown()) return;
@@ -134,10 +144,18 @@ export default class WorldScene extends Phaser.Scene {
                 this.selectedUnit = this.selectedUnit === unit ? null : unit;
             });
             this.players.push(unit);
+
+            const updatedUnits = {
+                ...(this.lobbyState.units || {}),
+                [playerName]: { q: spawnTile.q, r: spawnTile.r }
+            };
+            await supabase.from('lobbies').update({
+                state: { ...this.lobbyState, units: updatedUnits }
+            }).eq('room_code', roomCode);
         }
 
         this.enemies = [];
-        const enemyTiles = safeTiles.slice(4, 14);
+        const enemyTiles = safeTiles.slice(0, 10);
         for (let tile of enemyTiles) {
             const { x, y } = this.hexToPixel(tile.q, tile.r, this.hexSize);
             const enemy = this.add.circle(x, y, 8, 0x0000ff).setDepth(10);
@@ -149,6 +167,7 @@ export default class WorldScene extends Phaser.Scene {
         this.input.on('pointerdown', pointer => {
             if (pointer.rightButtonDown()) return;
             if (!this.selectedUnit || this.moveCooldown) return;
+            if (this.playerName !== this.lobbyState.currentTurn) return;
 
             const worldPoint = pointer.positionToCamera(this.cameras.main);
             const clickedHex = this.pixelToHex(worldPoint.x, worldPoint.y);
@@ -234,14 +253,14 @@ export default class WorldScene extends Phaser.Scene {
     }
 
     endTurn() {
-        this.currentTurnIndex = (this.currentTurnIndex + 1) % this.players.length;
+        if (this.playerName !== this.lobbyState.currentTurn) return;
         this.selectedUnit = null;
         if (this.selectedHexGraphic) {
             this.selectedHexGraphic.destroy();
             this.selectedHexGraphic = null;
         }
         if (this.turnText) {
-            this.turnText.setText('Player Turn: ' + (this.currentTurnIndex + 1));
+            this.turnText.setText('Player Turn: ...');
         }
         this.moveEnemies();
     }
