@@ -2,7 +2,7 @@
 
 import HexMap from '../engine/HexMap.js';
 import { findPath } from '../engine/AStar.js';
-import { setupCameraAndDrag, setupTurnUI } from './WorldSceneUI.js';
+import { setupCameraControls, setupTurnUI } from './WorldSceneUI.js';
 import { spawnUnitsAndEnemies, subscribeToGameUpdates } from './WorldSceneUnits.js';
 import { setupPointerActions } from './WorldSceneActions.js';
 import { generateHexMap, drawHexMap, hexToPixel, pixelToHex, roundHex, drawHex, getColorForTerrain } from './WorldSceneMap.js';
