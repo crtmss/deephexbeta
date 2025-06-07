@@ -2,6 +2,10 @@
 
 import HexMap from '../engine/HexMap.js';
 import { findPath } from '../engine/AStar.js';
+import { setupCameraAndDrag, setupTurnUI } from './WorldSceneUI.js';
+import { spawnUnitsAndEnemies, subscribeToGameUpdates } from './WorldSceneUnits.js';
+import { setupPointerActions } from './WorldSceneActions.js';
+import { generateHexMap, drawHexMap, hexToPixel, pixelToHex, roundHex, drawHex, getColorForTerrain } from './WorldSceneMap.js';
 
 export default class WorldScene extends Phaser.Scene {
     constructor() {
@@ -16,37 +20,11 @@ export default class WorldScene extends Phaser.Scene {
         this.isDragging = false;
         this.moveCooldown = false;
 
+        // Set camera boundaries
         const mapPixelWidth = this.hexSize * Math.sqrt(3) * (this.mapWidth + 0.5);
         const mapPixelHeight = this.hexSize * 0.75 * (this.mapHeight - 1) + this.hexSize * 2;
         this.cameras.main.setBounds(0, 0, mapPixelWidth, mapPixelHeight);
         this.cameras.main.setZoom(1.0);
-
-        this.input.on('pointerdown', pointer => {
-            if (pointer.rightButtonDown()) {
-                this.isDragging = true;
-                this.input.setDefaultCursor('grabbing');
-                this.dragStartX = pointer.x;
-                this.dragStartY = pointer.y;
-                this.cameraStartX = this.cameras.main.scrollX;
-                this.cameraStartY = this.cameras.main.scrollY;
-            }
-        });
-
-        this.input.on('pointerup', pointer => {
-            if (this.isDragging) {
-                this.isDragging = false;
-                this.input.setDefaultCursor('grab');
-            }
-        });
-
-        this.input.on('pointermove', pointer => {
-            if (this.isDragging) {
-                const dx = pointer.x - this.dragStartX;
-                const dy = pointer.y - this.dragStartY;
-                this.cameras.main.scrollX = this.cameraStartX - dx;
-                this.cameras.main.scrollY = this.cameraStartY - dy;
-            }
-        });
 
         const { roomCode, playerName, isHost } = this.scene.settings.data;
         const { getLobbyState } = await import('../net/LobbyManager.js');
@@ -60,27 +38,32 @@ export default class WorldScene extends Phaser.Scene {
 
         this.playerName = playerName;
         this.roomCode = roomCode;
+        this.isHost = isHost;
+        this.supabase = supabase;
+        this.subscribeToGame = subscribeToGame;
 
+        // Helper for syncing movement
         this.syncPlayerMove = async (unit) => {
-            const { data: lobbyData, error: fetchError } = await supabase
-                .from('lobbies').select('state').eq('room_code', roomCode).single();
+            const { data: lobbyData, error: fetchError } = await this.supabase
+                .from('lobbies').select('state').eq('room_code', this.roomCode).single();
             if (fetchError) return;
             const updatedState = {
                 ...lobbyData.state,
                 units: {
                     ...lobbyData.state.units,
-                    [playerName]: { q: unit.q, r: unit.r }
+                    [this.playerName]: { q: unit.q, r: unit.r }
                 },
-                currentTurn: this.getNextPlayer(lobbyData.state.players, playerName)
+                currentTurn: this.getNextPlayer(lobbyData.state.players, this.playerName)
             };
-            await supabase.from('lobbies').update({ state: updatedState }).eq('room_code', roomCode);
+            await this.supabase.from('lobbies').update({ state: updatedState }).eq('room_code', this.roomCode);
         };
 
+        // Enemy sync
         this.syncEnemies = async () => {
             const enemyData = this.enemies.map(e => ({ q: e.q, r: e.r }));
-            await supabase.from('lobbies').update({
+            await this.supabase.from('lobbies').update({
                 state: { ...this.lobbyState, enemies: enemyData }
-            }).eq('room_code', roomCode);
+            }).eq('room_code', this.roomCode);
         };
 
         this.getNextPlayer = (list, current) => {
@@ -88,158 +71,37 @@ export default class WorldScene extends Phaser.Scene {
             return list[(idx + 1) % list.length];
         };
 
-        subscribeToGame(roomCode, (newState) => {
-            this.lobbyState = newState;
-            if (newState.units) {
-                for (const name in newState.units) {
-                    if (name === playerName) continue;
-                    const other = newState.units[name];
-                    const existing = this.players.find(p => p.playerName === name);
-                    if (existing) {
-                        const { x, y } = this.hexToPixel(other.q, other.r, this.hexSize);
-                        existing.setPosition(x, y);
-                        existing.q = other.q;
-                        existing.r = other.r;
-                    } else {
-                        const { x, y } = this.hexToPixel(other.q, other.r, this.hexSize);
-                        const unit = this.add.circle(x, y, 10, 0x0000ff).setDepth(10);
-                        unit.q = other.q;
-                        unit.r = other.r;
-                        unit.playerName = name;
-                        this.players.push(unit);
-                    }
-                }
-            }
-            if (newState.enemies && !isHost) {
-                this.enemies.forEach((enemy, i) => {
-                    if (newState.enemies[i]) {
-                        const pos = newState.enemies[i];
-                        const { x, y } = this.hexToPixel(pos.q, pos.r, this.hexSize);
-                        enemy.setPosition(x, y);
-                        enemy.q = pos.q;
-                        enemy.r = pos.r;
-                    }
-                });
-            }
-            if (newState.currentTurn !== playerName) {
-                this.selectedUnit = null;
-            }
-            if (this.turnText) {
-                this.turnText.setText('Player Turn: ' + newState.currentTurn);
-            }
-        });
+        // Import hex methods
+        this.hexToPixel = hexToPixel.bind(this);
+        this.pixelToHex = pixelToHex.bind(this);
+        this.roundHex = roundHex.bind(this);
+        this.drawHex = drawHex.bind(this);
+        this.getColorForTerrain = getColorForTerrain.bind(this);
 
-        this.hexMap = new HexMap(this.mapWidth, this.mapHeight, this.seed);
-        this.mapData = this.hexMap.getMap();
         this.tileMap = {};
         this.selectedUnit = null;
         this.selectedHex = null;
         this.movingPath = [];
-        this.currentTurnIndex = 0;
         this.pathGraphics = this.add.graphics({ x: 0, y: 0 }).setDepth(50);
 
-        this.mapData.forEach(hex => {
-            const { q, r, type: terrain } = hex;
-            const { x, y } = this.hexToPixel(q, r, this.hexSize);
-            const color = this.getColorForTerrain(terrain);
-            this.drawHex(q, r, x, y, this.hexSize, color);
-        });
+        // Setup base map
+        this.hexMap = new HexMap(this.mapWidth, this.mapHeight, this.seed);
+        this.mapData = this.hexMap.getMap();
+        drawHexMap.call(this);
 
-        this.players = [];
-        const safeTiles = this.mapData.filter(hex => !['water', 'mountain'].includes(hex.type));
-        Phaser.Utils.Array.Shuffle(safeTiles);
+        // Setup units/enemies
+        await spawnUnitsAndEnemies.call(this);
 
-        if (isHost) {
-            const spawnTile = safeTiles.pop();
-            const { x, y } = this.hexToPixel(spawnTile.q, spawnTile.r, this.hexSize);
-            const unit = this.add.circle(x, y, 10, 0xff0000).setDepth(10);
-            unit.q = spawnTile.q;
-            unit.r = spawnTile.r;
-            unit.playerName = playerName;
-            unit.setInteractive();
-            unit.on('pointerdown', (pointer) => {
-                if (pointer.rightButtonDown()) return;
-                pointer.event.stopPropagation();
-                this.selectedUnit = this.selectedUnit === unit ? null : unit;
-            });
-            this.players.push(unit);
+        // Subscribe to real-time updates
+        subscribeToGameUpdates.call(this);
 
-            const updatedUnits = {
-                ...(this.lobbyState.units || {}),
-                [playerName]: { q: spawnTile.q, r: spawnTile.r }
-            };
-
-            // Spawn enemies if host
-            this.enemies = [];
-            const enemyTiles = safeTiles.slice(0, 10);
-            for (let tile of enemyTiles) {
-                const { x, y } = this.hexToPixel(tile.q, tile.r, this.hexSize);
-                const enemy = this.add.circle(x, y, 8, 0x0000ff).setDepth(10);
-                enemy.q = tile.q;
-                enemy.r = tile.r;
-                this.enemies.push(enemy);
-            }
-
-            await supabase.from('lobbies').update({
-                state: { ...this.lobbyState, units: updatedUnits, enemies: this.enemies.map(e => ({ q: e.q, r: e.r })) }
-            }).eq('room_code', roomCode);
-        } else {
-            this.enemies = Array.from({ length: 10 }, () =>
-                this.add.circle(0, 0, 8, 0x0000ff).setDepth(10));
-        }
-
-        this.input.on('pointerdown', pointer => {
-            if (pointer.rightButtonDown()) return;
-            if (!this.selectedUnit || this.moveCooldown) return;
-            if (this.playerName !== this.lobbyState.currentTurn) return;
-
-            const worldPoint = pointer.positionToCamera(this.cameras.main);
-            const clickedHex = this.pixelToHex(worldPoint.x, worldPoint.y);
-            const target = this.mapData.find(h => h.q === clickedHex.q && h.r === clickedHex.r);
-            if (!target || ['water', 'mountain'].includes(target.type)) return;
-
-            if (this.selectedHexGraphic) this.selectedHexGraphic.destroy();
-            const { x, y } = this.hexToPixel(target.q, target.r, this.hexSize);
-            this.selectedHexGraphic = this.add.graphics({ x: 0, y: 0 });
-            this.selectedHexGraphic.lineStyle(2, 0xffff00);
-            this.selectedHexGraphic.strokeCircle(x, y, this.hexSize * 0.8);
-
-            this.selectedHex = target;
-            const path = findPath(
-                { q: this.selectedUnit.q, r: this.selectedUnit.r },
-                { q: target.q, r: target.r },
-                this.mapData,
-                tile => ['water', 'mountain'].includes(tile.type)
-            );
-
-            if (path.length > 1) {
-                this.movingPath = path.slice(1);
-
-                this.pathGraphics.clear();
-                this.pathGraphics.lineStyle(3, 0x00ffff, 1);
-                this.pathGraphics.beginPath();
-                const start = this.hexToPixel(path[0].q, path[0].r, this.hexSize);
-                this.pathGraphics.moveTo(start.x, start.y);
-                for (let i = 1; i < path.length; i++) {
-                    const pt = this.hexToPixel(path[i].q, path[i].r, this.hexSize);
-                    this.pathGraphics.lineTo(pt.x, pt.y);
-                }
-                this.pathGraphics.strokePath();
-
-                this.startStepMovement();
-            }
-        });
-
-        this.displayTurnText();
-
-        this.endTurnButton = this.add.text(1150, 20, 'End Turn', {
-            fontSize: '22px',
-            backgroundColor: '#222',
-            color: '#fff',
-            padding: { x: 12, y: 6 }
-        }).setInteractive().setDepth(100);
-        this.endTurnButton.on('pointerdown', () => this.endTurn());
+        // Setup UI and controls
+        setupCameraAndDrag.call(this);
+        setupTurnUI.call(this);
+        setupPointerActions.call(this);
     }
+
+    update() {}
 
     startStepMovement() {
         if (!this.selectedUnit || this.movingPath.length === 0) return;
@@ -263,17 +125,8 @@ export default class WorldScene extends Phaser.Scene {
         });
     }
 
-    update() {}
-
     checkCombat() {
         console.log('[Combat] Check not implemented.');
-    }
-
-    displayTurnText() {
-        this.turnText = this.add.text(10, 10, 'Player Turn: 1', {
-            fontSize: '20px',
-            fill: '#ffffff'
-        }).setDepth(100);
     }
 
     endTurn() {
@@ -310,69 +163,5 @@ export default class WorldScene extends Phaser.Scene {
             }
         });
         this.syncEnemies();
-    }
-
-    hexToPixel(q, r, size) {
-        const x = size * Math.sqrt(3) * (q + 0.5 * (r & 1));
-        const y = size * 1.5 * r;
-        return { x: Math.round(x + 20), y: Math.round(y + 20) };
-    }
-
-    pixelToHex(x, y) {
-        x -= 20;
-        y -= 20;
-        const r = y / (this.hexSize * 1.5);
-        const q = (x - (r & 1) * this.hexSize * Math.sqrt(3) / 2) / (this.hexSize * Math.sqrt(3));
-        return this.roundHex(q, r);
-    }
-
-    roundHex(q, r) {
-        const x = q;
-        const z = r;
-        const y = -x - z;
-        let rx = Math.round(x);
-        let ry = Math.round(y);
-        let rz = Math.round(z);
-        const dx = Math.abs(rx - x);
-        const dy = Math.abs(ry - y);
-        const dz = Math.abs(rz - z);
-        if (dx > dy && dx > dz) rx = -ry - rz;
-        else if (dy > dz) ry = -rx - rz;
-        else rz = -rx - ry;
-        return { q: rx, r: rz };
-    }
-
-    drawHex(q, r, x, y, size, color) {
-        const graphics = this.add.graphics({ x: 0, y: 0 });
-        graphics.lineStyle(1, 0x000000);
-        graphics.fillStyle(color, 1);
-        const corners = [];
-        for (let i = 0; i < 6; i++) {
-            const angle = Phaser.Math.DegToRad(60 * i + 30);
-            const px = x + size * Math.cos(angle);
-            const py = y + size * Math.sin(angle);
-            corners.push({ x: px, y: py });
-        }
-        graphics.beginPath();
-        graphics.moveTo(corners[0].x, corners[0].y);
-        for (let i = 1; i < corners.length; i++) {
-            graphics.lineTo(corners[i].x, corners[i].y);
-        }
-        graphics.closePath();
-        graphics.fillPath();
-        graphics.strokePath();
-        this.tileMap[`${q},${r}`] = graphics;
-    }
-
-    getColorForTerrain(terrain) {
-        switch (terrain) {
-            case 'grassland': return 0x34a853;
-            case 'sand': return 0xFFF59D;
-            case 'mud': return 0x795548;
-            case 'swamp': return 0x4E342E;
-            case 'mountain': return 0x9E9E9E;
-            case 'water': return 0x4da6ff;
-            default: return 0x888888;
-        }
     }
 }
