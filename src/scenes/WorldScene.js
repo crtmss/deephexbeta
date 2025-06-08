@@ -4,7 +4,7 @@ import HexMap from '../engine/HexMap.js';
 import { findPath } from '../engine/AStar.js';
 import { setupCameraControls, setupTurnUI } from './WorldSceneUI.js';
 import { spawnUnitsAndEnemies, subscribeToGameUpdates } from './WorldSceneUnits.js';
-import { handleHexClick, refreshUnits } from './WorldSceneActions.js';
+import { handleHexClick, refreshUnits, setupPointerActions } from './WorldSceneActions.js';
 import {
   generateHexMap,
   drawHexMap,
