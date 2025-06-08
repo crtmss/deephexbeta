@@ -117,10 +117,5 @@ export function subscribeToGameUpdates() {
             this.selectedUnit = null;
         }
     });
-}
-
-// Export both functions for use in WorldScene.js
-export {
-    spawnUnitsAndEnemies,
-    subscribeToGameUpdates
 };
+
