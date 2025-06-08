@@ -4,7 +4,7 @@ import HexMap from '../engine/HexMap.js';
 import { findPath } from '../engine/AStar.js';
 import { setupCameraControls, setupTurnUI } from './WorldSceneUI.js';
 import { spawnUnitsAndEnemies, subscribeToGameUpdates } from './WorldSceneUnits.js';
-import { setupPointerActions, handleHexClick, refreshUnits } from './WorldSceneActions.js';
+import { handleHexClick, refreshUnits } from './WorldSceneActions.js';
 import { generateHexMap, drawHexMap, hexToPixel, pixelToHex, roundHex, drawHex, getColorForTerrain } from './WorldSceneMap.js';
 
 export default class WorldScene extends Phaser.Scene {
