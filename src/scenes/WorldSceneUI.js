@@ -33,31 +33,34 @@ export function setupCameraControls(scene) {
 }
 
 export function setupTurnUI(scene) {
-    scene.turnText = scene.add.text(10, 10, 'Player Turn: 1', {
-        fontSize: '20px',
-        fill: '#ffffff'
-    }).setDepth(100);
-
-    scene.endTurnButton = scene.add.text(1150, 20, 'End Turn', {
-        fontSize: '22px',
+    scene.turnText = scene.add.text(20, 20, `Player Turn: ${scene.lobbyState.currentTurn}`, {
+        fontSize: '18px',
+        fill: '#ffffff',
         backgroundColor: '#222',
-        color: '#fff',
-        padding: { x: 12, y: 6 }
-    }).setInteractive().setDepth(100);
+        padding: { x: 10, y: 5 }
+    }).setScrollFactor(0).setDepth(100);
+
+    scene.endTurnButton = scene.add.text(20, 50, 'End Turn', {
+        fontSize: '18px',
+        fill: '#fff',
+        backgroundColor: '#555',
+        padding: { x: 10, y: 5 }
+    }).setScrollFactor(0).setDepth(100).setInteractive();
 
     scene.endTurnButton.on('pointerdown', () => {
         scene.endTurn();
     });
 
-    scene.refreshButton = scene.add.text(1150, 60, 'Refresh', {
-        fontSize: '22px',
+    scene.refreshButton = scene.add.text(20, 85, 'Refresh', {
+        fontSize: '18px',
+        fill: '#fff',
         backgroundColor: '#444',
-        color: '#fff',
-        padding: { x: 12, y: 6 }
-    }).setInteractive().setDepth(100);
+        padding: { x: 10, y: 5 }
+    }).setScrollFactor(0).setDepth(100).setInteractive();
 
     scene.refreshButton.on('pointerdown', () => {
-        scene.refreshUnits();
+        const { refreshUnits } = require('./WorldSceneActions.js');
+        refreshUnits(scene);
     });
 }
 
