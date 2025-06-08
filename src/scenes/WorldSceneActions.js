@@ -69,4 +69,21 @@ export function refreshUnits(scene) {
             }
         });
     }
+    export function setupPointerActions() {
+    this.input.on('pointerdown', pointer => {
+        handleHexClick(this, pointer);
+    });
+
+    const refreshButton = this.add.text(1000, 20, 'Refresh', {
+        fontSize: '22px',
+        backgroundColor: '#444',
+        color: '#fff',
+        padding: { x: 10, y: 5 }
+    }).setInteractive().setDepth(100);
+
+    refreshButton.on('pointerdown', () => {
+        refreshUnits(this);
+    });
+}
+
 }
