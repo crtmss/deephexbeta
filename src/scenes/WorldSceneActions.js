@@ -2,6 +2,7 @@
 
 import { findPath } from '../engine/AStar.js';
 
+// Handles when player clicks a hex to move
 export function handleHexClick(scene, pointer) {
     if (pointer.rightButtonDown()) return;
     if (!scene.selectedUnit || scene.moveCooldown) return;
@@ -44,6 +45,7 @@ export function handleHexClick(scene, pointer) {
     }
 }
 
+// Updates all unit positions and flashes them once
 export function refreshUnits(scene) {
     if (!scene.lobbyState?.units) return;
     for (const name in scene.lobbyState.units) {
@@ -69,7 +71,10 @@ export function refreshUnits(scene) {
             }
         });
     }
-    export function setupPointerActions() {
+}
+
+// Sets up pointer and refresh button logic
+export function setupPointerActions() {
     this.input.on('pointerdown', pointer => {
         handleHexClick(this, pointer);
     });
@@ -84,6 +89,4 @@ export function refreshUnits(scene) {
     refreshButton.on('pointerdown', () => {
         refreshUnits(this);
     });
-}
-
 }
