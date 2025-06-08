@@ -1,7 +1,6 @@
 // deephexbeta/src/scenes/WorldSceneUnits.js
 
 import { supabase } from '../net/SupabaseClient.js';
-import { subscribeToGame } from './WorldScene.js';  // adjust based on your architecture
 
 /**
  * Spawns player unit and enemy units (if host) and synchronizes positions in lobby state.
@@ -69,7 +68,9 @@ export async function spawnUnitsAndEnemies() {
 /**
  * Subscribe to real-time updates for units & enemies.
  */
-export function subscribeToGameUpdates() {
+export async function subscribeToGameUpdates() {
+    const { subscribeToGame } = await import('../net/SyncManager.js');
+
     subscribeToGame(this.roomCode, (newState) => {
         this.lobbyState = newState;
 
@@ -117,5 +118,4 @@ export function subscribeToGameUpdates() {
             this.selectedUnit = null;
         }
     });
-};
-
+}
