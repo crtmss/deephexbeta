@@ -1,5 +1,7 @@
 // deephexbeta/src/scenes/WorldSceneUI.js
 
+import { refreshUnits } from './WorldSceneActions.js';
+
 export function setupCameraControls(scene) {
     scene.input.setDefaultCursor('grab');
     scene.isDragging = false;
@@ -59,7 +61,6 @@ export function setupTurnUI(scene) {
     }).setScrollFactor(0).setDepth(100).setInteractive();
 
     scene.refreshButton.on('pointerdown', () => {
-        const { refreshUnits } = require('./WorldSceneActions.js');
         refreshUnits(scene);
     });
 }
