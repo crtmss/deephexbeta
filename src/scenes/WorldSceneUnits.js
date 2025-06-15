@@ -2,9 +2,6 @@
 
 import { supabase } from '../net/SupabaseClient.js';
 
-/**
- * Spawns player unit and enemy units (if host) and synchronizes positions in lobby state.
- */
 export async function spawnUnitsAndEnemies() {
     const safeTiles = this.mapData.filter(h => !['water', 'mountain'].includes(h.type));
     Phaser.Utils.Array.Shuffle(safeTiles);
@@ -12,7 +9,6 @@ export async function spawnUnitsAndEnemies() {
     this.players = [];
     this.enemies = [];
 
-    // Spawn player for this client if not yet in state
     if (!this.lobbyState.units?.[this.playerName]) {
         const tile = safeTiles.pop();
         const { x, y } = this.hexToPixel(tile.q, tile.r, this.hexSize);
@@ -38,7 +34,6 @@ export async function spawnUnitsAndEnemies() {
             .eq('room_code', this.roomCode);
     }
 
-    // Spawn enemies only for host
     if (this.isHost && !this.lobbyState.enemies) {
         const enemyTiles = safeTiles.slice(0, 10);
         for (let tile of enemyTiles) {
@@ -54,7 +49,6 @@ export async function spawnUnitsAndEnemies() {
             .update({ state: this.lobbyState })
             .eq('room_code', this.roomCode);
     } else if (!this.isHost && this.lobbyState.enemies) {
-        // create enemy objects placeholders
         for (const pos of this.lobbyState.enemies) {
             const { x, y } = this.hexToPixel(pos.q, pos.r, this.hexSize);
             const enemy = this.add.circle(x, y, 8, 0x0000ff).setDepth(10);
@@ -65,28 +59,28 @@ export async function spawnUnitsAndEnemies() {
     }
 }
 
-/**
- * Subscribe to real-time updates for units & enemies.
- */
 export async function subscribeToGameUpdates() {
     const { subscribeToGame } = await import('../net/SyncManager.js');
 
     subscribeToGame(this.roomCode, (newState) => {
         this.lobbyState = newState;
 
-        // Update or spawn player units
         if (newState.units) {
             for (const [name, pos] of Object.entries(newState.units)) {
                 let unit = this.players.find(p => p.playerName === name);
                 const { x, y } = this.hexToPixel(pos.q, pos.r, this.hexSize);
                 if (unit) {
                     unit.setPosition(x, y);
+                    unit.q = pos.q;
+                    unit.r = pos.r;
                 } else {
                     const color = name === this.playerName ? 0xff0000 : 0x0000ff;
                     unit = this.add.circle(x, y, 10, color).setDepth(10);
                     unit.q = pos.q;
                     unit.r = pos.r;
                     unit.playerName = name;
+
+                    // Enable interaction if this is our unit
                     if (name === this.playerName) {
                         unit.setInteractive();
                         unit.on('pointerdown', (pointer) => {
@@ -95,12 +89,12 @@ export async function subscribeToGameUpdates() {
                             this.selectedUnit = this.selectedUnit === unit ? null : unit;
                         });
                     }
+
                     this.players.push(unit);
                 }
             }
         }
 
-        // Update enemy positions for non-hosts
         if (newState.enemies && !this.isHost) {
             newState.enemies.forEach((pos, i) => {
                 const enemy = this.enemies[i];
@@ -113,7 +107,6 @@ export async function subscribeToGameUpdates() {
             });
         }
 
-        // Reset selection if turn changed
         if (newState.currentTurn !== this.playerName) {
             this.selectedUnit = null;
         }
