@@ -16,6 +16,7 @@ export default class WorldScene extends Phaser.Scene {
   }
 
   preload() {
+    this.load.setPath('assets/');
     this.load.image('tree', 'assets/tree.png');
     this.load.image('ruin', 'assets/ruin.png');
   }
