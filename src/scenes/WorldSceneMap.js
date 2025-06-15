@@ -1,15 +1,12 @@
 // deephexbeta/src/scenes/WorldSceneMap.js
-
 import HexMap from '../engine/HexMap.js';
 
 /**
- * Generate map with a dynamic water border (1–4 hexes thick, varying per edge).
+ * Generate map with a dynamic water border (1–4 hexes thick per edge)
  */
 export function generateHexMap(width, height, seed) {
   const hexMap = new HexMap(width, height, seed);
   const raw = hexMap.getMap();
-
-  // Determine different buffer widths per edge
   const left = Phaser.Math.Between(1, 4);
   const right = Phaser.Math.Between(1, 4);
   const top = Phaser.Math.Between(1, 4);
@@ -25,7 +22,7 @@ export function generateHexMap(width, height, seed) {
 }
 
 /**
- * Draw hex grid and scatter trees & ruins on land tiles.
+ * Draw the hex grid and scatter scenic sprites
  */
 export function drawHexMap() {
   this.objects = this.objects || [];
@@ -36,7 +33,7 @@ export function drawHexMap() {
     const color = this.getColorForTerrain(type);
     this.drawHex(q, r, x, y, this.hexSize, color);
 
-    // Random scenery spawns
+    // Random scenic objects
     if (type !== 'water' && Phaser.Math.FloatBetween(0, 1) < 0.08) {
       const key = Phaser.Math.FloatBetween(0, 1) < 0.7 ? 'tree' : 'ruin';
       const sprite = this.add.sprite(x, y, key)
@@ -49,7 +46,7 @@ export function drawHexMap() {
 }
 
 /**
- * Convert hex coords to pixel position, with padding.
+ * Hex → pixel conversion (with padding)
  */
 export function hexToPixel(q, r, size) {
   const x = size * Math.sqrt(3) * (q + 0.5 * (r & 1));
@@ -58,7 +55,7 @@ export function hexToPixel(q, r, size) {
 }
 
 /**
- * Convert pixel to hex coordinate based on rounded center.
+ * Pixel → hex conversion + round
  */
 export function pixelToHex(x, y, size) {
   x -= size * 2;
@@ -69,7 +66,7 @@ export function pixelToHex(x, y, size) {
 }
 
 /**
- * Standard cube-rounding implementation.
+ * Cube coordinate rounding
  */
 export function roundHex(q, r) {
   const x = q, z = r, y = -x - z;
@@ -82,7 +79,7 @@ export function roundHex(q, r) {
 }
 
 /**
- * Basic hex drawing utility (unchanged).
+ * Draw one hexagon (as polygon)
  */
 export function drawHex(q, r, x, y, size, color) {
   const gfx = this.add.graphics({ x: 0, y: 0 });
@@ -95,7 +92,7 @@ export function drawHex(q, r, x, y, size, color) {
   }
   gfx.beginPath();
   gfx.moveTo(corners[0].x, corners[0].y);
-  for (let i = 1; i < corners.length; i++) gfx.lineTo(corners[i].x, corners[i].y);
+  corners.slice(1).forEach(c => gfx.lineTo(c.x, c.y));
   gfx.closePath();
   gfx.fillPath();
   gfx.strokePath();
@@ -103,7 +100,7 @@ export function drawHex(q, r, x, y, size, color) {
 }
 
 /**
- * Terrain color standard.
+ * Terrain color map
  */
 export function getColorForTerrain(terrain) {
   switch (terrain) {
