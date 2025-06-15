@@ -1,5 +1,3 @@
-// deephexbeta/src/scenes/WorldSceneMap.js
-
 import HexMap from '../engine/HexMap.js';
 
 export function generateHexMap(width, height, seed) {
@@ -19,12 +17,14 @@ export function drawHexMap() {
 export function hexToPixel(q, r, size) {
     const x = size * Math.sqrt(3) * (q + 0.5 * (r & 1));
     const y = size * 1.5 * r;
-    return { x: x + 32, y: y + 32 }; 
+    // Add padding to ensure the full map fits inside bounds
+    return { x: x + 32, y: y + 32 };
 }
 
 export function pixelToHex(x, y, size) {
-    x -= 20;
-    y -= 20;
+    // Match the offset from hexToPixel
+    x -= 32;
+    y -= 32;
     const r = y / (size * 1.5);
     const q = (x - (r & 1) * size * Math.sqrt(3) / 2) / (size * Math.sqrt(3));
     return roundHex(q, r);
