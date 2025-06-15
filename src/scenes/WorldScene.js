@@ -6,13 +6,8 @@ import { setupCameraControls, setupTurnUI } from './WorldSceneUI.js';
 import { spawnUnitsAndEnemies, subscribeToGameUpdates } from './WorldSceneUnits.js';
 import { handleHexClick, refreshUnits, setupPointerActions } from './WorldSceneActions.js';
 import {
-  generateHexMap,
   drawHexMap,
-  hexToPixel,
-  pixelToHex,
-  roundHex,
-  drawHex,
-  getColorForTerrain
+  hexToPixel, pixelToHex, roundHex, drawHex, getColorForTerrain
 } from './WorldSceneMap.js';
 
 export default class WorldScene extends Phaser.Scene {
@@ -23,10 +18,10 @@ export default class WorldScene extends Phaser.Scene {
   preload() {
     this.load.image('tree', 'assets/tree.png');
     this.load.image('ruin', 'assets/ruin.png');
-    // ℹ️ Add other assets here as needed
   }
 
   async create() {
+    // Map and camera setup
     this.hexSize = 24;
     this.mapWidth = 25;
     this.mapHeight = 25;
@@ -34,17 +29,18 @@ export default class WorldScene extends Phaser.Scene {
     this.isDragging = false;
     this.moveCooldown = false;
 
-    // Set camera boundaries
-    const pad = this.hexSize * 2;  // 48 px
+    const pad = this.hexSize * 2;
     const mapPixelWidth = this.hexSize * Math.sqrt(3) * (this.mapWidth + 0.5) + pad * 2;
     const mapPixelHeight = this.hexSize * 1.5 * (this.mapHeight + 0.5) + pad * 2;
     this.cameras.main.setBounds(0, 0, mapPixelWidth, mapPixelHeight);
     this.cameras.main.setZoom(1.0);
 
+    // Lobby and network setup
     const { roomCode, playerName, isHost } = this.scene.settings.data;
     const { getLobbyState } = await import('../net/LobbyManager.js');
     const { data: lobbyData, error } = await getLobbyState(roomCode);
     if (error || !lobbyData?.state?.seed) return;
+
     this.seed = lobbyData.state.seed;
     this.lobbyState = lobbyData.state;
 
@@ -57,26 +53,23 @@ export default class WorldScene extends Phaser.Scene {
     this.supabase = supabase;
     this.subscribeToGame = subscribeToGame;
 
-    // Sync movement
-    this.syncPlayerMove = async (unit) => {
-      const { data: lobbyData, error: fetchError } = await this.supabase
-        .from('lobbies').select('state').eq('room_code', this.roomCode).single();
-      if (fetchError) return;
-      const updatedState = {
-        ...lobbyData.state,
-        units: {
-          ...lobbyData.state.units,
-          [this.playerName]: { q: unit.q, r: unit.r }
-        },
-        currentTurn: this.getNextPlayer(lobbyData.state.players, this.playerName)
-      };
+    // Movement sync
+    this.syncPlayerMove = async unit => {
+      const res = await this.supabase.from('lobbies').select('state').eq('room_code', this.roomCode).single();
+      if (!res.data) return;
+      const nextPlayer = this.getNextPlayer(res.data.state.players, this.playerName);
       await this.supabase
         .from('lobbies')
-        .update({ state: updatedState })
+        .update({
+          state: {
+            ...res.data.state,
+            units: { ...res.data.state.units, [this.playerName]: { q: unit.q, r: unit.r } },
+            currentTurn: nextPlayer
+          }
+        })
         .eq('room_code', this.roomCode);
     };
 
-    // Sync enemies
     this.syncEnemies = async () => {
       const enemyData = this.enemies.map(e => ({ q: e.q, r: e.r }));
       await this.supabase
@@ -90,7 +83,7 @@ export default class WorldScene extends Phaser.Scene {
       return list[(idx + 1) % list.length];
     };
 
-    // Bind hex methods
+    // Bind map utilities
     this.hexToPixel = hexToPixel.bind(this);
     this.pixelToHex = pixelToHex.bind(this);
     this.roundHex = roundHex.bind(this);
@@ -103,21 +96,25 @@ export default class WorldScene extends Phaser.Scene {
     this.movingPath = [];
     this.pathGraphics = this.add.graphics({ x: 0, y: 0 }).setDepth(50);
 
-    // Draw base map
+    // Generate and draw map
     this.hexMap = new HexMap(this.mapWidth, this.mapHeight, this.seed);
     this.mapData = this.hexMap.getMap();
     drawHexMap.call(this);
 
-    // Spawn units & enemies
+    // Spawn units, enemies, and subscribe
     await spawnUnitsAndEnemies.call(this);
-
-    // Subscribe for real-time updates
     subscribeToGameUpdates.call(this);
 
     // Setup UI and controls
     setupCameraControls(this);
     setupTurnUI(this);
     setupPointerActions.call(this);
+
+    // Ensure refresh button works
+    if (this.refreshButton) {
+      this.refreshButton.removeAllListeners('pointerdown');
+      this.refreshButton.on('pointerdown', () => refreshUnits(this));
+    }
   }
 
   update() {}
@@ -126,14 +123,13 @@ export default class WorldScene extends Phaser.Scene {
     if (!this.selectedUnit || this.movingPath.length === 0) return;
     this.moveCooldown = true;
     this.time.addEvent({
-      delay: 300,
-      repeat: this.movingPath.length - 1,
+      delay: 300, repeat: this.movingPath.length - 1,
       callback: () => {
-        const next = this.movingPath.shift();
-        const { x, y } = this.hexToPixel(next.q, next.r, this.hexSize);
+        const step = this.movingPath.shift();
+        const { x, y } = this.hexToPixel(step.q, step.r, this.hexSize);
         this.selectedUnit.setPosition(x, y);
-        this.selectedUnit.q = next.q;
-        this.selectedUnit.r = next.r;
+        this.selectedUnit.q = step.q;
+        this.selectedUnit.r = step.r;
         if (this.movingPath.length === 0) {
           this.moveCooldown = false;
           this.syncPlayerMove(this.selectedUnit);
@@ -158,26 +154,27 @@ export default class WorldScene extends Phaser.Scene {
     if (this.turnText) {
       this.turnText.setText('Player Turn: ...');
     }
-    if (this.isHost) this.moveEnemies();
+    if (this.isHost) {
+      this.moveEnemies();
+    }
   }
 
   moveEnemies() {
-    const directions = [
+    const dirs = [
       { dq: +1, dr: 0 }, { dq: -1, dr: 0 },
       { dq: 0, dr: +1 }, { dq: 0, dr: -1 },
       { dq: +1, dr: -1 }, { dq: -1, dr: +1 }
     ];
     this.enemies.forEach(enemy => {
-      Phaser.Utils.Array.Shuffle(directions);
-      for (const dir of directions) {
-        const newQ = enemy.q + dir.dq;
-        const newR = enemy.r + dir.dr;
-        const tile = this.mapData.find(t => t.q === newQ && t.r === newR);
-        if (tile && !['water', 'mountain'].includes(tile.type)) {
-          const { x, y } = this.hexToPixel(newQ, newR, this.hexSize);
+      Phaser.Utils.Array.Shuffle(dirs);
+      for (const d of dirs) {
+        const nq = enemy.q + d.dq, nr = enemy.r + d.dr;
+        const tile = this.mapData.find(h => h.q === nq && h.r === nr);
+        if (tile && !['water','mountain'].includes(tile.type)) {
+          const { x, y } = this.hexToPixel(nq, nr, this.hexSize);
           enemy.setPosition(x, y);
-          enemy.q = newQ;
-          enemy.r = newR;
+          enemy.q = nq;
+          enemy.r = nr;
           break;
         }
       }
