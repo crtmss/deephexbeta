@@ -1,5 +1,4 @@
 // deephexbeta/src/scenes/WorldScene.js
-
 import HexMap from '../engine/HexMap.js';
 import { findPath } from '../engine/AStar.js';
 import { setupCameraControls, setupTurnUI } from './WorldSceneUI.js';
@@ -16,12 +15,12 @@ export default class WorldScene extends Phaser.Scene {
   }
 
   preload() {
-      this.load.image('tree', '../assets/tree.png');
-      this.load.image('ruin', '../assets/ruin.png');
+    this.load.image('tree', '../assets/tree.png');
+    this.load.image('ruin', '../assets/ruin.png');
   }
 
   async create() {
-    // Map and camera setup
+    // Map & camera init
     this.hexSize = 24;
     this.mapWidth = 25;
     this.mapHeight = 25;
@@ -35,7 +34,7 @@ export default class WorldScene extends Phaser.Scene {
     this.cameras.main.setBounds(0, 0, mapPixelWidth, mapPixelHeight);
     this.cameras.main.setZoom(1.0);
 
-    // Lobby and network setup
+    // Setup lobby & network
     const { roomCode, playerName, isHost } = this.scene.settings.data;
     const { getLobbyState } = await import('../net/LobbyManager.js');
     const { data: lobbyData, error } = await getLobbyState(roomCode);
@@ -43,7 +42,6 @@ export default class WorldScene extends Phaser.Scene {
 
     this.seed = lobbyData.state.seed;
     this.lobbyState = lobbyData.state;
-
     const { subscribeToGame } = await import('../net/SyncManager.js');
     const { supabase } = await import('../net/SupabaseClient.js');
 
@@ -70,6 +68,7 @@ export default class WorldScene extends Phaser.Scene {
         .eq('room_code', this.roomCode);
     };
 
+    // Enemy sync
     this.syncEnemies = async () => {
       const enemyData = this.enemies.map(e => ({ q: e.q, r: e.r }));
       await this.supabase
@@ -96,21 +95,20 @@ export default class WorldScene extends Phaser.Scene {
     this.movingPath = [];
     this.pathGraphics = this.add.graphics({ x: 0, y: 0 }).setDepth(50);
 
-    // Generate and draw map
+    // Generate & draw world
     this.hexMap = new HexMap(this.mapWidth, this.mapHeight, this.seed);
     this.mapData = this.hexMap.getMap();
     drawHexMap.call(this);
 
-    // Spawn units, enemies, and subscribe
+    // Spawn units & handle updates
     await spawnUnitsAndEnemies.call(this);
     subscribeToGameUpdates.call(this);
 
-    // Setup UI and controls
+    // UI & control setup
     setupCameraControls(this);
     setupTurnUI(this);
-    setupPointerActions.call(this);
+    setupPointerActions(this);
 
-    // Ensure refresh button works
     if (this.refreshButton) {
       this.refreshButton.removeAllListeners('pointerdown');
       this.refreshButton.on('pointerdown', () => refreshUnits(this));
@@ -141,7 +139,7 @@ export default class WorldScene extends Phaser.Scene {
   }
 
   checkCombat() {
-    console.log('[Combat] Check not implemented.');
+    console.log('[Combat] not implemented yet');
   }
 
   endTurn() {
@@ -154,9 +152,7 @@ export default class WorldScene extends Phaser.Scene {
     if (this.turnText) {
       this.turnText.setText('Player Turn: ...');
     }
-    if (this.isHost) {
-      this.moveEnemies();
-    }
+    if (this.isHost) this.moveEnemies();
   }
 
   moveEnemies() {
@@ -170,7 +166,7 @@ export default class WorldScene extends Phaser.Scene {
       for (const d of dirs) {
         const nq = enemy.q + d.dq, nr = enemy.r + d.dr;
         const tile = this.mapData.find(h => h.q === nq && h.r === nr);
-        if (tile && !['water','mountain'].includes(tile.type)) {
+        if (tile && !['water', 'mountain'].includes(tile.type)) {
           const { x, y } = this.hexToPixel(nq, nr, this.hexSize);
           enemy.setPosition(x, y);
           enemy.q = nq;
