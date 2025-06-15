@@ -20,6 +20,12 @@ export default class WorldScene extends Phaser.Scene {
     super('WorldScene');
   }
 
+  preload() {
+    this.load.image('tree', 'assets/tree.png');
+    this.load.image('ruin', 'assets/ruin.png');
+    // ℹ️ Add other assets here as needed
+  }
+
   async create() {
     this.hexSize = 24;
     this.mapWidth = 25;
@@ -50,7 +56,7 @@ export default class WorldScene extends Phaser.Scene {
     this.supabase = supabase;
     this.subscribeToGame = subscribeToGame;
 
-    // Helper for syncing movement
+    // Sync movement
     this.syncPlayerMove = async (unit) => {
       const { data: lobbyData, error: fetchError } = await this.supabase
         .from('lobbies').select('state').eq('room_code', this.roomCode).single();
@@ -63,15 +69,19 @@ export default class WorldScene extends Phaser.Scene {
         },
         currentTurn: this.getNextPlayer(lobbyData.state.players, this.playerName)
       };
-      await this.supabase.from('lobbies').update({ state: updatedState }).eq('room_code', this.roomCode);
+      await this.supabase
+        .from('lobbies')
+        .update({ state: updatedState })
+        .eq('room_code', this.roomCode);
     };
 
-    // Enemy sync
+    // Sync enemies
     this.syncEnemies = async () => {
       const enemyData = this.enemies.map(e => ({ q: e.q, r: e.r }));
-      await this.supabase.from('lobbies').update({
-        state: { ...this.lobbyState, enemies: enemyData }
-      }).eq('room_code', this.roomCode);
+      await this.supabase
+        .from('lobbies')
+        .update({ state: { ...this.lobbyState, enemies: enemyData } })
+        .eq('room_code', this.roomCode);
     };
 
     this.getNextPlayer = (list, current) => {
@@ -92,20 +102,20 @@ export default class WorldScene extends Phaser.Scene {
     this.movingPath = [];
     this.pathGraphics = this.add.graphics({ x: 0, y: 0 }).setDepth(50);
 
-    // Setup base map
+    // Draw base map
     this.hexMap = new HexMap(this.mapWidth, this.mapHeight, this.seed);
     this.mapData = this.hexMap.getMap();
     drawHexMap.call(this);
 
-    // Setup units/enemies
+    // Spawn units & enemies
     await spawnUnitsAndEnemies.call(this);
 
-    // Subscribe to real-time updates
+    // Subscribe for real-time updates
     subscribeToGameUpdates.call(this);
 
     // Setup UI and controls
     setupCameraControls(this);
-    setupTurnUI(this); // ✅ FIXED: pass 'this' properly as the scene
+    setupTurnUI(this);
     setupPointerActions.call(this);
   }
 
@@ -152,8 +162,9 @@ export default class WorldScene extends Phaser.Scene {
 
   moveEnemies() {
     const directions = [
-      { dq: +1, dr: 0 }, { dq: -1, dr: 0 }, { dq: 0, dr: +1 },
-      { dq: 0, dr: -1 }, { dq: +1, dr: -1 }, { dq: -1, dr: +1 }
+      { dq: +1, dr: 0 }, { dq: -1, dr: 0 },
+      { dq: 0, dr: +1 }, { dq: 0, dr: -1 },
+      { dq: +1, dr: -1 }, { dq: -1, dr: +1 }
     ];
     this.enemies.forEach(enemy => {
       Phaser.Utils.Array.Shuffle(directions);
