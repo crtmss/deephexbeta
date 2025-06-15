@@ -35,8 +35,9 @@ export default class WorldScene extends Phaser.Scene {
     this.moveCooldown = false;
 
     // Set camera boundaries
-    const mapPixelWidth = this.hexSize * Math.sqrt(3) * (this.mapWidth + 0.5);
-    const mapPixelHeight = this.hexSize * 1.5 * (this.mapHeight + 0.5);
+    const pad = this.hexSize * 2;  // 48 px
+    const mapPixelWidth = this.hexSize * Math.sqrt(3) * (this.mapWidth + 0.5) + pad * 2;
+    const mapPixelHeight = this.hexSize * 1.5 * (this.mapHeight + 0.5) + pad * 2;
     this.cameras.main.setBounds(0, 0, mapPixelWidth, mapPixelHeight);
     this.cameras.main.setZoom(1.0);
 
