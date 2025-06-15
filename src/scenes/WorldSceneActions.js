@@ -73,20 +73,9 @@ export function refreshUnits(scene) {
     }
 }
 
-// Sets up pointer and refresh button logic
+// Pointer click handler for selecting hexes
 export function setupPointerActions() {
     this.input.on('pointerdown', pointer => {
         handleHexClick(this, pointer);
-    });
-
-    const refreshButton = this.add.text(1000, 20, 'Refresh', {
-        fontSize: '22px',
-        backgroundColor: '#444',
-        color: '#fff',
-        padding: { x: 10, y: 5 }
-    }).setInteractive().setDepth(100);
-
-    refreshButton.on('pointerdown', () => {
-        refreshUnits(this);
     });
 }
