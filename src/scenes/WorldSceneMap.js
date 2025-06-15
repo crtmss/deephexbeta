@@ -45,9 +45,9 @@ export function drawHexMap() {
 
 // coordinate conversions
 export function hexToPixel(q, r, size) {
-    const x = size * Math.sqrt(3) * (q + 0.5 * (r & 1));
-    const y = size * 1.5 * r;
-    return { x: x + 32, y: y + 32 }; // padding for full render
+  const x = size * Math.sqrt(3) * (q + 0.5 * (r & 1));
+  const y = size * 1.5 * r;
+  return { x: x + 48, y: y + 48 }; // was +32, bump to +48
 }
 
 export function pixelToHex(x, y, size) {
