@@ -95,6 +95,8 @@ export default class WorldScene extends Phaser.Scene {
     this.movingPath = [];
     this.pathGraphics = this.add.graphics({ x: 0, y: 0 }).setDepth(50);
 
+    this.debugGraphics = this.add.graphics({ x: 0, y: 0 }).setDepth(100); // ← Debug draw layer
+
     // Generate & draw world
     this.hexMap = new HexMap(this.mapWidth, this.mapHeight, this.seed);
     this.mapData = this.hexMap.getMap();
@@ -108,6 +110,25 @@ export default class WorldScene extends Phaser.Scene {
     setupCameraControls(this);
     setupTurnUI(this);
     setupPointerActions(this);
+
+    // Debug pointer handler
+    this.input.on("pointerdown", (pointer) => {
+      if (pointer.rightButtonDown()) return;
+
+      const worldX = pointer.worldX;
+      const worldY = pointer.worldY;
+      const approx = this.pixelToHex(worldX, worldY, this.hexSize);
+      const rounded = this.roundHex(approx.q, approx.r);
+      const center = this.hexToPixel(rounded.q, rounded.r, this.hexSize);
+
+      // Debug highlight
+      this.debugGraphics.clear();
+      this.debugGraphics.lineStyle(2, 0xff00ff, 1);
+      this.drawHex(this.debugGraphics, center.x, center.y, this.hexSize);
+
+      this.selectedHex = rounded;
+      console.log("[DEBUG] Clicked Hex:", rounded);
+    });
 
     if (this.refreshButton) {
       this.refreshButton.removeAllListeners('pointerdown');
