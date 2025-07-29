@@ -109,19 +109,22 @@ if (hasForest) {
 if (hasRoad) {
   const neighbors = this.mapData.filter(h =>
     h.hasRoad &&
+    !(h.q === q && h.r === r) && // prevent self-linking
     Phaser.Math.Distance.Between(q, r, h.q, h.r) <= 1.5
   );
+
   neighbors.forEach(n => {
     const p1 = this.hexToPixel(q, r, this.hexSize);
     const p2 = this.hexToPixel(n.q, n.r, this.hexSize);
     const line = this.add.graphics().setDepth(1);
     line.lineStyle(2, 0x999999, 0.6);
-    line.lineBetween(p1.x, p1.y, p2.x, p2.y);
+    line.beginPath();
+    line.moveTo(p1.x, p1.y);
+    line.lineTo(p2.x, p2.y);
+    line.strokePath();
     this.objects.push(line);
   });
-}
-    
-
+} 
 
 /**
  * Hex → pixel conversion (with padding)
@@ -131,7 +134,6 @@ export function hexToPixel(q, r, size) {
   const y = size * 1.5 * r;
   return { x: x + size * 2, y: y + size * 2 };
 }
-
 /**
  * Pixel → hex conversion + round
  */
