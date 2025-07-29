@@ -28,37 +28,53 @@ export function drawHexMap() {
   this.objects = this.objects || [];
 
   this.mapData.forEach(hex => {
-    const { q, r, type, hasForest, hasRuin } = hex;
+    const { q, r, type, hasForest, hasRuin, hasCrashSite, hasVehicle } = hex;
     const { x, y } = this.hexToPixel(q, r, this.hexSize);
     const color = this.getColorForTerrain(type);
     this.drawHex(q, r, x, y, this.hexSize, color);
 
-    // FOREST CLUSTER: 2-4 trees
+    // 🌲 FOREST CLUSTER
     if (hasForest) {
-      const treeCount = Phaser.Math.Between(2, 4);
+      const treeCount = Phaser.Math.Between(1, 4);
       for (let i = 0; i < treeCount; i++) {
         const angle = Phaser.Math.FloatBetween(0, 2 * Math.PI);
-        const radius = Phaser.Math.FloatBetween(2, this.hexSize * 0.3); // within hex
+        const radius = Phaser.Math.FloatBetween(this.hexSize * 0.2, this.hexSize * 0.5);
         const dx = Math.cos(angle) * radius;
         const dy = Math.sin(angle) * radius;
 
-        const sizePercent = 0.45 + Phaser.Math.FloatBetween(-0.05, 0.05); // 40-50% size
+        const sizePercent = 0.45 + Phaser.Math.FloatBetween(-0.05, 0.05); // 40–50%
         const size = this.hexSize * sizePercent;
 
-        const emoji = this.add.text(x + dx, y + dy, '🌲', {
+        const tree = this.add.text(x + dx, y + dy, '🌲', {
           fontSize: `${size}px`
         }).setOrigin(0.5).setDepth(2);
 
-        this.objects.push(emoji);
+        this.objects.push(tree);
       }
     }
 
-    // SINGLE RUIN ICON
+    // 🏛️ RUINS
     if (hasRuin) {
       const ruin = this.add.text(x, y, '🏛️', {
         fontSize: `${this.hexSize * 0.9}px`
       }).setOrigin(0.5).setDepth(2);
       this.objects.push(ruin);
+    }
+
+    // 🚀 CRASHED SPACECRAFT
+    if (hasCrashSite) {
+      const rocket = this.add.text(x, y, '🚀', {
+        fontSize: `${this.hexSize * 0.9}px`
+      }).setOrigin(0.5).setDepth(2);
+      this.objects.push(rocket);
+    }
+
+    // 🚙 ABANDONED VEHICLE
+    if (hasVehicle) {
+      const vehicle = this.add.text(x, y, '🚙', {
+        fontSize: `${this.hexSize * 0.8}px`
+      }).setOrigin(0.5).setDepth(2);
+      this.objects.push(vehicle);
     }
   });
 }
