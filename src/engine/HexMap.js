@@ -94,6 +94,7 @@ function generateMap(rows = 25, cols = 25, seed = 'defaultseed') {
         break;
       }
     }
+    
   }
 
   // Smaller but more frequent biomes
@@ -151,6 +152,56 @@ Phaser.Utils.Array.Shuffle(vehicleCandidates);
 vehicleCandidates.slice(0, Phaser.Math.Between(2, 3)).forEach(tile => tile.hasVehicle = true);
   
   return flatMap;
+}
+
+// === ANCIENT ROAD GENERATION ===
+const roadTiles = flatMap.filter(t =>
+  !['water', 'mountain'].includes(t.type) &&
+  !t.hasRuin
+);
+Phaser.Utils.Array.Shuffle(roadTiles);
+
+const roadPaths = Phaser.Math.Between(2, 3);
+let totalRoadLength = Phaser.Math.Between(7, 19);
+let usedTiles = new Set();
+
+for (let i = 0; i < roadPaths; i++) {
+  let remaining = Math.floor(totalRoadLength / (roadPaths - i));
+  totalRoadLength -= remaining;
+
+  let start = roadTiles.find(t => !usedTiles.has(`${t.q},${t.r}`));
+  if (!start) continue;
+
+  const queue = [start];
+  usedTiles.add(`${start.q},${start.r}`);
+  start.hasRoad = true;
+
+  while (queue.length && remaining > 0) {
+    const current = queue.shift();
+    const dirs = [
+      [+1, 0], [-1, 0], [0, +1], [0, -1], [+1, -1], [-1, +1]
+    ];
+
+    Phaser.Utils.Array.Shuffle(dirs);
+
+    for (const [dq, dr] of dirs) {
+      const nq = current.q + dq;
+      const nr = current.r + dr;
+      const neighbor = flatMap.find(t => t.q === nq && t.r === nr);
+      if (
+        neighbor &&
+        !usedTiles.has(`${nq},${nr}`) &&
+        !['water', 'mountain'].includes(neighbor.type) &&
+        !neighbor.hasRuin
+      ) {
+        neighbor.hasRoad = true;
+        usedTiles.add(`${nq},${nr}`);
+        queue.push(neighbor);
+        remaining--;
+        break;
+      }
+    }
+  }
 }
 
 export default class HexMap {
