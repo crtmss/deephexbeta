@@ -28,18 +28,32 @@ export function drawHexMap() {
   this.objects = this.objects || [];
 
   this.mapData.forEach(hex => {
-    const { q, r, type, hasTree, hasRuin } = hex;
+    const { q, r, type, hasForest, hasRuin } = hex;
     const { x, y } = this.hexToPixel(q, r, this.hexSize);
     const color = this.getColorForTerrain(type);
     this.drawHex(q, r, x, y, this.hexSize, color);
 
-    if (hasTree) {
-      const tree = this.add.text(x, y, '🌲', {
-        fontSize: `${this.hexSize * 0.9}px`
-      }).setOrigin(0.5).setDepth(2);
-      this.objects.push(tree);
+    // FOREST CLUSTER: 2-4 trees
+    if (hasForest) {
+      const treeCount = Phaser.Math.Between(2, 4);
+      for (let i = 0; i < treeCount; i++) {
+        const angle = Phaser.Math.FloatBetween(0, 2 * Math.PI);
+        const radius = Phaser.Math.FloatBetween(2, this.hexSize * 0.3); // within hex
+        const dx = Math.cos(angle) * radius;
+        const dy = Math.sin(angle) * radius;
+
+        const sizePercent = 0.45 + Phaser.Math.FloatBetween(-0.05, 0.05); // 40-50% size
+        const size = this.hexSize * sizePercent;
+
+        const emoji = this.add.text(x + dx, y + dy, '🌲', {
+          fontSize: `${size}px`
+        }).setOrigin(0.5).setDepth(2);
+
+        this.objects.push(emoji);
+      }
     }
 
+    // SINGLE RUIN ICON
     if (hasRuin) {
       const ruin = this.add.text(x, y, '🏛️', {
         fontSize: `${this.hexSize * 0.9}px`
@@ -85,43 +99,22 @@ export function roundHex(q, r) {
 /**
  * Draw one hexagon (as polygon)
  */
-export function drawHexMap() {
-  this.objects = this.objects || [];
-
-  this.mapData.forEach(hex => {
-    const { q, r, type, hasForest, hasRuin } = hex;
-    const { x, y } = this.hexToPixel(q, r, this.hexSize);
-    const color = this.getColorForTerrain(type);
-    this.drawHex(q, r, x, y, this.hexSize, color);
-
-    // FOREST CLUSTER: 2-4 trees
-    if (hasForest) {
-      const treeCount = Phaser.Math.Between(2, 4);
-      for (let i = 0; i < treeCount; i++) {
-        const angle = Phaser.Math.FloatBetween(0, 2 * Math.PI);
-        const radius = Phaser.Math.FloatBetween(2, this.hexSize * 0.3); // within hex
-        const dx = Math.cos(angle) * radius;
-        const dy = Math.sin(angle) * radius;
-
-        const sizePercent = 0.45 + Phaser.Math.FloatBetween(-0.05, 0.05); // 40-50% size
-        const size = this.hexSize * sizePercent;
-
-        const emoji = this.add.text(x + dx, y + dy, '🌲', {
-          fontSize: `${size}px`
-        }).setOrigin(0.5).setDepth(2);
-
-        this.objects.push(emoji);
-      }
-    }
-
-    // SINGLE RUIN ICON
-    if (hasRuin) {
-      const ruin = this.add.text(x, y, '🏛️', {
-        fontSize: `${this.hexSize * 0.9}px`
-      }).setOrigin(0.5).setDepth(2);
-      this.objects.push(ruin);
-    }
-  });
+export function drawHex(q, r, x, y, size, color) {
+  const gfx = this.add.graphics({ x: 0, y: 0 });
+  gfx.lineStyle(1, 0x000000);
+  gfx.fillStyle(color, 1);
+  const corners = [];
+  for (let i = 0; i < 6; i++) {
+    const ang = Phaser.Math.DegToRad(60 * i + 30);
+    corners.push({ x: x + size * Math.cos(ang), y: y + size * Math.sin(ang) });
+  }
+  gfx.beginPath();
+  gfx.moveTo(corners[0].x, corners[0].y);
+  corners.slice(1).forEach(c => gfx.lineTo(c.x, c.y));
+  gfx.closePath();
+  gfx.fillPath();
+  gfx.strokePath();
+  this.tileMap[`${q},${r}`] = gfx;
 }
 
 /**
