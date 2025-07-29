@@ -33,38 +33,55 @@ export function drawHexMap() {
     const color = this.getColorForTerrain(type);
     this.drawHex(q, r, x, y, this.hexSize, color);
 
-    // 🌲 FOREST CLUSTER
+    // 🌲 FOREST CLUSTER: 1–4 non-overlapping trees
     if (hasForest) {
       const treeCount = Phaser.Math.Between(1, 4);
-      for (let i = 0; i < treeCount; i++) {
+      const placed = [];
+
+      let attempts = 0;
+      while (placed.length < treeCount && attempts < 20) {
         const angle = Phaser.Math.FloatBetween(0, 2 * Math.PI);
         const radius = Phaser.Math.FloatBetween(this.hexSize * 0.2, this.hexSize * 0.5);
         const dx = Math.cos(angle) * radius;
         const dy = Math.sin(angle) * radius;
 
-        const sizePercent = 0.45 + Phaser.Math.FloatBetween(-0.05, 0.05); // 40–50%
-        const size = this.hexSize * sizePercent;
+        const posX = x + dx;
+        const posY = y + dy;
+        const minDist = this.hexSize * 0.2;
 
-        const tree = this.add.text(x + dx, y + dy, '🌲', {
-          fontSize: `${size}px`
-        }).setOrigin(0.5).setDepth(2);
+        const tooClose = placed.some(p => {
+          const dist = Phaser.Math.Distance.Between(posX, posY, p.x, p.y);
+          return dist < minDist;
+        });
 
-        this.objects.push(tree);
+        if (!tooClose) {
+          const sizePercent = 0.45 + Phaser.Math.FloatBetween(-0.05, 0.05);
+          const size = this.hexSize * sizePercent;
+
+          const tree = this.add.text(posX, posY, '🌲', {
+            fontSize: `${size}px`
+          }).setOrigin(0.5).setDepth(2);
+
+          this.objects.push(tree);
+          placed.push({ x: posX, y: posY });
+        }
+
+        attempts++;
       }
     }
 
-    // 🏛️ RUINS
+    // 🏛️ RUINS (10% smaller)
     if (hasRuin) {
       const ruin = this.add.text(x, y, '🏛️', {
-        fontSize: `${this.hexSize * 0.9}px`
+        fontSize: `${this.hexSize * 0.8}px`
       }).setOrigin(0.5).setDepth(2);
       this.objects.push(ruin);
     }
 
-    // 🚀 CRASHED SPACECRAFT
+    // 🚀 CRASHED SPACECRAFT (10% smaller)
     if (hasCrashSite) {
       const rocket = this.add.text(x, y, '🚀', {
-        fontSize: `${this.hexSize * 0.9}px`
+        fontSize: `${this.hexSize * 0.8}px`
       }).setOrigin(0.5).setDepth(2);
       this.objects.push(rocket);
     }
