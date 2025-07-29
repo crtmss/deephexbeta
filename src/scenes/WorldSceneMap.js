@@ -33,21 +33,21 @@ export function drawHexMap() {
     const color = this.getColorForTerrain(type);
     this.drawHex(q, r, x, y, this.hexSize, color);
 
-   // 🌲 FOREST CLUSTER: 1–4 non-overlapping animated trees
+ // 🌲 FOREST CLUSTER: 1–4 non-overlapping animated trees
 if (hasForest) {
   const treeCount = Phaser.Math.Between(1, 4);
   const placed = [];
 
   let attempts = 0;
-  while (placed.length < treeCount && attempts < 20) {
+  while (placed.length < treeCount && attempts < 40) {
     const angle = Phaser.Math.FloatBetween(0, 2 * Math.PI);
-    const radius = Phaser.Math.FloatBetween(this.hexSize * 0.2, this.hexSize * 0.5);
+    const radius = Phaser.Math.FloatBetween(this.hexSize * 0.35, this.hexSize * 0.65); // spread wider
     const dx = Math.cos(angle) * radius;
     const dy = Math.sin(angle) * radius;
 
     const posX = x + dx;
     const posY = y + dy;
-    const minDist = this.hexSize * 0.2;
+    const minDist = this.hexSize * 0.3; // larger spacing between trees
 
     const tooClose = placed.some(p => {
       const dist = Phaser.Math.Distance.Between(posX, posY, p.x, p.y);
@@ -62,11 +62,10 @@ if (hasForest) {
         fontSize: `${size}px`
       }).setOrigin(0.5).setDepth(2);
 
-      // 🌬️ Wind sway animation (angle + y shift)
+      // 🌬️ Animate side-to-side sway only (no vertical float)
       this.tweens.add({
         targets: tree,
         angle: { from: -1.5, to: 1.5 },
-        y: tree.y + Phaser.Math.Between(-1, 1), // subtle float
         duration: Phaser.Math.Between(2500, 4000),
         yoyo: true,
         repeat: -1,
