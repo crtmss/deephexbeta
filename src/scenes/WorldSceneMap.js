@@ -104,8 +104,24 @@ if (hasForest) {
       }).setOrigin(0.5).setDepth(2);
       this.objects.push(vehicle);
     }
+
+      // draw connecting lines for ancient roads
+if (hasRoad) {
+  const neighbors = this.mapData.filter(h =>
+    h.hasRoad &&
+    Phaser.Math.Distance.Between(q, r, h.q, h.r) <= 1.5
+  );
+  neighbors.forEach(n => {
+    const p1 = this.hexToPixel(q, r, this.hexSize);
+    const p2 = this.hexToPixel(n.q, n.r, this.hexSize);
+    const line = this.add.graphics().setDepth(1);
+    line.lineStyle(2, 0x999999, 0.6);
+    line.lineBetween(p1.x, p1.y, p2.x, p2.y);
+    this.objects.push(line);
   });
 }
+    
+
 
 /**
  * Hex → pixel conversion (with padding)
