@@ -28,60 +28,59 @@ export function drawHexMap() {
   this.objects = this.objects || [];
 
   this.mapData.forEach(hex => {
-    const { q, r, type, hasForest, hasRuin, hasCrashSite, hasVehicle } = hex;
+    const { q, r, type, hasForest, hasRuin, hasCrashSite, hasVehicle, hasRoad } = hex;
     const { x, y } = this.hexToPixel(q, r, this.hexSize);
     const color = this.getColorForTerrain(type);
     this.drawHex(q, r, x, y, this.hexSize, color);
 
- // 🌲 FOREST CLUSTER: 1–4 non-overlapping animated trees
-if (hasForest) {
-  const treeCount = Phaser.Math.Between(2, 4);
-  const placed = [];
+    // 🌲 FOREST CLUSTER: 2–4 non-overlapping animated trees
+    if (hasForest) {
+      const treeCount = Phaser.Math.Between(2, 4);
+      const placed = [];
 
-  let attempts = 0;
-  while (placed.length < treeCount && attempts < 40) {
-    const angle = Phaser.Math.FloatBetween(0, 2 * Math.PI);
-    const radius = Phaser.Math.FloatBetween(this.hexSize * 0.35, this.hexSize * 0.65); // spread wider
-    const dx = Math.cos(angle) * radius;
-    const dy = Math.sin(angle) * radius;
+      let attempts = 0;
+      while (placed.length < treeCount && attempts < 40) {
+        const angle = Phaser.Math.FloatBetween(0, 2 * Math.PI);
+        const radius = Phaser.Math.FloatBetween(this.hexSize * 0.35, this.hexSize * 0.65);
+        const dx = Math.cos(angle) * radius;
+        const dy = Math.sin(angle) * radius;
 
-    const posX = x + dx;
-    const posY = y + dy;
-    const minDist = this.hexSize * 0.3; // larger spacing between trees
+        const posX = x + dx;
+        const posY = y + dy;
+        const minDist = this.hexSize * 0.3;
 
-    const tooClose = placed.some(p => {
-      const dist = Phaser.Math.Distance.Between(posX, posY, p.x, p.y);
-      return dist < minDist;
-    });
+        const tooClose = placed.some(p => {
+          const dist = Phaser.Math.Distance.Between(posX, posY, p.x, p.y);
+          return dist < minDist;
+        });
 
-    if (!tooClose) {
-      const sizePercent = 0.45 + Phaser.Math.FloatBetween(-0.05, 0.05);
-      const size = this.hexSize * sizePercent;
+        if (!tooClose) {
+          const sizePercent = 0.45 + Phaser.Math.FloatBetween(-0.05, 0.05);
+          const size = this.hexSize * sizePercent;
 
-      const tree = this.add.text(posX, posY, '🌲', {
-        fontSize: `${size}px`
-      }).setOrigin(0.5).setDepth(2);
+          const tree = this.add.text(posX, posY, '🌲', {
+            fontSize: `${size}px`
+          }).setOrigin(0.5).setDepth(2);
 
-      // 🌬️ Animate side-to-side sway only (no vertical float)
-      this.tweens.add({
-        targets: tree,
-        angle: { from: -1.5, to: 1.5 },
-        duration: Phaser.Math.Between(2500, 4000),
-        yoyo: true,
-        repeat: -1,
-        ease: 'Sine.easeInOut',
-        delay: Phaser.Math.Between(0, 1000)
-      });
+          this.tweens.add({
+            targets: tree,
+            angle: { from: -1.5, to: 1.5 },
+            duration: Phaser.Math.Between(2500, 4000),
+            yoyo: true,
+            repeat: -1,
+            ease: 'Sine.easeInOut',
+            delay: Phaser.Math.Between(0, 1000)
+          });
 
-      this.objects.push(tree);
-      placed.push({ x: posX, y: posY });
+          this.objects.push(tree);
+          placed.push({ x: posX, y: posY });
+        }
+
+        attempts++;
+      }
     }
 
-    attempts++;
-  }
-}
-
-    // 🏛️ RUINS (10% smaller)
+    // 🏛️ RUINS
     if (hasRuin) {
       const ruin = this.add.text(x, y, '🏛️', {
         fontSize: `${this.hexSize * 0.8}px`
@@ -89,7 +88,7 @@ if (hasForest) {
       this.objects.push(ruin);
     }
 
-    // 🚀 CRASHED SPACECRAFT (10% smaller)
+    // 🚀 CRASHED SPACECRAFT
     if (hasCrashSite) {
       const rocket = this.add.text(x, y, '🚀', {
         fontSize: `${this.hexSize * 0.8}px`
@@ -105,26 +104,28 @@ if (hasForest) {
       this.objects.push(vehicle);
     }
 
-      // draw connecting lines for ancient roads
-if (hasRoad) {
-  const neighbors = this.mapData.filter(h =>
-    h.hasRoad &&
-    !(h.q === q && h.r === r) && // prevent self-linking
-    Phaser.Math.Distance.Between(q, r, h.q, h.r) <= 1.5
-  );
+    // draw connecting lines for ancient roads
+    if (hasRoad) {
+      const neighbors = this.mapData.filter(h =>
+        h.hasRoad &&
+        !(h.q === q && h.r === r) &&
+        Phaser.Math.Distance.Between(q, r, h.q, h.r) <= 1.5
+      );
 
-  neighbors.forEach(n => {
-    const p1 = this.hexToPixel(q, r, this.hexSize);
-    const p2 = this.hexToPixel(n.q, n.r, this.hexSize);
-    const line = this.add.graphics().setDepth(1);
-    line.lineStyle(2, 0x999999, 0.6);
-    line.beginPath();
-    line.moveTo(p1.x, p1.y);
-    line.lineTo(p2.x, p2.y);
-    line.strokePath();
-    this.objects.push(line);
+      neighbors.forEach(n => {
+        const p1 = this.hexToPixel(q, r, this.hexSize);
+        const p2 = this.hexToPixel(n.q, n.r, this.hexSize);
+        const line = this.add.graphics().setDepth(1);
+        line.lineStyle(2, 0x999999, 0.6);
+        line.beginPath();
+        line.moveTo(p1.x, p1.y);
+        line.lineTo(p2.x, p2.y);
+        line.strokePath();
+        this.objects.push(line);
+      });
+    }
   });
-} 
+}
 
 /**
  * Hex → pixel conversion (with padding)
@@ -134,6 +135,7 @@ export function hexToPixel(q, r, size) {
   const y = size * 1.5 * r;
   return { x: x + size * 2, y: y + size * 2 };
 }
+
 /**
  * Pixel → hex conversion + round
  */
@@ -193,3 +195,4 @@ export function getColorForTerrain(terrain) {
     default: return 0x888888;
   }
 }
+
