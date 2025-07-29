@@ -95,7 +95,7 @@ export default class WorldScene extends Phaser.Scene {
     this.movingPath = [];
     this.pathGraphics = this.add.graphics({ x: 0, y: 0 }).setDepth(50);
 
-    this.debugGraphics = this.add.graphics({ x: 0, y: 0 }).setDepth(100); // ← Debug draw layer
+    this.debugGraphics = this.add.graphics({ x: 0, y: 0 }).setDepth(100);
 
     // Generate & draw world
     this.hexMap = new HexMap(this.mapWidth, this.mapHeight, this.seed);
@@ -111,7 +111,7 @@ export default class WorldScene extends Phaser.Scene {
     setupTurnUI(this);
     setupPointerActions(this);
 
-    // Debug pointer handler
+    // Enhanced debug pointer handler
     this.input.on("pointerdown", (pointer) => {
       if (pointer.rightButtonDown()) return;
 
@@ -121,13 +121,31 @@ export default class WorldScene extends Phaser.Scene {
       const rounded = this.roundHex(approx.q, approx.r);
       const center = this.hexToPixel(rounded.q, rounded.r, this.hexSize);
 
-      // Debug highlight
       this.debugGraphics.clear();
       this.debugGraphics.lineStyle(2, 0xff00ff, 1);
       this.drawHex(this.debugGraphics, center.x, center.y, this.hexSize);
 
       this.selectedHex = rounded;
-      console.log("[DEBUG] Clicked Hex:", rounded);
+
+      // Inspect contents
+      const tile = this.mapData.find(h => h.q === rounded.q && h.r === rounded.r);
+      const terrainType = tile?.type || "unknown";
+
+      const playerHere = this.players.find(p => p.q === rounded.q && p.r === rounded.r);
+      const enemiesHere = this.enemies.filter(e => e.q === rounded.q && e.r === rounded.r);
+
+      const objects = [];
+      if (tile?.hasTree) objects.push("Tree");
+      if (tile?.hasRuin) objects.push("Ruin");
+
+      console.log(`[HEX INSPECT] (${rounded.q}, ${rounded.r})`);
+      console.log(`• Terrain: ${terrainType}`);
+      console.log(`• Player Unit: ${playerHere ? "Yes" : "No"}`);
+      console.log(`• Enemy Units: ${enemiesHere.length}`);
+      if (enemiesHere.length > 0) {
+        enemiesHere.forEach((e, i) => console.log(`   - Enemy #${i + 1} at (${e.q}, ${e.r})`));
+      }
+      console.log(`• Objects: ${objects.length > 0 ? objects.join(", ") : "None"}`);
     });
 
     if (this.refreshButton) {
