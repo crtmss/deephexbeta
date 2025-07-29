@@ -101,6 +101,7 @@ function generateMap(rows = 25, cols = 25, seed = 'defaultseed') {
   placeBiome('sand', 5, 9, 4);
   placeBiome('swamp', 5, 9, 3);
 
+  // Mountains
   const mountainChains = 6 + Math.floor(rand() * 3);
   for (let i = 0; i < mountainChains; i++) {
     let q = Math.floor(rand() * (cols - 4)) + 2;
@@ -126,7 +127,20 @@ function generateMap(rows = 25, cols = 25, seed = 'defaultseed') {
     }
   }
 
-  return map.flat();
+  // === ADD TREES AND RUINS ===
+  const flatMap = map.flat();
+
+  // Trees on grassland or mud
+  const treeCandidates = flatMap.filter(t => ['grassland', 'mud'].includes(t.type));
+  Phaser.Utils.Array.Shuffle(treeCandidates);
+  treeCandidates.slice(0, 30).forEach(tile => tile.hasTree = true);
+
+  // Ruins on sand or swamp
+  const ruinCandidates = flatMap.filter(t => ['sand', 'swamp'].includes(t.type));
+  Phaser.Utils.Array.Shuffle(ruinCandidates);
+  ruinCandidates.slice(0, 20).forEach(tile => tile.hasRuin = true);
+
+  return flatMap;
 }
 
 export default class HexMap {
