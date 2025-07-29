@@ -15,32 +15,36 @@ export function generateHexMap(width, height, seed) {
   return raw.map(h => {
     const { q, r } = h;
     if (q < left || q >= width - right || r < top || r >= height - bottom) {
-      return { q, r, type: 'water' };
+      return { ...h, type: 'water' };
     }
     return h;
   });
 }
 
 /**
- * Draw the hex grid and scatter scenic sprites
+ * Draw the hex grid and place scenic object sprites based on tile data
  */
 export function drawHexMap() {
   this.objects = this.objects || [];
 
   this.mapData.forEach(hex => {
-    const { q, r, type } = hex;
+    const { q, r, type, hasTree, hasRuin } = hex;
     const { x, y } = this.hexToPixel(q, r, this.hexSize);
     const color = this.getColorForTerrain(type);
     this.drawHex(q, r, x, y, this.hexSize, color);
 
-    // Random scenic objects
-    if (type !== 'water' && Phaser.Math.FloatBetween(0, 1) < 0.08) {
-      const key = Phaser.Math.FloatBetween(0, 1) < 0.7 ? 'tree' : 'ruin';
-      const sprite = this.add.sprite(x, y, key)
-        .setScale(this.hexSize / 32)
-        .setDepth(20)
-        .setOrigin(0.5, 0.6);
-      this.objects.push(sprite);
+    if (hasTree) {
+      const tree = this.add.text(x, y, '🌲', {
+        fontSize: `${this.hexSize * 0.9}px`
+      }).setOrigin(0.5).setDepth(2);
+      this.objects.push(tree);
+    }
+
+    if (hasRuin) {
+      const ruin = this.add.text(x, y, '🏛️', {
+        fontSize: `${this.hexSize * 0.9}px`
+      }).setOrigin(0.5).setDepth(2);
+      this.objects.push(ruin);
     }
   });
 }
