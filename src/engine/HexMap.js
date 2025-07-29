@@ -135,18 +135,18 @@ const forestCandidates = flatMap.filter(t => ['grassland', 'mud'].includes(t.typ
 Phaser.Utils.Array.Shuffle(forestCandidates);
 forestCandidates.slice(0, 30).forEach(tile => tile.hasForest = true);
 
-// Ruins: now only 2–3
-const ruinCandidates = flatMap.filter(t => ['sand', 'swamp'].includes(t.type));
+// Ruins: only 2–3, on non-water
+const ruinCandidates = flatMap.filter(t => ['sand', 'swamp'].includes(t.type) && t.type !== 'water');
 Phaser.Utils.Array.Shuffle(ruinCandidates);
 ruinCandidates.slice(0, Phaser.Math.Between(2, 3)).forEach(tile => tile.hasRuin = true);
 
-// Crashed spacecrafts (🚀) on non-mountains
-const crashCandidates = flatMap.filter(t => t.type !== 'mountain');
+// Crash sites: only on non-mountain & non-water
+const crashCandidates = flatMap.filter(t => t.type !== 'mountain' && t.type !== 'water');
 Phaser.Utils.Array.Shuffle(crashCandidates);
 crashCandidates.slice(0, Phaser.Math.Between(2, 3)).forEach(tile => tile.hasCrashSite = true);
 
-// Abandoned vehicles (🚙) on grass only
-const vehicleCandidates = flatMap.filter(t => t.type === 'grassland');
+// Abandoned vehicles: only on grass, not water
+const vehicleCandidates = flatMap.filter(t => t.type === 'grassland' && t.type !== 'water');
 Phaser.Utils.Array.Shuffle(vehicleCandidates);
 vehicleCandidates.slice(0, Phaser.Math.Between(2, 3)).forEach(tile => tile.hasVehicle = true);
   
