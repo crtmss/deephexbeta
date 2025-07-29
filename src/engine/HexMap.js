@@ -133,7 +133,7 @@ const flatMap = map.flat();
 // Forests on grassland or mud
 const forestCandidates = flatMap.filter(t => ['grassland', 'mud'].includes(t.type));
 Phaser.Utils.Array.Shuffle(forestCandidates);
-forestCandidates.slice(0, 30).forEach(tile => tile.hasForest = true);
+forestCandidates.slice(0, 39).forEach(tile => tile.hasForest = true); // 
 
 // Ruins: only 2–3, on non-water
 const ruinCandidates = flatMap.filter(t => ['sand', 'swamp'].includes(t.type) && t.type !== 'water');
