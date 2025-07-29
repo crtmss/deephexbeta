@@ -127,19 +127,19 @@ function generateMap(rows = 25, cols = 25, seed = 'defaultseed') {
     }
   }
 
-  // === ADD TREES AND RUINS ===
-  const flatMap = map.flat();
+// === ADD FORESTS AND RUINS ===
+const flatMap = map.flat();
 
-  // Trees on grassland or mud
-  const treeCandidates = flatMap.filter(t => ['grassland', 'mud'].includes(t.type));
-  Phaser.Utils.Array.Shuffle(treeCandidates);
-  treeCandidates.slice(0, 30).forEach(tile => tile.hasTree = true);
+// Forests on grassland or mud
+const forestCandidates = flatMap.filter(t => ['grassland', 'mud'].includes(t.type));
+Phaser.Utils.Array.Shuffle(forestCandidates);
+forestCandidates.slice(0, 30).forEach(tile => tile.hasForest = true);
 
-  // Ruins on sand or swamp
-  const ruinCandidates = flatMap.filter(t => ['sand', 'swamp'].includes(t.type));
-  Phaser.Utils.Array.Shuffle(ruinCandidates);
-  ruinCandidates.slice(0, 20).forEach(tile => tile.hasRuin = true);
-
+// Ruins on sand or swamp
+const ruinCandidates = flatMap.filter(t => ['sand', 'swamp'].includes(t.type));
+Phaser.Utils.Array.Shuffle(ruinCandidates);
+ruinCandidates.slice(0, 20).forEach(tile => tile.hasRuin = true);
+  
   return flatMap;
 }
 
