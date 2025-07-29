@@ -35,7 +35,7 @@ export function drawHexMap() {
 
  // 🌲 FOREST CLUSTER: 1–4 non-overlapping animated trees
 if (hasForest) {
-  const treeCount = Phaser.Math.Between(1, 4);
+  const treeCount = Phaser.Math.Between(2, 4);
   const placed = [];
 
   let attempts = 0;
