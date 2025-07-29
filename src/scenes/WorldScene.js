@@ -139,6 +139,7 @@ export default class WorldScene extends Phaser.Scene {
       if (tile?.hasRuin) objects.push("Ruin");
       if (tile?.hasCrashSite) objects.push("Crash Site");
       if (tile?.hasVehicle) objects.push("Vehicle");
+      if (tile?.hasRoad) objects.push("Road");
 
       console.log(`[HEX INSPECT] (${rounded.q}, ${rounded.r})`);
       console.log(`• Terrain: ${terrainType}`);
