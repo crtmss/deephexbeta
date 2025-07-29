@@ -1,5 +1,4 @@
 // deephexbeta/src/scenes/WorldSceneUnits.js
-
 import { supabase } from '../net/SupabaseClient.js';
 
 export async function spawnUnitsAndEnemies() {
@@ -21,6 +20,7 @@ export async function spawnUnitsAndEnemies() {
             if (pointer.rightButtonDown()) return;
             pointer.event.stopPropagation();
             this.selectedUnit = this.selectedUnit === unit ? null : unit;
+            console.log(`[SELECTED] Unit at (${unit.q}, ${unit.r}) by ${this.playerName}`);
         });
         this.players.push(unit);
 
@@ -80,13 +80,13 @@ export async function subscribeToGameUpdates() {
                     unit.r = pos.r;
                     unit.playerName = name;
 
-                    // Enable interaction if this is our unit
                     if (name === this.playerName) {
                         unit.setInteractive();
                         unit.on('pointerdown', (pointer) => {
                             if (pointer.rightButtonDown()) return;
                             pointer.event.stopPropagation();
                             this.selectedUnit = this.selectedUnit === unit ? null : unit;
+                            console.log(`[SELECTED] Unit at (${unit.q}, ${unit.r}) by ${this.playerName}`);
                         });
                     }
 
