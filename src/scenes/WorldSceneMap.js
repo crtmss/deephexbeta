@@ -33,42 +33,54 @@ export function drawHexMap() {
     const color = this.getColorForTerrain(type);
     this.drawHex(q, r, x, y, this.hexSize, color);
 
-    // 🌲 FOREST CLUSTER: 1–4 non-overlapping trees
-    if (hasForest) {
-      const treeCount = Phaser.Math.Between(1, 4);
-      const placed = [];
+   // 🌲 FOREST CLUSTER: 1–4 non-overlapping animated trees
+if (hasForest) {
+  const treeCount = Phaser.Math.Between(1, 4);
+  const placed = [];
 
-      let attempts = 0;
-      while (placed.length < treeCount && attempts < 20) {
-        const angle = Phaser.Math.FloatBetween(0, 2 * Math.PI);
-        const radius = Phaser.Math.FloatBetween(this.hexSize * 0.2, this.hexSize * 0.5);
-        const dx = Math.cos(angle) * radius;
-        const dy = Math.sin(angle) * radius;
+  let attempts = 0;
+  while (placed.length < treeCount && attempts < 20) {
+    const angle = Phaser.Math.FloatBetween(0, 2 * Math.PI);
+    const radius = Phaser.Math.FloatBetween(this.hexSize * 0.2, this.hexSize * 0.5);
+    const dx = Math.cos(angle) * radius;
+    const dy = Math.sin(angle) * radius;
 
-        const posX = x + dx;
-        const posY = y + dy;
-        const minDist = this.hexSize * 0.2;
+    const posX = x + dx;
+    const posY = y + dy;
+    const minDist = this.hexSize * 0.2;
 
-        const tooClose = placed.some(p => {
-          const dist = Phaser.Math.Distance.Between(posX, posY, p.x, p.y);
-          return dist < minDist;
-        });
+    const tooClose = placed.some(p => {
+      const dist = Phaser.Math.Distance.Between(posX, posY, p.x, p.y);
+      return dist < minDist;
+    });
 
-        if (!tooClose) {
-          const sizePercent = 0.45 + Phaser.Math.FloatBetween(-0.05, 0.05);
-          const size = this.hexSize * sizePercent;
+    if (!tooClose) {
+      const sizePercent = 0.45 + Phaser.Math.FloatBetween(-0.05, 0.05);
+      const size = this.hexSize * sizePercent;
 
-          const tree = this.add.text(posX, posY, '🌲', {
-            fontSize: `${size}px`
-          }).setOrigin(0.5).setDepth(2);
+      const tree = this.add.text(posX, posY, '🌲', {
+        fontSize: `${size}px`
+      }).setOrigin(0.5).setDepth(2);
 
-          this.objects.push(tree);
-          placed.push({ x: posX, y: posY });
-        }
+      // 🌬️ Wind sway animation (angle + y shift)
+      this.tweens.add({
+        targets: tree,
+        angle: { from: -1.5, to: 1.5 },
+        y: tree.y + Phaser.Math.Between(-1, 1), // subtle float
+        duration: Phaser.Math.Between(2500, 4000),
+        yoyo: true,
+        repeat: -1,
+        ease: 'Sine.easeInOut',
+        delay: Phaser.Math.Between(0, 1000)
+      });
 
-        attempts++;
-      }
+      this.objects.push(tree);
+      placed.push({ x: posX, y: posY });
     }
+
+    attempts++;
+  }
+}
 
     // 🏛️ RUINS (10% smaller)
     if (hasRuin) {
