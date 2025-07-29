@@ -52,13 +52,10 @@ function generateMap(rows = 25, cols = 25, seed = 'defaultseed') {
   }
 
   function placeBiome(type, minSize, maxSize, instances) {
-    let placedTotal = 0;
-    let attempts = 0;
-
     for (let i = 0; i < instances; i++) {
       let size = minSize + Math.floor(rand() * (maxSize - minSize + 1));
       let placed = 0;
-      attempts = 0;
+      let attempts = 0;
 
       while (placed < size && attempts < 500) {
         const q = Math.floor(rand() * cols);
@@ -79,7 +76,6 @@ function generateMap(rows = 25, cols = 25, seed = 'defaultseed') {
           if (t.type === 'grassland') {
             Object.assign(t, { type, ...terrainTypes[type] });
             placed++;
-            placedTotal++;
             count++;
           }
 
@@ -94,10 +90,9 @@ function generateMap(rows = 25, cols = 25, seed = 'defaultseed') {
         break;
       }
     }
-    
   }
 
-  // Smaller but more frequent biomes
+  // Biome distribution
   placeBiome('mud', 5, 9, 4);
   placeBiome('sand', 5, 9, 4);
   placeBiome('swamp', 5, 9, 3);
@@ -128,80 +123,80 @@ function generateMap(rows = 25, cols = 25, seed = 'defaultseed') {
     }
   }
 
-// === ADD FORESTS AND RUINS ===
-const flatMap = map.flat();
+  // === ADD OBJECTS ===
+  const flatMap = map.flat();
 
-// Forests on grassland or mud
-const forestCandidates = flatMap.filter(t => ['grassland', 'mud'].includes(t.type));
-Phaser.Utils.Array.Shuffle(forestCandidates);
-forestCandidates.slice(0, 39).forEach(tile => tile.hasForest = true); // 
+  // Forests
+  const forestCandidates = flatMap.filter(t => ['grassland', 'mud'].includes(t.type));
+  Phaser.Utils.Array.Shuffle(forestCandidates);
+  forestCandidates.slice(0, 39).forEach(tile => tile.hasForest = true);
 
-// Ruins: only 2–3, on non-water
-const ruinCandidates = flatMap.filter(t => ['sand', 'swamp'].includes(t.type) && t.type !== 'water');
-Phaser.Utils.Array.Shuffle(ruinCandidates);
-ruinCandidates.slice(0, Phaser.Math.Between(2, 3)).forEach(tile => tile.hasRuin = true);
+  // Ruins: only 2–3
+  const ruinCandidates = flatMap.filter(t => ['sand', 'swamp'].includes(t.type));
+  Phaser.Utils.Array.Shuffle(ruinCandidates);
+  ruinCandidates.slice(0, Phaser.Math.Between(2, 3)).forEach(tile => tile.hasRuin = true);
 
-// Crash sites: only on non-mountain & non-water
-const crashCandidates = flatMap.filter(t => t.type !== 'mountain' && t.type !== 'water');
-Phaser.Utils.Array.Shuffle(crashCandidates);
-crashCandidates.slice(0, Phaser.Math.Between(2, 3)).forEach(tile => tile.hasCrashSite = true);
+  // Crash sites: not on mountain/water
+  const crashCandidates = flatMap.filter(t => t.type !== 'mountain' && t.type !== 'water');
+  Phaser.Utils.Array.Shuffle(crashCandidates);
+  crashCandidates.slice(0, Phaser.Math.Between(2, 3)).forEach(tile => tile.hasCrashSite = true);
 
-// Abandoned vehicles: only on grass, not water
-const vehicleCandidates = flatMap.filter(t => t.type === 'grassland' && t.type !== 'water');
-Phaser.Utils.Array.Shuffle(vehicleCandidates);
-vehicleCandidates.slice(0, Phaser.Math.Between(2, 3)).forEach(tile => tile.hasVehicle = true);
-  
-  return flatMap;
-}
+  // Vehicles: grassland only
+  const vehicleCandidates = flatMap.filter(t => t.type === 'grassland');
+  Phaser.Utils.Array.Shuffle(vehicleCandidates);
+  vehicleCandidates.slice(0, Phaser.Math.Between(2, 3)).forEach(tile => tile.hasVehicle = true);
 
-// === ANCIENT ROAD GENERATION ===
-const roadTiles = flatMap.filter(t =>
-  !['water', 'mountain'].includes(t.type) &&
-  !t.hasRuin
-);
-Phaser.Utils.Array.Shuffle(roadTiles);
+  // === ANCIENT ROAD GENERATION ===
+  const roadTiles = flatMap.filter(t =>
+    !['water', 'mountain'].includes(t.type) &&
+    !t.hasRuin
+  );
+  Phaser.Utils.Array.Shuffle(roadTiles);
 
-const roadPaths = Phaser.Math.Between(2, 3);
-let totalRoadLength = Phaser.Math.Between(7, 19);
-let usedTiles = new Set();
+  const roadPaths = Phaser.Math.Between(2, 3);
+  let totalRoadLength = Phaser.Math.Between(7, 19);
+  let usedTiles = new Set();
 
-for (let i = 0; i < roadPaths; i++) {
-  let remaining = Math.floor(totalRoadLength / (roadPaths - i));
-  totalRoadLength -= remaining;
+  for (let i = 0; i < roadPaths; i++) {
+    let remaining = Math.floor(totalRoadLength / (roadPaths - i));
+    totalRoadLength -= remaining;
 
-  let start = roadTiles.find(t => !usedTiles.has(`${t.q},${t.r}`));
-  if (!start) continue;
+    let start = roadTiles.find(t => !usedTiles.has(`${t.q},${t.r}`));
+    if (!start) continue;
 
-  const queue = [start];
-  usedTiles.add(`${start.q},${start.r}`);
-  start.hasRoad = true;
+    const queue = [start];
+    usedTiles.add(`${start.q},${start.r}`);
+    start.hasRoad = true;
 
-  while (queue.length && remaining > 0) {
-    const current = queue.shift();
-    const dirs = [
-      [+1, 0], [-1, 0], [0, +1], [0, -1], [+1, -1], [-1, +1]
-    ];
+    while (queue.length && remaining > 0) {
+      const current = queue.shift();
+      const dirs = [
+        [+1, 0], [-1, 0], [0, +1], [0, -1], [+1, -1], [-1, +1]
+      ];
 
-    Phaser.Utils.Array.Shuffle(dirs);
+      Phaser.Utils.Array.Shuffle(dirs);
 
-    for (const [dq, dr] of dirs) {
-      const nq = current.q + dq;
-      const nr = current.r + dr;
-      const neighbor = flatMap.find(t => t.q === nq && t.r === nr);
-      if (
-        neighbor &&
-        !usedTiles.has(`${nq},${nr}`) &&
-        !['water', 'mountain'].includes(neighbor.type) &&
-        !neighbor.hasRuin
-      ) {
-        neighbor.hasRoad = true;
-        usedTiles.add(`${nq},${nr}`);
-        queue.push(neighbor);
-        remaining--;
-        break;
+      for (const [dq, dr] of dirs) {
+        const nq = current.q + dq;
+        const nr = current.r + dr;
+        const neighbor = flatMap.find(t => t.q === nq && t.r === nr);
+        if (
+          neighbor &&
+          !usedTiles.has(`${nq},${nr}`) &&
+          !['water', 'mountain'].includes(neighbor.type) &&
+          !neighbor.hasRuin
+        ) {
+          neighbor.hasRoad = true;
+          usedTiles.add(`${nq},${nr}`);
+          queue.push(neighbor);
+          remaining--;
+          break;
+        }
       }
     }
   }
+
+  return flatMap;
 }
 
 export default class HexMap {
