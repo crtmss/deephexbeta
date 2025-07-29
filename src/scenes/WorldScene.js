@@ -135,8 +135,10 @@ export default class WorldScene extends Phaser.Scene {
       const enemiesHere = this.enemies.filter(e => e.q === rounded.q && e.r === rounded.r);
 
       const objects = [];
-      if (tile?.hasTree) objects.push("Tree");
+      if (tile?.hasForest) objects.push("Forest");
       if (tile?.hasRuin) objects.push("Ruin");
+      if (tile?.hasCrashSite) objects.push("Crash Site");
+      if (tile?.hasVehicle) objects.push("Vehicle");
 
       console.log(`[HEX INSPECT] (${rounded.q}, ${rounded.r})`);
       console.log(`• Terrain: ${terrainType}`);
