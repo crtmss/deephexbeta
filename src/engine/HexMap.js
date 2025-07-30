@@ -123,33 +123,49 @@ function generateMap(rows = 25, cols = 25, seed = 'defaultseed') {
     }
   }
 
-  // === ADD OBJECTS ===
+  // === OBJECT PLACEMENT ===
   const flatMap = map.flat();
 
-  // Forests
-  const forestCandidates = flatMap.filter(t => ['grassland', 'mud'].includes(t.type));
+  // Forests (can overlap with one object)
+  const forestCandidates = flatMap.filter(t =>
+    ['grassland', 'mud'].includes(t.type)
+  );
   Phaser.Utils.Array.Shuffle(forestCandidates);
   forestCandidates.slice(0, 39).forEach(tile => tile.hasForest = true);
 
-  // Ruins: only 2–3
-  const ruinCandidates = flatMap.filter(t => ['sand', 'swamp'].includes(t.type));
+  // Helper: mark tile as occupied after placing object
+  const mark = (tile, key) => {
+    tile[key] = true;
+    tile.hasObject = true;
+  };
+
+  const isFree = t =>
+    !t.hasObject &&
+    !['mountain', 'water'].includes(t.type);
+
+  // Ruins
+  const ruinCandidates = flatMap.filter(t =>
+    ['sand', 'swamp'].includes(t.type) && isFree(t)
+  );
   Phaser.Utils.Array.Shuffle(ruinCandidates);
-  ruinCandidates.slice(0, Phaser.Math.Between(2, 3)).forEach(tile => tile.hasRuin = true);
+  ruinCandidates.slice(0, Phaser.Math.Between(2, 3)).forEach(tile => mark(tile, 'hasRuin'));
 
-  // Crash sites: not on mountain/water
-  const crashCandidates = flatMap.filter(t => t.type !== 'mountain' && t.type !== 'water');
+  // Crash Sites
+  const crashCandidates = flatMap.filter(t => isFree(t));
   Phaser.Utils.Array.Shuffle(crashCandidates);
-  crashCandidates.slice(0, Phaser.Math.Between(2, 3)).forEach(tile => tile.hasCrashSite = true);
+  crashCandidates.slice(0, Phaser.Math.Between(2, 3)).forEach(tile => mark(tile, 'hasCrashSite'));
 
-  // Vehicles: grassland only
-  const vehicleCandidates = flatMap.filter(t => t.type === 'grassland');
+  // Vehicles
+  const vehicleCandidates = flatMap.filter(t =>
+    t.type === 'grassland' && isFree(t)
+  );
   Phaser.Utils.Array.Shuffle(vehicleCandidates);
-  vehicleCandidates.slice(0, Phaser.Math.Between(2, 3)).forEach(tile => tile.hasVehicle = true);
+  vehicleCandidates.slice(0, Phaser.Math.Between(2, 3)).forEach(tile => mark(tile, 'hasVehicle'));
 
   // === ANCIENT ROAD GENERATION ===
   const roadTiles = flatMap.filter(t =>
     !['water', 'mountain'].includes(t.type) &&
-    !t.hasRuin
+    !t.hasObject // roads cannot overlap any other object
   );
   Phaser.Utils.Array.Shuffle(roadTiles);
 
@@ -184,7 +200,7 @@ function generateMap(rows = 25, cols = 25, seed = 'defaultseed') {
           neighbor &&
           !usedTiles.has(`${nq},${nr}`) &&
           !['water', 'mountain'].includes(neighbor.type) &&
-          !neighbor.hasRuin
+          !neighbor.hasObject
         ) {
           neighbor.hasRoad = true;
           usedTiles.add(`${nq},${nr}`);
