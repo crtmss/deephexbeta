@@ -1,6 +1,5 @@
 // deephexbeta/src/engine/HexMap.js
 
-// HexMap.js - Generates hex island map with terrain
 import { cyrb128, sfc32 } from './PRNG.js';
 
 const terrainTypes = {
@@ -34,11 +33,20 @@ function generateMap(rows = 25, cols = 25, seed = 'defaultseed') {
     }))
   );
 
-  // Add water borders
+  // 🌊 Irregular island shape using radial falloff + randomness
+  const centerQ = cols / 2;
+  const centerR = rows / 2;
+  const maxRadius = Math.min(centerQ, centerR) - 2;
+
   for (let r = 0; r < rows; r++) {
     for (let q = 0; q < cols; q++) {
-      if (r < 2 || r >= rows - 2 || q < 2 || q >= cols - 2) {
-        const tile = map[r][q];
+      const tile = map[r][q];
+      const dx = q - centerQ;
+      const dy = r - centerR;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      const noise = rand() * 2.2;
+
+      if (dist + noise > maxRadius) {
         Object.assign(tile, { type: 'water', ...terrainTypes.water });
       }
     }
@@ -92,12 +100,12 @@ function generateMap(rows = 25, cols = 25, seed = 'defaultseed') {
     }
   }
 
-  // Biome distribution
+  // 🌱 Biomes
   placeBiome('mud', 5, 9, 4);
   placeBiome('sand', 5, 9, 4);
   placeBiome('swamp', 5, 9, 3);
 
-  // Mountains
+  // 🏔️ Mountains
   const mountainChains = 6 + Math.floor(rand() * 3);
   for (let i = 0; i < mountainChains; i++) {
     let q = Math.floor(rand() * (cols - 4)) + 2;
@@ -106,7 +114,6 @@ function generateMap(rows = 25, cols = 25, seed = 'defaultseed') {
 
     for (let j = 0; j < length; j++) {
       const tile = map[r][q];
-
       const distFromP1 = Math.sqrt((q - 2) ** 2 + (r - 2) ** 2);
       const distFromP2 = Math.sqrt((q - cols + 2) ** 2 + (r - rows + 2) ** 2);
 
@@ -123,17 +130,9 @@ function generateMap(rows = 25, cols = 25, seed = 'defaultseed') {
     }
   }
 
-  // === OBJECT PLACEMENT ===
+  // === 🌳 Object Placement ===
   const flatMap = map.flat();
 
-  // Forests (can overlap with one object)
-  const forestCandidates = flatMap.filter(t =>
-    ['grassland', 'mud'].includes(t.type)
-  );
-  Phaser.Utils.Array.Shuffle(forestCandidates);
-  forestCandidates.slice(0, 39).forEach(tile => tile.hasForest = true);
-
-  // Helper: mark tile as occupied after placing object
   const mark = (tile, key) => {
     tile[key] = true;
     tile.hasObject = true;
@@ -143,29 +142,36 @@ function generateMap(rows = 25, cols = 25, seed = 'defaultseed') {
     !t.hasObject &&
     !['mountain', 'water'].includes(t.type);
 
-  // Ruins
+  // 🌲 Forests (can coexist with 1 object)
+  const forestCandidates = flatMap.filter(t =>
+    ['grassland', 'mud'].includes(t.type)
+  );
+  Phaser.Utils.Array.Shuffle(forestCandidates);
+  forestCandidates.slice(0, 39).forEach(tile => tile.hasForest = true);
+
+  // 🏛️ Ruins
   const ruinCandidates = flatMap.filter(t =>
     ['sand', 'swamp'].includes(t.type) && isFree(t)
   );
   Phaser.Utils.Array.Shuffle(ruinCandidates);
-  ruinCandidates.slice(0, Phaser.Math.Between(2, 3)).forEach(tile => mark(tile, 'hasRuin'));
+  ruinCandidates.slice(0, Phaser.Math.Between(2, 3)).forEach(t => mark(t, 'hasRuin'));
 
-  // Crash Sites
-  const crashCandidates = flatMap.filter(t => isFree(t));
+  // 🚀 Crash Sites
+  const crashCandidates = flatMap.filter(isFree);
   Phaser.Utils.Array.Shuffle(crashCandidates);
-  crashCandidates.slice(0, Phaser.Math.Between(2, 3)).forEach(tile => mark(tile, 'hasCrashSite'));
+  crashCandidates.slice(0, Phaser.Math.Between(2, 3)).forEach(t => mark(t, 'hasCrashSite'));
 
-  // Vehicles
+  // 🚙 Abandoned Vehicles
   const vehicleCandidates = flatMap.filter(t =>
     t.type === 'grassland' && isFree(t)
   );
   Phaser.Utils.Array.Shuffle(vehicleCandidates);
-  vehicleCandidates.slice(0, Phaser.Math.Between(2, 3)).forEach(tile => mark(tile, 'hasVehicle'));
+  vehicleCandidates.slice(0, Phaser.Math.Between(2, 3)).forEach(t => mark(t, 'hasVehicle'));
 
-  // === ANCIENT ROAD GENERATION ===
+  // === 🛣️ Ancient Roads ===
   const roadTiles = flatMap.filter(t =>
     !['water', 'mountain'].includes(t.type) &&
-    !t.hasObject // roads cannot overlap any other object
+    !t.hasObject
   );
   Phaser.Utils.Array.Shuffle(roadTiles);
 
@@ -189,7 +195,6 @@ function generateMap(rows = 25, cols = 25, seed = 'defaultseed') {
       const dirs = [
         [+1, 0], [-1, 0], [0, +1], [0, -1], [+1, -1], [-1, +1]
       ];
-
       Phaser.Utils.Array.Shuffle(dirs);
 
       for (const [dq, dr] of dirs) {
