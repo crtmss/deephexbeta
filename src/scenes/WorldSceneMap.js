@@ -22,6 +22,17 @@ export function generateHexMap(width, height, seed) {
 }
 
 /**
+ * Return neighboring axial coordinates (odd-r offset layout)
+ */
+function getHexNeighbors(q, r) {
+  // Pointy-top, odd-r offset
+  const directions = (r % 2 === 0)
+    ? [[+1, 0], [0, -1], [-1, -1], [-1, 0], [-1, +1], [0, +1]]
+    : [[+1, 0], [+1, -1], [0, -1], [-1, 0], [0, +1], [+1, +1]];
+  return directions.map(([dq, dr]) => ({ q: q + dq, r: r + dr }));
+}
+
+/**
  * Draw the hex grid and place scenic object sprites based on tile data
  */
 export function drawHexMap() {
@@ -104,13 +115,11 @@ export function drawHexMap() {
       this.objects.push(vehicle);
     }
 
-    // draw connecting lines for ancient roads
+    // 🛣️ Draw connecting lines for ancient roads
     if (hasRoad) {
-      const neighbors = this.mapData.filter(h =>
-        h.hasRoad &&
-        !(h.q === q && h.r === r) &&
-        Phaser.Math.Distance.Between(q, r, h.q, h.r) <= 1.5
-      );
+      const neighbors = getHexNeighbors(q, r)
+        .map(n => this.mapData.find(h => h.q === n.q && h.r === n.r && h.hasRoad))
+        .filter(Boolean);
 
       neighbors.forEach(n => {
         const p1 = this.hexToPixel(q, r, this.hexSize);
@@ -195,4 +204,3 @@ export function getColorForTerrain(terrain) {
     default: return 0x888888;
   }
 }
-
