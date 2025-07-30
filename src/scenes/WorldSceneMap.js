@@ -117,14 +117,14 @@ export function drawHexMap() {
       this.objects.push(vehicle);
     }
 
-    // ⛰️ MOUNTAIN ICON
-    if (hasMountainIcon) {
-      const mountain = this.add.text(x, y, '🏔️', {
-        fontSize: `${this.hexSize * 0.9}px`
-        fontFamily: 'Arial, "Segoe UI Emoji", "Noto Color Emoji", sans-serif'
-      }).setOrigin(0.5).setDepth(2);
-      this.objects.push(mountain);
-    }
+// 🏔️ MOUNTAIN ICON
+if (hasMountainIcon) {
+  const mountain = this.add.text(x, y, '🏔️', {
+    fontSize: `${this.hexSize * 0.9}px`,
+    fontFamily: 'Arial, "Segoe UI Emoji", "Noto Color Emoji", sans-serif'
+  }).setOrigin(0.5).setDepth(2);
+  this.objects.push(mountain);
+}
 
     // 🛣️ Draw connecting lines for ancient roads
     if (hasRoad) {
