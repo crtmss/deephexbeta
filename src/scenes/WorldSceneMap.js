@@ -119,7 +119,7 @@ export function drawHexMap() {
 
     // ⛰️ MOUNTAIN ICON
     if (hasMountainIcon) {
-      const mountain = this.add.text(x, y, '⛰️', {
+      const mountain = this.add.text(x, y, '🏔️', {
         fontSize: `${this.hexSize * 0.9}px`
       }).setOrigin(0.5).setDepth(2);
       this.objects.push(mountain);
