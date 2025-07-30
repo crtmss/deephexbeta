@@ -25,7 +25,6 @@ export function generateHexMap(width, height, seed) {
  * Return neighboring axial coordinates (odd-r offset layout)
  */
 function getHexNeighbors(q, r) {
-  // Pointy-top, odd-r offset
   const directions = (r % 2 === 0)
     ? [[+1, 0], [0, -1], [-1, -1], [-1, 0], [-1, +1], [0, +1]]
     : [[+1, 0], [+1, -1], [0, -1], [-1, 0], [0, +1], [+1, +1]];
@@ -39,7 +38,12 @@ export function drawHexMap() {
   this.objects = this.objects || [];
 
   this.mapData.forEach(hex => {
-    const { q, r, type, hasForest, hasRuin, hasCrashSite, hasVehicle, hasRoad } = hex;
+    const {
+      q, r, type,
+      hasForest, hasRuin, hasCrashSite, hasVehicle,
+      hasRoad, hasMountainIcon
+    } = hex;
+
     const { x, y } = this.hexToPixel(q, r, this.hexSize);
     const color = this.getColorForTerrain(type);
     this.drawHex(q, r, x, y, this.hexSize, color);
@@ -48,14 +52,13 @@ export function drawHexMap() {
     if (hasForest) {
       const treeCount = Phaser.Math.Between(2, 4);
       const placed = [];
-
       let attempts = 0;
+
       while (placed.length < treeCount && attempts < 40) {
         const angle = Phaser.Math.FloatBetween(0, 2 * Math.PI);
         const radius = Phaser.Math.FloatBetween(this.hexSize * 0.35, this.hexSize * 0.65);
         const dx = Math.cos(angle) * radius;
         const dy = Math.sin(angle) * radius;
-
         const posX = x + dx;
         const posY = y + dy;
         const minDist = this.hexSize * 0.3;
@@ -86,7 +89,6 @@ export function drawHexMap() {
           this.objects.push(tree);
           placed.push({ x: posX, y: posY });
         }
-
         attempts++;
       }
     }
@@ -113,6 +115,14 @@ export function drawHexMap() {
         fontSize: `${this.hexSize * 0.8}px`
       }).setOrigin(0.5).setDepth(2);
       this.objects.push(vehicle);
+    }
+
+    // ⛰️ MOUNTAIN ICON
+    if (hasMountainIcon) {
+      const mountain = this.add.text(x, y, '⛰️', {
+        fontSize: `${this.hexSize * 0.9}px`
+      }).setOrigin(0.5).setDepth(2);
+      this.objects.push(mountain);
     }
 
     // 🛣️ Draw connecting lines for ancient roads
