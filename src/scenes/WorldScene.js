@@ -21,6 +21,7 @@ export default class WorldScene extends Phaser.Scene {
     this.mapWidth = 25;
     this.mapHeight = 25;
     this.input.setDefaultCursor('grab');
+    this.isDragging = false;
 
     const pad = this.hexSize * 2;
     const mapPixelWidth = this.hexSize * Math.sqrt(3) * (this.mapWidth + 0.5) + pad * 2;
@@ -82,7 +83,6 @@ export default class WorldScene extends Phaser.Scene {
     this.tileMap = {};
     this.selectedUnit = null;
     this.selectedHex = null;
-    this.lastClickedHex = null;
     this.movingPath = [];
     this.pathGraphics = this.add.graphics({ x: 0, y: 0 }).setDepth(50);
     this.debugGraphics = this.add.graphics({ x: 0, y: 0 }).setDepth(100);
@@ -109,10 +109,9 @@ export default class WorldScene extends Phaser.Scene {
       this.debugGraphics.clear();
       this.debugGraphics.lineStyle(2, 0xff00ff, 1);
       this.drawHex(this.debugGraphics, center.x, center.y, this.hexSize);
-
       this.selectedHex = rounded;
 
-      // DEBUG INFO — always show
+      // === HEX INSPECTION LOG ===
       const tile = this.mapData.find(h => h.q === rounded.q && h.r === rounded.r);
       const terrainType = tile?.type || "unknown";
       const playerHere = this.players.find(p => p.q === rounded.q && p.r === rounded.r);
@@ -123,28 +122,22 @@ export default class WorldScene extends Phaser.Scene {
       if (tile?.hasCrashSite) objects.push("Crash Site");
       if (tile?.hasVehicle) objects.push("Vehicle");
       if (tile?.hasRoad) objects.push("Road");
-
       console.log(`[HEX INSPECT] (${rounded.q}, ${rounded.r})`);
       console.log(`• Terrain: ${terrainType}`);
       console.log(`• Player Unit: ${playerHere ? "Yes" : "No"}`);
       console.log(`• Enemy Units: ${enemiesHere.length}`);
       console.log(`• Objects: ${objects.length > 0 ? objects.join(", ") : "None"}`);
 
-      // === Selection / movement logic
+      // === UNIT SELECTION / MOVEMENT ===
       if (this.selectedUnit) {
-        if (
-          this.selectedUnit.q === rounded.q &&
-          this.selectedUnit.r === rounded.r &&
-          this.lastClickedHex?.q === rounded.q &&
-          this.lastClickedHex?.r === rounded.r
-        ) {
-          console.log("Unit deselected.");
+        if (this.selectedUnit.q === rounded.q && this.selectedUnit.r === rounded.r) {
+          // Deselect
           this.selectedUnit = null;
+          console.log("Unit deselected.");
         } else {
-          const isBlocked = (q, r) => {
-            const tile = this.mapData.find(h => h.q === q && h.r === r);
-            return !tile || tile.type === "water" || tile.type === "mountain";
-          };
+          // Attempt movement
+          const isBlocked = (tile) =>
+            !tile || tile.type === "water" || tile.type === "mountain";
           const path = findPath(this.selectedUnit, rounded, this.mapData, isBlocked);
           if (path && path.length > 1) {
             this.movingPath = path.slice(1);
@@ -157,8 +150,6 @@ export default class WorldScene extends Phaser.Scene {
         this.selectedUnit = playerHere;
         console.log(`[SELECTED] Unit at (${playerHere.q}, ${playerHere.r}) by ${this.playerName}`);
       }
-
-      this.lastClickedHex = rounded;
     });
 
     if (this.refreshButton) {
