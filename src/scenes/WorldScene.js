@@ -14,13 +14,9 @@ export default class WorldScene extends Phaser.Scene {
     super('WorldScene');
   }
 
-  preload() {
-
-    
-  }
+  preload() {}
 
   async create() {
-    // Map & camera init
     this.hexSize = 24;
     this.mapWidth = 25;
     this.mapHeight = 25;
@@ -34,7 +30,6 @@ export default class WorldScene extends Phaser.Scene {
     this.cameras.main.setBounds(0, 0, mapPixelWidth, mapPixelHeight);
     this.cameras.main.setZoom(1.0);
 
-    // Setup lobby & network
     const { roomCode, playerName, isHost } = this.scene.settings.data;
     const { getLobbyState } = await import('../net/LobbyManager.js');
     const { data: lobbyData, error } = await getLobbyState(roomCode);
@@ -51,7 +46,6 @@ export default class WorldScene extends Phaser.Scene {
     this.supabase = supabase;
     this.subscribeToGame = subscribeToGame;
 
-    // Movement sync
     this.syncPlayerMove = async unit => {
       const res = await this.supabase.from('lobbies').select('state').eq('room_code', this.roomCode).single();
       if (!res.data) return;
@@ -68,7 +62,6 @@ export default class WorldScene extends Phaser.Scene {
         .eq('room_code', this.roomCode);
     };
 
-    // Enemy sync
     this.syncEnemies = async () => {
       const enemyData = this.enemies.map(e => ({ q: e.q, r: e.r }));
       await this.supabase
@@ -82,7 +75,6 @@ export default class WorldScene extends Phaser.Scene {
       return list[(idx + 1) % list.length];
     };
 
-    // Bind map utilities
     this.hexToPixel = hexToPixel.bind(this);
     this.pixelToHex = pixelToHex.bind(this);
     this.roundHex = roundHex.bind(this);
@@ -94,24 +86,19 @@ export default class WorldScene extends Phaser.Scene {
     this.selectedHex = null;
     this.movingPath = [];
     this.pathGraphics = this.add.graphics({ x: 0, y: 0 }).setDepth(50);
-
     this.debugGraphics = this.add.graphics({ x: 0, y: 0 }).setDepth(100);
 
-    // Generate & draw world
     this.hexMap = new HexMap(this.mapWidth, this.mapHeight, this.seed);
     this.mapData = this.hexMap.getMap();
     drawHexMap.call(this);
 
-    // Spawn units & handle updates
     await spawnUnitsAndEnemies.call(this);
     subscribeToGameUpdates.call(this);
 
-    // UI & control setup
     setupCameraControls(this);
     setupTurnUI(this);
     setupPointerActions(this);
 
-    // Enhanced debug pointer handler
     this.input.on("pointerdown", (pointer) => {
       if (pointer.rightButtonDown()) return;
 
@@ -127,7 +114,6 @@ export default class WorldScene extends Phaser.Scene {
 
       this.selectedHex = rounded;
 
-      // Inspect contents
       const tile = this.mapData.find(h => h.q === rounded.q && h.r === rounded.r);
       const terrainType = tile?.type || "unknown";
 
@@ -149,6 +135,21 @@ export default class WorldScene extends Phaser.Scene {
         enemiesHere.forEach((e, i) => console.log(`   - Enemy #${i + 1} at (${e.q}, ${e.r})`));
       }
       console.log(`• Objects: ${objects.length > 0 ? objects.join(", ") : "None"}`);
+
+      if (this.selectedUnit) {
+        const start = { q: this.selectedUnit.q, r: this.selectedUnit.r };
+        const end = { q: rounded.q, r: rounded.r };
+        const path = findPath(start, end, this.mapData);
+
+        if (path.length > 0) {
+          this.selectedUnit.setPosition(center.x, center.y);
+          this.selectedUnit.q = rounded.q;
+          this.selectedUnit.r = rounded.r;
+          this.syncPlayerMove(this.selectedUnit);
+          this.checkCombat();
+          this.pathGraphics.clear();
+        }
+      }
     });
 
     if (this.refreshButton) {
@@ -158,27 +159,6 @@ export default class WorldScene extends Phaser.Scene {
   }
 
   update() {}
-
-  startStepMovement() {
-    if (!this.selectedUnit || this.movingPath.length === 0) return;
-    this.moveCooldown = true;
-    this.time.addEvent({
-      delay: 300, repeat: this.movingPath.length - 1,
-      callback: () => {
-        const step = this.movingPath.shift();
-        const { x, y } = this.hexToPixel(step.q, step.r, this.hexSize);
-        this.selectedUnit.setPosition(x, y);
-        this.selectedUnit.q = step.q;
-        this.selectedUnit.r = step.r;
-        if (this.movingPath.length === 0) {
-          this.moveCooldown = false;
-          this.syncPlayerMove(this.selectedUnit);
-          this.checkCombat();
-          this.pathGraphics.clear();
-        }
-      }
-    });
-  }
 
   checkCombat() {
     console.log('[Combat] not implemented yet');
