@@ -22,6 +22,7 @@ export default class WorldScene extends Phaser.Scene {
     this.mapHeight = 25;
     this.input.setDefaultCursor('grab');
     this.isDragging = false;
+    this.moveCooldown = false;
 
     const pad = this.hexSize * 2;
     const mapPixelWidth = this.hexSize * Math.sqrt(3) * (this.mapWidth + 0.5) + pad * 2;
@@ -29,7 +30,6 @@ export default class WorldScene extends Phaser.Scene {
     this.cameras.main.setBounds(0, 0, mapPixelWidth, mapPixelHeight);
     this.cameras.main.setZoom(1.0);
 
-    // Setup lobby
     const { roomCode, playerName, isHost } = this.scene.settings.data;
     const { getLobbyState } = await import('../net/LobbyManager.js');
     const { data: lobbyData, error } = await getLobbyState(roomCode);
@@ -46,7 +46,6 @@ export default class WorldScene extends Phaser.Scene {
     this.supabase = supabase;
     this.subscribeToGame = subscribeToGame;
 
-    // Movement sync
     this.syncPlayerMove = async unit => {
       const res = await this.supabase.from('lobbies').select('state').eq('room_code', this.roomCode).single();
       if (!res.data) return;
@@ -76,7 +75,6 @@ export default class WorldScene extends Phaser.Scene {
       return list[(idx + 1) % list.length];
     };
 
-    // Bind utilities
     this.hexToPixel = hexToPixel.bind(this);
     this.pixelToHex = pixelToHex.bind(this);
     this.roundHex = roundHex.bind(this);
@@ -91,11 +89,12 @@ export default class WorldScene extends Phaser.Scene {
     this.debugGraphics = this.add.graphics({ x: 0, y: 0 }).setDepth(100);
 
     this.hexMap = new HexMap(this.mapWidth, this.mapHeight, this.seed);
-    this.mapData = this.hexMap.getMap(); // flat array of tiles
+    this.mapData = this.hexMap.getMap();
     drawHexMap.call(this);
 
     await spawnUnitsAndEnemies.call(this);
     subscribeToGameUpdates.call(this);
+
     setupCameraControls(this);
     setupTurnUI(this);
     setupPointerActions(this);
@@ -112,58 +111,59 @@ export default class WorldScene extends Phaser.Scene {
       this.debugGraphics.clear();
       this.debugGraphics.lineStyle(2, 0xff00ff, 1);
       this.drawHex(this.debugGraphics, center.x, center.y, this.hexSize);
-      this.selectedHex = rounded;
 
-      const clickedTile = this.mapData.find(h => h.q === rounded.q && h.r === rounded.r);
-      const terrainType = clickedTile?.type || "unknown";
+      const clickedUnit = this.players.find(u => u.q === rounded.q && u.r === rounded.r);
+
+      // Unselect if clicking already selected unit
+      if (this.selectedUnit && clickedUnit === this.selectedUnit) {
+        this.selectedUnit = null;
+        this.pathGraphics.clear();
+        return;
+      }
+
+      // Select unit
+      if (clickedUnit) {
+        this.selectedUnit = clickedUnit;
+        console.log('[SELECTED UNIT]', clickedUnit);
+        return;
+      }
+
+      // Move selected unit if valid
+      if (this.selectedUnit) {
+        const unit = this.selectedUnit;
+        const start = { q: unit.q, r: unit.r };
+        const end = rounded;
+        const path = findPath(start, end, this.mapData);
+
+        if (path && path.length > 1) {
+          this.movingPath = path.slice(1); // remove current tile
+          this.startStepMovement(); // step by step movement
+        }
+      }
+
+      // Debug inspect
+      this.selectedHex = rounded;
+      const tile = this.mapData.find(h => h.q === rounded.q && h.r === rounded.r);
+      const terrainType = tile?.type || "unknown";
 
       const playerHere = this.players.find(p => p.q === rounded.q && p.r === rounded.r);
       const enemiesHere = this.enemies.filter(e => e.q === rounded.q && e.r === rounded.r);
 
       const objects = [];
-      if (clickedTile?.hasForest) objects.push("Forest");
-      if (clickedTile?.hasRuin) objects.push("Ruin");
-      if (clickedTile?.hasCrashSite) objects.push("Crash Site");
-      if (clickedTile?.hasVehicle) objects.push("Vehicle");
-      if (clickedTile?.hasRoad) objects.push("Road");
+      if (tile?.hasForest) objects.push("Forest");
+      if (tile?.hasRuin) objects.push("Ruin");
+      if (tile?.hasCrashSite) objects.push("Crash Site");
+      if (tile?.hasVehicle) objects.push("Vehicle");
+      if (tile?.hasRoad) objects.push("Road");
 
       console.log(`[HEX INSPECT] (${rounded.q}, ${rounded.r})`);
       console.log(`• Terrain: ${terrainType}`);
       console.log(`• Player Unit: ${playerHere ? "Yes" : "No"}`);
       console.log(`• Enemy Units: ${enemiesHere.length}`);
-      console.log(`• Objects: ${objects.length > 0 ? objects.join(", ") : "None"}`);
-
-      // Unit selection and movement logic
-      if (this.selectedUnit) {
-        if (this.selectedUnit.q === rounded.q && this.selectedUnit.r === rounded.r) {
-          // Clicked on the same unit → unselect
-          this.selectedUnit = null;
-          console.log("Unit deselected.");
-        } else {
-          // Try to move unit
-          const isBlocked = (q, r) => {
-            const tile = this.mapData.find(h => h.q === q && h.r === r);
-            return !tile || tile.type === "water" || tile.type === "mountain";
-          };
-          const path = findPath(this.selectedUnit, rounded, this.mapData, isBlocked);
-          if (path && path.length > 0) {
-            const last = path[path.length - 1];
-            const { x, y } = this.hexToPixel(last.q, last.r, this.hexSize);
-            this.selectedUnit.setPosition(x, y);
-            this.selectedUnit.q = last.q;
-            this.selectedUnit.r = last.r;
-            this.syncPlayerMove(this.selectedUnit);
-            console.log(`Moved unit to (${last.q}, ${last.r})`);
-          } else {
-            console.log("Path not found or blocked.");
-          }
-        }
-      } else {
-        if (playerHere) {
-          this.selectedUnit = playerHere;
-          console.log("Unit selected.");
-        }
+      if (enemiesHere.length > 0) {
+        enemiesHere.forEach((e, i) => console.log(`   - Enemy #${i + 1} at (${e.q}, ${e.r})`));
       }
+      console.log(`• Objects: ${objects.length > 0 ? objects.join(", ") : "None"}`);
     });
 
     if (this.refreshButton) {
@@ -173,6 +173,29 @@ export default class WorldScene extends Phaser.Scene {
   }
 
   update() {}
+
+  startStepMovement() {
+    if (!this.selectedUnit || this.movingPath.length === 0) return;
+    const unit = this.selectedUnit;
+    const step = this.movingPath.shift();
+
+    const { x, y } = this.hexToPixel(step.q, step.r, this.hexSize);
+    unit.setPosition(x, y);
+    unit.q = step.q;
+    unit.r = step.r;
+
+    if (this.movingPath.length > 0) {
+      this.time.delayedCall(100, () => this.startStepMovement());
+    } else {
+      this.syncPlayerMove(unit);
+      this.pathGraphics.clear();
+      this.checkCombat();
+    }
+  }
+
+  checkCombat() {
+    console.log('[Combat] not implemented yet');
+  }
 
   endTurn() {
     if (this.playerName !== this.lobbyState.currentTurn) return;
