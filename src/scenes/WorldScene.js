@@ -61,14 +61,6 @@ export default class WorldScene extends Phaser.Scene {
         .eq('room_code', this.roomCode);
     };
 
-    this.syncEnemies = async () => {
-      const enemyData = this.enemies.map(e => ({ q: e.q, r: e.r }));
-      await this.supabase
-        .from('lobbies')
-        .update({ state: { ...this.lobbyState, enemies: enemyData } })
-        .eq('room_code', this.roomCode);
-    };
-
     this.getNextPlayer = (list, current) => {
       const idx = list.indexOf(current);
       return list[(idx + 1) % list.length];
@@ -97,68 +89,88 @@ export default class WorldScene extends Phaser.Scene {
     setupTurnUI(this);
     setupPointerActions(this);
 
-    this.input.on("pointerdown", (pointer) => {
+    this.input.on("pointerdown", pointer => {
       if (pointer.rightButtonDown()) return;
 
       const worldX = pointer.worldX;
       const worldY = pointer.worldY;
       const approx = this.pixelToHex(worldX, worldY, this.hexSize);
       const rounded = this.roundHex(approx.q, approx.r);
-      const center = this.hexToPixel(rounded.q, rounded.r, this.hexSize);
-
-      this.debugGraphics.clear();
-      this.debugGraphics.lineStyle(2, 0xff00ff, 1);
-      this.drawHex(this.debugGraphics, center.x, center.y, this.hexSize);
-      this.selectedHex = rounded;
-
-      // === HEX INSPECTION LOG ===
       const tile = this.mapData.find(h => h.q === rounded.q && h.r === rounded.r);
-      const terrainType = tile?.type || "unknown";
       const playerHere = this.players.find(p => p.q === rounded.q && p.r === rounded.r);
-      const enemiesHere = this.enemies.filter(e => e.q === rounded.q && e.r === rounded.r);
-      const objects = [];
-      if (tile?.hasForest) objects.push("Forest");
-      if (tile?.hasRuin) objects.push("Ruin");
-      if (tile?.hasCrashSite) objects.push("Crash Site");
-      if (tile?.hasVehicle) objects.push("Vehicle");
-      if (tile?.hasRoad) objects.push("Road");
-      console.log(`[HEX INSPECT] (${rounded.q}, ${rounded.r})`);
-      console.log(`• Terrain: ${terrainType}`);
-      console.log(`• Player Unit: ${playerHere ? "Yes" : "No"}`);
-      console.log(`• Enemy Units: ${enemiesHere.length}`);
-      console.log(`• Objects: ${objects.length > 0 ? objects.join(", ") : "None"}`);
 
-      // === UNIT SELECTION / MOVEMENT ===
+      this.selectedHex = rounded;
+      this.debugHex(rounded.q, rounded.r);
+
       if (this.selectedUnit) {
         if (this.selectedUnit.q === rounded.q && this.selectedUnit.r === rounded.r) {
-          // Deselect
           this.selectedUnit = null;
-          console.log("Unit deselected.");
-        } else {
-          // Attempt movement
-          const isBlocked = (tile) =>
-            !tile || tile.type === "water" || tile.type === "mountain";
-          const path = findPath(this.selectedUnit, rounded, this.mapData, isBlocked);
-          if (path && path.length > 1) {
-            this.movingPath = path.slice(1);
-            this.startStepMovement();
-          } else {
-            console.log("Path not found or blocked.");
-          }
+          return;
         }
-      } else if (playerHere) {
-        this.selectedUnit = playerHere;
-        console.log(`[SELECTED] Unit at (${playerHere.q}, ${playerHere.r}) by ${this.playerName}`);
+
+        const isBlocked = tile => !tile || tile.type === 'water' || tile.type === 'mountain';
+        const path = findPath(this.selectedUnit, rounded, this.mapData, isBlocked);
+        if (path && path.length > 1) {
+          this.movingPath = path.slice(1);
+          this.startStepMovement();
+        } else {
+          console.log("Path not found or blocked.");
+        }
+      } else {
+        if (playerHere) {
+          this.selectedUnit = playerHere;
+          console.log(`[SELECTED] Unit at (${playerHere.q}, ${playerHere.r})`);
+        }
       }
     });
 
-    if (this.refreshButton) {
-      this.refreshButton.removeAllListeners('pointerdown');
-      this.refreshButton.on('pointerdown', () => refreshUnits(this));
-    }
+    // Live path preview on hover
+    this.input.on("pointermove", pointer => {
+      if (!this.selectedUnit) return;
+
+      const worldX = pointer.worldX;
+      const worldY = pointer.worldY;
+      const approx = this.pixelToHex(worldX, worldY, this.hexSize);
+      const rounded = this.roundHex(approx.q, approx.r);
+
+      const isBlocked = tile => !tile || tile.type === 'water' || tile.type === 'mountain';
+      const path = findPath(this.selectedUnit, rounded, this.mapData, isBlocked);
+
+      this.pathGraphics.clear();
+      if (path && path.length > 1) {
+        this.pathGraphics.lineStyle(2, 0xffffff, 1);
+        for (let i = 0; i < path.length - 1; i++) {
+          const p1 = this.hexToPixel(path[i].q, path[i].r, this.hexSize);
+          const p2 = this.hexToPixel(path[i + 1].q, path[i + 1].r, this.hexSize);
+          this.pathGraphics.strokeLineShape(new Phaser.Geom.Line(p1.x, p1.y, p2.x, p2.y));
+        }
+      }
+    });
   }
 
-  update() {}
+  debugHex(q, r) {
+    const center = this.hexToPixel(q, r, this.hexSize);
+    this.debugGraphics.clear();
+    this.debugGraphics.lineStyle(2, 0xff00ff, 1);
+    this.drawHex(this.debugGraphics, center.x, center.y, this.hexSize);
+
+    const tile = this.mapData.find(h => h.q === q && h.r === r);
+    const playerHere = this.players.find(p => p.q === q && p.r === r);
+    const enemiesHere = this.enemies.filter(e => e.q === q && e.r === r);
+
+    const objects = [];
+    if (tile?.hasForest) objects.push("Forest");
+    if (tile?.hasRuin) objects.push("Ruin");
+    if (tile?.hasCrashSite) objects.push("Crash Site");
+    if (tile?.hasVehicle) objects.push("Vehicle");
+    if (tile?.hasRoad) objects.push("Road");
+
+    console.log(`[HEX INSPECT] (${q}, ${r})`);
+    console.log(`• Terrain: ${tile?.type}`);
+    console.log(`• Player Unit: ${playerHere ? "Yes" : "No"}`);
+    console.log(`• Enemy Units: ${enemiesHere.length}`);
+    console.log(`• Objects: ${objects.join(", ") || "None"}`);
+  }
 
   startStepMovement() {
     if (!this.selectedUnit || !this.movingPath || this.movingPath.length === 0) return;
