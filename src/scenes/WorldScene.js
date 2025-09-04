@@ -139,7 +139,7 @@ export default class WorldScene extends Phaser.Scene {
       if (this.selectedUnit) {
         const start = { q: this.selectedUnit.q, r: this.selectedUnit.r };
         const end = { q: rounded.q, r: rounded.r };
-        const path = findPath(start, end, this.mapData);
+        const path = findPath(unit, hex, this.mapData, (tile) => {return tile.type === 'water' || tile.type === 'mountain';});
 
         if (path.length > 0) {
           this.selectedUnit.setPosition(center.x, center.y);
