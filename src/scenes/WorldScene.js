@@ -84,7 +84,6 @@ export default class WorldScene extends Phaser.Scene {
     this.tileMap = {};
     this.selectedUnit = null;
     this.selectedHex = null;
-    this.movingPath = [];
     this.pathGraphics = this.add.graphics({ x: 0, y: 0 }).setDepth(50);
     this.debugGraphics = this.add.graphics({ x: 0, y: 0 }).setDepth(100);
 
@@ -112,11 +111,32 @@ export default class WorldScene extends Phaser.Scene {
       this.debugGraphics.lineStyle(2, 0xff00ff, 1);
       this.drawHex(this.debugGraphics, center.x, center.y, this.hexSize);
 
+      const tile = this.mapData.find(h => h.q === rounded.q && h.r === rounded.r);
       this.selectedHex = rounded;
 
-      const tile = this.mapData.find(h => h.q === rounded.q && h.r === rounded.r);
-      const terrainType = tile?.type || "unknown";
+      // === IMMEDIATE MOVEMENT LOGIC ===
+      if (this.selectedUnit && this.selectedHex) {
+        const isBlocked = (q, r) => {
+          const hex = this.mapData.find(h => h.q === q && h.r === r);
+          return hex?.impassable || false;
+        };
 
+        const path = findPath(this.mapData, this.selectedUnit, this.selectedHex, isBlocked);
+
+        if (path && path.length > 0) {
+          const last = path[path.length - 1];
+          const { x, y } = this.hexToPixel(last.q, last.r, this.hexSize);
+          this.selectedUnit.setPosition(x, y);
+          this.selectedUnit.q = last.q;
+          this.selectedUnit.r = last.r;
+          this.syncPlayerMove(this.selectedUnit);
+        }
+
+        this.pathGraphics.clear();
+      }
+
+      // Debug output
+      const terrainType = tile?.type || "unknown";
       const playerHere = this.players.find(p => p.q === rounded.q && p.r === rounded.r);
       const enemiesHere = this.enemies.filter(e => e.q === rounded.q && e.r === rounded.r);
 
@@ -135,21 +155,6 @@ export default class WorldScene extends Phaser.Scene {
         enemiesHere.forEach((e, i) => console.log(`   - Enemy #${i + 1} at (${e.q}, ${e.r})`));
       }
       console.log(`• Objects: ${objects.length > 0 ? objects.join(", ") : "None"}`);
-
-      if (this.selectedUnit) {
-        const start = { q: this.selectedUnit.q, r: this.selectedUnit.r };
-        const end = { q: rounded.q, r: rounded.r };
-        const path = findPath(unit, hex, this.mapData, (tile) => {return tile.type === 'water' || tile.type === 'mountain';});
-
-        if (path.length > 0) {
-          this.selectedUnit.setPosition(center.x, center.y);
-          this.selectedUnit.q = rounded.q;
-          this.selectedUnit.r = rounded.r;
-          this.syncPlayerMove(this.selectedUnit);
-          this.checkCombat();
-          this.pathGraphics.clear();
-        }
-      }
     });
 
     if (this.refreshButton) {
@@ -159,10 +164,6 @@ export default class WorldScene extends Phaser.Scene {
   }
 
   update() {}
-
-  checkCombat() {
-    console.log('[Combat] not implemented yet');
-  }
 
   endTurn() {
     if (this.playerName !== this.lobbyState.currentTurn) return;
