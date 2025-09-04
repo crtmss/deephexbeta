@@ -3,7 +3,7 @@ import HexMap from '../engine/HexMap.js';
 import { findPath } from '../engine/AStar.js';
 import { setupCameraControls, setupTurnUI } from './WorldSceneUI.js';
 import { spawnUnitsAndEnemies, subscribeToGameUpdates } from './WorldSceneUnits.js';
-import { refreshUnits } from './WorldSceneActions.js';
+import { handleHexClick, refreshUnits, setupPointerActions } from './WorldSceneActions.js';
 import {
   drawHexMap,
   hexToPixel, pixelToHex, roundHex, drawHex, getColorForTerrain
@@ -89,13 +89,14 @@ export default class WorldScene extends Phaser.Scene {
     this.debugGraphics = this.add.graphics({ x: 0, y: 0 }).setDepth(100);
 
     this.hexMap = new HexMap(this.mapWidth, this.mapHeight, this.seed);
-    this.mapData = this.hexMap.getMap(); // flat array of tiles
+    this.mapData = this.hexMap.getMap();
     drawHexMap.call(this);
 
     await spawnUnitsAndEnemies.call(this);
     subscribeToGameUpdates.call(this);
     setupCameraControls(this);
     setupTurnUI(this);
+    setupPointerActions(this);
 
     this.input.on("pointerdown", (pointer) => {
       if (pointer.rightButtonDown()) return;
@@ -113,32 +114,19 @@ export default class WorldScene extends Phaser.Scene {
 
       const clickedTile = this.mapData.find(h => h.q === rounded.q && h.r === rounded.r);
       const playerHere = this.players.find(p => p.q === rounded.q && p.r === rounded.r);
-      const enemiesHere = this.enemies.filter(e => e.q === rounded.q && e.r === rounded.r);
 
-      const objects = [];
-      if (clickedTile?.hasForest) objects.push("Forest");
-      if (clickedTile?.hasRuin) objects.push("Ruin");
-      if (clickedTile?.hasCrashSite) objects.push("Crash Site");
-      if (clickedTile?.hasVehicle) objects.push("Vehicle");
-      if (clickedTile?.hasRoad) objects.push("Road");
-
-      console.log(`[HEX INSPECT] (${rounded.q}, ${rounded.r})`);
-      console.log(`• Terrain: ${clickedTile?.type || 'unknown'}`);
-      console.log(`• Player Unit: ${playerHere ? 'Yes' : 'No'}`);
-      console.log(`• Enemy Units: ${enemiesHere.length}`);
-      console.log(`• Objects: ${objects.join(', ') || 'None'}`);
-
-      // === Selection & Movement Logic ===
+      // === Selection Logic ===
       if (this.selectedUnit) {
         if (this.selectedUnit.q === rounded.q && this.selectedUnit.r === rounded.r) {
-          this.selectedUnit = null;
           console.log("Unit deselected.");
+          this.selectedUnit = null;
           return;
         }
 
+        // Move unit if target is different
         const isBlocked = (q, r) => {
           const tile = this.mapData.find(h => h.q === q && h.r === r);
-          return !tile || tile.type === 'water' || tile.type === 'mountain';
+          return !tile || tile.type === "water" || tile.type === "mountain";
         };
 
         const path = findPath(this.selectedUnit, rounded, this.mapData, isBlocked);
@@ -148,9 +136,11 @@ export default class WorldScene extends Phaser.Scene {
         } else {
           console.log("Path not found or blocked.");
         }
-      } else if (playerHere) {
-        this.selectedUnit = playerHere;
-        console.log("Unit selected.");
+      } else {
+        if (playerHere) {
+          this.selectedUnit = playerHere;
+          console.log(`[SELECTED] Unit at (${playerHere.q}, ${playerHere.r}) by ${this.playerName}`);
+        }
       }
     });
 
@@ -163,9 +153,7 @@ export default class WorldScene extends Phaser.Scene {
   update() {}
 
   startStepMovement() {
-    if (!this.selectedUnit || !this.movingPath || this.movingPath.length === 0) {
-      return;
-    }
+    if (!this.selectedUnit || !this.movingPath || this.movingPath.length === 0) return;
 
     const unit = this.selectedUnit;
     const step = this.movingPath.shift();
@@ -173,13 +161,11 @@ export default class WorldScene extends Phaser.Scene {
 
     this.tweens.add({
       targets: unit,
-      x: x,
-      y: y,
+      x, y,
       duration: 200,
       onComplete: () => {
         unit.q = step.q;
         unit.r = step.r;
-
         if (this.movingPath.length > 0) {
           this.startStepMovement();
         } else {
@@ -192,7 +178,7 @@ export default class WorldScene extends Phaser.Scene {
   }
 
   checkCombat() {
-    console.log('[Combat] not implemented yet');
+    console.log("[Combat] not implemented yet.");
   }
 
   endTurn() {
@@ -203,7 +189,7 @@ export default class WorldScene extends Phaser.Scene {
       this.selectedHexGraphic = null;
     }
     if (this.turnText) {
-      this.turnText.setText('Player Turn: ...');
+      this.turnText.setText("Player Turn: ...");
     }
     if (this.isHost) this.moveEnemies();
   }
@@ -214,6 +200,7 @@ export default class WorldScene extends Phaser.Scene {
       { dq: 0, dr: +1 }, { dq: 0, dr: -1 },
       { dq: +1, dr: -1 }, { dq: -1, dr: +1 }
     ];
+
     this.enemies.forEach(enemy => {
       Phaser.Utils.Array.Shuffle(dirs);
       for (const d of dirs) {
@@ -228,6 +215,7 @@ export default class WorldScene extends Phaser.Scene {
         }
       }
     });
+
     this.syncEnemies();
   }
 }
