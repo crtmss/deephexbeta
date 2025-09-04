@@ -21,7 +21,6 @@ export default class WorldScene extends Phaser.Scene {
     this.mapWidth = 25;
     this.mapHeight = 25;
     this.input.setDefaultCursor('grab');
-    this.isDragging = false;
 
     const pad = this.hexSize * 2;
     const mapPixelWidth = this.hexSize * Math.sqrt(3) * (this.mapWidth + 0.5) + pad * 2;
@@ -29,7 +28,6 @@ export default class WorldScene extends Phaser.Scene {
     this.cameras.main.setBounds(0, 0, mapPixelWidth, mapPixelHeight);
     this.cameras.main.setZoom(1.0);
 
-    // Setup lobby
     const { roomCode, playerName, isHost } = this.scene.settings.data;
     const { getLobbyState } = await import('../net/LobbyManager.js');
     const { data: lobbyData, error } = await getLobbyState(roomCode);
@@ -84,6 +82,7 @@ export default class WorldScene extends Phaser.Scene {
     this.tileMap = {};
     this.selectedUnit = null;
     this.selectedHex = null;
+    this.lastClickedHex = null;
     this.movingPath = [];
     this.pathGraphics = this.add.graphics({ x: 0, y: 0 }).setDepth(50);
     this.debugGraphics = this.add.graphics({ x: 0, y: 0 }).setDepth(100);
@@ -110,38 +109,56 @@ export default class WorldScene extends Phaser.Scene {
       this.debugGraphics.clear();
       this.debugGraphics.lineStyle(2, 0xff00ff, 1);
       this.drawHex(this.debugGraphics, center.x, center.y, this.hexSize);
+
       this.selectedHex = rounded;
 
-      const clickedTile = this.mapData.find(h => h.q === rounded.q && h.r === rounded.r);
+      // DEBUG INFO — always show
+      const tile = this.mapData.find(h => h.q === rounded.q && h.r === rounded.r);
+      const terrainType = tile?.type || "unknown";
       const playerHere = this.players.find(p => p.q === rounded.q && p.r === rounded.r);
+      const enemiesHere = this.enemies.filter(e => e.q === rounded.q && e.r === rounded.r);
+      const objects = [];
+      if (tile?.hasForest) objects.push("Forest");
+      if (tile?.hasRuin) objects.push("Ruin");
+      if (tile?.hasCrashSite) objects.push("Crash Site");
+      if (tile?.hasVehicle) objects.push("Vehicle");
+      if (tile?.hasRoad) objects.push("Road");
 
-      // === Selection Logic ===
+      console.log(`[HEX INSPECT] (${rounded.q}, ${rounded.r})`);
+      console.log(`• Terrain: ${terrainType}`);
+      console.log(`• Player Unit: ${playerHere ? "Yes" : "No"}`);
+      console.log(`• Enemy Units: ${enemiesHere.length}`);
+      console.log(`• Objects: ${objects.length > 0 ? objects.join(", ") : "None"}`);
+
+      // === Selection / movement logic
       if (this.selectedUnit) {
-        if (this.selectedUnit.q === rounded.q && this.selectedUnit.r === rounded.r) {
+        if (
+          this.selectedUnit.q === rounded.q &&
+          this.selectedUnit.r === rounded.r &&
+          this.lastClickedHex?.q === rounded.q &&
+          this.lastClickedHex?.r === rounded.r
+        ) {
           console.log("Unit deselected.");
           this.selectedUnit = null;
-          return;
-        }
-
-        // Move unit if target is different
-        const isBlocked = (q, r) => {
-          const tile = this.mapData.find(h => h.q === q && h.r === r);
-          return !tile || tile.type === "water" || tile.type === "mountain";
-        };
-
-        const path = findPath(this.selectedUnit, rounded, this.mapData, isBlocked);
-        if (path && path.length > 1) {
-          this.movingPath = path.slice(1);
-          this.startStepMovement();
         } else {
-          console.log("Path not found or blocked.");
+          const isBlocked = (q, r) => {
+            const tile = this.mapData.find(h => h.q === q && h.r === r);
+            return !tile || tile.type === "water" || tile.type === "mountain";
+          };
+          const path = findPath(this.selectedUnit, rounded, this.mapData, isBlocked);
+          if (path && path.length > 1) {
+            this.movingPath = path.slice(1);
+            this.startStepMovement();
+          } else {
+            console.log("Path not found or blocked.");
+          }
         }
-      } else {
-        if (playerHere) {
-          this.selectedUnit = playerHere;
-          console.log(`[SELECTED] Unit at (${playerHere.q}, ${playerHere.r}) by ${this.playerName}`);
-        }
+      } else if (playerHere) {
+        this.selectedUnit = playerHere;
+        console.log(`[SELECTED] Unit at (${playerHere.q}, ${playerHere.r}) by ${this.playerName}`);
       }
+
+      this.lastClickedHex = rounded;
     });
 
     if (this.refreshButton) {
