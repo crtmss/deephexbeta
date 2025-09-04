@@ -29,6 +29,7 @@ export default class WorldScene extends Phaser.Scene {
     this.cameras.main.setBounds(0, 0, mapPixelWidth, mapPixelHeight);
     this.cameras.main.setZoom(1.0);
 
+    // Lobby and seed
     const { roomCode, playerName, isHost } = this.scene.settings.data;
     const { getLobbyState } = await import('../net/LobbyManager.js');
     const { data: lobbyData, error } = await getLobbyState(roomCode);
@@ -61,6 +62,14 @@ export default class WorldScene extends Phaser.Scene {
         .eq('room_code', this.roomCode);
     };
 
+    this.syncEnemies = async () => {
+      const enemyData = this.enemies.map(e => ({ q: e.q, r: e.r }));
+      await this.supabase
+        .from('lobbies')
+        .update({ state: { ...this.lobbyState, enemies: enemyData } })
+        .eq('room_code', this.roomCode);
+    };
+
     this.getNextPlayer = (list, current) => {
       const idx = list.indexOf(current);
       return list[(idx + 1) % list.length];
@@ -78,6 +87,7 @@ export default class WorldScene extends Phaser.Scene {
     this.movingPath = [];
     this.pathGraphics = this.add.graphics({ x: 0, y: 0 }).setDepth(50);
     this.debugGraphics = this.add.graphics({ x: 0, y: 0 }).setDepth(100);
+    this.selectionMarker = null;
 
     this.hexMap = new HexMap(this.mapWidth, this.mapHeight, this.seed);
     this.mapData = this.hexMap.getMap();
@@ -89,107 +99,136 @@ export default class WorldScene extends Phaser.Scene {
     setupTurnUI(this);
     setupPointerActions(this);
 
-    this.input.on("pointerdown", pointer => {
+    // Selection & movement
+    this.input.on("pointerdown", (pointer, gameObjects) => {
       if (pointer.rightButtonDown()) return;
 
       const worldX = pointer.worldX;
       const worldY = pointer.worldY;
-      const approx = this.pixelToHex(worldX, worldY, this.hexSize);
-      const rounded = this.roundHex(approx.q, approx.r);
-      const tile = this.mapData.find(h => h.q === rounded.q && h.r === rounded.r);
-      const playerHere = this.players.find(p => p.q === rounded.q && p.r === rounded.r);
+      const { q, r } = this.roundHex(...Object.values(this.pixelToHex(worldX, worldY, this.hexSize)));
+      const tile = this.mapData.find(t => t.q === q && t.r === r);
+      const playerHere = this.players.find(p => p.q === q && p.r === r);
 
-      this.selectedHex = rounded;
-      this.debugHex(rounded.q, rounded.r);
+      this.debugGraphics.clear();
+      const center = this.hexToPixel(q, r, this.hexSize);
+      this.debugGraphics.lineStyle(2, 0xff00ff, 1);
+      this.drawHex(this.debugGraphics, center.x, center.y, this.hexSize);
 
-      if (this.selectedUnit) {
-        if (this.selectedUnit.q === rounded.q && this.selectedUnit.r === rounded.r) {
-          this.selectedUnit = null;
+      // Print inspection info
+      console.log(`[HEX INSPECT] (${q}, ${r})`);
+      console.log(`• Terrain: ${tile?.type || "unknown"}`);
+      console.log(`• Player Unit: ${playerHere ? "Yes" : "No"}`);
+      console.log(`• Enemy Units: ${this.enemies.filter(e => e.q === q && e.r === r).length}`);
+      console.log(`• Objects: ${[
+        tile?.hasForest && "Forest",
+        tile?.hasRuin && "Ruin",
+        tile?.hasCrashSite && "Crash Site",
+        tile?.hasVehicle && "Vehicle",
+        tile?.hasRoad && "Road"
+      ].filter(Boolean).join(", ") || "None"}`);
+
+      // === SELECTION ===
+      const clickedUnit = gameObjects.find(obj => obj.getData("isPlayerUnit"));
+      if (clickedUnit) {
+        // clicked the red unit circle
+        if (this.selectedUnit === clickedUnit) {
+          console.log("Unit already selected.");
           return;
         }
 
-        const isBlocked = tile => !tile || tile.type === 'water' || tile.type === 'mountain';
-        const path = findPath(this.selectedUnit, rounded, this.mapData, isBlocked);
+        this.selectedUnit = clickedUnit;
+        console.log(`[SELECTED] Unit at (${clickedUnit.q}, ${clickedUnit.r})`);
+
+        if (this.selectionMarker) this.selectionMarker.destroy();
+        const marker = this.add.circle(clickedUnit.x, clickedUnit.y - 16, 4, 0xffffff)
+          .setDepth(3);
+        this.selectionMarker = marker;
+        return;
+      }
+
+      // === MOVE if unit selected ===
+      if (this.selectedUnit) {
+        const isBlocked = (tile) =>
+          !tile || tile.type === "water" || tile.type === "mountain";
+
+        const path = findPath(
+          { q: this.selectedUnit.q, r: this.selectedUnit.r },
+          { q, r },
+          this.mapData,
+          isBlocked
+        );
+
         if (path && path.length > 1) {
           this.movingPath = path.slice(1);
           this.startStepMovement();
         } else {
           console.log("Path not found or blocked.");
         }
-      } else {
-        if (playerHere) {
-          this.selectedUnit = playerHere;
-          console.log(`[SELECTED] Unit at (${playerHere.q}, ${playerHere.r})`);
+        this.selectedUnit = null;
+        if (this.selectionMarker) {
+          this.selectionMarker.destroy();
+          this.selectionMarker = null;
         }
+        this.pathGraphics.clear();
       }
     });
 
-    // Live path preview on hover
-    this.input.on("pointermove", pointer => {
+    // === PATH PREVIEW ON HOVER ===
+    this.input.on("pointermove", (pointer) => {
       if (!this.selectedUnit) return;
 
-      const worldX = pointer.worldX;
-      const worldY = pointer.worldY;
-      const approx = this.pixelToHex(worldX, worldY, this.hexSize);
-      const rounded = this.roundHex(approx.q, approx.r);
+      const { q, r } = this.roundHex(...Object.values(this.pixelToHex(pointer.worldX, pointer.worldY, this.hexSize)));
+      const tile = this.mapData.find(h => h.q === q && h.r === r);
+      const isBlocked = (tile) => !tile || tile.type === "water" || tile.type === "mountain";
 
-      const isBlocked = tile => !tile || tile.type === 'water' || tile.type === 'mountain';
-      const path = findPath(this.selectedUnit, rounded, this.mapData, isBlocked);
+      const path = findPath(
+        { q: this.selectedUnit.q, r: this.selectedUnit.r },
+        { q, r },
+        this.mapData,
+        isBlocked
+      );
 
       this.pathGraphics.clear();
       if (path && path.length > 1) {
-        this.pathGraphics.lineStyle(2, 0xffffff, 1);
+        this.pathGraphics.lineStyle(2, 0xffffff, 0.5);
         for (let i = 0; i < path.length - 1; i++) {
-          const p1 = this.hexToPixel(path[i].q, path[i].r, this.hexSize);
-          const p2 = this.hexToPixel(path[i + 1].q, path[i + 1].r, this.hexSize);
-          this.pathGraphics.strokeLineShape(new Phaser.Geom.Line(p1.x, p1.y, p2.x, p2.y));
+          const a = this.hexToPixel(path[i].q, path[i].r, this.hexSize);
+          const b = this.hexToPixel(path[i + 1].q, path[i + 1].r, this.hexSize);
+          this.pathGraphics.strokeLineShape(new Phaser.Geom.Line(a.x, a.y, b.x, b.y));
         }
       }
     });
+
+    if (this.refreshButton) {
+      this.refreshButton.removeAllListeners('pointerdown');
+      this.refreshButton.on('pointerdown', () => refreshUnits(this));
+    }
   }
 
-  debugHex(q, r) {
-    const center = this.hexToPixel(q, r, this.hexSize);
-    this.debugGraphics.clear();
-    this.debugGraphics.lineStyle(2, 0xff00ff, 1);
-    this.drawHex(this.debugGraphics, center.x, center.y, this.hexSize);
-
-    const tile = this.mapData.find(h => h.q === q && h.r === r);
-    const playerHere = this.players.find(p => p.q === q && p.r === r);
-    const enemiesHere = this.enemies.filter(e => e.q === q && e.r === r);
-
-    const objects = [];
-    if (tile?.hasForest) objects.push("Forest");
-    if (tile?.hasRuin) objects.push("Ruin");
-    if (tile?.hasCrashSite) objects.push("Crash Site");
-    if (tile?.hasVehicle) objects.push("Vehicle");
-    if (tile?.hasRoad) objects.push("Road");
-
-    console.log(`[HEX INSPECT] (${q}, ${r})`);
-    console.log(`• Terrain: ${tile?.type}`);
-    console.log(`• Player Unit: ${playerHere ? "Yes" : "No"}`);
-    console.log(`• Enemy Units: ${enemiesHere.length}`);
-    console.log(`• Objects: ${objects.join(", ") || "None"}`);
-  }
+  update() {}
 
   startStepMovement() {
     if (!this.selectedUnit || !this.movingPath || this.movingPath.length === 0) return;
 
-    const unit = this.selectedUnit;
     const step = this.movingPath.shift();
     const { x, y } = this.hexToPixel(step.q, step.r, this.hexSize);
 
     this.tweens.add({
-      targets: unit,
+      targets: this.selectedUnit,
       x, y,
       duration: 200,
       onComplete: () => {
-        unit.q = step.q;
-        unit.r = step.r;
+        this.selectedUnit.q = step.q;
+        this.selectedUnit.r = step.r;
+
+        if (this.selectionMarker) {
+          this.selectionMarker.setPosition(x, y - 16);
+        }
+
         if (this.movingPath.length > 0) {
           this.startStepMovement();
         } else {
-          this.syncPlayerMove(unit);
+          this.syncPlayerMove(this.selectedUnit);
           this.pathGraphics.clear();
           this.checkCombat();
         }
@@ -204,13 +243,11 @@ export default class WorldScene extends Phaser.Scene {
   endTurn() {
     if (this.playerName !== this.lobbyState.currentTurn) return;
     this.selectedUnit = null;
-    if (this.selectedHexGraphic) {
-      this.selectedHexGraphic.destroy();
-      this.selectedHexGraphic = null;
+    if (this.selectionMarker) {
+      this.selectionMarker.destroy();
+      this.selectionMarker = null;
     }
-    if (this.turnText) {
-      this.turnText.setText("Player Turn: ...");
-    }
+    if (this.turnText) this.turnText.setText("Player Turn: ...");
     if (this.isHost) this.moveEnemies();
   }
 
