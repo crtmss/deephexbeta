@@ -88,7 +88,6 @@ export default class WorldScene extends Phaser.Scene {
     setupCameraControls(this);
     setupTurnUI(this);
 
-    // 🔄 Refresh button override (fix teleport bug)
     if (this.refreshButton) {
       this.refreshButton.removeAllListeners('pointerdown');
       this.refreshButton.on('pointerdown', async () => {
@@ -120,7 +119,6 @@ export default class WorldScene extends Phaser.Scene {
       });
     }
 
-    // === Input: click to move or select ===
     this.input.on("pointerdown", pointer => {
       if (pointer.rightButtonDown()) return;
 
@@ -158,7 +156,6 @@ export default class WorldScene extends Phaser.Scene {
       }
     });
 
-    // === Input: hover to preview path ===
     this.input.on("pointermove", pointer => {
       if (!this.selectedUnit || this.isUnitMoving) return;
 
@@ -181,8 +178,8 @@ export default class WorldScene extends Phaser.Scene {
 
           const { x, y } = this.hexToPixel(step.q, step.r, this.hexSize);
 
-          this.pathGraphics.lineStyle(1, 0x0000ff, 0.5);      // Blue outline
-          this.pathGraphics.fillStyle(0x3399ff, 0.35);        // Light blue fill
+          this.pathGraphics.lineStyle(1, 0x0000ff, 0.5);
+          this.pathGraphics.fillStyle(0x66ccff, 0.4);
           this.pathGraphics.beginPath();
           this.drawHex(this.pathGraphics, x, y, this.hexSize);
           this.pathGraphics.closePath();
@@ -192,7 +189,9 @@ export default class WorldScene extends Phaser.Scene {
           const label = this.add.text(x, y, `${costSum}`, {
             fontSize: '10px',
             color: '#000000',
-            backgroundColor: 'rgba(255,255,255,0.5)'
+            fontStyle: 'bold',
+            stroke: '#ffffff',
+            strokeThickness: 2
           }).setOrigin(0.5).setDepth(51);
           this.pathLabels.push(label);
         }
