@@ -120,7 +120,6 @@ export default class WorldScene extends Phaser.Scene {
       });
     }
 
-    // === Unit selection & movement ===
     this.input.on("pointerdown", pointer => {
       if (pointer.rightButtonDown()) return;
 
@@ -180,7 +179,7 @@ export default class WorldScene extends Phaser.Scene {
 
           const { x, y } = this.hexToPixel(step.q, step.r, this.hexSize);
           this.pathGraphics.fillStyle(0xffffff, 0.3);
-          this.pathGraphics.fillCircle(x, y, this.hexSize * 0.6);
+          this.drawHex(this.pathGraphics, x, y, this.hexSize);
 
           const label = this.add.text(x, y, `${costSum}`, {
             fontSize: '10px', color: '#000000'
