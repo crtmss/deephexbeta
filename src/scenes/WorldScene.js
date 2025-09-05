@@ -3,10 +3,8 @@ import HexMap from '../engine/HexMap.js';
 import { findPath } from '../engine/AStar.js';
 import { setupCameraControls, setupTurnUI } from './WorldSceneUI.js';
 import { spawnUnitsAndEnemies, subscribeToGameUpdates } from './WorldSceneUnits.js';
-import { handleHexClick, refreshUnits, setupPointerActions } from './WorldSceneActions.js';
 import {
-  drawHexMap,
-  hexToPixel, pixelToHex, roundHex, drawHex, getColorForTerrain
+  drawHexMap, hexToPixel, pixelToHex, roundHex, drawHex, getColorForTerrain
 } from './WorldSceneMap.js';
 
 export default class WorldScene extends Phaser.Scene {
@@ -78,6 +76,7 @@ export default class WorldScene extends Phaser.Scene {
     this.selectedHex = null;
     this.movingPath = [];
     this.pathGraphics = this.add.graphics({ x: 0, y: 0 }).setDepth(50);
+    this.pathLabels = [];
     this.debugGraphics = this.add.graphics({ x: 0, y: 0 }).setDepth(100);
 
     this.hexMap = new HexMap(this.mapWidth, this.mapHeight, this.seed);
@@ -114,6 +113,7 @@ export default class WorldScene extends Phaser.Scene {
         if (path && path.length > 1) {
           this.movingPath = path.slice(1);
           this.isUnitMoving = true;
+          this.clearPathPreview();
           this.startStepMovement();
         } else {
           console.log("Path not found or blocked.");
@@ -137,15 +137,32 @@ export default class WorldScene extends Phaser.Scene {
       const isBlocked = tile => !tile || tile.type === 'water' || tile.type === 'mountain';
       const path = findPath(this.selectedUnit, rounded, this.mapData, isBlocked);
 
-      this.pathGraphics.clear();
+      this.clearPathPreview();
       if (path && path.length > 1) {
-        this.pathGraphics.lineStyle(1, 0xffffff, 0.4);
+        let costSum = 0;
         for (let i = 0; i < path.length; i++) {
-          const { x, y } = this.hexToPixel(path[i].q, path[i].r, this.hexSize);
-          this.pathGraphics.strokeCircle(x, y, this.hexSize * 0.3);
+          const step = path[i];
+          const tile = this.mapData.find(h => h.q === step.q && h.r === step.r);
+          const moveCost = tile?.movementCost || 1;
+          costSum += moveCost;
+
+          const { x, y } = this.hexToPixel(step.q, step.r, this.hexSize);
+          this.pathGraphics.fillStyle(0xffffff, 0.3);
+          this.pathGraphics.fillCircle(x, y, this.hexSize * 0.6);
+
+          const label = this.add.text(x, y, `${costSum}`, {
+            fontSize: '10px', color: '#000000'
+          }).setOrigin(0.5).setDepth(51);
+          this.pathLabels.push(label);
         }
       }
     });
+  }
+
+  clearPathPreview() {
+    this.pathGraphics.clear();
+    this.pathLabels.forEach(l => l.destroy());
+    this.pathLabels = [];
   }
 
   debugHex(q, r) {
@@ -187,18 +204,13 @@ export default class WorldScene extends Phaser.Scene {
         unit.q = step.q;
         unit.r = step.r;
 
-        // Clear and redraw remaining path
-        this.pathGraphics.clear();
+        this.clearPathPreview();
+
         if (this.movingPath.length > 0) {
-          this.pathGraphics.lineStyle(1, 0xffffff, 0.4);
-          for (let i = 0; i < this.movingPath.length; i++) {
-            const { x, y } = this.hexToPixel(this.movingPath[i].q, this.movingPath[i].r, this.hexSize);
-            this.pathGraphics.strokeCircle(x, y, this.hexSize * 0.3);
-          }
+          // Optional: visualize remaining path if needed
           this.startStepMovement();
         } else {
           this.syncPlayerMove(unit);
-          this.pathGraphics.clear();
           this.isUnitMoving = false;
           this.checkCombat();
         }
