@@ -124,7 +124,7 @@ export default class WorldScene extends Phaser.Scene {
       }
     });
 
-    // Live path preview on hover
+    // Highlight path hexes instead of drawing lines
     this.input.on("pointermove", pointer => {
       if (!this.selectedUnit) return;
 
@@ -138,11 +138,10 @@ export default class WorldScene extends Phaser.Scene {
 
       this.pathGraphics.clear();
       if (path && path.length > 1) {
-        this.pathGraphics.lineStyle(2, 0xffffff, 1);
-        for (let i = 0; i < path.length - 1; i++) {
-          const p1 = this.hexToPixel(path[i].q, path[i].r, this.hexSize);
-          const p2 = this.hexToPixel(path[i + 1].q, path[i + 1].r, this.hexSize);
-          this.pathGraphics.strokeLineShape(new Phaser.Geom.Line(p1.x, p1.y, p2.x, p2.y));
+        this.pathGraphics.lineStyle(1, 0xffffff, 0.4);
+        for (let i = 0; i < path.length; i++) {
+          const { x, y } = this.hexToPixel(path[i].q, path[i].r, this.hexSize);
+          this.pathGraphics.strokeCircle(x, y, this.hexSize * 0.3);
         }
       }
     });
