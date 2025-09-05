@@ -22,6 +22,7 @@ export default class WorldScene extends Phaser.Scene {
     this.mapHeight = 25;
     this.input.setDefaultCursor('grab');
     this.isDragging = false;
+    this.isUnitMoving = false;
 
     const pad = this.hexSize * 2;
     const mapPixelWidth = this.hexSize * Math.sqrt(3) * (this.mapWidth + 0.5) + pad * 2;
@@ -112,6 +113,7 @@ export default class WorldScene extends Phaser.Scene {
         const path = findPath(this.selectedUnit, rounded, this.mapData, isBlocked);
         if (path && path.length > 1) {
           this.movingPath = path.slice(1);
+          this.isUnitMoving = true;
           this.startStepMovement();
         } else {
           console.log("Path not found or blocked.");
@@ -124,9 +126,8 @@ export default class WorldScene extends Phaser.Scene {
       }
     });
 
-    // Highlight path hexes instead of drawing lines
     this.input.on("pointermove", pointer => {
-      if (!this.selectedUnit) return;
+      if (!this.selectedUnit || this.isUnitMoving) return;
 
       const worldX = pointer.worldX;
       const worldY = pointer.worldY;
@@ -185,11 +186,20 @@ export default class WorldScene extends Phaser.Scene {
       onComplete: () => {
         unit.q = step.q;
         unit.r = step.r;
+
+        // Clear and redraw remaining path
+        this.pathGraphics.clear();
         if (this.movingPath.length > 0) {
+          this.pathGraphics.lineStyle(1, 0xffffff, 0.4);
+          for (let i = 0; i < this.movingPath.length; i++) {
+            const { x, y } = this.hexToPixel(this.movingPath[i].q, this.movingPath[i].r, this.hexSize);
+            this.pathGraphics.strokeCircle(x, y, this.hexSize * 0.3);
+          }
           this.startStepMovement();
         } else {
           this.syncPlayerMove(unit);
           this.pathGraphics.clear();
+          this.isUnitMoving = false;
           this.checkCombat();
         }
       }
