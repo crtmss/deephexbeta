@@ -180,14 +180,19 @@ export default class WorldScene extends Phaser.Scene {
           costSum += moveCost;
 
           const { x, y } = this.hexToPixel(step.q, step.r, this.hexSize);
-          this.pathGraphics.fillStyle(0xffffff, 0.3);
+
+          this.pathGraphics.lineStyle(1, 0x0000ff, 0.5);      // Blue outline
+          this.pathGraphics.fillStyle(0x3399ff, 0.35);        // Light blue fill
           this.pathGraphics.beginPath();
           this.drawHex(this.pathGraphics, x, y, this.hexSize);
           this.pathGraphics.closePath();
           this.pathGraphics.fillPath();
+          this.pathGraphics.strokePath();
 
           const label = this.add.text(x, y, `${costSum}`, {
-            fontSize: '10px', color: '#000000'
+            fontSize: '10px',
+            color: '#000000',
+            backgroundColor: 'rgba(255,255,255,0.5)'
           }).setOrigin(0.5).setDepth(51);
           this.pathLabels.push(label);
         }
@@ -197,7 +202,7 @@ export default class WorldScene extends Phaser.Scene {
 
   clearPathPreview() {
     this.pathGraphics.clear();
-    this.pathLabels.forEach(l => l.destroy());
+    this.pathLabels.forEach(label => label.destroy());
     this.pathLabels = [];
   }
 
