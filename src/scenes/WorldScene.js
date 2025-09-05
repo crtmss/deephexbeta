@@ -120,6 +120,7 @@ export default class WorldScene extends Phaser.Scene {
       });
     }
 
+    // === Input: click to move or select ===
     this.input.on("pointerdown", pointer => {
       if (pointer.rightButtonDown()) return;
 
@@ -157,6 +158,7 @@ export default class WorldScene extends Phaser.Scene {
       }
     });
 
+    // === Input: hover to preview path ===
     this.input.on("pointermove", pointer => {
       if (!this.selectedUnit || this.isUnitMoving) return;
 
