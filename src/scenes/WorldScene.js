@@ -179,7 +179,10 @@ export default class WorldScene extends Phaser.Scene {
 
           const { x, y } = this.hexToPixel(step.q, step.r, this.hexSize);
           this.pathGraphics.fillStyle(0xffffff, 0.3);
+          this.pathGraphics.beginPath();
           this.drawHex(this.pathGraphics, x, y, this.hexSize);
+          this.pathGraphics.closePath();
+          this.pathGraphics.fillPath();
 
           const label = this.add.text(x, y, `${costSum}`, {
             fontSize: '10px', color: '#000000'
