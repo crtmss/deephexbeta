@@ -151,6 +151,7 @@ export default class WorldScene extends Phaser.Scene {
       } else {
         if (playerHere) {
           this.selectedUnit = playerHere;
+          this.selectedUnit.movementPoints = 10;
           console.log(`[SELECTED] Unit at (${playerHere.q}, ${playerHere.r})`);
         }
       }
@@ -170,6 +171,8 @@ export default class WorldScene extends Phaser.Scene {
       this.clearPathPreview();
       if (path && path.length > 1) {
         let costSum = 0;
+        const maxMove = this.selectedUnit.movementPoints || 10;
+
         for (let i = 0; i < path.length; i++) {
           const step = path[i];
           const tile = this.mapData.find(h => h.q === step.q && h.r === step.r);
@@ -177,9 +180,10 @@ export default class WorldScene extends Phaser.Scene {
           costSum += moveCost;
 
           const { x, y } = this.hexToPixel(step.q, step.r, this.hexSize);
+          const fillColor = costSum <= maxMove ? 0x00ff00 : 0xffffff; // Green if reachable, white if not
 
-          this.pathGraphics.lineStyle(1, 0x0000ff, 0.5);
-          this.pathGraphics.fillStyle(0x66ccff, 0.4);
+          this.pathGraphics.lineStyle(1, 0x000000, 0.3);
+          this.pathGraphics.fillStyle(fillColor, 0.4);
           this.pathGraphics.beginPath();
           this.drawHex(this.pathGraphics, x, y, this.hexSize);
           this.pathGraphics.closePath();
