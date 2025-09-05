@@ -180,7 +180,7 @@ export default class WorldScene extends Phaser.Scene {
           costSum += moveCost;
 
           const { x, y } = this.hexToPixel(step.q, step.r, this.hexSize);
-          const fillColor = costSum <= maxMove ? 0x00ff00 : 0xffffff; // Green if reachable, white if not
+          const fillColor = costSum <= maxMove ? 0x00ff00 : 0xffffff;
 
           this.pathGraphics.lineStyle(1, 0x000000, 0.3);
           this.pathGraphics.fillStyle(fillColor, 0.4);
