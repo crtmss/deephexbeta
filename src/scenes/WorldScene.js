@@ -77,7 +77,6 @@ export default class WorldScene extends Phaser.Scene {
     this.movingPath = [];
     this.pathGraphics = this.add.graphics({ x: 0, y: 0 }).setDepth(50);
     this.pathLabels = [];
-    this.unitMarker = null;
     this.debugGraphics = this.add.graphics({ x: 0, y: 0 }).setDepth(100);
 
     this.hexMap = new HexMap(this.mapWidth, this.mapHeight, this.seed);
@@ -89,7 +88,7 @@ export default class WorldScene extends Phaser.Scene {
     setupCameraControls(this);
     setupTurnUI(this);
 
-    // Refresh override
+    // 🔄 Refresh button override (fix teleport bug)
     if (this.refreshButton) {
       this.refreshButton.removeAllListeners('pointerdown');
       this.refreshButton.on('pointerdown', async () => {
@@ -98,7 +97,11 @@ export default class WorldScene extends Phaser.Scene {
           .select('state')
           .eq('room_code', this.roomCode)
           .single();
-        if (error || !lobbyData?.state?.units) return;
+
+        if (error || !lobbyData?.state?.units) {
+          console.error("Failed to refresh units:", error);
+          return;
+        }
 
         const updatedUnits = lobbyData.state.units;
         const unitData = updatedUnits[this.playerName];
@@ -106,22 +109,18 @@ export default class WorldScene extends Phaser.Scene {
 
         const { q, r } = unitData;
         const { x, y } = this.hexToPixel(q, r, this.hexSize);
+
         const unit = this.players.find(p => p.name === this.playerName);
         if (unit) {
           unit.setPosition(x, y);
           unit.q = q;
           unit.r = r;
+          console.log(`[REFRESH] Unit moved to synced position: (${q}, ${r})`);
         }
       });
     }
 
-    this.input.on('gameobjectdown', (pointer, gameObject) => {
-      if (pointer.rightButtonDown()) return;
-      if (gameObject.type === 'unit' && gameObject.owner === this.playerName) {
-        this.selectUnit(gameObject);
-      }
-    });
-
+    // === Input: click to move or select ===
     this.input.on("pointerdown", pointer => {
       if (pointer.rightButtonDown()) return;
 
@@ -130,13 +129,14 @@ export default class WorldScene extends Phaser.Scene {
       const approx = this.pixelToHex(worldX, worldY, this.hexSize);
       const rounded = this.roundHex(approx.q, approx.r);
       const tile = this.mapData.find(h => h.q === rounded.q && h.r === rounded.r);
+      const playerHere = this.players.find(p => p.q === rounded.q && p.r === rounded.r);
 
       this.selectedHex = rounded;
       this.debugHex(rounded.q, rounded.r);
 
       if (this.selectedUnit) {
         if (this.selectedUnit.q === rounded.q && this.selectedUnit.r === rounded.r) {
-          this.clearSelection();
+          this.selectedUnit = null;
           return;
         }
 
@@ -150,9 +150,15 @@ export default class WorldScene extends Phaser.Scene {
         } else {
           console.log("Path not found or blocked.");
         }
+      } else {
+        if (playerHere) {
+          this.selectedUnit = playerHere;
+          console.log(`[SELECTED] Unit at (${playerHere.q}, ${playerHere.r})`);
+        }
       }
     });
 
+    // === Input: hover to preview path ===
     this.input.on("pointermove", pointer => {
       if (!this.selectedUnit || this.isUnitMoving) return;
 
@@ -174,8 +180,9 @@ export default class WorldScene extends Phaser.Scene {
           costSum += moveCost;
 
           const { x, y } = this.hexToPixel(step.q, step.r, this.hexSize);
-          this.pathGraphics.lineStyle(1, 0x0000ff, 0.5);
-          this.pathGraphics.fillStyle(0x3399ff, 0.35);
+
+          this.pathGraphics.lineStyle(1, 0x0000ff, 0.5);      // Blue outline
+          this.pathGraphics.fillStyle(0x3399ff, 0.35);        // Light blue fill
           this.pathGraphics.beginPath();
           this.drawHex(this.pathGraphics, x, y, this.hexSize);
           this.pathGraphics.closePath();
@@ -191,24 +198,6 @@ export default class WorldScene extends Phaser.Scene {
         }
       }
     });
-  }
-
-  selectUnit(unit) {
-    this.clearSelection();
-    this.selectedUnit = unit;
-    console.log(`[SELECTED] Unit at (${unit.q}, ${unit.r})`);
-
-    const { x, y } = unit;
-    this.unitMarker = this.add.circle(x, y - 16, 4, 0xffffff).setDepth(51);
-  }
-
-  clearSelection() {
-    this.selectedUnit = null;
-    if (this.unitMarker) {
-      this.unitMarker.destroy();
-      this.unitMarker = null;
-    }
-    this.clearPathPreview();
   }
 
   clearPathPreview() {
@@ -266,8 +255,6 @@ export default class WorldScene extends Phaser.Scene {
         }
       }
     });
-
-    if (this.unitMarker) this.unitMarker.setPosition(x, y - 16);
   }
 
   checkCombat() {
@@ -276,7 +263,7 @@ export default class WorldScene extends Phaser.Scene {
 
   endTurn() {
     if (this.playerName !== this.lobbyState.currentTurn) return;
-    this.clearSelection();
+    this.selectedUnit = null;
     if (this.selectedHexGraphic) {
       this.selectedHexGraphic.destroy();
       this.selectedHexGraphic = null;
