@@ -87,8 +87,40 @@ export default class WorldScene extends Phaser.Scene {
     subscribeToGameUpdates.call(this);
     setupCameraControls(this);
     setupTurnUI(this);
-    setupPointerActions(this);
 
+    // 🔄 Refresh button override (fix teleport bug)
+    if (this.refreshButton) {
+      this.refreshButton.removeAllListeners('pointerdown');
+      this.refreshButton.on('pointerdown', async () => {
+        const { data: lobbyData, error } = await this.supabase
+          .from('lobbies')
+          .select('state')
+          .eq('room_code', this.roomCode)
+          .single();
+
+        if (error || !lobbyData?.state?.units) {
+          console.error("Failed to refresh units:", error);
+          return;
+        }
+
+        const updatedUnits = lobbyData.state.units;
+        const unitData = updatedUnits[this.playerName];
+        if (!unitData) return;
+
+        const { q, r } = unitData;
+        const { x, y } = this.hexToPixel(q, r, this.hexSize);
+
+        const unit = this.players.find(p => p.name === this.playerName);
+        if (unit) {
+          unit.setPosition(x, y);
+          unit.q = q;
+          unit.r = r;
+          console.log(`[REFRESH] Unit moved to synced position: (${q}, ${r})`);
+        }
+      });
+    }
+
+    // === Unit selection & movement ===
     this.input.on("pointerdown", pointer => {
       if (pointer.rightButtonDown()) return;
 
@@ -203,11 +235,9 @@ export default class WorldScene extends Phaser.Scene {
       onComplete: () => {
         unit.q = step.q;
         unit.r = step.r;
-
         this.clearPathPreview();
 
         if (this.movingPath.length > 0) {
-          // Optional: visualize remaining path if needed
           this.startStepMovement();
         } else {
           this.syncPlayerMove(unit);
