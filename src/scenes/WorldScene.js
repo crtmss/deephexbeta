@@ -1,11 +1,5 @@
 // deephexbeta/src/scenes/WorldScene.js
-import HexMap from '../engine/HexMap.js';
-import { findPath } from '../engine/AStar.js';
-import { setupCameraControls, setupTurnUI } from './WorldSceneUI.js';
-import { spawnUnitsAndEnemies, subscribeToGameUpdates } from './WorldSceneUnits.js';
-import {
-  drawHexMap, hexToPixel, pixelToHex, roundHex, drawHex, getColorForTerrain
-} from './WorldSceneMap.js';
+// ... your existing imports stay the same
 
 export default class WorldScene extends Phaser.Scene {
   constructor() {
@@ -193,12 +187,11 @@ export default class WorldScene extends Phaser.Scene {
           const step = path[i];
           const tile = this.mapData.find(h => h.q === step.q && h.r === step.r);
           const moveCost = tile?.movementCost || 1;
-          costSum += moveCost;
 
           const { x, y } = this.hexToPixel(step.q, step.r, this.hexSize);
-          const fillColor = costSum <= maxMove ? 0x00ff00 : 0xffffff;
-          const labelColor = costSum <= maxMove ? '#ffffff' : '#000000';
-          const bgColor = costSum <= maxMove ? 0x00aa00 : 0xffffff;
+          const fillColor = i === 0 ? 0xeeeeee : (costSum + moveCost <= maxMove ? 0x00ff00 : 0xffffff);
+          const labelColor = fillColor === 0x00ff00 ? '#ffffff' : '#000000';
+          const bgColor = fillColor === 0x00ff00 ? 0x008800 : 0xffffff;
 
           this.pathGraphics.lineStyle(1, 0x000000, 0.3);
           this.pathGraphics.fillStyle(fillColor, 0.4);
@@ -208,18 +201,22 @@ export default class WorldScene extends Phaser.Scene {
           this.pathGraphics.fillPath();
           this.pathGraphics.strokePath();
 
-          const circle = this.add.graphics();
-          circle.fillStyle(bgColor, 1);
-          circle.fillCircle(x, y, 9);
-          circle.setDepth(50);
-          this.pathLabels.push(circle);
+          if (i > 0) {
+            costSum += moveCost;
 
-          const label = this.add.text(x, y, `${costSum}`, {
-            fontSize: '10px',
-            color: labelColor,
-            fontStyle: 'bold'
-          }).setOrigin(0.5).setDepth(51);
-          this.pathLabels.push(label);
+            const circle = this.add.graphics();
+            circle.fillStyle(bgColor, 1);
+            circle.fillCircle(x, y, 9);
+            circle.setDepth(50);
+            this.pathLabels.push(circle);
+
+            const label = this.add.text(x, y, `${costSum}`, {
+              fontSize: '10px',
+              color: labelColor,
+              fontStyle: 'bold'
+            }).setOrigin(0.5).setDepth(51);
+            this.pathLabels.push(label);
+          }
         }
       }
     });
