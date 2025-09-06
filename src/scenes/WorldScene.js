@@ -88,6 +88,37 @@ export default class WorldScene extends Phaser.Scene {
     setupCameraControls(this);
     setupTurnUI(this);
 
+    if (this.refreshButton) {
+      this.refreshButton.removeAllListeners('pointerdown');
+      this.refreshButton.on('pointerdown', async () => {
+        const { data: lobbyData, error } = await this.supabase
+          .from('lobbies')
+          .select('state')
+          .eq('room_code', this.roomCode)
+          .single();
+
+        if (error || !lobbyData?.state?.units) {
+          console.error("Failed to refresh units:", error);
+          return;
+        }
+
+        const updatedUnits = lobbyData.state.units;
+        const unitData = updatedUnits[this.playerName];
+        if (!unitData) return;
+
+        const { q, r } = unitData;
+        const { x, y } = this.hexToPixel(q, r, this.hexSize);
+
+        const unit = this.players.find(p => p.name === this.playerName);
+        if (unit) {
+          unit.setPosition(x, y);
+          unit.q = q;
+          unit.r = r;
+          console.log(`[REFRESH] Unit moved to synced position: (${q}, ${r})`);
+        }
+      });
+    }
+
     this.input.on("pointerdown", pointer => {
       if (pointer.rightButtonDown()) return;
 
@@ -109,13 +140,19 @@ export default class WorldScene extends Phaser.Scene {
 
         const isBlocked = tile => !tile || tile.type === 'water' || tile.type === 'mountain';
         const path = findPath(this.selectedUnit, rounded, this.mapData, isBlocked);
-        if (path && path.length > 1) {
+        let costSum = 0;
+        for (const step of path) {
+          const tile = this.mapData.find(h => h.q === step.q && h.r === step.r);
+          costSum += tile?.movementCost || 1;
+        }
+
+        if (path && path.length > 1 && costSum <= 10) {
           this.movingPath = path.slice(1);
           this.isUnitMoving = true;
           this.clearPathPreview();
           this.startStepMovement();
         } else {
-          console.log("Path not found or blocked.");
+          console.log("Path not found, blocked, or exceeds movement points.");
         }
       } else {
         if (playerHere) {
@@ -150,9 +187,11 @@ export default class WorldScene extends Phaser.Scene {
 
           const { x, y } = this.hexToPixel(step.q, step.r, this.hexSize);
           const fillColor = costSum <= maxMove ? 0x00ff00 : 0xffffff;
+          const textColor = costSum <= maxMove ? '#000000' : '#888888';
+          const backgroundColor = costSum <= maxMove ? 'rgba(0,255,0,0.3)' : 'rgba(255,255,255,0.8)';
 
           this.pathGraphics.lineStyle(1, 0x000000, 0.3);
-          this.pathGraphics.fillStyle(fillColor, 0.35);
+          this.pathGraphics.fillStyle(fillColor, 0.4);
           this.pathGraphics.beginPath();
           this.drawHex(this.pathGraphics, x, y, this.hexSize);
           this.pathGraphics.closePath();
@@ -161,9 +200,10 @@ export default class WorldScene extends Phaser.Scene {
 
           const label = this.add.text(x, y, `${costSum}`, {
             fontSize: '10px',
-            color: costSum <= maxMove ? '#000000' : '#555555',
-            fontStyle: costSum <= maxMove ? 'bold' : 'normal',
-            backgroundColor: 'transparent'
+            color: textColor,
+            backgroundColor: backgroundColor,
+            fontStyle: 'bold',
+            padding: 2
           }).setOrigin(0.5).setDepth(51);
           this.pathLabels.push(label);
         }
