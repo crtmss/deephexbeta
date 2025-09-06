@@ -104,7 +104,6 @@ export default class WorldScene extends Phaser.Scene {
       if (this.selectedUnit) {
         if (this.selectedUnit.q === rounded.q && this.selectedUnit.r === rounded.r) {
           this.selectedUnit = null;
-          this.clearPathPreview();
           return;
         }
 
@@ -153,7 +152,7 @@ export default class WorldScene extends Phaser.Scene {
           const fillColor = costSum <= maxMove ? 0x00ff00 : 0xffffff;
 
           this.pathGraphics.lineStyle(1, 0x000000, 0.3);
-          this.pathGraphics.fillStyle(fillColor, 0.4);
+          this.pathGraphics.fillStyle(fillColor, 0.35);
           this.pathGraphics.beginPath();
           this.drawHex(this.pathGraphics, x, y, this.hexSize);
           this.pathGraphics.closePath();
@@ -162,10 +161,9 @@ export default class WorldScene extends Phaser.Scene {
 
           const label = this.add.text(x, y, `${costSum}`, {
             fontSize: '10px',
-            color: '#000000',
-            fontStyle: 'bold',
-            stroke: '#ffffff',
-            strokeThickness: 2
+            color: costSum <= maxMove ? '#000000' : '#555555',
+            fontStyle: costSum <= maxMove ? 'bold' : 'normal',
+            backgroundColor: 'transparent'
           }).setOrigin(0.5).setDepth(51);
           this.pathLabels.push(label);
         }
