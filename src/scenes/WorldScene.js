@@ -140,19 +140,29 @@ export default class WorldScene extends Phaser.Scene {
 
         const isBlocked = tile => !tile || tile.type === 'water' || tile.type === 'mountain';
         const path = findPath(this.selectedUnit, rounded, this.mapData, isBlocked);
-        let costSum = 0;
-        for (const step of path) {
-          const tile = this.mapData.find(h => h.q === step.q && h.r === step.r);
-          costSum += tile?.movementCost || 1;
-        }
+        if (path && path.length > 1) {
+          const movePoints = this.selectedUnit.movementPoints || 10;
+          let totalCost = 0;
+          const trimmedPath = [path[0]];
+          for (let i = 1; i < path.length; i++) {
+            const tile = this.mapData.find(h => h.q === path[i].q && h.r === path[i].r);
+            const cost = tile?.movementCost || 1;
+            totalCost += cost;
+            if (totalCost <= movePoints) {
+              trimmedPath.push(path[i]);
+            } else {
+              break;
+            }
+          }
 
-        if (path && path.length > 1 && costSum <= 10) {
-          this.movingPath = path.slice(1);
-          this.isUnitMoving = true;
-          this.clearPathPreview();
-          this.startStepMovement();
+          if (trimmedPath.length > 1) {
+            this.movingPath = trimmedPath.slice(1);
+            this.isUnitMoving = true;
+            this.clearPathPreview();
+            this.startStepMovement();
+          }
         } else {
-          console.log("Path not found, blocked, or exceeds movement points.");
+          console.log("Path not found or blocked.");
         }
       } else {
         if (playerHere) {
@@ -187,8 +197,8 @@ export default class WorldScene extends Phaser.Scene {
 
           const { x, y } = this.hexToPixel(step.q, step.r, this.hexSize);
           const fillColor = costSum <= maxMove ? 0x00ff00 : 0xffffff;
-          const textColor = costSum <= maxMove ? '#000000' : '#888888';
-          const backgroundColor = costSum <= maxMove ? 'rgba(0,255,0,0.3)' : 'rgba(255,255,255,0.8)';
+          const labelColor = costSum <= maxMove ? '#ffffff' : '#000000';
+          const bgColor = costSum <= maxMove ? 0x00aa00 : 0xffffff;
 
           this.pathGraphics.lineStyle(1, 0x000000, 0.3);
           this.pathGraphics.fillStyle(fillColor, 0.4);
@@ -198,12 +208,16 @@ export default class WorldScene extends Phaser.Scene {
           this.pathGraphics.fillPath();
           this.pathGraphics.strokePath();
 
+          const circle = this.add.graphics();
+          circle.fillStyle(bgColor, 1);
+          circle.fillCircle(x, y, 9);
+          circle.setDepth(50);
+          this.pathLabels.push(circle);
+
           const label = this.add.text(x, y, `${costSum}`, {
             fontSize: '10px',
-            color: textColor,
-            backgroundColor: backgroundColor,
-            fontStyle: 'bold',
-            padding: 2
+            color: labelColor,
+            fontStyle: 'bold'
           }).setOrigin(0.5).setDepth(51);
           this.pathLabels.push(label);
         }
