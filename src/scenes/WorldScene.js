@@ -1,5 +1,11 @@
 // deephexbeta/src/scenes/WorldScene.js
-// ... your existing imports stay the same
+import HexMap from '../engine/HexMap.js';
+import { findPath } from '../engine/AStar.js';
+import { setupCameraControls, setupTurnUI } from './WorldSceneUI.js';
+import { spawnUnitsAndEnemies, subscribeToGameUpdates } from './WorldSceneUnits.js';
+import {
+  drawHexMap, hexToPixel, pixelToHex, roundHex, drawHex, getColorForTerrain
+} from './WorldSceneMap.js';
 
 export default class WorldScene extends Phaser.Scene {
   constructor() {
@@ -82,6 +88,7 @@ export default class WorldScene extends Phaser.Scene {
     setupCameraControls(this);
     setupTurnUI(this);
 
+    // 🌀 Refresh Button (Unit sync)
     if (this.refreshButton) {
       this.refreshButton.removeAllListeners('pointerdown');
       this.refreshButton.on('pointerdown', async () => {
@@ -96,13 +103,11 @@ export default class WorldScene extends Phaser.Scene {
           return;
         }
 
-        const updatedUnits = lobbyData.state.units;
-        const unitData = updatedUnits[this.playerName];
+        const unitData = lobbyData.state.units[this.playerName];
         if (!unitData) return;
 
         const { q, r } = unitData;
         const { x, y } = this.hexToPixel(q, r, this.hexSize);
-
         const unit = this.players.find(p => p.name === this.playerName);
         if (unit) {
           unit.setPosition(x, y);
@@ -113,11 +118,11 @@ export default class WorldScene extends Phaser.Scene {
       });
     }
 
+    // 🖱️ Pointer Click: Move or Select
     this.input.on("pointerdown", pointer => {
       if (pointer.rightButtonDown()) return;
 
-      const worldX = pointer.worldX;
-      const worldY = pointer.worldY;
+      const { worldX, worldY } = pointer;
       const approx = this.pixelToHex(worldX, worldY, this.hexSize);
       const rounded = this.roundHex(approx.q, approx.r);
       const tile = this.mapData.find(h => h.q === rounded.q && h.r === rounded.r);
@@ -133,17 +138,17 @@ export default class WorldScene extends Phaser.Scene {
         }
 
         const isBlocked = tile => !tile || tile.type === 'water' || tile.type === 'mountain';
-        const path = findPath(this.selectedUnit, rounded, this.mapData, isBlocked);
-        if (path && path.length > 1) {
+        const fullPath = findPath(this.selectedUnit, rounded, this.mapData, isBlocked);
+        if (fullPath && fullPath.length > 1) {
           const movePoints = this.selectedUnit.movementPoints || 10;
           let totalCost = 0;
-          const trimmedPath = [path[0]];
-          for (let i = 1; i < path.length; i++) {
-            const tile = this.mapData.find(h => h.q === path[i].q && h.r === path[i].r);
+          const trimmedPath = [fullPath[0]];
+          for (let i = 1; i < fullPath.length; i++) {
+            const tile = this.mapData.find(h => h.q === fullPath[i].q && h.r === fullPath[i].r);
             const cost = tile?.movementCost || 1;
             totalCost += cost;
             if (totalCost <= movePoints) {
-              trimmedPath.push(path[i]);
+              trimmedPath.push(fullPath[i]);
             } else {
               break;
             }
@@ -167,11 +172,11 @@ export default class WorldScene extends Phaser.Scene {
       }
     });
 
+    // 🧭 Pointer Move: Draw Path Preview
     this.input.on("pointermove", pointer => {
       if (!this.selectedUnit || this.isUnitMoving) return;
 
-      const worldX = pointer.worldX;
-      const worldY = pointer.worldY;
+      const { worldX, worldY } = pointer;
       const approx = this.pixelToHex(worldX, worldY, this.hexSize);
       const rounded = this.roundHex(approx.q, approx.r);
 
@@ -189,10 +194,15 @@ export default class WorldScene extends Phaser.Scene {
           const moveCost = tile?.movementCost || 1;
 
           const { x, y } = this.hexToPixel(step.q, step.r, this.hexSize);
-          const fillColor = i === 0 ? 0xeeeeee : (costSum + moveCost <= maxMove ? 0x00ff00 : 0xffffff);
-          const labelColor = fillColor === 0x00ff00 ? '#ffffff' : '#000000';
-          const bgColor = fillColor === 0x00ff00 ? 0x008800 : 0xffffff;
+          const isStart = i === 0;
 
+          if (!isStart) costSum += moveCost;
+
+          const fillColor = isStart ? 0xeeeeee : (costSum <= maxMove ? 0x00ff00 : 0xffffff);
+          const labelColor = costSum <= maxMove ? '#ffffff' : '#000000';
+          const bgColor = costSum <= maxMove ? 0x008800 : 0xffffff;
+
+          // Draw hex background
           this.pathGraphics.lineStyle(1, 0x000000, 0.3);
           this.pathGraphics.fillStyle(fillColor, 0.4);
           this.pathGraphics.beginPath();
@@ -201,9 +211,8 @@ export default class WorldScene extends Phaser.Scene {
           this.pathGraphics.fillPath();
           this.pathGraphics.strokePath();
 
-          if (i > 0) {
-            costSum += moveCost;
-
+          // Draw cost circle + text
+          if (!isStart) {
             const circle = this.add.graphics();
             circle.fillStyle(bgColor, 1);
             circle.fillCircle(x, y, 9);
