@@ -11,7 +11,6 @@ const terrainTypes = {
   swamp: { movementCost: 3, color: '#4E342E' }
 };
 
-// Hex directions in odd-r layout (pointy top)
 const directions = [
   [+1,  0], [0, -1], [-1, -1],
   [-1,  0], [0, +1], [+1, +1]
@@ -36,7 +35,7 @@ function generateMap(rows = 25, cols = 25, seed = 'defaultseed') {
       type: 'grassland',
       movementCost: terrainTypes.grassland.movementCost,
       impassable: false,
-      cliffs: [false, false, false, false, false, false]  // 6 directions
+      cliffs: [false, false, false, false, false, false]
     }))
   );
 
@@ -51,7 +50,6 @@ function generateMap(rows = 25, cols = 25, seed = 'defaultseed') {
       const dy = r - centerR;
       const dist = Math.sqrt(dx * dx + dy * dy);
       const noise = rand() * 2.2;
-
       if (dist + noise > maxRadius) {
         Object.assign(tile, { type: 'water', ...terrainTypes.water });
       }
@@ -75,12 +73,10 @@ function generateMap(rows = 25, cols = 25, seed = 'defaultseed') {
         const q = Math.floor(rand() * cols);
         const r = Math.floor(rand() * rows);
         const tile = map[r][q];
-
         if (tile.type !== 'grassland') {
           attempts++;
           continue;
         }
-
         const queue = [[q, r]];
         let count = 0;
 
@@ -92,17 +88,17 @@ function generateMap(rows = 25, cols = 25, seed = 'defaultseed') {
             placed++;
             count++;
           }
-
           if (count < size) {
-neighbors(x, y).forEach(([nx, ny]) => {
-  const nTile = map[ny]?.[nx];
-  if (nTile?.type === 'grassland') {
-    queue.push([nx, ny]);
-  }
-});
+            directions.forEach(([dq, dr]) => {
+              const nx = x + dq;
+              const ny = y + dr;
+              const nTile = map[ny]?.[nx];
+              if (nTile?.type === 'grassland') {
+                queue.push([nx, ny]);
+              }
+            });
           }
         }
-
         break;
       }
     }
@@ -122,11 +118,9 @@ neighbors(x, y).forEach(([nx, ny]) => {
       const tile = map[r][q];
       const distFromP1 = Math.sqrt((q - 2) ** 2 + (r - 2) ** 2);
       const distFromP2 = Math.sqrt((q - cols + 2) ** 2 + (r - rows + 2) ** 2);
-
       if (tile.type === 'grassland' && distFromP1 > 3 && distFromP2 > 3) {
         Object.assign(tile, { type: 'mountain', ...terrainTypes.mountain });
       }
-
       const nbs = neighbors(q, r).map(n => n.tile);
       if (nbs.length) {
         const next = nbs[Math.floor(rand() * nbs.length)];
@@ -136,7 +130,6 @@ neighbors(x, y).forEach(([nx, ny]) => {
     }
   }
 
-  // 🧱 Generate cliffs (30% chance per side)
   for (let r = 0; r < rows; r++) {
     for (let q = 0; q < cols; q++) {
       const tile = map[r][q];
@@ -145,8 +138,6 @@ neighbors(x, y).forEach(([nx, ny]) => {
         const nr = r + dr;
         const neighbor = map[nr]?.[nq];
         if (!neighbor) return;
-
-        // Prevent double assignment
         const oppositeDir = (dir + 3) % 6;
         if (!tile.cliffs[dir] && !neighbor.cliffs[oppositeDir] && rand() < 0.12) {
           tile.cliffs[dir] = true;
@@ -157,12 +148,7 @@ neighbors(x, y).forEach(([nx, ny]) => {
   }
 
   const flatMap = map.flat();
-
-  const mark = (tile, key) => {
-    tile[key] = true;
-    tile.hasObject = true;
-  };
-
+  const mark = (tile, key) => { tile[key] = true; tile.hasObject = true; };
   const isFree = t => !t.hasObject && !['mountain', 'water'].includes(t.type);
 
   const forestCandidates = flatMap.filter(t => ['grassland', 'mud'].includes(t.type));
@@ -183,7 +169,6 @@ neighbors(x, y).forEach(([nx, ny]) => {
 
   const roadTiles = flatMap.filter(t => !['water', 'mountain'].includes(t.type) && !t.hasObject);
   Phaser.Utils.Array.Shuffle(roadTiles);
-
   const roadPaths = Phaser.Math.Between(2, 3);
   let totalRoadLength = Phaser.Math.Between(7, 19);
   let usedTiles = new Set();
