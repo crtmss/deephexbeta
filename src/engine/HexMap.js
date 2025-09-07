@@ -94,10 +94,12 @@ function generateMap(rows = 25, cols = 25, seed = 'defaultseed') {
           }
 
           if (count < size) {
-            neighbors(x, y).forEach(({ q: nx, r: ny }) => {
-              const nTile = map[ny][nx];
-              if (nTile.type === 'grassland') queue.push([nx, ny]);
-            });
+neighbors(x, y).forEach(([nx, ny]) => {
+  const nTile = map[ny]?.[nx];
+  if (nTile?.type === 'grassland') {
+    queue.push([nx, ny]);
+  }
+});
           }
         }
 
