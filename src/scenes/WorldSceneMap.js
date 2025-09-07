@@ -41,12 +41,17 @@ export function drawHexMap() {
     const {
       q, r, type,
       hasForest, hasRuin, hasCrashSite, hasVehicle,
-      hasRoad, hasMountainIcon
+      hasRoad, hasMountainIcon, cliffs
     } = hex;
 
     const { x, y } = this.hexToPixel(q, r, this.hexSize);
     const color = this.getColorForTerrain(type);
     this.drawHex(q, r, x, y, this.hexSize, color);
+
+    // Draw cliff edges if present
+    if (cliffs && Array.isArray(cliffs)) {
+      drawCliffEdges.call(this, x, y, this.hexSize, cliffs);
+    }
 
     // 🌲 FOREST CLUSTER: 2–4 non-overlapping animated trees
     if (hasForest) {
@@ -117,14 +122,14 @@ export function drawHexMap() {
       this.objects.push(vehicle);
     }
 
-// 🏔️ MOUNTAIN ICON
-if (hasMountainIcon) {
-  const mountain = this.add.text(x, y, '🏔️', {
-    fontSize: `${this.hexSize * 0.9}px`,
-    fontFamily: 'Arial, "Segoe UI Emoji", "Noto Color Emoji", sans-serif'
-  }).setOrigin(0.5).setDepth(2);
-  this.objects.push(mountain);
-}
+    // 🏔️ MOUNTAIN ICON
+    if (hasMountainIcon) {
+      const mountain = this.add.text(x, y, '🏔️', {
+        fontSize: `${this.hexSize * 0.9}px`,
+        fontFamily: 'Arial, "Segoe UI Emoji", "Noto Color Emoji", sans-serif'
+      }).setOrigin(0.5).setDepth(2);
+      this.objects.push(mountain);
+    }
 
     // 🛣️ Draw connecting lines for ancient roads
     if (hasRoad) {
@@ -144,6 +149,28 @@ if (hasMountainIcon) {
         this.objects.push(line);
       });
     }
+  });
+}
+
+function drawCliffEdges(x, y, size, cliffDirs) {
+  const angles = [30, 90, 150, 210, 270, 330];
+  cliffDirs.forEach(dir => {
+    const ang = Phaser.Math.DegToRad(angles[dir]);
+    const inner = {
+      x: x + size * 0.6 * Math.cos(ang),
+      y: y + size * 0.6 * Math.sin(ang)
+    };
+    const outer = {
+      x: x + size * Math.cos(ang),
+      y: y + size * Math.sin(ang)
+    };
+    const cliff = this.add.graphics().setDepth(3);
+    cliff.lineStyle(3, 0x000000, 0.9);
+    cliff.beginPath();
+    cliff.moveTo(inner.x, inner.y);
+    cliff.lineTo(outer.x, outer.y);
+    cliff.strokePath();
+    this.objects.push(cliff);
   });
 }
 
