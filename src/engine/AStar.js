@@ -1,85 +1,90 @@
 // deephexbeta/src/engine/AStar.js
 
-function getNeighbors(tile, mapData) {
+function hexDistance(a, b) {
+  return (Math.abs(a.q - b.q) + Math.abs(a.q + a.r - b.q - b.r) + Math.abs(a.r - b.r)) / 2;
+}
+
+function getNeighbors(current, map) {
   const directions = [
-    { dq: +1, dr: 0 },   // E (0)
-    { dq: +1, dr: -1 },  // NE (1)
-    { dq: 0, dr: -1 },   // NW (2)
-    { dq: -1, dr: 0 },   // W (3)
-    { dq: -1, dr: +1 },  // SW (4)
-    { dq: 0, dr: +1 }    // SE (5)
+    { dq: +1, dr: 0, dir: 0 },
+    { dq: +1, dr: -1, dir: 1 },
+    { dq: 0, dr: -1, dir: 2 },
+    { dq: -1, dr: 0, dir: 3 },
+    { dq: -1, dr: +1, dir: 4 },
+    { dq: 0, dr: +1, dir: 5 }
   ];
 
   const results = [];
 
-  for (let dir = 0; dir < 6; dir++) {
-    const { dq, dr } = directions[dir];
-    const neighborQ = tile.q + dq;
-    const neighborR = tile.r + dr;
+  for (const { dq, dr, dir } of directions) {
+    const neighborQ = current.q + dq;
+    const neighborR = current.r + dr;
 
-    const neighbor = mapData.find(t => t.q === neighborQ && t.r === neighborR);
-    if (!neighbor) continue;
+    const fromTile = map.find(t => t.q === current.q && t.r === current.r);
+    const toTile = map.find(t => t.q === neighborQ && t.r === neighborR);
 
-    // Prevent movement across cliffs
-    const hasCliffHere = tile.cliffs?.[dir];
-    const reverseDir = (dir + 3) % 6;
-    const hasCliffThere = neighbor.cliffs?.[reverseDir];
-    if (hasCliffHere || hasCliffThere) continue;
+    if (!fromTile || !toTile) continue;
 
-    results.push(neighbor);
+    // Skip impassable tiles
+    if (toTile.impassable) continue;
+
+    // Skip if a cliff blocks this direction
+    const fromCliffs = fromTile.cliffs || [];
+    const toCliffs = toTile.cliffs || [];
+    const oppositeDir = (dir + 3) % 6;
+
+    if (fromCliffs.includes(dir) || toCliffs.includes(oppositeDir)) continue;
+
+    results.push(toTile);
   }
 
   return results;
 }
 
-function heuristic(a, b) {
-  const dq = Math.abs(a.q - b.q);
-  const dr = Math.abs(a.r - b.r);
-  return dq + dr;
-}
+export function findPath(start, goal, map, isBlocked = () => false) {
+  const openSet = [];
+  const cameFrom = new Map();
+  const gScore = new Map();
+  const fScore = new Map();
 
-export function findPath(start, goal, mapData, isBlocked) {
-  const frontier = [];
-  frontier.push(start);
+  const key = (tile) => `${tile.q},${tile.r}`;
 
-  const cameFrom = {};
-  const costSoFar = {};
-  const key = (t) => `${t.q},${t.r}`;
+  openSet.push(start);
+  gScore.set(key(start), 0);
+  fScore.set(key(start), hexDistance(start, goal));
 
-  cameFrom[key(start)] = null;
-  costSoFar[key(start)] = 0;
+  while (openSet.length > 0) {
+    openSet.sort((a, b) => fScore.get(key(a)) - fScore.get(key(b)));
+    const current = openSet.shift();
+    if (current.q === goal.q && current.r === goal.r) {
+      const path = [];
+      let temp = key(current);
+      while (cameFrom.has(temp)) {
+        path.unshift(current);
+        current = cameFrom.get(temp);
+        temp = key(current);
+      }
+      path.unshift(start);
+      return path;
+    }
 
-  while (frontier.length > 0) {
-    frontier.sort((a, b) =>
-      (costSoFar[key(a)] + heuristic(a, goal)) -
-      (costSoFar[key(b)] + heuristic(b, goal))
-    );
-
-    const current = frontier.shift();
-    if (current.q === goal.q && current.r === goal.r) break;
-
-    for (const neighbor of getNeighbors(current, mapData)) {
+    const neighbors = getNeighbors(current, map);
+    for (const neighbor of neighbors) {
       if (isBlocked(neighbor)) continue;
 
-      const moveCost = neighbor.movementCost || 1;
-      const newCost = costSoFar[key(current)] + moveCost;
+      const tentativeG = gScore.get(key(current)) + (neighbor.movementCost || 1);
+      const neighborKey = key(neighbor);
 
-      if (!(key(neighbor) in costSoFar) || newCost < costSoFar[key(neighbor)]) {
-        costSoFar[key(neighbor)] = newCost;
-        cameFrom[key(neighbor)] = current;
-        frontier.push(neighbor);
+      if (tentativeG < (gScore.get(neighborKey) || Infinity)) {
+        cameFrom.set(neighborKey, current);
+        gScore.set(neighborKey, tentativeG);
+        fScore.set(neighborKey, tentativeG + hexDistance(neighbor, goal));
+        if (!openSet.find(t => t.q === neighbor.q && t.r === neighbor.r)) {
+          openSet.push(neighbor);
+        }
       }
     }
   }
 
-  // Reconstruct path
-  const path = [];
-  let current = goal;
-  while (current && key(current) !== key(start)) {
-    path.unshift(current);
-    current = cameFrom[key(current)];
-  }
-
-  if (current) path.unshift(start);
-  return path.length > 1 ? path : null;
+  return null; // No path found
 }
