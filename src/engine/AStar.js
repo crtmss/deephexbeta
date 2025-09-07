@@ -33,7 +33,7 @@ function getNeighbors(current, map) {
     const toCliffs = toTile.cliffs || [];
     const oppositeDir = (dir + 3) % 6;
 
-    if (fromCliffs.includes(dir) || toCliffs.includes(oppositeDir)) continue;
+    if (fromCliffs[dir] || toCliffs[oppositeDir]) continue;
 
     results.push(toTile);
   }
@@ -56,14 +56,18 @@ export function findPath(start, goal, map, isBlocked = () => false) {
   while (openSet.length > 0) {
     openSet.sort((a, b) => fScore.get(key(a)) - fScore.get(key(b)));
     const current = openSet.shift();
+
     if (current.q === goal.q && current.r === goal.r) {
       const path = [];
-      let temp = key(current);
-      while (cameFrom.has(temp)) {
-        path.unshift(current);
-        current = cameFrom.get(temp);
-        temp = key(current);
+      let tempKey = key(current);
+      let node = current;
+
+      while (cameFrom.has(tempKey)) {
+        path.unshift(node);
+        node = cameFrom.get(tempKey);
+        tempKey = key(node);
       }
+
       path.unshift(start);
       return path;
     }
