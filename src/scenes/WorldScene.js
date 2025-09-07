@@ -88,7 +88,6 @@ export default class WorldScene extends Phaser.Scene {
     setupCameraControls(this);
     setupTurnUI(this);
 
-    // 🌀 Refresh Button (Unit sync)
     if (this.refreshButton) {
       this.refreshButton.removeAllListeners('pointerdown');
       this.refreshButton.on('pointerdown', async () => {
@@ -118,7 +117,6 @@ export default class WorldScene extends Phaser.Scene {
       });
     }
 
-    // 🖱️ Pointer Click: Move or Select
     this.input.on("pointerdown", pointer => {
       if (pointer.rightButtonDown()) return;
 
@@ -138,17 +136,18 @@ export default class WorldScene extends Phaser.Scene {
         }
 
         const isBlocked = tile => !tile || tile.type === 'water' || tile.type === 'mountain';
-        const fullPath = findPath(this.selectedUnit, rounded, this.mapData, isBlocked);
-        if (fullPath && fullPath.length > 1) {
+        const path = findPath(this.selectedUnit, rounded, this.mapData, isBlocked);
+
+        if (path && path.length > 1) {
           const movePoints = this.selectedUnit.movementPoints || 10;
           let totalCost = 0;
-          const trimmedPath = [fullPath[0]];
-          for (let i = 1; i < fullPath.length; i++) {
-            const tile = this.mapData.find(h => h.q === fullPath[i].q && h.r === fullPath[i].r);
+          const trimmedPath = [path[0]];
+          for (let i = 1; i < path.length; i++) {
+            const tile = this.mapData.find(h => h.q === path[i].q && h.r === path[i].r);
             const cost = tile?.movementCost || 1;
             totalCost += cost;
             if (totalCost <= movePoints) {
-              trimmedPath.push(fullPath[i]);
+              trimmedPath.push(path[i]);
             } else {
               break;
             }
@@ -172,7 +171,6 @@ export default class WorldScene extends Phaser.Scene {
       }
     });
 
-    // 🧭 Pointer Move: Draw Path Preview
     this.input.on("pointermove", pointer => {
       if (!this.selectedUnit || this.isUnitMoving) return;
 
@@ -202,7 +200,6 @@ export default class WorldScene extends Phaser.Scene {
           const labelColor = costSum <= maxMove ? '#ffffff' : '#000000';
           const bgColor = costSum <= maxMove ? 0x008800 : 0xffffff;
 
-          // Draw hex background
           this.pathGraphics.lineStyle(1, 0x000000, 0.3);
           this.pathGraphics.fillStyle(fillColor, 0.4);
           this.pathGraphics.beginPath();
@@ -211,7 +208,6 @@ export default class WorldScene extends Phaser.Scene {
           this.pathGraphics.fillPath();
           this.pathGraphics.strokePath();
 
-          // Draw cost circle + text
           if (!isStart) {
             const circle = this.add.graphics();
             circle.fillStyle(bgColor, 1);
