@@ -1,94 +1,56 @@
 // deephexbeta/src/engine/AStar.js
 
-function hexDistance(a, b) {
-  return (Math.abs(a.q - b.q) + Math.abs(a.q + a.r - b.q - b.r) + Math.abs(a.r - b.r)) / 2;
-}
+// A* pathfinding for hex grids using odd-r offset layout (pointy-top)
+export function findPath(start, goal, mapData, isBlocked) {
+  const frontier = [start];
+  const cameFrom = {};
+  const costSoFar = {};
+  const key = (q, r) => `${q},${r}`;
 
-function getNeighbors(current, map) {
-  const directions = [
-    { dq: +1, dr: 0, dir: 0 },
-    { dq: +1, dr: -1, dir: 1 },
-    { dq: 0, dr: -1, dir: 2 },
-    { dq: -1, dr: 0, dir: 3 },
-    { dq: -1, dr: +1, dir: 4 },
-    { dq: 0, dr: +1, dir: 5 }
-  ];
+  cameFrom[key(start.q, start.r)] = null;
+  costSoFar[key(start.q, start.r)] = 0;
 
-  const results = [];
+  const getNeighbors = (q, r) => {
+    const even = r % 2 === 0;
+    return even ? [
+      { dq: +1, dr: 0 }, { dq: 0, dr: -1 }, { dq: -1, dr: -1 },
+      { dq: -1, dr: 0 }, { dq: -1, dr: +1 }, { dq: 0, dr: +1 }
+    ] : [
+      { dq: +1, dr: 0 }, { dq: +1, dr: -1 }, { dq: 0, dr: -1 },
+      { dq: -1, dr: 0 }, { dq: 0, dr: +1 }, { dq: +1, dr: +1 }
+    ];
+  };
 
-  for (const { dq, dr, dir } of directions) {
-    const neighborQ = current.q + dq;
-    const neighborR = current.r + dr;
+  while (frontier.length > 0) {
+    const current = frontier.shift();
+    if (current.q === goal.q && current.r === goal.r) break;
 
-    const fromTile = map.find(t => t.q === current.q && t.r === current.r);
-    const toTile = map.find(t => t.q === neighborQ && t.r === neighborR);
+    for (const dir of getNeighbors(current.q, current.r)) {
+      const nq = current.q + dir.dq;
+      const nr = current.r + dir.dr;
+      const nextKey = key(nq, nr);
+      const next = { q: nq, r: nr };
+      const tile = mapData.find(t => t.q === nq && t.r === nr);
+      if (!tile || isBlocked(tile)) continue;
 
-    if (!fromTile || !toTile) continue;
+      const moveCost = tile.movementCost || 1;
+      const newCost = costSoFar[key(current.q, current.r)] + moveCost;
 
-    // Skip impassable tiles
-    if (toTile.impassable) continue;
-
-    // Skip if a cliff blocks this direction
-    const fromCliffs = fromTile.cliffs || [];
-    const toCliffs = toTile.cliffs || [];
-    const oppositeDir = (dir + 3) % 6;
-
-    if (fromCliffs[dir] || toCliffs[oppositeDir]) continue;
-
-    results.push(toTile);
-  }
-
-  return results;
-}
-
-export function findPath(start, goal, map, isBlocked = () => false) {
-  const openSet = [];
-  const cameFrom = new Map();
-  const gScore = new Map();
-  const fScore = new Map();
-
-  const key = (tile) => `${tile.q},${tile.r}`;
-
-  openSet.push(start);
-  gScore.set(key(start), 0);
-  fScore.set(key(start), hexDistance(start, goal));
-
-  while (openSet.length > 0) {
-    openSet.sort((a, b) => fScore.get(key(a)) - fScore.get(key(b)));
-    const current = openSet.shift();
-
-    if (current.q === goal.q && current.r === goal.r) {
-      const path = [];
-      let tempKey = key(current);
-      let node = current;
-
-      while (cameFrom.has(tempKey)) {
-        path.unshift(node);
-        node = cameFrom.get(tempKey);
-        tempKey = key(node);
-      }
-
-      path.unshift(start);
-      return path;
-    }
-
-    const neighbors = getNeighbors(current, map);
-    for (const neighbor of neighbors) {
-      if (isBlocked(neighbor)) continue;
-
-      const tentativeG = gScore.get(key(current)) + (neighbor.movementCost || 1);
-      const neighborKey = key(neighbor);
-
-      if (tentativeG < (gScore.get(neighborKey) || Infinity)) {
-        cameFrom.set(neighborKey, current);
-        gScore.set(neighborKey, tentativeG);
-        fScore.set(neighborKey, tentativeG + hexDistance(neighbor, goal));
-        if (!openSet.find(t => t.q === neighbor.q && t.r === neighbor.r)) {
-          openSet.push(neighbor);
-        }
+      if (!(nextKey in costSoFar) || newCost < costSoFar[nextKey]) {
+        costSoFar[nextKey] = newCost;
+        frontier.push(next);
+        cameFrom[nextKey] = current;
       }
     }
   }
 
-  return null; // No path found
+  const path = [];
+  let current = goal;
+  while (current) {
+    path.push(current);
+    current = cameFrom[key(current.q, current.r)];
+  }
+
+  if (!cameFrom[key(goal.q, goal.r)]) return []; // unreachable
+  return path.reverse();
 }
