@@ -32,7 +32,32 @@ function getHexNeighbors(q, r) {
 }
 
 /**
+ * Compute adjusted fill color for elevation shading
+ * Higher elevation → brighter tint; lower → darker.
+ */
+function getFillForTile(tile) {
+  const baseColor = getColorForTerrain(tile.type);
+  const elevation = tile.elevation ?? 0;
+  const colorObj = Phaser.Display.Color.IntegerToColor(baseColor);
+  const adjusted = Phaser.Display.Color.Interpolate.ColorWithColor(
+    Phaser.Display.Color.IntegerToColor(0x000000),
+    Phaser.Display.Color.IntegerToColor(0xffffff),
+    4,
+    elevation
+  );
+  // Blend base with brightness adjustment
+  const blended = Phaser.Display.Color.Interpolate.ColorWithColor(
+    colorObj,
+    Phaser.Display.Color.ObjectToColor(adjusted),
+    1,
+    0.5
+  );
+  return Phaser.Display.Color.GetColor(blended.r, blended.g, blended.b);
+}
+
+/**
  * Draw the hex grid and place scenic object sprites based on tile data
+ * Now includes elevation shading and subtle shadows/contours.
  */
 export function drawHexMap() {
   this.objects = this.objects || [];
@@ -41,12 +66,12 @@ export function drawHexMap() {
     const {
       q, r, type,
       hasForest, hasRuin, hasCrashSite, hasVehicle,
-      hasRoad, hasMountainIcon
+      hasRoad, hasMountainIcon, elevation = 0
     } = hex;
 
     const { x, y } = this.hexToPixel(q, r, this.hexSize);
-    const color = this.getColorForTerrain(type);
-    this.drawHex(q, r, x, y, this.hexSize, color);
+    const color = getFillForTile(hex);
+    this.drawHex(q, r, x, y, this.hexSize, color, elevation);
 
     // 🌲 FOREST CLUSTER: 2–4 non-overlapping animated trees
     if (hasForest) {
@@ -117,14 +142,14 @@ export function drawHexMap() {
       this.objects.push(vehicle);
     }
 
-// 🏔️ MOUNTAIN ICON
-if (hasMountainIcon) {
-  const mountain = this.add.text(x, y, '🏔️', {
-    fontSize: `${this.hexSize * 0.9}px`,
-    fontFamily: 'Arial, "Segoe UI Emoji", "Noto Color Emoji", sans-serif'
-  }).setOrigin(0.5).setDepth(2);
-  this.objects.push(mountain);
-}
+    // 🏔️ MOUNTAIN ICON
+    if (hasMountainIcon) {
+      const mountain = this.add.text(x, y, '🏔️', {
+        fontSize: `${this.hexSize * 0.9}px`,
+        fontFamily: 'Arial, "Segoe UI Emoji", "Noto Color Emoji", sans-serif'
+      }).setOrigin(0.5).setDepth(2);
+      this.objects.push(mountain);
+    }
 
     // 🛣️ Draw connecting lines for ancient roads
     if (hasRoad) {
@@ -136,13 +161,29 @@ if (hasMountainIcon) {
         const p1 = this.hexToPixel(q, r, this.hexSize);
         const p2 = this.hexToPixel(n.q, n.r, this.hexSize);
         const line = this.add.graphics().setDepth(1);
-        line.lineStyle(2, 0x999999, 0.6);
+        // Slightly darken/lift road color by elevation
+        const brightness = 0.6 + elevation * 0.05;
+        const roadColor = Phaser.Display.Color.GetColor(
+          153 * brightness,
+          153 * brightness,
+          153 * brightness
+        );
+        line.lineStyle(2, roadColor, 0.7);
         line.beginPath();
         line.moveTo(p1.x, p1.y);
         line.lineTo(p2.x, p2.y);
         line.strokePath();
         this.objects.push(line);
       });
+    }
+
+    // 🔍 Debug: show elevation text if enabled
+    if (this.debugMode) {
+      const label = this.add.text(x, y, `E:${elevation}`, {
+        fontSize: '8px',
+        color: '#000'
+      }).setOrigin(0.5).setDepth(60);
+      this.objects.push(label);
     }
   });
 }
@@ -182,10 +223,28 @@ export function roundHex(q, r) {
 
 /**
  * Draw one hexagon (as polygon)
+ * Now supports elevation shadows and contour rings.
  */
-export function drawHex(q, r, x, y, size, color) {
+export function drawHex(q, r, x, y, size, color, elevation = 0) {
   const gfx = this.add.graphics({ x: 0, y: 0 });
-  gfx.lineStyle(1, 0x000000);
+
+  // elevation shadow (draw first)
+  if (elevation > 0) {
+    gfx.fillStyle(0x000000, 0.08 * elevation);
+    const cornersShadow = [];
+    for (let i = 0; i < 6; i++) {
+      const ang = Phaser.Math.DegToRad(60 * i + 30);
+      cornersShadow.push({ x: x + size * Math.cos(ang), y: y + size * Math.sin(ang) + elevation * 1.5 });
+    }
+    gfx.beginPath();
+    gfx.moveTo(cornersShadow[0].x, cornersShadow[0].y);
+    cornersShadow.slice(1).forEach(c => gfx.lineTo(c.x, c.y));
+    gfx.closePath();
+    gfx.fillPath();
+  }
+
+  // main hex fill
+  gfx.lineStyle(1, 0x000000, 0.4);
   gfx.fillStyle(color, 1);
   const corners = [];
   for (let i = 0; i < 6; i++) {
@@ -198,6 +257,23 @@ export function drawHex(q, r, x, y, size, color) {
   gfx.closePath();
   gfx.fillPath();
   gfx.strokePath();
+
+  // contour rings (visual only)
+  const cx = x, cy = y;
+  for (let i = 1; i <= Math.min(3, elevation); i++) {
+    gfx.lineStyle(0.5, 0x000000, 0.08);
+    const scale = 1 - i * 0.1;
+    gfx.beginPath();
+    corners.forEach(({ x: px, y: py }, idx) => {
+      const sx = cx + (px - cx) * scale;
+      const sy = cy + (py - cy) * scale;
+      if (idx === 0) gfx.moveTo(sx, sy);
+      else gfx.lineTo(sx, sy);
+    });
+    gfx.closePath();
+    gfx.strokePath();
+  }
+
   this.tileMap[`${q},${r}`] = gfx;
 }
 
