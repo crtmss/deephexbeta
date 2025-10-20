@@ -4,11 +4,11 @@ import { cyrb128, sfc32 } from './PRNG.js';
 
 const terrainTypes = {
   grassland: { movementCost: 1, color: '#34a853' },
-  sand: { movementCost: 2, color: '#FFF59D' },
-  mud: { movementCost: 3, color: '#795548' },
-  mountain: { movementCost: Infinity, color: '#9E9E9E', impassable: true },
-  water: { movementCost: Infinity, color: '#4da6ff', impassable: true },
-  swamp: { movementCost: 3, color: '#4E342E' }
+  sand:      { movementCost: 2, color: '#FFF59D' },
+  mud:       { movementCost: 3, color: '#795548' },
+  mountain:  { movementCost: Infinity, color: '#9E9E9E', impassable: true },
+  water:     { movementCost: Infinity, color: '#4da6ff', impassable: true },
+  swamp:     { movementCost: 3, color: '#4E342E' }
 };
 
 function seededRandom(seed) {
@@ -19,6 +19,96 @@ function seededRandom(seed) {
     x = (x * 9301 + 49297) % 233280;
     return x / 233280;
   };
+}
+
+/** Hash a string to a 32-bit int */
+function __hx_strHash(s) {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+/** Cheap 2D integer hash → [0,1) */
+function __hx_hash2D(q, r, seedStr) {
+  const sh = __hx_strHash(seedStr);
+  let h = (Math.imul(q, 374761393) ^ Math.imul(r, 668265263) ^ sh) >>> 0;
+  h ^= h >>> 13;
+  h = Math.imul(h, 1274126177) >>> 0;
+  h ^= h >>> 16;
+  return (h >>> 0) / 4294967296;
+}
+
+/** Smoothstep */
+function __hx_smooth(t) {
+  return t * t * (3 - 2 * t);
+}
+
+/** Value-noise style interpolation of 4 corner hashes */
+function __hx_valueNoise2D(x, y, seedStr) {
+  const x0 = Math.floor(x), y0 = Math.floor(y);
+  const x1 = x0 + 1,        y1 = y0 + 1;
+  const sx = __hx_smooth(x - x0);
+  const sy = __hx_smooth(y - y0);
+
+  const v00 = __hx_hash2D(x0, y0, seedStr);
+  const v10 = __hx_hash2D(x1, y0, seedStr);
+  const v01 = __hx_hash2D(x0, y1, seedStr);
+  const v11 = __hx_hash2D(x1, y1, seedStr);
+
+  const ix0 = v00 + sx * (v10 - v00);
+  const ix1 = v01 + sx * (v11 - v01);
+  return ix0 + sy * (ix1 - ix0);
+}
+
+/** Simple fBm (sum of octaves) → ~[0,1] */
+function __hx_fbm2D(x, y, seedStr, octaves = 4, lacunarity = 2.0, gain = 0.5) {
+  let amp = 0.5, freq = 1.0, sum = 0.0, ampSum = 0.0;
+  for (let i = 0; i < octaves; i++) {
+    sum += amp * __hx_valueNoise2D(x * freq, y * freq, seedStr);
+    ampSum += amp;
+    freq *= lacunarity;
+    amp *= gain;
+  }
+  return sum / (ampSum || 1);
+}
+
+/**
+ * Compute elevation 0..4 for a tile (visual-only).
+ * Water → 0; Mountains biased to 3–4; sand lower; others varied.
+ */
+function __hx_computeElevation(q, r, cols, rows, rawSeed, terrainType) {
+  const seedStr = (typeof rawSeed === 'string' && rawSeed) ? rawSeed : 'defaultseed';
+
+  // Rotate/scale axial-ish coords for nicer patterns
+  const x = q * 0.18 + 123.45;
+  const y = (q * 0.10 + r * 0.20) + 678.90;
+
+  let n = __hx_fbm2D(x, y, seedStr, 4, 2.0, 0.55); // [0,1]
+
+  // Gentle radial falloff from map center to keep edges lower on average
+  const cx = cols / 2, cy = rows / 2;
+  const dx = q - cx,   dy = r - cy;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  const maxd = Math.sqrt(cx * cx + cy * cy) || 1;
+  const falloff = 1 - (dist / maxd); // [0..1]
+  n = 0.75 * n + 0.25 * falloff;
+
+  // Terrain biasing
+  switch (terrainType) {
+    case 'water':     return 0;
+    case 'mountain':  n = Math.min(1, n * 0.7 + 0.5); break; // push up
+    case 'sand':      n = Math.max(0, n * 0.85 - 0.05); break; // pull down
+    case 'swamp':
+    case 'mud':       n = Math.max(0, n * 0.9  - 0.02); break; // slightly lower
+    default:          /* grassland etc. */ break;
+  }
+
+  // Quantize into 5 bands (0..4)
+  const e = Math.max(0, Math.min(4, Math.floor(n * 5)));
+  return e;
 }
 
 function generateMap(rows = 25, cols = 25, seed = 'defaultseed') {
@@ -217,6 +307,15 @@ function generateMap(rows = 25, cols = 25, seed = 'defaultseed') {
     }
   }
 
+  const seedForElevation = (typeof seed === 'string' && seed) ? seed : 'defaultseed';
+  for (let i = 0; i < flatMap.length; i++) {
+    const t = flatMap[i];
+    // Don’t overwrite if elevation already exists (idempotent)
+    if (typeof t.elevation !== 'number') {
+      t.elevation = __hx_computeElevation(t.q, t.r, cols, rows, seedForElevation, t.type);
+    }
+  }
+
   return flatMap;
 }
 
@@ -232,6 +331,7 @@ export default class HexMap {
   generateMap() {
     const randSeed = cyrb128(this.seed);
     const rand = sfc32(...randSeed);
+
     this.map = generateMap(this.width, this.height, rand);
   }
 
