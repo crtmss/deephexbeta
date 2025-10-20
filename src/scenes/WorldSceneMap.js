@@ -23,13 +23,30 @@ export function generateHexMap(width, height, seed) {
 }
 
 /**
- * Return neighboring axial coordinates (odd-r offset layout)
+ * Return neighboring axial coordinates (odd-r offset layout) — used by roads
  */
 function getHexNeighbors(q, r) {
   const directions = (r % 2 === 0)
     ? [[+1, 0], [0, -1], [-1, -1], [-1, 0], [-1, +1], [0, +1]]
     : [[+1, 0], [+1, -1], [0, -1], [-1, 0], [0, +1], [+1, +1]];
   return directions.map(([dq, dr]) => ({ q: q + dq, r: r + dr }));
+}
+
+/**
+ * Axial neighbors in fixed angular order (pointy-top axial), independent of row parity.
+ * Index 0..5 correspond to directions: [E, NE, NW, W, SW, SE].
+ * We use this stable order to align **edges** with **neighbor directions**.
+ */
+function getAxialNeighborsFixedOrder(q, r) {
+  const dirs = [
+    [+1,  0], // 0: E
+    [+1, -1], // 1: NE
+    [ 0, -1], // 2: NW
+    [-1,  0], // 3: W
+    [-1, +1], // 4: SW
+    [ 0, +1], // 5: SE
+  ];
+  return dirs.map(([dq, dr]) => ({ q: q + dq, r: r + dr }));
 }
 
 /**
@@ -75,23 +92,46 @@ function darkenColor(intColor, factor) {
   return Phaser.Display.Color.GetColor(r, g, b);
 }
 
+/** Constant cliff thickness (in pixels) used for isometric faces */
+const CLIFF_THICKNESS = 5;
+
+/** Isometric transform for a local offset relative to hex center */
+function isoOffset(dx, dy) {
+  // shear X by -0.5 * dy, compress Y by 0.75
+  return { x: dx - dy * 0.5, y: dy * 0.75 };
+}
+
 /**
- * Draw the hex grid and place scenic object sprites based on tile data
- * Includes elevation shading, subtle shadows/contours, edge highlights,
- * center elevation numbers, and **isometric cliffs** along edges where
- * this tile is higher than its neighbor (visual 3D step effect).
+ * Draw the hex grid and place scenic object sprites based on tile data.
+ * Now renders in a pseudo-isometric projection with controlled cliffs.
  */
 export function drawHexMap() {
   this.objects = this.objects || [];
 
-  this.mapData.forEach(hex => {
+  // Draw lower elevations first, higher last (so 4 over 3 over 2, etc.)
+  const sorted = [...this.mapData].sort((a, b) => {
+    if ((a.elevation ?? 0) !== (b.elevation ?? 0)) {
+      return (a.elevation ?? 0) - (b.elevation ?? 0); // primary: elevation asc
+    }
+    // then back-to-front to reduce overlaps in iso
+    const da = (a.q + a.r) - (b.q + b.r);
+    if (da !== 0) return da;
+    if (a.r !== b.r) return a.r - b.r;
+    return a.q - b.q;
+  });
+
+  sorted.forEach(hex => {
     const {
       q, r, type,
       hasForest, hasRuin, hasCrashSite, hasVehicle,
       hasRoad, hasMountainIcon, elevation = 0
     } = hex;
 
-    const { x, y } = this.hexToPixel(q, r, this.hexSize);
+    const base = this.hexToPixel(q, r, this.hexSize); // iso-projected center (no vertical lift)
+    const lift = CLIFF_THICKNESS * (elevation || 0);
+    const x = base.x;
+    const y = base.y - lift; // raise top face according to elevation
+
     const fillColor = getFillForTile(hex);
     this.drawHex(q, r, x, y, this.hexSize, fillColor, elevation);
 
@@ -104,7 +144,7 @@ export function drawHexMap() {
       align: 'center'
     })
       .setOrigin(0.5)
-      .setDepth(3);
+      .setDepth(4);
     elevLabel.setStroke(strokeColor, 2);
     this.objects.push(elevLabel);
 
@@ -119,8 +159,9 @@ export function drawHexMap() {
         const radius = Phaser.Math.FloatBetween(this.hexSize * 0.35, this.hexSize * 0.65);
         const dx = Math.cos(angle) * radius;
         const dy = Math.sin(angle) * radius;
-        const posX = x + dx;
-        const posY = y + dy;
+        const o = isoOffset(dx, dy);
+        const posX = x + o.x;
+        const posY = y + o.y;
         const minDist = this.hexSize * 0.3;
 
         const tooClose = placed.some(p => {
@@ -134,7 +175,7 @@ export function drawHexMap() {
 
           const tree = this.add.text(posX, posY, '🌲', {
             fontSize: `${size}px`
-          }).setOrigin(0.5).setDepth(2);
+          }).setOrigin(0.5).setDepth(5);
 
           this.tweens.add({
             targets: tree,
@@ -157,7 +198,7 @@ export function drawHexMap() {
     if (hasRuin) {
       const ruin = this.add.text(x, y, '🏛️', {
         fontSize: `${this.hexSize * 0.8}px`
-      }).setOrigin(0.5).setDepth(2);
+      }).setOrigin(0.5).setDepth(5);
       this.objects.push(ruin);
     }
 
@@ -165,7 +206,7 @@ export function drawHexMap() {
     if (hasCrashSite) {
       const rocket = this.add.text(x, y, '🚀', {
         fontSize: `${this.hexSize * 0.8}px`
-      }).setOrigin(0.5).setDepth(2);
+      }).setOrigin(0.5).setDepth(5);
       this.objects.push(rocket);
     }
 
@@ -173,7 +214,7 @@ export function drawHexMap() {
     if (hasVehicle) {
       const vehicle = this.add.text(x, y, '🚙', {
         fontSize: `${this.hexSize * 0.8}px`
-      }).setOrigin(0.5).setDepth(2);
+      }).setOrigin(0.5).setDepth(5);
       this.objects.push(vehicle);
     }
 
@@ -182,11 +223,11 @@ export function drawHexMap() {
       const mountain = this.add.text(x, y, '🏔️', {
         fontSize: `${this.hexSize * 0.9}px`,
         fontFamily: 'Arial, "Segoe UI Emoji", "Noto Color Emoji", sans-serif'
-      }).setOrigin(0.5).setDepth(2);
+      }).setOrigin(0.5).setDepth(5);
       this.objects.push(mountain);
     }
 
-    // 🛣️ Draw connecting lines for ancient roads
+    // 🛣️ Ancient roads (connect centers at their elevated iso positions)
     if (hasRoad) {
       const neighbors = getHexNeighbors(q, r)
         .map(n => this.mapData.find(h => h.q === n.q && h.r === n.r && h.hasRoad))
@@ -195,40 +236,47 @@ export function drawHexMap() {
       neighbors.forEach(n => {
         const p1 = this.hexToPixel(q, r, this.hexSize);
         const p2 = this.hexToPixel(n.q, n.r, this.hexSize);
-        const line = this.add.graphics().setDepth(1);
 
-        // Adjust road brightness by elevation for contrast (clamped)
+        const y1 = p1.y - CLIFF_THICKNESS * (elevation || 0);
+        const y2 = p2.y - CLIFF_THICKNESS * (n.elevation || 0);
+
+        const line = this.add.graphics().setDepth(3);
+
         const brightness = 0.60 + Math.min(4, Math.max(0, elevation)) * 0.05;
         const val = Math.max(0, Math.min(255, Math.round(153 * brightness)));
         const roadColor = Phaser.Display.Color.GetColor(val, val, val);
 
         line.lineStyle(2, roadColor, 0.7);
         line.beginPath();
-        line.moveTo(p1.x, p1.y);
-        line.lineTo(p2.x, p2.y);
+        line.moveTo(p1.x, y1);
+        line.lineTo(p2.x, y2);
         line.strokePath();
         this.objects.push(line);
       });
-    }
-
-    // 🔍 If debugMode is enabled, repurpose the center label to include a prefix
-    if (this.debugMode && elevLabel && elevLabel.setText) {
-      elevLabel.setText(`E:${elevation}`);
     }
   });
 }
 
 /**
- * Hex → pixel conversion (with padding)
+ * Hex → pixel conversion (with padding) in **isometric projection**
+ * Standard pointy-top axial position -> shear/compress to iso.
  */
 export function hexToPixel(q, r, size) {
-  const x = size * Math.sqrt(3) * (q + 0.5 * (r & 1));
-  const y = size * 1.5 * r;
-  return { x: x + size * 2, y: y + size * 2 };
+  // pointy-top axial
+  const x0 = size * Math.sqrt(3) * (q + 0.5 * (r & 1));
+  const y0 = size * 1.5 * r;
+
+  // isometric projection
+  const xIso = x0 - y0 * 0.5;
+  const yIso = y0 * 0.75;
+
+  // padding
+  return { x: xIso + size * 2, y: yIso + size * 2 };
 }
 
 /**
  * Pixel → hex conversion + round
+ * (kept as original top-down mapping for now; visuals only changed)
  */
 export function pixelToHex(x, y, size) {
   x -= size * 2;
@@ -253,70 +301,60 @@ export function roundHex(q, r) {
 
 /**
  * Draw one hexagon (as polygon)
- * Supports elevation shadows, **isometric cliffs**, contour rings, and edge highlights.
+ * Supports **isometric cliffs** (only on bottom-left & bottom-right edges),
+ * and simple contour rings. No shadow rendering.
  */
 export function drawHex(q, r, x, y, size, color, elevation = 0) {
   const gfx = this.add.graphics({ x: 0, y: 0 });
 
-  // elevation shadow (draw first, soft offset downward)
-  if (elevation > 0) {
-    gfx.fillStyle(0x000000, 0.12 * elevation); // a bit stronger so it reads
-    const cornersShadow = [];
-    for (let i = 0; i < 6; i++) {
-      const ang = Phaser.Math.DegToRad(60 * i + 30);
-      cornersShadow.push({
-        x: x + size * Math.cos(ang),
-        y: y + size * Math.sin(ang) + elevation * (size * 0.10)
-      });
-    }
-    gfx.beginPath();
-    gfx.moveTo(cornersShadow[0].x, cornersShadow[0].y);
-    cornersShadow.slice(1).forEach(c => gfx.lineTo(c.x, c.y));
-    gfx.closePath();
-    gfx.fillPath();
-  }
-
-  // Compute top-face corners once
+  // Compute top-face corners (iso-transformed offsets)
   const corners = [];
   for (let i = 0; i < 6; i++) {
     const ang = Phaser.Math.DegToRad(60 * i + 30);
-    corners.push({ x: x + size * Math.cos(ang), y: y + size * Math.sin(ang) });
+    const dx = size * Math.cos(ang);
+    const dy = size * Math.sin(ang);
+    const o = isoOffset(dx, dy);
+    corners.push({ x: x + o.x, y: y + o.y });
   }
 
-  // === ISO CLIFFS: strong, visible side walls on drop edges ===
+  // === ISO CLIFFS — ONLY bottom-left (SW, edge 3) & bottom-right (SE, edge 4) ===
   if (elevation > 0) {
-    // Tall enough to see: around 0.28 * size per elevation level
-    const cliffPerLevel = Math.max(4, Math.round(size * 0.28));
-    const neighbors = getHexNeighbors(q, r).map(n =>
-      this.mapData.find(t => t.q === n.q && t.r === n.r)
-    );
+    const neighborsFixed = getAxialNeighborsFixedOrder(q, r)
+      .map(n => this.mapData.find(t => t.q === n.q && t.r === n.r));
 
-    for (let i = 0; i < 6; i++) {
-      const nb = neighbors[i];
-      const nbElev = nb && typeof nb.elevation === 'number' ? nb.elevation : 0;
-      const diff = elevation - nbElev;
-      if (diff <= 0) continue; // only when this tile is higher
+    // map edges to neighbor indices (edges order: [NE, NW, W, SW, SE, E])
+    const dirIndexForEdge = [1, 2, 3, 4, 5, 0];
 
-      const h = diff * cliffPerLevel;
+    // process only edges 3 (SW) and 4 (SE)
+    [3, 4].forEach(edge => {
+      const nb = neighborsFixed[dirIndexForEdge[edge]];
+      const nbElev = nb && typeof nb.elevation === 'number' ? nb.elevation : null;
+      const diff = nbElev === null ? Infinity : (elevation - nbElev);
 
-      // Edge from corner i to i+1
-      const a = corners[i];
-      const b = corners[(i + 1) % 6];
+      // RULES:
+      // - no cliffs when |Δ| == 0 or |Δ| == 1
+      // - draw a 5px cliff when elevation - nbElev >= 2
+      // - also draw a 5px base thickness at map edges (no neighbor) to simulate iso
+      const shouldDraw =
+        (nbElev === null) || (diff >= 2);
 
-      // Bottom edge points (extruded downwards by +y)
+      if (!shouldDraw) return;
+
+      const h = CLIFF_THICKNESS;
+
+      const a = corners[edge];
+      const b = corners[(edge + 1) % 6];
+
+      // Bottom edge points (extruded straight down in screen space)
       const a2 = { x: a.x, y: a.y + h };
       const b2 = { x: b.x, y: b.y + h };
 
-      // Wall fill and outline — darker with stronger drop
-      // Slight directional lighting: darker on SE/S edges (2..4)
-      const dirFactor = (i === 2 || i === 3 || i === 4) ? 0.55 : 0.65;
-      const wallBase = darkenColor(color, dirFactor);
-      const wallFill = darkenColor(wallBase, 0.85);
-      const wallStroke = darkenColor(wallBase, 0.6);
+      // Wall shading and outline (simple, consistent)
+      const wallFill = darkenColor(color, 0.70);
+      const wallStroke = darkenColor(color, 0.55);
 
-      // Fill wall quad
       gfx.fillStyle(wallFill, 1);
-      gfx.lineStyle(2, wallStroke, 0.9);
+      gfx.lineStyle(2, wallStroke, 0.95);
       gfx.beginPath();
       gfx.moveTo(a.x, a.y);
       gfx.lineTo(b.x, b.y);
@@ -325,31 +363,7 @@ export function drawHex(q, r, x, y, size, color, elevation = 0) {
       gfx.closePath();
       gfx.fillPath();
       gfx.strokePath();
-
-      // Add AO (ambient occlusion) rim at the top of the drop edge
-      gfx.lineStyle(3, darkenColor(0x000000, 0.6), 0.25 + 0.05 * diff);
-      gfx.beginPath();
-      gfx.moveTo(a.x, a.y);
-      gfx.lineTo(b.x, b.y);
-      gfx.strokePath();
-
-      // Optional: subtle vertical hatch lines inside the wall for texture
-      const hatchStep = Math.max(4, Math.round(size * 0.12));
-      const edgeDx = (b.x - a.x);
-      const edgeDy = (b.y - a.y);
-      const edgeLen = Math.max(1, Math.hypot(edgeDx, edgeDy));
-      const ux = edgeDx / edgeLen, uy = edgeDy / edgeLen; // unit along edge
-      // perpendicular "down" is (0, +1), so hatch just vertical segments
-      gfx.lineStyle(1, darkenColor(wallFill, 0.8), 0.35);
-      for (let t = hatchStep; t < edgeLen; t += hatchStep) {
-        const hx = a.x + ux * t;
-        const hy = a.y + uy * t;
-        gfx.beginPath();
-        gfx.moveTo(hx, hy + 1);
-        gfx.lineTo(hx, hy + h - 1);
-        gfx.strokePath();
-      }
-    }
+    });
   }
 
   // main hex top fill (drawn above cliffs)
@@ -362,24 +376,10 @@ export function drawHex(q, r, x, y, size, color, elevation = 0) {
   gfx.fillPath();
   gfx.strokePath();
 
-  // subtle directional highlight along top-right edges for elevated tiles
-  if (elevation >= 2) {
-    // Assume light comes from top-left; highlight edges facing that direction.
-    const highlightAlpha = 0.10 + 0.03 * (elevation - 2);
-    gfx.lineStyle(2, 0xffffff, highlightAlpha);
-    // Edges: from corner 0→1 and 1→2 (roughly top-right on pointy-top hexes)
-    gfx.beginPath();
-    gfx.moveTo(corners[0].x, corners[0].y);
-    gfx.lineTo(corners[1].x, corners[1].y);
-    gfx.moveTo(corners[1].x, corners[1].y);
-    gfx.lineTo(corners[2].x, corners[2].y);
-    gfx.strokePath();
-  }
-
-  // contour rings (visual only; capped to 3 for clarity)
+  // Simple contour rings (visual only; capped to 3 for clarity)
   const cx = x, cy = y;
   for (let i = 1; i <= Math.min(3, elevation); i++) {
-    gfx.lineStyle(0.5, 0x000000, 0.10);
+    gfx.lineStyle(0.5, 0x000000, 0.08);
     const scale = 1 - i * 0.1;
     gfx.beginPath();
     corners.forEach(({ x: px, y: py }, idx) => {
