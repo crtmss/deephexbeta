@@ -35,7 +35,6 @@ function getHexNeighbors(q, r) {
 /**
  * Axial neighbors in fixed angular order (pointy-top axial), independent of row parity.
  * Index 0..5 correspond to directions: [E, NE, NW, W, SW, SE].
- * We use this stable order to align **edges** with **neighbor directions**.
  */
 function getAxialNeighborsFixedOrder(q, r) {
   const dirs = [
@@ -57,12 +56,8 @@ function getFillForTile(tile) {
   const baseColor = getColorForTerrain(tile.type);
   const elevation = tile.elevation ?? 0;
 
-  // Do not tint water (keeps borders visually coherent)
-  if (tile.type === 'water') {
-    return baseColor;
-  }
+  if (tile.type === 'water') return baseColor;
 
-  // Linear brighten towards white, up to 50% at elevation 4
   const t = Math.max(0, Math.min(1, elevation / 4)) * 0.5; // 0..0.5
   const base = Phaser.Display.Color.IntegerToColor(baseColor);
   const r = Math.round(base.r + (255 - base.r) * t);
@@ -71,12 +66,9 @@ function getFillForTile(tile) {
   return Phaser.Display.Color.GetColor(r, g, b);
 }
 
-/**
- * Choose black or white text for best contrast against a background color
- */
+/** Choose black or white text for best contrast */
 function getContrastingTextColors(bgInt) {
   const c = Phaser.Display.Color.IntegerToColor(bgInt);
-  // Perceived luminance
   const luminance = (0.299 * c.r + 0.587 * c.g + 0.114 * c.b);
   const text = luminance > 150 ? '#000000' : '#ffffff';
   const stroke = luminance > 150 ? '#ffffff' : '#000000';
@@ -92,39 +84,39 @@ function darkenColor(intColor, factor) {
   return Phaser.Display.Color.GetColor(r, g, b);
 }
 
-/** Thickness constants (in pixels) */
-const CLIFF_THICKNESS = 5;  // shown when Δelev >= 2 (true cliff)
-const BASE_THICKNESS  = 2;  // always on bottom edges to sell isometry
+/** Projection & depth constants */
+const ISO_SHEAR   = 0.15; // milder tilt (was 0.35)
+const ISO_YSCALE  = 0.95; // taller (was 0.85)
+const LIFT_PER_LVL = 4;   // vertical lift per elevation level (px)
 
-/** Isometric projection tuning (less stretch, more rectangular) */
-const ISO_SHEAR = 0.35;     // ← was 0.5, milder skew on X
-const ISO_YSCALE = 0.85;    // ← was 0.75, a bit taller
+/** Visual wall policy
+ * - We keep a small base slab for isometric feel on BL & BR edges.
+ * - When Δelev ≥ 2, wall depth matches the true height difference to avoid "floating".
+ */
+const BASE_SLAB_THICKNESS = 2; // shown when Δ<2 (and on edges to map boundary)
 
 /** Isometric transform for a local offset relative to hex center */
 function isoOffset(dx, dy) {
-  // shear X by -ISO_SHEAR * dy, compress Y by ISO_YSCALE
   return { x: dx - dy * ISO_SHEAR, y: dy * ISO_YSCALE };
 }
 
 /**
  * Draw the hex grid and place scenic object sprites based on tile data.
- * Renders in a pseudo-isometric projection with centering & grounded bases.
+ * Centered rendering, mild tilt, and cliffs that reach the lower surface.
  */
 export function drawHexMap() {
   this.objects = this.objects || [];
 
-  // === Compute bounding box (without elevation lift) to center the map ===
+  // === Bounding box (no elevation lift) to center the map ===
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  const centers = this.mapData.map(t => {
+  this.mapData.forEach(t => {
     const p = this.hexToPixel(t.q, t.r, this.hexSize);
     if (p.x < minX) minX = p.x;
     if (p.y < minY) minY = p.y;
     if (p.x > maxX) maxX = p.x;
     if (p.y > maxY) maxY = p.y;
-    return { t, p };
   });
 
-  // Center inside the main camera if available, else keep previous padding origin
   let offsetX = 0, offsetY = 0;
   const cam = this.cameras && this.cameras.main;
   if (cam) {
@@ -134,12 +126,11 @@ export function drawHexMap() {
     offsetY = cam.centerY - cy;
   }
 
-  // Draw lower elevations first, higher last (so 4 over 3 over 2, etc.)
+  // === Draw order: lower elevations first -> higher on top ===
   const sorted = [...this.mapData].sort((a, b) => {
     if ((a.elevation ?? 0) !== (b.elevation ?? 0)) {
-      return (a.elevation ?? 0) - (b.elevation ?? 0); // primary: elevation asc
+      return (a.elevation ?? 0) - (b.elevation ?? 0);
     }
-    // then back-to-front to reduce overlaps in iso
     const da = (a.q + a.r) - (b.q + b.r);
     if (da !== 0) return da;
     if (a.r !== b.r) return a.r - b.r;
@@ -153,16 +144,14 @@ export function drawHexMap() {
       hasRoad, hasMountainIcon, elevation = 0
     } = hex;
 
-    // iso-projected center (no vertical lift) + centering offsets
     const base = this.hexToPixel(q, r, this.hexSize);
-    const lift = CLIFF_THICKNESS * (elevation || 0);
     const x = base.x + offsetX;
-    const y = base.y + offsetY - lift; // raise top face according to elevation
+    const y = base.y + offsetY - LIFT_PER_LVL * (elevation || 0);
 
     const fillColor = getFillForTile(hex);
     this.drawHex(q, r, x, y, this.hexSize, fillColor, elevation);
 
-    // Elevation number at the center of each hex
+    // Elevation number
     const { text: txtColor, stroke: strokeColor } = getContrastingTextColors(fillColor);
     const elevLabel = this.add.text(x, y, String(elevation), {
       fontSize: `${Math.max(10, Math.floor(this.hexSize * 0.55))}px`,
@@ -175,7 +164,7 @@ export function drawHexMap() {
     elevLabel.setStroke(strokeColor, 2);
     this.objects.push(elevLabel);
 
-    // FORESTS
+    // Scenic objects (unchanged depths)
     if (hasForest) {
       const treeCount = Phaser.Math.Between(2, 4);
       const placed = [];
@@ -183,80 +172,46 @@ export function drawHexMap() {
 
       while (placed.length < treeCount && attempts < 40) {
         const angle = Phaser.Math.FloatBetween(0, 2 * Math.PI);
-        theLoop: {
-          const radius = Phaser.Math.FloatBetween(this.hexSize * 0.35, this.hexSize * 0.65);
-          const dx = Math.cos(angle) * radius;
-          const dy = Math.sin(angle) * radius;
-          const o = isoOffset(dx, dy);
-          const posX = x + o.x;
-          const posY = y + o.y;
-          const minDist = this.hexSize * 0.3;
+        const radius = Phaser.Math.FloatBetween(this.hexSize * 0.35, this.hexSize * 0.65);
+        const dx = Math.cos(angle) * radius;
+        const dy = Math.sin(angle) * radius;
+        const o = isoOffset(dx, dy);
+        const posX = x + o.x;
+        const posY = y + o.y;
+        const minDist = this.hexSize * 0.3;
 
-          const tooClose = placed.some(p => {
-            const dist = Phaser.Math.Distance.Between(posX, posY, p.x, p.y);
-            return dist < minDist;
+        const tooClose = placed.some(p => Phaser.Math.Distance.Between(posX, posY, p.x, p.y) < minDist);
+        if (!tooClose) {
+          const sizePercent = 0.45 + Phaser.Math.FloatBetween(-0.05, 0.05);
+          const size = this.hexSize * sizePercent;
+
+          const tree = this.add.text(posX, posY, '🌲', { fontSize: `${size}px` })
+            .setOrigin(0.5)
+            .setDepth(5);
+
+          this.tweens.add({
+            targets: tree,
+            angle: { from: -1.5, to: 1.5 },
+            duration: Phaser.Math.Between(2500, 4000),
+            yoyo: true,
+            repeat: -1,
+            ease: 'Sine.easeInOut',
+            delay: Phaser.Math.Between(0, 1000)
           });
 
-          if (!tooClose) {
-            const sizePercent = 0.45 + Phaser.Math.FloatBetween(-0.05, 0.05);
-            const size = this.hexSize * sizePercent;
-
-            const tree = this.add.text(posX, posY, '🌲', {
-              fontSize: `${size}px`
-            }).setOrigin(0.5).setDepth(5);
-
-            this.tweens.add({
-              targets: tree,
-              angle: { from: -1.5, to: 1.5 },
-              duration: Phaser.Math.Between(2500, 4000),
-              yoyo: true,
-              repeat: -1,
-              ease: 'Sine.easeInOut',
-              delay: Phaser.Math.Between(0, 1000)
-            });
-
-            this.objects.push(tree);
-            placed.push({ x: posX, y: posY });
-          }
+          this.objects.push(tree);
+          placed.push({ x: posX, y: posY });
         }
         attempts++;
       }
     }
 
-    // RUINS
-    if (hasRuin) {
-      const ruin = this.add.text(x, y, '🏛️', {
-        fontSize: `${this.hexSize * 0.8}px`
-      }).setOrigin(0.5).setDepth(5);
-      this.objects.push(ruin);
-    }
+    if (hasRuin)  this.objects.push(this.add.text(x, y, '🏛️', { fontSize: `${this.hexSize * 0.8}px` }).setOrigin(0.5).setDepth(5));
+    if (hasCrashSite) this.objects.push(this.add.text(x, y, '🚀', { fontSize: `${this.hexSize * 0.8}px` }).setOrigin(0.5).setDepth(5));
+    if (hasVehicle) this.objects.push(this.add.text(x, y, '🚙', { fontSize: `${this.hexSize * 0.8}px` }).setOrigin(0.5).setDepth(5));
+    if (hasMountainIcon) this.objects.push(this.add.text(x, y, '🏔️', { fontSize: `${this.hexSize * 0.9}px`, fontFamily: 'Arial, "Segoe UI Emoji", "Noto Color Emoji", sans-serif' }).setOrigin(0.5).setDepth(5));
 
-    // CRASHED SPACECRAFT
-    if (hasCrashSite) {
-      const rocket = this.add.text(x, y, '🚀', {
-        fontSize: `${this.hexSize * 0.8}px`
-      }).setOrigin(0.5).setDepth(5);
-      this.objects.push(rocket);
-    }
-
-    // VEHICLE
-    if (hasVehicle) {
-      const vehicle = this.add.text(x, y, '🚙', {
-        fontSize: `${this.hexSize * 0.8}px`
-      }).setOrigin(0.5).setDepth(5);
-      this.objects.push(vehicle);
-    }
-
-    // MOUNTAIN ICON
-    if (hasMountainIcon) {
-      const mountain = this.add.text(x, y, '🏔️', {
-        fontSize: `${this.hexSize * 0.9}px`,
-        fontFamily: 'Arial, "Segoe UI Emoji", "Noto Color Emoji", sans-serif'
-      }).setOrigin(0.5).setDepth(5);
-      this.objects.push(mountain);
-    }
-
-    // ROADS (connect centers at their elevated iso positions)
+    // Roads across elevated centers
     if (hasRoad) {
       const neighbors = getHexNeighbors(q, r)
         .map(n => this.mapData.find(h => h.q === n.q && h.r === n.r && h.hasRoad))
@@ -266,11 +221,10 @@ export function drawHexMap() {
         const p1 = this.hexToPixel(q, r, this.hexSize);
         const p2 = this.hexToPixel(n.q, n.r, this.hexSize);
 
-        const y1 = p1.y + offsetY - CLIFF_THICKNESS * (elevation || 0);
-        const y2 = p2.y + offsetY - CLIFF_THICKNESS * (n.elevation || 0);
+        const y1 = p1.y + offsetY - LIFT_PER_LVL * (elevation || 0);
+        const y2 = p2.y + offsetY - LIFT_PER_LVL * (n.elevation || 0);
 
         const line = this.add.graphics().setDepth(3);
-
         const brightness = 0.60 + Math.min(4, Math.max(0, elevation)) * 0.05;
         const val = Math.max(0, Math.min(255, Math.round(153 * brightness)));
         const roadColor = Phaser.Display.Color.GetColor(val, val, val);
@@ -287,26 +241,23 @@ export function drawHexMap() {
 }
 
 /**
- * Hex → pixel conversion (with padding) in **isometric projection**
- * Standard pointy-top axial position -> shear/compress to iso.
- * Projection tuned to be less skewed (more rectangular).
+ * Hex → pixel conversion (with padding) in **mild isometric projection**
  */
 export function hexToPixel(q, r, size) {
   // pointy-top axial
   const x0 = size * Math.sqrt(3) * (q + 0.5 * (r & 1));
   const y0 = size * 1.5 * r;
 
-  // tuned isometric projection
+  // milder isometric projection
   const xIso = x0 - y0 * ISO_SHEAR;
   const yIso = y0 * ISO_YSCALE;
 
-  // padding (small fixed origin so map still visible if no camera)
+  // padding
   return { x: xIso + size * 2, y: yIso + size * 2 };
 }
 
 /**
- * Pixel → hex conversion + round
- * (kept as original top-down mapping for now; visuals only changed)
+ * Pixel → hex conversion + round (kept as original top-down mapping)
  */
 export function pixelToHex(x, y, size) {
   x -= size * 2;
@@ -316,9 +267,7 @@ export function pixelToHex(x, y, size) {
   return roundHex(q, r);
 }
 
-/**
- * Cube coordinate rounding
- */
+/** Cube coordinate rounding */
 export function roundHex(q, r) {
   const x = q, z = r, y = -x - z;
   let rx = Math.round(x), ry = Math.round(y), rz = Math.round(z);
@@ -331,10 +280,9 @@ export function roundHex(q, r) {
 
 /**
  * Draw one hexagon (as polygon)
- * Grounded: draws a dark **base plate** first, then slab/cliffs, then top.
- * Shows a constant **BASE_THICKNESS** on bottom-left & bottom-right edges for
- * all non-water tiles, and upgrades to **CLIFF_THICKNESS** only when this
- * tile's elevation is ≥2 higher than its neighbor.
+ * Grounded: draws a dark base plate first, then slab/cliffs, then top.
+ * Bottom edges (SW & SE) always have a small slab; when Δelev ≥ 2,
+ * the wall depth equals the true vertical difference to remove floating.
  */
 export function drawHex(q, r, x, y, size, color, elevation = 0) {
   const gfx = this.add.graphics({ x: 0, y: 0 });
@@ -357,15 +305,15 @@ export function drawHex(q, r, x, y, size, color, elevation = 0) {
     gfx.fillStyle(plateColor, 1);
     gfx.lineStyle(0, 0x000000, 0);
     gfx.beginPath();
-    gfx.moveTo(corners[0].x, corners[0].y + BASE_THICKNESS);
+    gfx.moveTo(corners[0].x, corners[0].y + BASE_SLAB_THICKNESS);
     for (let i = 1; i < 6; i++) {
-      gfx.lineTo(corners[i].x, corners[i].y + BASE_THICKNESS);
+      gfx.lineTo(corners[i].x, corners[i].y + BASE_SLAB_THICKNESS);
     }
     gfx.closePath();
     gfx.fillPath();
   }
 
-  // === ISO BOTTOM EDGES (only SW and SE = edges 3 and 4)
+  // === ISO BOTTOM EDGES (SW and SE = edges 3 and 4)
   if (!isWater) {
     const neighborsFixed = getAxialNeighborsFixedOrder(q, r)
       .map(n => this.mapData.find(t => t.q === n.q && t.r === n.r));
@@ -373,18 +321,18 @@ export function drawHex(q, r, x, y, size, color, elevation = 0) {
     // edge→neighbor mapping (edges order: [NE, NW, W, SW, SE, E])
     const dirIndexForEdge = [1, 2, 3, 4, 5, 0];
 
-    [3, 4].forEach(edge => { // SW and SE only
+    [3, 4].forEach(edge => {
       const nb = neighborsFixed[dirIndexForEdge[edge]];
       const nbElev = nb && typeof nb.elevation === 'number' ? nb.elevation : null;
-      const diff = nbElev === null ? Infinity : (elevation - nbElev);
+      const diff = nbElev === null ? elevation : Math.max(0, elevation - nbElev);
 
-      // Base slab always; upgrade to cliff when Δelev >= 2
-      const thickness = (diff >= 2) ? CLIFF_THICKNESS : BASE_THICKNESS;
+      // If Δ<2 → show a small slab; if Δ≥2 → extend wall to actual height diff.
+      const wallDepth = (diff >= 2) ? (LIFT_PER_LVL * diff) : BASE_SLAB_THICKNESS;
 
       const a = corners[edge];
       const b = corners[(edge + 1) % 6];
-      const a2 = { x: a.x, y: a.y + thickness };
-      const b2 = { x: b.x, y: b.y + thickness };
+      const a2 = { x: a.x, y: a.y + wallDepth };
+      const b2 = { x: b.x, y: b.y + wallDepth };
 
       const wallFill = darkenColor(color, 0.70);
       const wallStroke = darkenColor(color, 0.55);
@@ -431,9 +379,7 @@ export function drawHex(q, r, x, y, size, color, elevation = 0) {
   this.tileMap[`${q},${r}`] = gfx;
 }
 
-/**
- * Terrain color map
- */
+/** Terrain color map */
 export function getColorForTerrain(terrain) {
   switch (terrain) {
     case 'grassland': return 0x34a853;
