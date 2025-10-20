@@ -92,8 +92,9 @@ function darkenColor(intColor, factor) {
   return Phaser.Display.Color.GetColor(r, g, b);
 }
 
-/** Constant cliff thickness (in pixels) used for isometric faces */
-const CLIFF_THICKNESS = 5;
+/** Thickness constants (in pixels) */
+const CLIFF_THICKNESS = 5;  // shown when Δelev >= 2 (true cliff)
+const BASE_THICKNESS  = 2;  // always shown on bottom edges to sell isometry
 
 /** Isometric transform for a local offset relative to hex center */
 function isoOffset(dx, dy) {
@@ -103,7 +104,7 @@ function isoOffset(dx, dy) {
 
 /**
  * Draw the hex grid and place scenic object sprites based on tile data.
- * Now renders in a pseudo-isometric projection with controlled cliffs.
+ * Renders in a pseudo-isometric projection with parity-correct bottom edges.
  */
 export function drawHexMap() {
   this.objects = this.objects || [];
@@ -135,7 +136,7 @@ export function drawHexMap() {
     const fillColor = getFillForTile(hex);
     this.drawHex(q, r, x, y, this.hexSize, fillColor, elevation);
 
-    // ░░ Elevation number at the center of each hex ░░
+    // Elevation number at the center of each hex
     const { text: txtColor, stroke: strokeColor } = getContrastingTextColors(fillColor);
     const elevLabel = this.add.text(x, y, String(elevation), {
       fontSize: `${Math.max(10, Math.floor(this.hexSize * 0.55))}px`,
@@ -148,7 +149,7 @@ export function drawHexMap() {
     elevLabel.setStroke(strokeColor, 2);
     this.objects.push(elevLabel);
 
-    // 🌲 FOREST CLUSTER: 2–4 non-overlapping animated trees
+    // FORESTS
     if (hasForest) {
       const treeCount = Phaser.Math.Between(2, 4);
       const placed = [];
@@ -194,7 +195,7 @@ export function drawHexMap() {
       }
     }
 
-    // 🏛️ RUINS
+    // RUINS
     if (hasRuin) {
       const ruin = this.add.text(x, y, '🏛️', {
         fontSize: `${this.hexSize * 0.8}px`
@@ -202,7 +203,7 @@ export function drawHexMap() {
       this.objects.push(ruin);
     }
 
-    // 🚀 CRASHED SPACECRAFT
+    // CRASHED SPACECRAFT
     if (hasCrashSite) {
       const rocket = this.add.text(x, y, '🚀', {
         fontSize: `${this.hexSize * 0.8}px`
@@ -210,7 +211,7 @@ export function drawHexMap() {
       this.objects.push(rocket);
     }
 
-    // 🚙 ABANDONED VEHICLE
+    // VEHICLE
     if (hasVehicle) {
       const vehicle = this.add.text(x, y, '🚙', {
         fontSize: `${this.hexSize * 0.8}px`
@@ -218,7 +219,7 @@ export function drawHexMap() {
       this.objects.push(vehicle);
     }
 
-    // 🏔️ MOUNTAIN ICON
+    // MOUNTAIN ICON
     if (hasMountainIcon) {
       const mountain = this.add.text(x, y, '🏔️', {
         fontSize: `${this.hexSize * 0.9}px`,
@@ -227,7 +228,7 @@ export function drawHexMap() {
       this.objects.push(mountain);
     }
 
-    // 🛣️ Ancient roads (connect centers at their elevated iso positions)
+    // ROADS (connect centers at their elevated iso positions)
     if (hasRoad) {
       const neighbors = getHexNeighbors(q, r)
         .map(n => this.mapData.find(h => h.q === n.q && h.r === n.r && h.hasRoad))
@@ -301,8 +302,9 @@ export function roundHex(q, r) {
 
 /**
  * Draw one hexagon (as polygon)
- * Supports **isometric cliffs** (only on bottom-left & bottom-right edges),
- * and simple contour rings. No shadow rendering.
+ * Shows a constant **BASE_THICKNESS** on bottom-left & bottom-right edges for
+ * all non-water tiles (isometric slab), and upgrades to **CLIFF_THICKNESS**
+ * only when this tile's elevation is ≥2 higher than its neighbor.
  */
 export function drawHex(q, r, x, y, size, color, elevation = 0) {
   const gfx = this.add.graphics({ x: 0, y: 0 });
@@ -317,39 +319,35 @@ export function drawHex(q, r, x, y, size, color, elevation = 0) {
     corners.push({ x: x + o.x, y: y + o.y });
   }
 
-  // === ISO CLIFFS — ONLY bottom-left (SW, edge 3) & bottom-right (SE, edge 4) ===
-  if (elevation > 0) {
+  // === ISO BOTTOM EDGES (only SW and SE = edges 3 and 4) ===
+  if (elevation >= 0 && this.mapData) {
     const neighborsFixed = getAxialNeighborsFixedOrder(q, r)
       .map(n => this.mapData.find(t => t.q === n.q && t.r === n.r));
 
-    // map edges to neighbor indices (edges order: [NE, NW, W, SW, SE, E])
+    // edge→neighbor mapping (edges order: [NE, NW, W, SW, SE, E])
     const dirIndexForEdge = [1, 2, 3, 4, 5, 0];
 
-    // process only edges 3 (SW) and 4 (SE)
-    [3, 4].forEach(edge => {
+    [3, 4].forEach(edge => { // SW and SE only
       const nb = neighborsFixed[dirIndexForEdge[edge]];
       const nbElev = nb && typeof nb.elevation === 'number' ? nb.elevation : null;
       const diff = nbElev === null ? Infinity : (elevation - nbElev);
 
-      // RULES:
-      // - no cliffs when |Δ| == 0 or |Δ| == 1
-      // - draw a 5px cliff when elevation - nbElev >= 2
-      // - also draw a 5px base thickness at map edges (no neighbor) to simulate iso
-      const shouldDraw =
-        (nbElev === null) || (diff >= 2);
+      // Base thickness always for non-water tiles
+      let thickness = BASE_THICKNESS;
 
-      if (!shouldDraw) return;
+      // Upgrade to cliff thickness when Δelev >= 2
+      if (diff >= 2) thickness = CLIFF_THICKNESS;
 
-      const h = CLIFF_THICKNESS;
+      // If this tile is water, skip slab/cliff (keep sea flat)
+      if (this.mapData && this.mapData.find(t => t.q === q && t.r === r)?.type === 'water') {
+        return;
+      }
 
       const a = corners[edge];
       const b = corners[(edge + 1) % 6];
+      const a2 = { x: a.x, y: a.y + thickness };
+      const b2 = { x: b.x, y: b.y + thickness };
 
-      // Bottom edge points (extruded straight down in screen space)
-      const a2 = { x: a.x, y: a.y + h };
-      const b2 = { x: b.x, y: b.y + h };
-
-      // Wall shading and outline (simple, consistent)
       const wallFill = darkenColor(color, 0.70);
       const wallStroke = darkenColor(color, 0.55);
 
@@ -366,7 +364,7 @@ export function drawHex(q, r, x, y, size, color, elevation = 0) {
     });
   }
 
-  // main hex top fill (drawn above cliffs)
+  // main hex top fill (drawn above slab/cliffs)
   gfx.lineStyle(1, 0x000000, 0.45);
   gfx.fillStyle(color, 1);
   gfx.beginPath();
@@ -376,7 +374,7 @@ export function drawHex(q, r, x, y, size, color, elevation = 0) {
   gfx.fillPath();
   gfx.strokePath();
 
-  // Simple contour rings (visual only; capped to 3 for clarity)
+  // simple inner contour rings (visual only; capped to 3 for clarity)
   const cx = x, cy = y;
   for (let i = 1; i <= Math.min(3, elevation); i++) {
     gfx.lineStyle(0.5, 0x000000, 0.08);
