@@ -260,13 +260,13 @@ export function drawHex(q, r, x, y, size, color, elevation = 0) {
 
   // elevation shadow (draw first, soft offset downward)
   if (elevation > 0) {
-    gfx.fillStyle(0x000000, 0.08 * elevation);
+    gfx.fillStyle(0x000000, 0.12 * elevation); // a bit stronger so it reads
     const cornersShadow = [];
     for (let i = 0; i < 6; i++) {
       const ang = Phaser.Math.DegToRad(60 * i + 30);
       cornersShadow.push({
         x: x + size * Math.cos(ang),
-        y: y + size * Math.sin(ang) + elevation * 1.5
+        y: y + size * Math.sin(ang) + elevation * (size * 0.10)
       });
     }
     gfx.beginPath();
@@ -276,20 +276,17 @@ export function drawHex(q, r, x, y, size, color, elevation = 0) {
     gfx.fillPath();
   }
 
-  // === ISO CLIFFS: draw side walls where neighbor elevation is lower ===
-  // Build top-face corners first (used for sides & later top fill)
+  // Compute top-face corners once
   const corners = [];
   for (let i = 0; i < 6; i++) {
     const ang = Phaser.Math.DegToRad(60 * i + 30);
     corners.push({ x: x + size * Math.cos(ang), y: y + size * Math.sin(ang) });
   }
 
+  // === ISO CLIFFS: strong, visible side walls on drop edges ===
   if (elevation > 0) {
-    // Height in pixels per elevation level
-    const cliffPerLevel = Math.max(2, Math.round(size * 0.18)); // ~4 px when size≈24
-    // Slightly darkened wall color (deeper with bigger drop)
-    const baseWallColor = darkenColor(color, 0.7);
-
+    // Tall enough to see: around 0.28 * size per elevation level
+    const cliffPerLevel = Math.max(4, Math.round(size * 0.28));
     const neighbors = getHexNeighbors(q, r).map(n =>
       this.mapData.find(t => t.q === n.q && t.r === n.r)
     );
@@ -298,7 +295,7 @@ export function drawHex(q, r, x, y, size, color, elevation = 0) {
       const nb = neighbors[i];
       const nbElev = nb && typeof nb.elevation === 'number' ? nb.elevation : 0;
       const diff = elevation - nbElev;
-      if (diff <= 0) continue; // only draw cliff when this tile is higher
+      if (diff <= 0) continue; // only when this tile is higher
 
       const h = diff * cliffPerLevel;
 
@@ -310,15 +307,16 @@ export function drawHex(q, r, x, y, size, color, elevation = 0) {
       const a2 = { x: a.x, y: a.y + h };
       const b2 = { x: b.x, y: b.y + h };
 
-      // Shade varies slightly by edge to mimic directional lighting
-      // Prefer darker on "south/east" edges (i ~ 2..4)
-      const edgeFactor = (i === 2 || i === 3 || i === 4) ? 0.55 : 0.65;
-      const wallColor = darkenColor(baseWallColor, edgeFactor);
+      // Wall fill and outline — darker with stronger drop
+      // Slight directional lighting: darker on SE/S edges (2..4)
+      const dirFactor = (i === 2 || i === 3 || i === 4) ? 0.55 : 0.65;
+      const wallBase = darkenColor(color, dirFactor);
+      const wallFill = darkenColor(wallBase, 0.85);
+      const wallStroke = darkenColor(wallBase, 0.6);
 
-      gfx.fillStyle(wallColor, 1);
-      gfx.lineStyle(1, darkenColor(wallColor, 0.8), 0.9);
-
-      // Draw wall quad (a -> b -> b2 -> a2)
+      // Fill wall quad
+      gfx.fillStyle(wallFill, 1);
+      gfx.lineStyle(2, wallStroke, 0.9);
       gfx.beginPath();
       gfx.moveTo(a.x, a.y);
       gfx.lineTo(b.x, b.y);
@@ -327,11 +325,35 @@ export function drawHex(q, r, x, y, size, color, elevation = 0) {
       gfx.closePath();
       gfx.fillPath();
       gfx.strokePath();
+
+      // Add AO (ambient occlusion) rim at the top of the drop edge
+      gfx.lineStyle(3, darkenColor(0x000000, 0.6), 0.25 + 0.05 * diff);
+      gfx.beginPath();
+      gfx.moveTo(a.x, a.y);
+      gfx.lineTo(b.x, b.y);
+      gfx.strokePath();
+
+      // Optional: subtle vertical hatch lines inside the wall for texture
+      const hatchStep = Math.max(4, Math.round(size * 0.12));
+      const edgeDx = (b.x - a.x);
+      const edgeDy = (b.y - a.y);
+      const edgeLen = Math.max(1, Math.hypot(edgeDx, edgeDy));
+      const ux = edgeDx / edgeLen, uy = edgeDy / edgeLen; // unit along edge
+      // perpendicular "down" is (0, +1), so hatch just vertical segments
+      gfx.lineStyle(1, darkenColor(wallFill, 0.8), 0.35);
+      for (let t = hatchStep; t < edgeLen; t += hatchStep) {
+        const hx = a.x + ux * t;
+        const hy = a.y + uy * t;
+        gfx.beginPath();
+        gfx.moveTo(hx, hy + 1);
+        gfx.lineTo(hx, hy + h - 1);
+        gfx.strokePath();
+      }
     }
   }
 
   // main hex top fill (drawn above cliffs)
-  gfx.lineStyle(1, 0x000000, 0.4);
+  gfx.lineStyle(1, 0x000000, 0.45);
   gfx.fillStyle(color, 1);
   gfx.beginPath();
   gfx.moveTo(corners[0].x, corners[0].y);
@@ -343,7 +365,7 @@ export function drawHex(q, r, x, y, size, color, elevation = 0) {
   // subtle directional highlight along top-right edges for elevated tiles
   if (elevation >= 2) {
     // Assume light comes from top-left; highlight edges facing that direction.
-    const highlightAlpha = 0.08 + 0.02 * (elevation - 2);
+    const highlightAlpha = 0.10 + 0.03 * (elevation - 2);
     gfx.lineStyle(2, 0xffffff, highlightAlpha);
     // Edges: from corner 0→1 and 1→2 (roughly top-right on pointy-top hexes)
     gfx.beginPath();
@@ -357,7 +379,7 @@ export function drawHex(q, r, x, y, size, color, elevation = 0) {
   // contour rings (visual only; capped to 3 for clarity)
   const cx = x, cy = y;
   for (let i = 1; i <= Math.min(3, elevation); i++) {
-    gfx.lineStyle(0.5, 0x000000, 0.08);
+    gfx.lineStyle(0.5, 0x000000, 0.10);
     const scale = 1 - i * 0.1;
     gfx.beginPath();
     corners.forEach(({ x: px, y: py }, idx) => {
