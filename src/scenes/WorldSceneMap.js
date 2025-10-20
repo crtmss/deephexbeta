@@ -94,20 +94,45 @@ function darkenColor(intColor, factor) {
 
 /** Thickness constants (in pixels) */
 const CLIFF_THICKNESS = 5;  // shown when Δelev >= 2 (true cliff)
-const BASE_THICKNESS  = 2;  // always shown on bottom edges to sell isometry
+const BASE_THICKNESS  = 2;  // always on bottom edges to sell isometry
+
+/** Isometric projection tuning (less stretch, more rectangular) */
+const ISO_SHEAR = 0.35;     // ← was 0.5, milder skew on X
+const ISO_YSCALE = 0.85;    // ← was 0.75, a bit taller
 
 /** Isometric transform for a local offset relative to hex center */
 function isoOffset(dx, dy) {
-  // shear X by -0.5 * dy, compress Y by 0.75
-  return { x: dx - dy * 0.5, y: dy * 0.75 };
+  // shear X by -ISO_SHEAR * dy, compress Y by ISO_YSCALE
+  return { x: dx - dy * ISO_SHEAR, y: dy * ISO_YSCALE };
 }
 
 /**
  * Draw the hex grid and place scenic object sprites based on tile data.
- * Renders in a pseudo-isometric projection with parity-correct bottom edges.
+ * Renders in a pseudo-isometric projection with centering & grounded bases.
  */
 export function drawHexMap() {
   this.objects = this.objects || [];
+
+  // === Compute bounding box (without elevation lift) to center the map ===
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  const centers = this.mapData.map(t => {
+    const p = this.hexToPixel(t.q, t.r, this.hexSize);
+    if (p.x < minX) minX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y > maxY) maxY = p.y;
+    return { t, p };
+  });
+
+  // Center inside the main camera if available, else keep previous padding origin
+  let offsetX = 0, offsetY = 0;
+  const cam = this.cameras && this.cameras.main;
+  if (cam) {
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+    offsetX = cam.centerX - cx;
+    offsetY = cam.centerY - cy;
+  }
 
   // Draw lower elevations first, higher last (so 4 over 3 over 2, etc.)
   const sorted = [...this.mapData].sort((a, b) => {
@@ -128,10 +153,11 @@ export function drawHexMap() {
       hasRoad, hasMountainIcon, elevation = 0
     } = hex;
 
-    const base = this.hexToPixel(q, r, this.hexSize); // iso-projected center (no vertical lift)
+    // iso-projected center (no vertical lift) + centering offsets
+    const base = this.hexToPixel(q, r, this.hexSize);
     const lift = CLIFF_THICKNESS * (elevation || 0);
-    const x = base.x;
-    const y = base.y - lift; // raise top face according to elevation
+    const x = base.x + offsetX;
+    const y = base.y + offsetY - lift; // raise top face according to elevation
 
     const fillColor = getFillForTile(hex);
     this.drawHex(q, r, x, y, this.hexSize, fillColor, elevation);
@@ -157,39 +183,41 @@ export function drawHexMap() {
 
       while (placed.length < treeCount && attempts < 40) {
         const angle = Phaser.Math.FloatBetween(0, 2 * Math.PI);
-        const radius = Phaser.Math.FloatBetween(this.hexSize * 0.35, this.hexSize * 0.65);
-        const dx = Math.cos(angle) * radius;
-        const dy = Math.sin(angle) * radius;
-        const o = isoOffset(dx, dy);
-        const posX = x + o.x;
-        const posY = y + o.y;
-        const minDist = this.hexSize * 0.3;
+        theLoop: {
+          const radius = Phaser.Math.FloatBetween(this.hexSize * 0.35, this.hexSize * 0.65);
+          const dx = Math.cos(angle) * radius;
+          const dy = Math.sin(angle) * radius;
+          const o = isoOffset(dx, dy);
+          const posX = x + o.x;
+          const posY = y + o.y;
+          const minDist = this.hexSize * 0.3;
 
-        const tooClose = placed.some(p => {
-          const dist = Phaser.Math.Distance.Between(posX, posY, p.x, p.y);
-          return dist < minDist;
-        });
-
-        if (!tooClose) {
-          const sizePercent = 0.45 + Phaser.Math.FloatBetween(-0.05, 0.05);
-          const size = this.hexSize * sizePercent;
-
-          const tree = this.add.text(posX, posY, '🌲', {
-            fontSize: `${size}px`
-          }).setOrigin(0.5).setDepth(5);
-
-          this.tweens.add({
-            targets: tree,
-            angle: { from: -1.5, to: 1.5 },
-            duration: Phaser.Math.Between(2500, 4000),
-            yoyo: true,
-            repeat: -1,
-            ease: 'Sine.easeInOut',
-            delay: Phaser.Math.Between(0, 1000)
+          const tooClose = placed.some(p => {
+            const dist = Phaser.Math.Distance.Between(posX, posY, p.x, p.y);
+            return dist < minDist;
           });
 
-          this.objects.push(tree);
-          placed.push({ x: posX, y: posY });
+          if (!tooClose) {
+            const sizePercent = 0.45 + Phaser.Math.FloatBetween(-0.05, 0.05);
+            const size = this.hexSize * sizePercent;
+
+            const tree = this.add.text(posX, posY, '🌲', {
+              fontSize: `${size}px`
+            }).setOrigin(0.5).setDepth(5);
+
+            this.tweens.add({
+              targets: tree,
+              angle: { from: -1.5, to: 1.5 },
+              duration: Phaser.Math.Between(2500, 4000),
+              yoyo: true,
+              repeat: -1,
+              ease: 'Sine.easeInOut',
+              delay: Phaser.Math.Between(0, 1000)
+            });
+
+            this.objects.push(tree);
+            placed.push({ x: posX, y: posY });
+          }
         }
         attempts++;
       }
@@ -238,8 +266,8 @@ export function drawHexMap() {
         const p1 = this.hexToPixel(q, r, this.hexSize);
         const p2 = this.hexToPixel(n.q, n.r, this.hexSize);
 
-        const y1 = p1.y - CLIFF_THICKNESS * (elevation || 0);
-        const y2 = p2.y - CLIFF_THICKNESS * (n.elevation || 0);
+        const y1 = p1.y + offsetY - CLIFF_THICKNESS * (elevation || 0);
+        const y2 = p2.y + offsetY - CLIFF_THICKNESS * (n.elevation || 0);
 
         const line = this.add.graphics().setDepth(3);
 
@@ -249,8 +277,8 @@ export function drawHexMap() {
 
         line.lineStyle(2, roadColor, 0.7);
         line.beginPath();
-        line.moveTo(p1.x, y1);
-        line.lineTo(p2.x, y2);
+        line.moveTo(p1.x + offsetX, y1);
+        line.lineTo(p2.x + offsetX, y2);
         line.strokePath();
         this.objects.push(line);
       });
@@ -261,17 +289,18 @@ export function drawHexMap() {
 /**
  * Hex → pixel conversion (with padding) in **isometric projection**
  * Standard pointy-top axial position -> shear/compress to iso.
+ * Projection tuned to be less skewed (more rectangular).
  */
 export function hexToPixel(q, r, size) {
   // pointy-top axial
   const x0 = size * Math.sqrt(3) * (q + 0.5 * (r & 1));
   const y0 = size * 1.5 * r;
 
-  // isometric projection
-  const xIso = x0 - y0 * 0.5;
-  const yIso = y0 * 0.75;
+  // tuned isometric projection
+  const xIso = x0 - y0 * ISO_SHEAR;
+  const yIso = y0 * ISO_YSCALE;
 
-  // padding
+  // padding (small fixed origin so map still visible if no camera)
   return { x: xIso + size * 2, y: yIso + size * 2 };
 }
 
@@ -302,9 +331,10 @@ export function roundHex(q, r) {
 
 /**
  * Draw one hexagon (as polygon)
+ * Grounded: draws a dark **base plate** first, then slab/cliffs, then top.
  * Shows a constant **BASE_THICKNESS** on bottom-left & bottom-right edges for
- * all non-water tiles (isometric slab), and upgrades to **CLIFF_THICKNESS**
- * only when this tile's elevation is ≥2 higher than its neighbor.
+ * all non-water tiles, and upgrades to **CLIFF_THICKNESS** only when this
+ * tile's elevation is ≥2 higher than its neighbor.
  */
 export function drawHex(q, r, x, y, size, color, elevation = 0) {
   const gfx = this.add.graphics({ x: 0, y: 0 });
@@ -319,8 +349,24 @@ export function drawHex(q, r, x, y, size, color, elevation = 0) {
     corners.push({ x: x + o.x, y: y + o.y });
   }
 
-  // === ISO BOTTOM EDGES (only SW and SE = edges 3 and 4) ===
-  if (elevation >= 0 && this.mapData) {
+  const isWater = this.mapData && this.mapData.find(t => t.q === q && t.r === r)?.type === 'water';
+
+  // === BASE PLATE (prevents 'floating' look). Skip for water.
+  if (!isWater) {
+    const plateColor = darkenColor(color, 0.68);
+    gfx.fillStyle(plateColor, 1);
+    gfx.lineStyle(0, 0x000000, 0);
+    gfx.beginPath();
+    gfx.moveTo(corners[0].x, corners[0].y + BASE_THICKNESS);
+    for (let i = 1; i < 6; i++) {
+      gfx.lineTo(corners[i].x, corners[i].y + BASE_THICKNESS);
+    }
+    gfx.closePath();
+    gfx.fillPath();
+  }
+
+  // === ISO BOTTOM EDGES (only SW and SE = edges 3 and 4)
+  if (!isWater) {
     const neighborsFixed = getAxialNeighborsFixedOrder(q, r)
       .map(n => this.mapData.find(t => t.q === n.q && t.r === n.r));
 
@@ -332,16 +378,8 @@ export function drawHex(q, r, x, y, size, color, elevation = 0) {
       const nbElev = nb && typeof nb.elevation === 'number' ? nb.elevation : null;
       const diff = nbElev === null ? Infinity : (elevation - nbElev);
 
-      // Base thickness always for non-water tiles
-      let thickness = BASE_THICKNESS;
-
-      // Upgrade to cliff thickness when Δelev >= 2
-      if (diff >= 2) thickness = CLIFF_THICKNESS;
-
-      // If this tile is water, skip slab/cliff (keep sea flat)
-      if (this.mapData && this.mapData.find(t => t.q === q && t.r === r)?.type === 'water') {
-        return;
-      }
+      // Base slab always; upgrade to cliff when Δelev >= 2
+      const thickness = (diff >= 2) ? CLIFF_THICKNESS : BASE_THICKNESS;
 
       const a = corners[edge];
       const b = corners[(edge + 1) % 6];
@@ -364,17 +402,17 @@ export function drawHex(q, r, x, y, size, color, elevation = 0) {
     });
   }
 
-  // main hex top fill (drawn above slab/cliffs)
+  // === TOP FACE (above base & walls)
   gfx.lineStyle(1, 0x000000, 0.45);
   gfx.fillStyle(color, 1);
   gfx.beginPath();
   gfx.moveTo(corners[0].x, corners[0].y);
-  corners.slice(1).forEach(c => gfx.lineTo(c.x, c.y));
+  for (let i = 1; i < 6; i++) gfx.lineTo(corners[i].x, corners[i].y);
   gfx.closePath();
   gfx.fillPath();
   gfx.strokePath();
 
-  // simple inner contour rings (visual only; capped to 3 for clarity)
+  // optional inner contour rings (capped to 3)
   const cx = x, cy = y;
   for (let i = 1; i <= Math.min(3, elevation); i++) {
     gfx.lineStyle(0.5, 0x000000, 0.08);
