@@ -15,6 +15,7 @@ export function generateHexMap(width, height, seed) {
   return raw.map(h => {
     const { q, r } = h;
     if (q < left || q >= width - right || r < top || r >= height - bottom) {
+      // Keep all other fields (e.g., elevation) but force water type
       return { ...h, type: 'water' };
     }
     return h;
@@ -38,26 +39,30 @@ function getHexNeighbors(q, r) {
 function getFillForTile(tile) {
   const baseColor = getColorForTerrain(tile.type);
   const elevation = tile.elevation ?? 0;
-  const colorObj = Phaser.Display.Color.IntegerToColor(baseColor);
-  const adjusted = Phaser.Display.Color.Interpolate.ColorWithColor(
+
+  // Interpolate a brightness shift from black → white across 0..4 steps
+  const adjust = Phaser.Display.Color.Interpolate.ColorWithColor(
     Phaser.Display.Color.IntegerToColor(0x000000),
     Phaser.Display.Color.IntegerToColor(0xffffff),
     4,
-    elevation
+    Math.min(4, Math.max(0, elevation))
   );
-  // Blend base with brightness adjustment
+  const base = Phaser.Display.Color.IntegerToColor(baseColor);
+
+  // Blend base with adjustment (50%)
   const blended = Phaser.Display.Color.Interpolate.ColorWithColor(
-    colorObj,
-    Phaser.Display.Color.ObjectToColor(adjusted),
+    base,
+    Phaser.Display.Color.ObjectToColor(adjust),
     1,
     0.5
   );
+
   return Phaser.Display.Color.GetColor(blended.r, blended.g, blended.b);
 }
 
 /**
  * Draw the hex grid and place scenic object sprites based on tile data
- * Now includes elevation shading and subtle shadows/contours.
+ * Includes elevation shading, subtle shadows/contours, and edge highlights.
  */
 export function drawHexMap() {
   this.objects = this.objects || [];
@@ -161,13 +166,12 @@ export function drawHexMap() {
         const p1 = this.hexToPixel(q, r, this.hexSize);
         const p2 = this.hexToPixel(n.q, n.r, this.hexSize);
         const line = this.add.graphics().setDepth(1);
-        // Slightly darken/lift road color by elevation
-        const brightness = 0.6 + elevation * 0.05;
-        const roadColor = Phaser.Display.Color.GetColor(
-          153 * brightness,
-          153 * brightness,
-          153 * brightness
-        );
+
+        // Slightly adjust road brightness by elevation for contrast
+        const brightness = 0.60 + elevation * 0.05; // clamp visually
+        const val = Math.max(0, Math.min(255, Math.round(153 * brightness)));
+        const roadColor = Phaser.Display.Color.GetColor(val, val, val);
+
         line.lineStyle(2, roadColor, 0.7);
         line.beginPath();
         line.moveTo(p1.x, p1.y);
@@ -223,18 +227,21 @@ export function roundHex(q, r) {
 
 /**
  * Draw one hexagon (as polygon)
- * Now supports elevation shadows and contour rings.
+ * Supports elevation shadows, contour rings, and edge highlights.
  */
 export function drawHex(q, r, x, y, size, color, elevation = 0) {
   const gfx = this.add.graphics({ x: 0, y: 0 });
 
-  // elevation shadow (draw first)
+  // elevation shadow (draw first, soft offset downward)
   if (elevation > 0) {
     gfx.fillStyle(0x000000, 0.08 * elevation);
     const cornersShadow = [];
     for (let i = 0; i < 6; i++) {
       const ang = Phaser.Math.DegToRad(60 * i + 30);
-      cornersShadow.push({ x: x + size * Math.cos(ang), y: y + size * Math.sin(ang) + elevation * 1.5 });
+      cornersShadow.push({
+        x: x + size * Math.cos(ang),
+        y: y + size * Math.sin(ang) + elevation * 1.5
+      });
     }
     gfx.beginPath();
     gfx.moveTo(cornersShadow[0].x, cornersShadow[0].y);
@@ -258,7 +265,21 @@ export function drawHex(q, r, x, y, size, color, elevation = 0) {
   gfx.fillPath();
   gfx.strokePath();
 
-  // contour rings (visual only)
+  // subtle directional highlight along top-right edges for elevated tiles
+  if (elevation >= 2) {
+    // Assume light comes from top-left; highlight edges facing that direction.
+    const highlightAlpha = 0.08 + 0.02 * (elevation - 2);
+    gfx.lineStyle(2, 0xffffff, highlightAlpha);
+    // Edges: from corner 0→1 and 1→2 (roughly top-right on pointy-top hexes)
+    gfx.beginPath();
+    gfx.moveTo(corners[0].x, corners[0].y);
+    gfx.lineTo(corners[1].x, corners[1].y);
+    gfx.moveTo(corners[1].x, corners[1].y);
+    gfx.lineTo(corners[2].x, corners[2].y);
+    gfx.strokePath();
+  }
+
+  // contour rings (visual only; capped to 3 for clarity)
   const cx = x, cy = y;
   for (let i = 1; i <= Math.min(3, elevation); i++) {
     gfx.lineStyle(0.5, 0x000000, 0.08);
