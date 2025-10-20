@@ -34,35 +34,42 @@ function getHexNeighbors(q, r) {
 
 /**
  * Compute adjusted fill color for elevation shading
- * Higher elevation → brighter tint; lower → darker.
+ * Higher elevation → brighter tint; water is not tinted.
  */
 function getFillForTile(tile) {
   const baseColor = getColorForTerrain(tile.type);
   const elevation = tile.elevation ?? 0;
 
-  // Interpolate a brightness shift from black → white across 0..4 steps
-  const adjust = Phaser.Display.Color.Interpolate.ColorWithColor(
-    Phaser.Display.Color.IntegerToColor(0x000000),
-    Phaser.Display.Color.IntegerToColor(0xffffff),
-    4,
-    Math.min(4, Math.max(0, elevation))
-  );
+  // Do not tint water (keeps borders visually coherent)
+  if (tile.type === 'water') {
+    return baseColor;
+  }
+
+  // Linear brighten towards white, up to 50% at elevation 4
+  const t = Math.max(0, Math.min(1, elevation / 4)) * 0.5; // 0..0.5
   const base = Phaser.Display.Color.IntegerToColor(baseColor);
+  const r = Math.round(base.r + (255 - base.r) * t);
+  const g = Math.round(base.g + (255 - base.g) * t);
+  const b = Math.round(base.b + (255 - base.b) * t);
+  return Phaser.Display.Color.GetColor(r, g, b);
+}
 
-  // Blend base with adjustment (50%)
-  const blended = Phaser.Display.Color.Interpolate.ColorWithColor(
-    base,
-    Phaser.Display.Color.ObjectToColor(adjust),
-    1,
-    0.5
-  );
-
-  return Phaser.Display.Color.GetColor(blended.r, blended.g, blended.b);
+/**
+ * Choose black or white text for best contrast against a background color
+ */
+function getContrastingTextColors(bgInt) {
+  const c = Phaser.Display.Color.IntegerToColor(bgInt);
+  // Perceived luminance
+  const luminance = (0.299 * c.r + 0.587 * c.g + 0.114 * c.b);
+  const text = luminance > 150 ? '#000000' : '#ffffff';
+  const stroke = luminance > 150 ? '#ffffff' : '#000000';
+  return { text, stroke };
 }
 
 /**
  * Draw the hex grid and place scenic object sprites based on tile data
- * Includes elevation shading, subtle shadows/contours, and edge highlights.
+ * Includes elevation shading, subtle shadows/contours, edge highlights,
+ * and the elevation number rendered at each hex center.
  */
 export function drawHexMap() {
   this.objects = this.objects || [];
@@ -75,8 +82,21 @@ export function drawHexMap() {
     } = hex;
 
     const { x, y } = this.hexToPixel(q, r, this.hexSize);
-    const color = getFillForTile(hex);
-    this.drawHex(q, r, x, y, this.hexSize, color, elevation);
+    const fillColor = getFillForTile(hex);
+    this.drawHex(q, r, x, y, this.hexSize, fillColor, elevation);
+
+    // ░░ Elevation number at the center of each hex ░░
+    const { text: txtColor, stroke: strokeColor } = getContrastingTextColors(fillColor);
+    const elevLabel = this.add.text(x, y, String(elevation), {
+      fontSize: `${Math.max(10, Math.floor(this.hexSize * 0.55))}px`,
+      fontStyle: 'bold',
+      color: txtColor,
+      align: 'center'
+    })
+      .setOrigin(0.5)
+      .setDepth(3);
+    elevLabel.setStroke(strokeColor, 2);
+    this.objects.push(elevLabel);
 
     // 🌲 FOREST CLUSTER: 2–4 non-overlapping animated trees
     if (hasForest) {
@@ -167,8 +187,8 @@ export function drawHexMap() {
         const p2 = this.hexToPixel(n.q, n.r, this.hexSize);
         const line = this.add.graphics().setDepth(1);
 
-        // Slightly adjust road brightness by elevation for contrast
-        const brightness = 0.60 + elevation * 0.05; // clamp visually
+        // Adjust road brightness by elevation for contrast (clamped)
+        const brightness = 0.60 + Math.min(4, Math.max(0, elevation)) * 0.05;
         const val = Math.max(0, Math.min(255, Math.round(153 * brightness)));
         const roadColor = Phaser.Display.Color.GetColor(val, val, val);
 
@@ -181,13 +201,9 @@ export function drawHexMap() {
       });
     }
 
-    // 🔍 Debug: show elevation text if enabled
-    if (this.debugMode) {
-      const label = this.add.text(x, y, `E:${elevation}`, {
-        fontSize: '8px',
-        color: '#000'
-      }).setOrigin(0.5).setDepth(60);
-      this.objects.push(label);
+    // 🔍 If debugMode is enabled, repurpose the center label to include a prefix
+    if (this.debugMode && elevLabel && elevLabel.setText) {
+      elevLabel.setText(`E:${elevation}`);
     }
   });
 }
