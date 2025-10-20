@@ -66,10 +66,20 @@ function getContrastingTextColors(bgInt) {
   return { text, stroke };
 }
 
+/** Darken a hex color integer by factor (0..1) */
+function darkenColor(intColor, factor) {
+  const c = Phaser.Display.Color.IntegerToColor(intColor);
+  const r = Math.max(0, Math.min(255, Math.round(c.r * factor)));
+  const g = Math.max(0, Math.min(255, Math.round(c.g * factor)));
+  const b = Math.max(0, Math.min(255, Math.round(c.b * factor)));
+  return Phaser.Display.Color.GetColor(r, g, b);
+}
+
 /**
  * Draw the hex grid and place scenic object sprites based on tile data
  * Includes elevation shading, subtle shadows/contours, edge highlights,
- * and the elevation number rendered at each hex center.
+ * center elevation numbers, and **isometric cliffs** along edges where
+ * this tile is higher than its neighbor (visual 3D step effect).
  */
 export function drawHexMap() {
   this.objects = this.objects || [];
@@ -243,7 +253,7 @@ export function roundHex(q, r) {
 
 /**
  * Draw one hexagon (as polygon)
- * Supports elevation shadows, contour rings, and edge highlights.
+ * Supports elevation shadows, **isometric cliffs**, contour rings, and edge highlights.
  */
 export function drawHex(q, r, x, y, size, color, elevation = 0) {
   const gfx = this.add.graphics({ x: 0, y: 0 });
@@ -266,14 +276,63 @@ export function drawHex(q, r, x, y, size, color, elevation = 0) {
     gfx.fillPath();
   }
 
-  // main hex fill
-  gfx.lineStyle(1, 0x000000, 0.4);
-  gfx.fillStyle(color, 1);
+  // === ISO CLIFFS: draw side walls where neighbor elevation is lower ===
+  // Build top-face corners first (used for sides & later top fill)
   const corners = [];
   for (let i = 0; i < 6; i++) {
     const ang = Phaser.Math.DegToRad(60 * i + 30);
     corners.push({ x: x + size * Math.cos(ang), y: y + size * Math.sin(ang) });
   }
+
+  if (elevation > 0) {
+    // Height in pixels per elevation level
+    const cliffPerLevel = Math.max(2, Math.round(size * 0.18)); // ~4 px when size≈24
+    // Slightly darkened wall color (deeper with bigger drop)
+    const baseWallColor = darkenColor(color, 0.7);
+
+    const neighbors = getHexNeighbors(q, r).map(n =>
+      this.mapData.find(t => t.q === n.q && t.r === n.r)
+    );
+
+    for (let i = 0; i < 6; i++) {
+      const nb = neighbors[i];
+      const nbElev = nb && typeof nb.elevation === 'number' ? nb.elevation : 0;
+      const diff = elevation - nbElev;
+      if (diff <= 0) continue; // only draw cliff when this tile is higher
+
+      const h = diff * cliffPerLevel;
+
+      // Edge from corner i to i+1
+      const a = corners[i];
+      const b = corners[(i + 1) % 6];
+
+      // Bottom edge points (extruded downwards by +y)
+      const a2 = { x: a.x, y: a.y + h };
+      const b2 = { x: b.x, y: b.y + h };
+
+      // Shade varies slightly by edge to mimic directional lighting
+      // Prefer darker on "south/east" edges (i ~ 2..4)
+      const edgeFactor = (i === 2 || i === 3 || i === 4) ? 0.55 : 0.65;
+      const wallColor = darkenColor(baseWallColor, edgeFactor);
+
+      gfx.fillStyle(wallColor, 1);
+      gfx.lineStyle(1, darkenColor(wallColor, 0.8), 0.9);
+
+      // Draw wall quad (a -> b -> b2 -> a2)
+      gfx.beginPath();
+      gfx.moveTo(a.x, a.y);
+      gfx.lineTo(b.x, b.y);
+      gfx.lineTo(b2.x, b2.y);
+      gfx.lineTo(a2.x, a2.y);
+      gfx.closePath();
+      gfx.fillPath();
+      gfx.strokePath();
+    }
+  }
+
+  // main hex top fill (drawn above cliffs)
+  gfx.lineStyle(1, 0x000000, 0.4);
+  gfx.fillStyle(color, 1);
   gfx.beginPath();
   gfx.moveTo(corners[0].x, corners[0].y);
   corners.slice(1).forEach(c => gfx.lineTo(c.x, c.y));
