@@ -252,7 +252,6 @@ export function drawHexMap() {
 
       while (placed.length < treeCount && attempts < 40) {
         const angle = Phaser.Math.FloatBetween(0, 2 * Math.PI);
-        the:
         const radius = Phaser.Math.FloatBetween(this.hexSize * 0.35, 0.65 * this.hexSize);
         const dx = Math.cos(angle) * radius;
         const dy = Math.sin(angle) * radius;
