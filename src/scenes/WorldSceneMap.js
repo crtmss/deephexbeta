@@ -107,11 +107,12 @@ const LIFT_PER_LVL = 4;             // vertical lift per *effective* level (px)
 const BASE_SLAB_THICKNESS = 2;      // shown on BL/BR when Δ≤0
 
 /** Top stroke styling to avoid black rims */
-const TOP_STROKE_ALPHA_LAND  = 0.0;   // no rim on land (removes black seams)
+const TOP_STROKE_ALPHA_LAND  = 0.0;   // no rim on land
 const TOP_STROKE_ALPHA_WATER = 0.12;  // subtle rim on water only
 
-/** Slight overlap so walls tuck under the top face (prevents antialias gaps) */
-const WALL_TOP_INSET = 0.5; // px
+/** Overlaps/Insets to eliminate AA seams */
+const WALL_TOP_INSET   = 0.5;  // tuck under top face
+const WALL_EDGE_OVERLAP = 0.6; // extend along edge direction
 
 /** Isometric transform for a local offset relative to hex center */
 function isoOffset(dx, dy) {
@@ -251,6 +252,7 @@ export function drawHexMap() {
 
       while (placed.length < treeCount && attempts < 40) {
         const angle = Phaser.Math.FloatBetween(0, 2 * Math.PI);
+        the:
         const radius = Phaser.Math.FloatBetween(this.hexSize * 0.35, 0.65 * this.hexSize);
         const dx = Math.cos(angle) * radius;
         const dy = Math.sin(angle) * radius;
@@ -362,9 +364,9 @@ export function roundHex(q, r) {
 
 /**
  * Draw one hexagon (as polygon)
- * Cylindrical walls: for each of 6 edges, if neighbor is lower, draw a wall whose
- * depth equals the true *effective* height difference. BL/BR still get a tiny slab when flat.
- * Accepts `effElevation` and `type` to handle water/level1 baseline at 0.
+ * Cylindrical walls with **corner-stitched depths**: for each edge, the two
+ * bottom vertices use the max depth of the two edges that join at that corner.
+ * Also extends walls slightly along the edge to overlap neighbors.
  */
 export function drawHex(q, r, x, y, size, color, effElevation = 0, type = 'grassland') {
   const gfx = this.add.graphics({ x: 0, y: 0 });
@@ -379,36 +381,55 @@ export function drawHex(q, r, x, y, size, color, effElevation = 0, type = 'grass
     corners.push({ x: x + o.x, y: y + o.y });
   }
 
-  // === Per-edge walls (6 sides) – cylinder effect ===
+  // Neighbor list in fixed angular order
   const neighborsFixed = getAxialNeighborsFixedOrder(q, r)
     .map(n => this.mapData.find(t => t.q === n.q && t.r === n.r));
 
-  // edge order from our corner order is [E, NE, NW, W, SW, SE]
+  // Edge order from our corner order is [E, NE, NW, W, SW, SE]
   const EDGE_TO_DIR = [0, 1, 2, 3, 4, 5];
 
+  // ---- 1) Precompute raw wall depths per edge (before stitching)
+  const rawDepths = new Array(6).fill(0);
+  const isWater = (type === 'water');
+
   for (let edge = 0; edge < 6; edge++) {
+    if (isWater) { rawDepths[edge] = 0; continue; }
+
     const nb = neighborsFixed[EDGE_TO_DIR[edge]];
-    // effective neighbor elevation (water=0, level1=0)
     const nbEff = effectiveElevation(nb);
 
     let diff = effElevation - nbEff;
-    if (diff < 0) diff = 0; // only draw when we are higher
+    if (diff < 0) diff = 0;
 
-    // keep small slab for BL/BR when flat
     const isBottomEdge = (edge === 3 || edge === 4);
-    const wallDepth = diff > 0 ? (diff * LIFT_PER_LVL) : (isBottomEdge ? BASE_SLAB_THICKNESS : 0);
+    const depth = diff > 0 ? (diff * LIFT_PER_LVL) : (isBottomEdge ? BASE_SLAB_THICKNESS : 0);
 
-    if (wallDepth <= 0) continue;
+    rawDepths[edge] = depth;
+  }
+
+  // ---- 2) Draw each wall using **stitched** depths at the two corners
+  for (let edge = 0; edge < 6; edge++) {
+    const depthHere = rawDepths[edge];
+    if (depthHere <= 0) continue;
 
     const a = corners[edge];
     const b = corners[(edge + 1) % 6];
 
-    // tuck wall slightly under the top face to hide AA gaps
-    const topA = { x: a.x, y: a.y - WALL_TOP_INSET };
-    const topB = { x: b.x, y: b.y - WALL_TOP_INSET };
+    // stitched corner depths (max of touching edges)
+    const dA = Math.max(rawDepths[edge], rawDepths[(edge + 5) % 6]);
+    const dB = Math.max(rawDepths[edge], rawDepths[(edge + 1) % 6]);
 
-    const a2 = { x: a.x, y: a.y + wallDepth };
-    const b2 = { x: b.x, y: b.y + wallDepth };
+    // extend slightly along the edge to overlap adjacent walls
+    const ex = b.x - a.x;
+    const ey = b.y - a.y;
+    const len = Math.max(1, Math.hypot(ex, ey));
+    const ux = ex / len, uy = ey / len;
+
+    const topA = { x: a.x - ux * WALL_EDGE_OVERLAP, y: a.y - uy * WALL_EDGE_OVERLAP - WALL_TOP_INSET };
+    const topB = { x: b.x + ux * WALL_EDGE_OVERLAP, y: b.y + uy * WALL_EDGE_OVERLAP - WALL_TOP_INSET };
+
+    const a2 = { x: a.x - ux * WALL_EDGE_OVERLAP, y: a.y + dA };
+    const b2 = { x: b.x + ux * WALL_EDGE_OVERLAP, y: b.y + dB };
 
     const wallFill = darkenColor(color, 0.72);
     const wallStroke = darkenColor(color, 0.62);
@@ -425,8 +446,7 @@ export function drawHex(q, r, x, y, size, color, effElevation = 0, type = 'grass
     gfx.strokePath();
   }
 
-  // top face (no heavy black rim on land)
-  const isWater = (type === 'water');
+  // ---- 3) Top face (no heavy black rim on land)
   const topStrokeAlpha = isWater ? TOP_STROKE_ALPHA_WATER : TOP_STROKE_ALPHA_LAND;
   const topStrokeColor = darkenColor(color, 0.85);
 
@@ -444,7 +464,7 @@ export function drawHex(q, r, x, y, size, color, effElevation = 0, type = 'grass
   gfx.fillPath();
   if (topStrokeAlpha > 0) gfx.strokePath();
 
-  // soft inner contours (optional) — still use effective elevation
+  // Optional inner contours (use effective elevation)
   const cx = x, cy = y;
   for (let i = 1; i <= Math.min(3, effElevation); i++) {
     gfx.lineStyle(0.5, 0x000000, 0.08);
