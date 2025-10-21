@@ -399,3 +399,52 @@ export function drawHex(q, r, x, y, size, color, effElevation = 0, type = 'grass
       gfx.beginPath();
       gfx.moveTo(a.x, a.y);
       gfx.lineTo(b.x, b.y);
+      gfx.lineTo(b2.x, b2.y);
+      gfx.lineTo(a2.x, a2.y);
+      gfx.closePath();
+      gfx.fillPath();
+      gfx.strokePath();
+    }
+  }
+
+  // top face
+  gfx.lineStyle(1, 0x000000, 0.45);
+  gfx.fillStyle(color, 1);
+  gfx.beginPath();
+  gfx.moveTo(corners[0].x, corners[0].y);
+  for (let i = 1; i < 6; i++) gfx.lineTo(corners[i].x, corners[i].y);
+  gfx.closePath();
+  gfx.fillPath();
+  gfx.strokePath();
+
+  // soft inner contours (optional)
+  const cx = x, cy = y;
+  for (let i = 1; i <= Math.min(3, effElevation); i++) {
+    gfx.lineStyle(0.5, 0x000000, 0.08);
+    const scale = 1 - i * 0.1;
+    gfx.beginPath();
+    corners.forEach(({ x: px, y: py }, idx) => {
+      const sx = cx + (px - cx) * scale;
+      const sy = cy + (py - cy) * scale;
+      if (idx === 0) gfx.moveTo(sx, sy);
+      else gfx.lineTo(sx, sy);
+    });
+    gfx.closePath();
+    gfx.strokePath();
+  }
+
+  this.tileMap[`${q},${r}`] = gfx;
+}
+
+/** Terrain color map */
+export function getColorForTerrain(terrain) {
+  switch (terrain) {
+    case 'grassland': return 0x34a853;
+    case 'sand': return 0xFFF59D;
+    case 'mud': return 0x795548;
+    case 'swamp': return 0x4E342E;
+    case 'mountain': return 0x9E9E9E;
+    case 'water': return 0x4da6ff;
+    default: return 0x888888;
+  }
+}
