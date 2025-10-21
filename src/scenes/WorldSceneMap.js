@@ -84,13 +84,17 @@ function darkenColor(intColor, factor) {
   return Phaser.Display.Color.GetColor(r, g, b);
 }
 
-/** Projection & depth constants */
-const ISO_SHEAR   = 0.15; // very mild tilt
-const ISO_YSCALE  = 0.95; // almost top-down height
-const LIFT_PER_LVL = 4;   // vertical lift per elevation level (px)
+/** Projection & depth constants (mild tilt, almost top-down) */
+const ISO_SHEAR   = 0.15;
+const ISO_YSCALE  = 0.95;
+const LIFT_PER_LVL = 4;             // vertical lift per elevation level (px)
 
-/** Visual wall policy */
-const BASE_SLAB_THICKNESS = 2; // small slab on BL/BR when Δ<2 (and for edges to void)
+/** Visual walls
+ * - For ANY positive drop to a neighbor, we draw a wall the exact height difference.
+ *   This creates a "cylinder" feel and removes black air gaps.
+ * - We still keep a tiny slab on bottom-left/bottom-right to sell isometry on flat areas.
+ */
+const BASE_SLAB_THICKNESS = 2;      // shown on BL/BR when Δ≤0
 
 /** Isometric transform for a local offset relative to hex center */
 function isoOffset(dx, dy) {
@@ -99,11 +103,9 @@ function isoOffset(dx, dy) {
 
 /** Create/refresh a sticky UI button at top-right to toggle debugMode */
 function ensureDebugToggleButton() {
-  // default state: hidden numbers
   if (typeof this.debugMode !== 'boolean') this.debugMode = false;
 
   if (this.debugBtn && this.debugBtnLabel) {
-    // Reposition each frame (in case of resize / camera changes)
     const cam = this.cameras?.main;
     if (cam) {
       const x = cam.scrollX + cam.width - 130;
@@ -118,7 +120,6 @@ function ensureDebugToggleButton() {
   const x = (cam ? cam.scrollX + cam.width : 800) - 130;
   const y = (cam ? cam.scrollY : 0) + 12;
 
-  // simple rounded rectangle button using Graphics
   const g = this.add.graphics().setScrollFactor(0).setDepth(1000);
   g.fillStyle(0x1e1e1e, 0.85);
   g.fillRoundedRect(x, y, 120, 34, 8);
@@ -136,19 +137,14 @@ function ensureDebugToggleButton() {
   g.on('pointerdown', () => {
     this.debugMode = !this.debugMode;
     label.setText(`Debug: ${this.debugMode ? 'ON' : 'OFF'}`);
-
-    // Toggle all existing elevation labels
     if (this.objects) {
-      this.objects.forEach(o => {
-        if (o && o.isElevationLabel) o.setVisible(this.debugMode);
-      });
+      this.objects.forEach(o => { if (o && o.isElevationLabel) o.setVisible(this.debugMode); });
     }
   });
 
   this.debugBtn = g;
   this.debugBtnLabel = label;
 
-  // keep pinned to top-right as camera scrolls
   this.events?.on('postupdate', () => {
     const c = this.cameras?.main;
     if (!c) return;
@@ -161,12 +157,12 @@ function ensureDebugToggleButton() {
 
 /**
  * Draw the hex grid and place scenic object sprites based on tile data.
- * Centered rendering, mild tilt, and cliffs that reach the lower surface.
+ * Centered rendering + cylindrical walls down to neighbor height.
  */
 export function drawHexMap() {
   this.objects = this.objects || [];
 
-  // make sure the debug toggle exists & is positioned
+  // UI button
   ensureDebugToggleButton.call(this);
 
   // === Bounding box (no elevation lift) to center the map ===
@@ -213,7 +209,7 @@ export function drawHexMap() {
     const fillColor = getFillForTile(hex);
     this.drawHex(q, r, x, y, this.hexSize, fillColor, elevation);
 
-    // Elevation number (created always, but visibility follows debug toggle)
+    // Elevation number (visibility tied to debug toggle)
     const { text: txtColor, stroke: strokeColor } = getContrastingTextColors(fillColor);
     const elevLabel = this.add.text(x, y, String(elevation), {
       fontSize: `${Math.max(10, Math.floor(this.hexSize * 0.55))}px`,
@@ -228,7 +224,7 @@ export function drawHexMap() {
     elevLabel.isElevationLabel = true;
     this.objects.push(elevLabel);
 
-    // Scenic objects (unchanged depths)
+    // Scenic objects
     if (hasForest) {
       const treeCount = Phaser.Math.Between(2, 4);
       const placed = [];
@@ -236,7 +232,7 @@ export function drawHexMap() {
 
       while (placed.length < treeCount && attempts < 40) {
         const angle = Phaser.Math.FloatBetween(0, 2 * Math.PI);
-        const radius = Phaser.Math.FloatBetween(this.hexSize * 0.35, this.hexSize * 0.65);
+        const radius = Phaser.Math.FloatBetween(this.hexSize * 0.35, 0.65 * this.hexSize);
         const dx = Math.cos(angle) * radius;
         const dy = Math.sin(angle) * radius;
         const o = isoOffset(dx, dy);
@@ -344,14 +340,13 @@ export function roundHex(q, r) {
 
 /**
  * Draw one hexagon (as polygon)
- * Grounded: draws a dark base plate first, then BL/BR slab/cliffs, then top.
- * Bottom edges (SW & SE) always have a small slab; when Δelev ≥ 2,
- * the wall depth equals the true vertical difference to remove floating.
+ * Cylindrical walls: for each of 6 edges, if neighbor is lower, draw a wall whose
+ * depth equals the true height difference. BL/BR still get a tiny slab when flat.
  */
 export function drawHex(q, r, x, y, size, color, elevation = 0) {
   const gfx = this.add.graphics({ x: 0, y: 0 });
 
-  // Compute top-face corners (iso-transformed offsets)
+  // top-face corners (iso-transformed)
   const corners = [];
   for (let i = 0; i < 6; i++) {
     const ang = Phaser.Math.DegToRad(60 * i + 30);
@@ -363,35 +358,25 @@ export function drawHex(q, r, x, y, size, color, elevation = 0) {
 
   const isWater = this.mapData && this.mapData.find(t => t.q === q && t.r === r)?.type === 'water';
 
-  // === BASE PLATE (prevents 'floating' look). Skip for water.
-  if (!isWater) {
-    const plateColor = darkenColor(color, 0.68);
-    gfx.fillStyle(plateColor, 1);
-    gfx.lineStyle(0, 0x000000, 0);
-    gfx.beginPath();
-    gfx.moveTo(corners[0].x, corners[0].y + BASE_SLAB_THICKNESS);
-    for (let i = 1; i < 6; i++) {
-      gfx.lineTo(corners[i].x, corners[i].y + BASE_SLAB_THICKNESS);
-    }
-    gfx.closePath();
-    gfx.fillPath();
-  }
-
-  // === ISO BOTTOM EDGES (SW and SE = edges 3 and 4)
+  // === Per-edge walls (6 sides) – cylinder effect ===
   if (!isWater) {
     const neighborsFixed = getAxialNeighborsFixedOrder(q, r)
       .map(n => this.mapData.find(t => t.q === n.q && t.r === n.r));
 
-    // edge→neighbor mapping (edges order: [NE, NW, W, SW, SE, E])
+    // edges order of our polygon: [NE, NW, W, SW, SE, E]
     const dirIndexForEdge = [1, 2, 3, 4, 5, 0];
 
-    [3, 4].forEach(edge => {
+    for (let edge = 0; edge < 6; edge++) {
       const nb = neighborsFixed[dirIndexForEdge[edge]];
-      const nbElev = nb && typeof nb.elevation === 'number' ? nb.elevation : null;
-      const diff = nbElev === null ? elevation : Math.max(0, elevation - nbElev);
+      const nbElev = (nb && typeof nb.elevation === 'number') ? nb.elevation : 0; // fall to ground level
+      let diff = (elevation || 0) - nbElev;
+      if (diff < 0) diff = 0; // only draw when we are higher
 
-      // If Δ<2 → show a small slab; if Δ≥2 → extend wall to actual height diff.
-      const wallDepth = (diff >= 2) ? (LIFT_PER_LVL * diff) : BASE_SLAB_THICKNESS;
+      // keep small slab for BL/BR when flat
+      const isBottomEdge = (edge === 3 || edge === 4);
+      const wallDepth = diff > 0 ? (diff * LIFT_PER_LVL) : (isBottomEdge ? BASE_SLAB_THICKNESS : 0);
+
+      if (wallDepth <= 0) continue;
 
       const a = corners[edge];
       const b = corners[(edge + 1) % 6];
@@ -411,10 +396,10 @@ export function drawHex(q, r, x, y, size, color, elevation = 0) {
       gfx.closePath();
       gfx.fillPath();
       gfx.strokePath();
-    });
+    }
   }
 
-  // === TOP FACE (above base & walls)
+  // top face
   gfx.lineStyle(1, 0x000000, 0.45);
   gfx.fillStyle(color, 1);
   gfx.beginPath();
@@ -424,7 +409,7 @@ export function drawHex(q, r, x, y, size, color, elevation = 0) {
   gfx.fillPath();
   gfx.strokePath();
 
-  // optional inner contour rings (capped to 3)
+  // soft inner contours (optional)
   const cx = x, cy = y;
   for (let i = 1; i <= Math.min(3, elevation); i++) {
     gfx.lineStyle(0.5, 0x000000, 0.08);
