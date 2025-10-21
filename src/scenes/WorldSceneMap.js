@@ -201,16 +201,19 @@ export function drawHexMap() {
       hasRoad, hasMountainIcon, elevation = 0
     } = hex;
 
+    // EFFECTIVE elevation: water renders as level 0 (prevents floating water tops)
+    const effElev = (type === 'water') ? 0 : (elevation || 0);
+
     const base = this.hexToPixel(q, r, this.hexSize);
     const x = base.x + offsetX;
-    const y = base.y + offsetY - LIFT_PER_LVL * (elevation || 0);
+    const y = base.y + offsetY - LIFT_PER_LVL * effElev;
 
     const fillColor = getFillForTile(hex);
-    this.drawHex(q, r, x, y, this.hexSize, fillColor, elevation);
+    this.drawHex(q, r, x, y, this.hexSize, fillColor, effElev, type);
 
     // Elevation number (visibility tied to debug toggle)
     const { text: txtColor, stroke: strokeColor } = getContrastingTextColors(fillColor);
-    const elevLabel = this.add.text(x, y, String(elevation), {
+    const elevLabel = this.add.text(x, y, String(effElev), {
       fontSize: `${Math.max(10, Math.floor(this.hexSize * 0.55))}px`,
       fontStyle: 'bold',
       color: txtColor,
@@ -270,7 +273,7 @@ export function drawHexMap() {
     if (hasVehicle) this.objects.push(this.add.text(x, y, '🚙', { fontSize: `${this.hexSize * 0.8}px` }).setOrigin(0.5).setDepth(5));
     if (hasMountainIcon) this.objects.push(this.add.text(x, y, '🏔️', { fontSize: `${this.hexSize * 0.9}px`, fontFamily: 'Arial, "Segoe UI Emoji", "Noto Color Emoji", sans-serif' }).setOrigin(0.5).setDepth(5));
 
-    // Roads across elevated centers
+    // Roads across elevated centers: use effective elevations
     if (hasRoad) {
       const neighbors = getHexNeighbors(q, r)
         .map(n => this.mapData.find(h => h.q === n.q && h.r === n.r && h.hasRoad))
@@ -280,11 +283,14 @@ export function drawHexMap() {
         const p1 = this.hexToPixel(q, r, this.hexSize);
         const p2 = this.hexToPixel(n.q, n.r, this.hexSize);
 
-        const y1 = p1.y + offsetY - LIFT_PER_LVL * (elevation || 0);
-        const y2 = p2.y + offsetY - LIFT_PER_LVL * (n.elevation || 0);
+        const e1 = (type === 'water') ? 0 : (elevation || 0);
+        const e2 = (n.type === 'water') ? 0 : (n.elevation || 0);
+
+        const y1 = p1.y + offsetY - LIFT_PER_LVL * e1;
+        const y2 = p2.y + offsetY - LIFT_PER_LVL * e2;
 
         const line = this.add.graphics().setDepth(3);
-        const brightness = 0.60 + Math.min(4, Math.max(0, elevation)) * 0.05;
+        const brightness = 0.60 + Math.min(4, Math.max(0, e1)) * 0.05;
         const val = Math.max(0, Math.min(255, Math.round(153 * brightness)));
         const roadColor = Phaser.Display.Color.GetColor(val, val, val);
 
@@ -341,8 +347,9 @@ export function roundHex(q, r) {
  * Draw one hexagon (as polygon)
  * Cylindrical walls: for each of 6 edges, if neighbor is lower, draw a wall whose
  * depth equals the true height difference. BL/BR still get a tiny slab when flat.
+ * Accepts `effElevation` and `type` to handle water as level 0.
  */
-export function drawHex(q, r, x, y, size, color, elevation = 0) {
+export function drawHex(q, r, x, y, size, color, effElevation = 0, type = 'grassland') {
   const gfx = this.add.graphics({ x: 0, y: 0 });
 
   // top-face corners (iso-transformed)
@@ -355,14 +362,14 @@ export function drawHex(q, r, x, y, size, color, elevation = 0) {
     corners.push({ x: x + o.x, y: y + o.y });
   }
 
-  const isWater = this.mapData && this.mapData.find(t => t.q === q && t.r === r)?.type === 'water';
+  const isWater = (type === 'water');
 
   // === Per-edge walls (6 sides) – cylinder effect ===
   if (!isWater) {
     const neighborsFixed = getAxialNeighborsFixedOrder(q, r)
       .map(n => this.mapData.find(t => t.q === n.q && t.r === n.r));
 
-    // IMPORTANT: edge order built from our corner order is [E, NE, NW, W, SW, SE]
+    // edge order from our corner order is [E, NE, NW, W, SW, SE]
     const EDGE_TO_DIR = [0, 1, 2, 3, 4, 5];
 
     for (let edge = 0; edge < 6; edge++) {
@@ -370,7 +377,7 @@ export function drawHex(q, r, x, y, size, color, elevation = 0) {
       // Treat water/void as ground level (0 elevation)
       const nbElev = (nb && nb.type !== 'water' && typeof nb.elevation === 'number') ? nb.elevation : 0;
 
-      let diff = (elevation || 0) - nbElev;
+      let diff = effElevation - nbElev;
       if (diff < 0) diff = 0; // only draw when we are higher
 
       // keep small slab for BL/BR when flat
@@ -392,52 +399,3 @@ export function drawHex(q, r, x, y, size, color, elevation = 0) {
       gfx.beginPath();
       gfx.moveTo(a.x, a.y);
       gfx.lineTo(b.x, b.y);
-      gfx.lineTo(b2.x, b2.y);
-      gfx.lineTo(a2.x, a2.y);
-      gfx.closePath();
-      gfx.fillPath();
-      gfx.strokePath();
-    }
-  }
-
-  // top face
-  gfx.lineStyle(1, 0x000000, 0.45);
-  gfx.fillStyle(color, 1);
-  gfx.beginPath();
-  gfx.moveTo(corners[0].x, corners[0].y);
-  for (let i = 1; i < 6; i++) gfx.lineTo(corners[i].x, corners[i].y);
-  gfx.closePath();
-  gfx.fillPath();
-  gfx.strokePath();
-
-  // soft inner contours (optional)
-  const cx = x, cy = y;
-  for (let i = 1; i <= Math.min(3, elevation); i++) {
-    gfx.lineStyle(0.5, 0x000000, 0.08);
-    const scale = 1 - i * 0.1;
-    gfx.beginPath();
-    corners.forEach(({ x: px, y: py }, idx) => {
-      const sx = cx + (px - cx) * scale;
-      const sy = cy + (py - cy) * scale;
-      if (idx === 0) gfx.moveTo(sx, sy);
-      else gfx.lineTo(sx, sy);
-    });
-    gfx.closePath();
-    gfx.strokePath();
-  }
-
-  this.tileMap[`${q},${r}`] = gfx;
-}
-
-/** Terrain color map */
-export function getColorForTerrain(terrain) {
-  switch (terrain) {
-    case 'grassland': return 0x34a853;
-    case 'sand': return 0xFFF59D;
-    case 'mud': return 0x795548;
-    case 'swamp': return 0x4E342E;
-    case 'mountain': return 0x9E9E9E;
-    case 'water': return 0x4da6ff;
-    default: return 0x888888;
-  }
-}
