@@ -106,6 +106,13 @@ const LIFT_PER_LVL = 4;             // vertical lift per *effective* level (px)
  */
 const BASE_SLAB_THICKNESS = 2;      // shown on BL/BR when Δ≤0
 
+/** Top stroke styling to avoid black rims */
+const TOP_STROKE_ALPHA_LAND  = 0.0;   // no rim on land (removes black seams)
+const TOP_STROKE_ALPHA_WATER = 0.12;  // subtle rim on water only
+
+/** Slight overlap so walls tuck under the top face (prevents antialias gaps) */
+const WALL_TOP_INSET = 0.5; // px
+
 /** Isometric transform for a local offset relative to hex center */
 function isoOffset(dx, dy) {
   return { x: dx - dy * ISO_SHEAR, y: dy * ISO_YSCALE };
@@ -212,7 +219,7 @@ export function drawHexMap() {
       hasRoad, hasMountainIcon
     } = hex;
 
-    const effElev = effectiveElevation(hex);    // water=0, land uses (elev-1)+
+    const effElev = effectiveElevation(hex);    // water=0, level1=0
     const base = this.hexToPixel(q, r, this.hexSize);
     const x = base.x + offsetX;
     const y = base.y + offsetY - LIFT_PER_LVL * effElev;
@@ -237,7 +244,7 @@ export function drawHexMap() {
     this.objects.push(elevLabel);
 
     // Scenic objects
-    if (hex.hasForest) {
+    if (hasForest) {
       const treeCount = Phaser.Math.Between(2, 4);
       const placed = [];
       let attempts = 0;
@@ -395,17 +402,22 @@ export function drawHex(q, r, x, y, size, color, effElevation = 0, type = 'grass
 
     const a = corners[edge];
     const b = corners[(edge + 1) % 6];
+
+    // tuck wall slightly under the top face to hide AA gaps
+    const topA = { x: a.x, y: a.y - WALL_TOP_INSET };
+    const topB = { x: b.x, y: b.y - WALL_TOP_INSET };
+
     const a2 = { x: a.x, y: a.y + wallDepth };
     const b2 = { x: b.x, y: b.y + wallDepth };
 
-    const wallFill = darkenColor(color, 0.70);
-    const wallStroke = darkenColor(color, 0.55);
+    const wallFill = darkenColor(color, 0.72);
+    const wallStroke = darkenColor(color, 0.62);
 
     gfx.fillStyle(wallFill, 1);
-    gfx.lineStyle(2, wallStroke, 0.95);
+    gfx.lineStyle(1, wallStroke, 0.6);
     gfx.beginPath();
-    gfx.moveTo(a.x, a.y);
-    gfx.lineTo(b.x, b.y);
+    gfx.moveTo(topA.x, topA.y);
+    gfx.lineTo(topB.x, topB.y);
     gfx.lineTo(b2.x, b2.y);
     gfx.lineTo(a2.x, a2.y);
     gfx.closePath();
@@ -413,15 +425,24 @@ export function drawHex(q, r, x, y, size, color, effElevation = 0, type = 'grass
     gfx.strokePath();
   }
 
-  // top face
-  gfx.lineStyle(1, 0x000000, 0.45);
+  // top face (no heavy black rim on land)
+  const isWater = (type === 'water');
+  const topStrokeAlpha = isWater ? TOP_STROKE_ALPHA_WATER : TOP_STROKE_ALPHA_LAND;
+  const topStrokeColor = darkenColor(color, 0.85);
+
+  if (topStrokeAlpha > 0) {
+    gfx.lineStyle(1, topStrokeColor, topStrokeAlpha);
+  } else {
+    gfx.lineStyle(0, 0x000000, 0);
+  }
+
   gfx.fillStyle(color, 1);
   gfx.beginPath();
   gfx.moveTo(corners[0].x, corners[0].y);
   for (let i = 1; i < 6; i++) gfx.lineTo(corners[i].x, corners[i].y);
   gfx.closePath();
   gfx.fillPath();
-  gfx.strokePath();
+  if (topStrokeAlpha > 0) gfx.strokePath();
 
   // soft inner contours (optional) — still use effective elevation
   const cx = x, cy = y;
