@@ -48,9 +48,20 @@ function getAxialNeighborsFixedOrder(q, r) {
   return dirs.map(([dq, dr]) => ({ q: q + dq, r: r + dr }));
 }
 
+/** Map raw tile -> visual effective elevation:
+ *  - water => 0
+ *  - land  => max(0, elevation - 1)  (level 1 is baseline like water)
+ */
+function effectiveElevation(tile) {
+  if (!tile) return 0;
+  if (tile.type === 'water') return 0;
+  const e = typeof tile.elevation === 'number' ? tile.elevation : 0;
+  return Math.max(0, e - 1);
+}
+
 /**
  * Compute adjusted fill color for elevation shading
- * Higher elevation → brighter tint; water is not tinted.
+ * Higher *raw* elevation → brighter tint; water is not tinted.
  */
 function getFillForTile(tile) {
   const baseColor = getColorForTerrain(tile.type);
@@ -87,10 +98,10 @@ function darkenColor(intColor, factor) {
 /** Projection & depth constants (mild tilt, almost top-down) */
 const ISO_SHEAR   = 0.15;
 const ISO_YSCALE  = 0.95;
-const LIFT_PER_LVL = 4;             // vertical lift per elevation level (px)
+const LIFT_PER_LVL = 4;             // vertical lift per *effective* level (px)
 
 /** Visual walls:
- * - For ANY positive drop to a neighbor, draw wall with depth = true height diff.
+ * - For ANY positive drop to a neighbor (by effective levels), draw wall with depth = true height diff.
  * - Keep tiny slab on BL/BR to sell isometry on flat areas.
  */
 const BASE_SLAB_THICKNESS = 2;      // shown on BL/BR when Δ≤0
@@ -183,11 +194,11 @@ export function drawHexMap() {
     offsetY = cam.centerY - cy;
   }
 
-  // === Draw order: lower elevations first -> higher on top ===
+  // === Draw order: lower effective elevations first -> higher on top ===
   const sorted = [...this.mapData].sort((a, b) => {
-    if ((a.elevation ?? 0) !== (b.elevation ?? 0)) {
-      return (a.elevation ?? 0) - (b.elevation ?? 0);
-    }
+    const ea = effectiveElevation(a);
+    const eb = effectiveElevation(b);
+    if (ea !== eb) return ea - eb;
     const da = (a.q + a.r) - (b.q + b.r);
     if (da !== 0) return da;
     if (a.r !== b.r) return a.r - b.r;
@@ -198,12 +209,10 @@ export function drawHexMap() {
     const {
       q, r, type,
       hasForest, hasRuin, hasCrashSite, hasVehicle,
-      hasRoad, hasMountainIcon, elevation = 0
+      hasRoad, hasMountainIcon
     } = hex;
 
-    // EFFECTIVE elevation: water renders as level 0 (prevents floating water tops)
-    const effElev = (type === 'water') ? 0 : (elevation || 0);
-
+    const effElev = effectiveElevation(hex);    // water=0, land uses (elev-1)+
     const base = this.hexToPixel(q, r, this.hexSize);
     const x = base.x + offsetX;
     const y = base.y + offsetY - LIFT_PER_LVL * effElev;
@@ -211,9 +220,10 @@ export function drawHexMap() {
     const fillColor = getFillForTile(hex);
     this.drawHex(q, r, x, y, this.hexSize, fillColor, effElev, type);
 
-    // Elevation number (visibility tied to debug toggle)
+    // Elevation number (visibility tied to debug toggle) — show RAW elevation
+    const rawElev = typeof hex.elevation === 'number' ? hex.elevation : 0;
     const { text: txtColor, stroke: strokeColor } = getContrastingTextColors(fillColor);
-    const elevLabel = this.add.text(x, y, String(effElev), {
+    const elevLabel = this.add.text(x, y, String(rawElev), {
       fontSize: `${Math.max(10, Math.floor(this.hexSize * 0.55))}px`,
       fontStyle: 'bold',
       color: txtColor,
@@ -227,7 +237,7 @@ export function drawHexMap() {
     this.objects.push(elevLabel);
 
     // Scenic objects
-    if (hasForest) {
+    if (hex.hasForest) {
       const treeCount = Phaser.Math.Between(2, 4);
       const placed = [];
       let attempts = 0;
@@ -283,14 +293,14 @@ export function drawHexMap() {
         const p1 = this.hexToPixel(q, r, this.hexSize);
         const p2 = this.hexToPixel(n.q, n.r, this.hexSize);
 
-        const e1 = (type === 'water') ? 0 : (elevation || 0);
-        const e2 = (n.type === 'water') ? 0 : (n.elevation || 0);
+        const e1 = effectiveElevation(hex);
+        const e2 = effectiveElevation(n);
 
         const y1 = p1.y + offsetY - LIFT_PER_LVL * e1;
         const y2 = p2.y + offsetY - LIFT_PER_LVL * e2;
 
         const line = this.add.graphics().setDepth(3);
-        const brightness = 0.60 + Math.min(4, Math.max(0, e1)) * 0.05;
+        const brightness = 0.60 + Math.min(4, Math.max(0, rawElev)) * 0.05;
         const val = Math.max(0, Math.min(255, Math.round(153 * brightness)));
         const roadColor = Phaser.Display.Color.GetColor(val, val, val);
 
@@ -346,8 +356,8 @@ export function roundHex(q, r) {
 /**
  * Draw one hexagon (as polygon)
  * Cylindrical walls: for each of 6 edges, if neighbor is lower, draw a wall whose
- * depth equals the true height difference. BL/BR still get a tiny slab when flat.
- * Accepts `effElevation` and `type` to handle water as level 0.
+ * depth equals the true *effective* height difference. BL/BR still get a tiny slab when flat.
+ * Accepts `effElevation` and `type` to handle water/level1 baseline at 0.
  */
 export function drawHex(q, r, x, y, size, color, effElevation = 0, type = 'grassland') {
   const gfx = this.add.graphics({ x: 0, y: 0 });
@@ -362,49 +372,45 @@ export function drawHex(q, r, x, y, size, color, effElevation = 0, type = 'grass
     corners.push({ x: x + o.x, y: y + o.y });
   }
 
-  const isWater = (type === 'water');
-
   // === Per-edge walls (6 sides) – cylinder effect ===
-  if (!isWater) {
-    const neighborsFixed = getAxialNeighborsFixedOrder(q, r)
-      .map(n => this.mapData.find(t => t.q === n.q && t.r === n.r));
+  const neighborsFixed = getAxialNeighborsFixedOrder(q, r)
+    .map(n => this.mapData.find(t => t.q === n.q && t.r === n.r));
 
-    // edge order from our corner order is [E, NE, NW, W, SW, SE]
-    const EDGE_TO_DIR = [0, 1, 2, 3, 4, 5];
+  // edge order from our corner order is [E, NE, NW, W, SW, SE]
+  const EDGE_TO_DIR = [0, 1, 2, 3, 4, 5];
 
-    for (let edge = 0; edge < 6; edge++) {
-      const nb = neighborsFixed[EDGE_TO_DIR[edge]];
-      // Treat water/void as ground level (0 elevation)
-      const nbElev = (nb && nb.type !== 'water' && typeof nb.elevation === 'number') ? nb.elevation : 0;
+  for (let edge = 0; edge < 6; edge++) {
+    const nb = neighborsFixed[EDGE_TO_DIR[edge]];
+    // effective neighbor elevation (water=0, level1=0)
+    const nbEff = effectiveElevation(nb);
 
-      let diff = effElevation - nbElev;
-      if (diff < 0) diff = 0; // only draw when we are higher
+    let diff = effElevation - nbEff;
+    if (diff < 0) diff = 0; // only draw when we are higher
 
-      // keep small slab for BL/BR when flat
-      const isBottomEdge = (edge === 3 || edge === 4);
-      const wallDepth = diff > 0 ? (diff * LIFT_PER_LVL) : (isBottomEdge ? BASE_SLAB_THICKNESS : 0);
+    // keep small slab for BL/BR when flat
+    const isBottomEdge = (edge === 3 || edge === 4);
+    const wallDepth = diff > 0 ? (diff * LIFT_PER_LVL) : (isBottomEdge ? BASE_SLAB_THICKNESS : 0);
 
-      if (wallDepth <= 0) continue;
+    if (wallDepth <= 0) continue;
 
-      const a = corners[edge];
-      const b = corners[(edge + 1) % 6];
-      const a2 = { x: a.x, y: a.y + wallDepth };
-      const b2 = { x: b.x, y: b.y + wallDepth };
+    const a = corners[edge];
+    const b = corners[(edge + 1) % 6];
+    const a2 = { x: a.x, y: a.y + wallDepth };
+    const b2 = { x: b.x, y: b.y + wallDepth };
 
-      const wallFill = darkenColor(color, 0.70);
-      const wallStroke = darkenColor(color, 0.55);
+    const wallFill = darkenColor(color, 0.70);
+    const wallStroke = darkenColor(color, 0.55);
 
-      gfx.fillStyle(wallFill, 1);
-      gfx.lineStyle(2, wallStroke, 0.95);
-      gfx.beginPath();
-      gfx.moveTo(a.x, a.y);
-      gfx.lineTo(b.x, b.y);
-      gfx.lineTo(b2.x, b2.y);
-      gfx.lineTo(a2.x, a2.y);
-      gfx.closePath();
-      gfx.fillPath();
-      gfx.strokePath();
-    }
+    gfx.fillStyle(wallFill, 1);
+    gfx.lineStyle(2, wallStroke, 0.95);
+    gfx.beginPath();
+    gfx.moveTo(a.x, a.y);
+    gfx.lineTo(b.x, b.y);
+    gfx.lineTo(b2.x, b2.y);
+    gfx.lineTo(a2.x, a2.y);
+    gfx.closePath();
+    gfx.fillPath();
+    gfx.strokePath();
   }
 
   // top face
@@ -417,7 +423,7 @@ export function drawHex(q, r, x, y, size, color, effElevation = 0, type = 'grass
   gfx.fillPath();
   gfx.strokePath();
 
-  // soft inner contours (optional)
+  // soft inner contours (optional) — still use effective elevation
   const cx = x, cy = y;
   for (let i = 1; i <= Math.min(3, effElevation); i++) {
     gfx.lineStyle(0.5, 0x000000, 0.08);
