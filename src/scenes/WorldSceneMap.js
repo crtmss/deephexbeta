@@ -89,10 +89,9 @@ const ISO_SHEAR   = 0.15;
 const ISO_YSCALE  = 0.95;
 const LIFT_PER_LVL = 4;             // vertical lift per elevation level (px)
 
-/** Visual walls
- * - For ANY positive drop to a neighbor, we draw a wall the exact height difference.
- *   This creates a "cylinder" feel and removes black air gaps.
- * - We still keep a tiny slab on bottom-left/bottom-right to sell isometry on flat areas.
+/** Visual walls:
+ * - For ANY positive drop to a neighbor, draw wall with depth = true height diff.
+ * - Keep tiny slab on BL/BR to sell isometry on flat areas.
  */
 const BASE_SLAB_THICKNESS = 2;      // shown on BL/BR when Δ≤0
 
@@ -363,12 +362,14 @@ export function drawHex(q, r, x, y, size, color, elevation = 0) {
     const neighborsFixed = getAxialNeighborsFixedOrder(q, r)
       .map(n => this.mapData.find(t => t.q === n.q && t.r === n.r));
 
-    // edges order of our polygon: [NE, NW, W, SW, SE, E]
-    const dirIndexForEdge = [1, 2, 3, 4, 5, 0];
+    // IMPORTANT: edge order built from our corner order is [E, NE, NW, W, SW, SE]
+    const EDGE_TO_DIR = [0, 1, 2, 3, 4, 5];
 
     for (let edge = 0; edge < 6; edge++) {
-      const nb = neighborsFixed[dirIndexForEdge[edge]];
-      const nbElev = (nb && typeof nb.elevation === 'number') ? nb.elevation : 0; // fall to ground level
+      const nb = neighborsFixed[EDGE_TO_DIR[edge]];
+      // Treat water/void as ground level (0 elevation)
+      const nbElev = (nb && nb.type !== 'water' && typeof nb.elevation === 'number') ? nb.elevation : 0;
+
       let diff = (elevation || 0) - nbElev;
       if (diff < 0) diff = 0; // only draw when we are higher
 
