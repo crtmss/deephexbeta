@@ -85,19 +85,78 @@ function darkenColor(intColor, factor) {
 }
 
 /** Projection & depth constants */
-const ISO_SHEAR   = 0.15; // milder tilt (was 0.35)
-const ISO_YSCALE  = 0.95; // taller (was 0.85)
+const ISO_SHEAR   = 0.15; // very mild tilt
+const ISO_YSCALE  = 0.95; // almost top-down height
 const LIFT_PER_LVL = 4;   // vertical lift per elevation level (px)
 
-/** Visual wall policy
- * - We keep a small base slab for isometric feel on BL & BR edges.
- * - When Δelev ≥ 2, wall depth matches the true height difference to avoid "floating".
- */
-const BASE_SLAB_THICKNESS = 2; // shown when Δ<2 (and on edges to map boundary)
+/** Visual wall policy */
+const BASE_SLAB_THICKNESS = 2; // small slab on BL/BR when Δ<2 (and for edges to void)
 
 /** Isometric transform for a local offset relative to hex center */
 function isoOffset(dx, dy) {
   return { x: dx - dy * ISO_SHEAR, y: dy * ISO_YSCALE };
+}
+
+/** Create/refresh a sticky UI button at top-right to toggle debugMode */
+function ensureDebugToggleButton() {
+  // default state: hidden numbers
+  if (typeof this.debugMode !== 'boolean') this.debugMode = false;
+
+  if (this.debugBtn && this.debugBtnLabel) {
+    // Reposition each frame (in case of resize / camera changes)
+    const cam = this.cameras?.main;
+    if (cam) {
+      const x = cam.scrollX + cam.width - 130;
+      const y = cam.scrollY + 12;
+      this.debugBtn.setPosition(x, y);
+      this.debugBtnLabel.setPosition(x + 10, y + 6);
+    }
+    return;
+  }
+
+  const cam = this.cameras?.main;
+  const x = (cam ? cam.scrollX + cam.width : 800) - 130;
+  const y = (cam ? cam.scrollY : 0) + 12;
+
+  // simple rounded rectangle button using Graphics
+  const g = this.add.graphics().setScrollFactor(0).setDepth(1000);
+  g.fillStyle(0x1e1e1e, 0.85);
+  g.fillRoundedRect(x, y, 120, 34, 8);
+  g.lineStyle(1, 0xffffff, 0.25);
+  g.strokeRoundedRect(x, y, 120, 34, 8);
+  g.setInteractive(new Phaser.Geom.Rectangle(x, y, 120, 34), Phaser.Geom.Rectangle.Contains);
+
+  const label = this.add.text(x + 10, y + 6, `Debug: ${this.debugMode ? 'ON' : 'OFF'}`, {
+    fontSize: '16px',
+    color: '#ffffff'
+  }).setScrollFactor(0).setDepth(1001);
+
+  g.on('pointerover', () => { g.clear(); g.fillStyle(0x2a2a2a, 0.9); g.fillRoundedRect(x, y, 120, 34, 8); g.lineStyle(1, 0xffffff, 0.35); g.strokeRoundedRect(x, y, 120, 34, 8); });
+  g.on('pointerout',  () => { g.clear(); g.fillStyle(0x1e1e1e, 0.85); g.fillRoundedRect(x, y, 120, 34, 8); g.lineStyle(1, 0xffffff, 0.25); g.strokeRoundedRect(x, y, 120, 34, 8); });
+  g.on('pointerdown', () => {
+    this.debugMode = !this.debugMode;
+    label.setText(`Debug: ${this.debugMode ? 'ON' : 'OFF'}`);
+
+    // Toggle all existing elevation labels
+    if (this.objects) {
+      this.objects.forEach(o => {
+        if (o && o.isElevationLabel) o.setVisible(this.debugMode);
+      });
+    }
+  });
+
+  this.debugBtn = g;
+  this.debugBtnLabel = label;
+
+  // keep pinned to top-right as camera scrolls
+  this.events?.on('postupdate', () => {
+    const c = this.cameras?.main;
+    if (!c) return;
+    const nx = c.scrollX + c.width - 130;
+    const ny = c.scrollY + 12;
+    g.setPosition(nx, ny);
+    label.setPosition(nx + 10, ny + 6);
+  });
 }
 
 /**
@@ -106,6 +165,9 @@ function isoOffset(dx, dy) {
  */
 export function drawHexMap() {
   this.objects = this.objects || [];
+
+  // make sure the debug toggle exists & is positioned
+  ensureDebugToggleButton.call(this);
 
   // === Bounding box (no elevation lift) to center the map ===
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -151,7 +213,7 @@ export function drawHexMap() {
     const fillColor = getFillForTile(hex);
     this.drawHex(q, r, x, y, this.hexSize, fillColor, elevation);
 
-    // Elevation number
+    // Elevation number (created always, but visibility follows debug toggle)
     const { text: txtColor, stroke: strokeColor } = getContrastingTextColors(fillColor);
     const elevLabel = this.add.text(x, y, String(elevation), {
       fontSize: `${Math.max(10, Math.floor(this.hexSize * 0.55))}px`,
@@ -160,8 +222,10 @@ export function drawHexMap() {
       align: 'center'
     })
       .setOrigin(0.5)
-      .setDepth(4);
+      .setDepth(4)
+      .setVisible(!!this.debugMode);
     elevLabel.setStroke(strokeColor, 2);
+    elevLabel.isElevationLabel = true;
     this.objects.push(elevLabel);
 
     // Scenic objects (unchanged depths)
@@ -280,7 +344,7 @@ export function roundHex(q, r) {
 
 /**
  * Draw one hexagon (as polygon)
- * Grounded: draws a dark base plate first, then slab/cliffs, then top.
+ * Grounded: draws a dark base plate first, then BL/BR slab/cliffs, then top.
  * Bottom edges (SW & SE) always have a small slab; when Δelev ≥ 2,
  * the wall depth equals the true vertical difference to remove floating.
  */
