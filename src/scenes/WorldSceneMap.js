@@ -15,7 +15,6 @@ export function generateHexMap(width, height, seed) {
   return raw.map(h => {
     const { q, r } = h;
     if (q < left || q >= width - right || r < top || r >= height - bottom) {
-      // Keep all other fields (e.g., elevation) but force water type
       return { ...h, type: 'water' };
     }
     return h;
@@ -33,19 +32,15 @@ function getHexNeighbors(q, r) {
 }
 
 /**
- * Axial neighbors in fixed angular order (pointy-top axial), independent of row parity.
- * Index 0..5 correspond to directions: [E, NE, NW, W, SW, SE].
+ * Odd-r neighbor tiles in fixed order [E, NE, NW, W, SW, SE]
+ * (matches pointy-top edge normals & our corner order)
  */
-function getAxialNeighborsFixedOrder(q, r) {
-  const dirs = [
-    [+1,  0], // 0: E
-    [+1, -1], // 1: NE
-    [ 0, -1], // 2: NW
-    [-1,  0], // 3: W
-    [-1, +1], // 4: SW
-    [ 0, +1], // 5: SE
-  ];
-  return dirs.map(([dq, dr]) => ({ q: q + dq, r: r + dr }));
+function getNeighborsOffsetOrderTiles(q, r, mapData) {
+  const even = (r % 2 === 0);
+  const offs = even
+    ? [[+1,0],[0,-1],[-1,-1],[-1,0],[-1,+1],[0,+1]]
+    : [[+1,0],[+1,-1],[0,-1],[-1,0],[0,+1],[+1,+1]];
+  return offs.map(([dq, dr]) => mapData.find(t => t.q === q + dq && t.r === r + dr) || null);
 }
 
 /** Effective visual elevation:
@@ -98,13 +93,13 @@ const ISO_SHEAR   = 0.15;
 const ISO_YSCALE  = 0.95;
 const LIFT_PER_LVL = 4;             // vertical lift per *effective* level (px)
 
-/** Visual walls/slabs */
+/** Visual walls/slabs (only bottom-left & bottom-right) */
 const BASE_SLAB_THICKNESS = 2;      // slab on BL/BR when Δ<=0
 
 /** AA seam killers */
-const WALL_TOP_INSET     = 0.9;     // tuck wall under top face a bit more
+const WALL_TOP_INSET     = 0.9;     // tuck wall under top face
 const WALL_EDGE_OVERLAP  = 1.2;     // extend along edge to overlap neighbors
-const DEPTH_EPSILON      = 1.0;     // add to positive walls so they always cover
+const DEPTH_EPSILON      = 1.0;     // ensure positive-drop walls always cover
 
 /** Iso offset (shear + compress) from hex center */
 function isoOffset(dx, dy) {
@@ -298,7 +293,6 @@ export function drawHexMap() {
         const y2 = p2.y + offsetY - LIFT_PER_LVL * e2;
 
         const line = this.add.graphics().setDepth(3);
-        // neutral grey road
         line.lineStyle(2, 0x999999, 0.7);
         line.beginPath();
         line.moveTo(p1.x + offsetX, y1);
@@ -346,7 +340,8 @@ export function roundHex(q, r) {
 }
 
 /**
- * Draw one hex with cylindrical walls:
+ * Draw one hex with cylindrical walls on BL/BR only:
+ * - Uses correct odd-r neighbors for SW/SE
  * - No strokes on top/walls (avoids AA seams)
  * - Corner-stitched depths + overlap + inset to seal gaps
  */
@@ -363,34 +358,30 @@ export function drawHex(q, r, x, y, size, color, effElevation = 0, type = 'grass
     corners.push({ x: x + o.x, y: y + o.y });
   }
 
-  // neighbor list (E, NE, NW, W, SW, SE)
-  const neighborsFixed = getAxialNeighborsFixedOrder(q, r)
-    .map(n => this.mapData.find(t => t.q === n.q && t.r === n.r));
-  const EDGE_TO_DIR = [0, 1, 2, 3, 4, 5];
+  // neighbor tiles in odd-r order [E, NE, NW, W, SW, SE]
+  const neighbors = getNeighborsOffsetOrderTiles(q, r, this.mapData);
 
-  // 1) raw depths per edge
+  // compute depths only for SW(edge=3) and SE(edge=4)
+  const edgesToDraw = [3, 4]; // BL, BR
   const rawDepths = new Array(6).fill(0);
-  const isWater = (type === 'water');
 
-  for (let edge = 0; edge < 6; edge++) {
-    if (isWater) { rawDepths[edge] = 0; continue; }
+  if (type !== 'water') {
+    edgesToDraw.forEach(edge => {
+      const nb = neighbors[edge]; // because order matches [E,NE,NW,W,SW,SE]
+      const nbEff = effectiveElevation(nb);
+      let diff = effElevation - nbEff;
+      if (diff < 0) diff = 0;
 
-    const nb = neighborsFixed[EDGE_TO_DIR[edge]];
-    const nbEff = effectiveElevation(nb);
-    let diff = effElevation - nbEff;
-    if (diff < 0) diff = 0;
-
-    const isBottomEdge = (edge === 3 || edge === 4); // SW/SE slab on flats
-    const depth = diff > 0 ? (diff * LIFT_PER_LVL + DEPTH_EPSILON)
-                           : (isBottomEdge ? BASE_SLAB_THICKNESS : 0);
-
-    rawDepths[edge] = depth;
+      const depth = diff > 0 ? (diff * LIFT_PER_LVL + DEPTH_EPSILON)
+                             : BASE_SLAB_THICKNESS;
+      rawDepths[edge] = depth;
+    });
   }
 
-  // 2) draw stitched walls
-  for (let edge = 0; edge < 6; edge++) {
+  // stitched walls (only for the two bottom edges)
+  edgesToDraw.forEach(edge => {
     const depthHere = rawDepths[edge];
-    if (depthHere <= 0) continue;
+    if (depthHere <= 0) return;
 
     const a = corners[edge];
     const b = corners[(edge + 1) % 6];
@@ -412,7 +403,6 @@ export function drawHex(q, r, x, y, size, color, effElevation = 0, type = 'grass
     const wallFill = darkenColor(color, 0.72);
 
     gfx.fillStyle(wallFill, 1);
-    // no stroke -> no seam
     gfx.beginPath();
     gfx.moveTo(topA.x, topA.y);
     gfx.lineTo(topB.x, topB.y);
@@ -420,9 +410,9 @@ export function drawHex(q, r, x, y, size, color, effElevation = 0, type = 'grass
     gfx.lineTo(a2.x, a2.y);
     gfx.closePath();
     gfx.fillPath();
-  }
+  });
 
-  // 3) Top face (no stroke on land; faint on water only)
+  // top face (no stroke on land; faint on water only)
   const topStrokeAlpha = (type === 'water') ? 0.12 : 0.0;
   const topStrokeColor = darkenColor(color, 0.85);
 
