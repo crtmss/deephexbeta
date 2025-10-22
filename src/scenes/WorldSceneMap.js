@@ -33,7 +33,6 @@ function getHexNeighbors(q, r) {
 
 /**
  * Odd-r neighbor tiles in fixed order [E, NE, NW, W, SW, SE]
- * (matches pointy-top edge normals & our corner order)
  */
 function getNeighborsOffsetOrderTiles(q, r, mapData) {
   const even = (r % 2 === 0);
@@ -45,7 +44,7 @@ function getNeighborsOffsetOrderTiles(q, r, mapData) {
 
 /** Effective visual elevation:
  *  - water => 0
- *  - land  => max(0, elevation - 1)  (level 1 is baseline like water)
+ *  - land  => max(0, elevation - 1)  (level 1 shows at same baseline as water)
  */
 function effectiveElevation(tile) {
   if (!tile) return 0;
@@ -89,17 +88,17 @@ function darkenColor(intColor, factor) {
 }
 
 /** Mild isometry */
-const ISO_SHEAR   = 0.15;
-const ISO_YSCALE  = 0.95;
-const LIFT_PER_LVL = 4;             // vertical lift per *effective* level (px)
+const ISO_SHEAR    = 0.15;
+const ISO_YSCALE   = 0.95;
+const LIFT_PER_LVL = 4;    // vertical lift per *effective* level (px)
 
-/** Visual walls/slabs (only bottom-left & bottom-right) */
-const BASE_SLAB_THICKNESS = 2;      // slab on BL/BR when Δ<=0
+/** Draw cliff only when drop ≥ 2 effective levels */
+const CLIFF_MIN_DROP = 2;
 
 /** AA seam killers */
-const WALL_TOP_INSET     = 0.9;     // tuck wall under top face
-const WALL_EDGE_OVERLAP  = 1.2;     // extend along edge to overlap neighbors
-const DEPTH_EPSILON      = 1.0;     // ensure positive-drop walls always cover
+const WALL_TOP_INSET     = 0.9;   // tuck wall under top face
+const WALL_EDGE_OVERLAP  = 1.2;   // extend along edge to overlap neighbors
+const DEPTH_EPSILON      = 1.0;   // ensure positive-drop walls always cover
 
 /** Iso offset (shear + compress) from hex center */
 function isoOffset(dx, dy) {
@@ -161,8 +160,8 @@ function ensureDebugToggleButton() {
 }
 
 /**
- * Draw the hex grid with cylindrical walls down to neighbor height,
- * centered in the camera view.
+ * Draw the hex grid and place scenic object sprites based on tile data.
+ * Centered rendering + cylindrical walls only where drop ≥ 2.
  */
 export function drawHexMap() {
   this.objects = this.objects || [];
@@ -340,9 +339,9 @@ export function roundHex(q, r) {
 }
 
 /**
- * Draw one hex with cylindrical walls on BL/BR only:
+ * Draw one hex with cylindrical walls on BL/BR only when DROP ≥ 2:
  * - Uses correct odd-r neighbors for SW/SE
- * - No strokes on top/walls (avoids AA seams)
+ * - No base slabs at all (so flat areas won't look dark)
  * - Corner-stitched depths + overlap + inset to seal gaps
  */
 export function drawHex(q, r, x, y, size, color, effElevation = 0, type = 'grassland') {
@@ -361,20 +360,20 @@ export function drawHex(q, r, x, y, size, color, effElevation = 0, type = 'grass
   // neighbor tiles in odd-r order [E, NE, NW, W, SW, SE]
   const neighbors = getNeighborsOffsetOrderTiles(q, r, this.mapData);
 
-  // compute depths only for SW(edge=3) and SE(edge=4)
-  const edgesToDraw = [3, 4]; // BL, BR
+  // Only bottom edges (SW edge=4? No—our corner/edge order is [0:E,1:NE,2:NW,3:W,4:SW,5:SE])
+  const edgesToDraw = [4, 5]; // SW, SE
+
+  // Precompute raw depths just for the two edges
   const rawDepths = new Array(6).fill(0);
 
   if (type !== 'water') {
     edgesToDraw.forEach(edge => {
-      const nb = neighbors[edge]; // because order matches [E,NE,NW,W,SW,SE]
+      const nb = neighbors[edge];
       const nbEff = effectiveElevation(nb);
-      let diff = effElevation - nbEff;
-      if (diff < 0) diff = 0;
-
-      const depth = diff > 0 ? (diff * LIFT_PER_LVL + DEPTH_EPSILON)
-                             : BASE_SLAB_THICKNESS;
-      rawDepths[edge] = depth;
+      const drop = effElevation - nbEff;
+      if (drop >= CLIFF_MIN_DROP) {
+        rawDepths[edge] = drop * LIFT_PER_LVL + DEPTH_EPSILON;
+      }
     });
   }
 
