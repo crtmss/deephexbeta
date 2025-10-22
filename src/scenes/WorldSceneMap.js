@@ -48,7 +48,7 @@ function getAxialNeighborsFixedOrder(q, r) {
   return dirs.map(([dq, dr]) => ({ q: q + dq, r: r + dr }));
 }
 
-/** Map raw tile -> visual effective elevation:
+/** Effective visual elevation:
  *  - water => 0
  *  - land  => max(0, elevation - 1)  (level 1 is baseline like water)
  */
@@ -60,16 +60,14 @@ function effectiveElevation(tile) {
 }
 
 /**
- * Compute adjusted fill color for elevation shading
- * Higher *raw* elevation → brighter tint; water is not tinted.
+ * Fill color with mild brightening by RAW elevation; water not tinted.
  */
 function getFillForTile(tile) {
   const baseColor = getColorForTerrain(tile.type);
   const elevation = tile.elevation ?? 0;
-
   if (tile.type === 'water') return baseColor;
 
-  const t = Math.max(0, Math.min(1, elevation / 4)) * 0.5; // 0..0.5
+  const t = Math.max(0, Math.min(1, elevation / 4)) * 0.5; // up to +50% toward white
   const base = Phaser.Display.Color.IntegerToColor(baseColor);
   const r = Math.round(base.r + (255 - base.r) * t);
   const g = Math.round(base.g + (255 - base.g) * t);
@@ -77,7 +75,7 @@ function getFillForTile(tile) {
   return Phaser.Display.Color.GetColor(r, g, b);
 }
 
-/** Choose black or white text for best contrast */
+/** Contrast helpers for elevation labels (debug) */
 function getContrastingTextColors(bgInt) {
   const c = Phaser.Display.Color.IntegerToColor(bgInt);
   const luminance = (0.299 * c.r + 0.587 * c.g + 0.114 * c.b);
@@ -86,7 +84,7 @@ function getContrastingTextColors(bgInt) {
   return { text, stroke };
 }
 
-/** Darken a hex color integer by factor (0..1) */
+/** Utility: darken integer color by factor (0..1) */
 function darkenColor(intColor, factor) {
   const c = Phaser.Display.Color.IntegerToColor(intColor);
   const r = Math.max(0, Math.min(255, Math.round(c.r * factor)));
@@ -95,31 +93,25 @@ function darkenColor(intColor, factor) {
   return Phaser.Display.Color.GetColor(r, g, b);
 }
 
-/** Projection & depth constants (mild tilt, almost top-down) */
+/** Mild isometry */
 const ISO_SHEAR   = 0.15;
 const ISO_YSCALE  = 0.95;
 const LIFT_PER_LVL = 4;             // vertical lift per *effective* level (px)
 
-/** Visual walls:
- * - For ANY positive drop to a neighbor (by effective levels), draw wall with depth = true height diff.
- * - Keep tiny slab on BL/BR to sell isometry on flat areas.
- */
-const BASE_SLAB_THICKNESS = 2;      // shown on BL/BR when Δ≤0
+/** Visual walls/slabs */
+const BASE_SLAB_THICKNESS = 2;      // slab on BL/BR when Δ<=0
 
-/** Top stroke styling to avoid black rims */
-const TOP_STROKE_ALPHA_LAND  = 0.0;   // no rim on land
-const TOP_STROKE_ALPHA_WATER = 0.12;  // subtle rim on water only
+/** AA seam killers */
+const WALL_TOP_INSET     = 0.9;     // tuck wall under top face a bit more
+const WALL_EDGE_OVERLAP  = 1.2;     // extend along edge to overlap neighbors
+const DEPTH_EPSILON      = 1.0;     // add to positive walls so they always cover
 
-/** Overlaps/Insets to eliminate AA seams */
-const WALL_TOP_INSET   = 0.5;  // tuck under top face
-const WALL_EDGE_OVERLAP = 0.6; // extend along edge direction
-
-/** Isometric transform for a local offset relative to hex center */
+/** Iso offset (shear + compress) from hex center */
 function isoOffset(dx, dy) {
   return { x: dx - dy * ISO_SHEAR, y: dy * ISO_YSCALE };
 }
 
-/** Create/refresh a sticky UI button at top-right to toggle debugMode */
+/** Sticky UI button top-right to toggle debug numbers */
 function ensureDebugToggleButton() {
   if (typeof this.debugMode !== 'boolean') this.debugMode = false;
 
@@ -174,16 +166,14 @@ function ensureDebugToggleButton() {
 }
 
 /**
- * Draw the hex grid and place scenic object sprites based on tile data.
- * Centered rendering + cylindrical walls down to neighbor height.
+ * Draw the hex grid with cylindrical walls down to neighbor height,
+ * centered in the camera view.
  */
 export function drawHexMap() {
   this.objects = this.objects || [];
-
-  // UI button
   ensureDebugToggleButton.call(this);
 
-  // === Bounding box (no elevation lift) to center the map ===
+  // Center the map (based on iso centers without lift)
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   this.mapData.forEach(t => {
     const p = this.hexToPixel(t.q, t.r, this.hexSize);
@@ -202,7 +192,7 @@ export function drawHexMap() {
     offsetY = cam.centerY - cy;
   }
 
-  // === Draw order: lower effective elevations first -> higher on top ===
+  // Draw order: lower effective elevation first
   const sorted = [...this.mapData].sort((a, b) => {
     const ea = effectiveElevation(a);
     const eb = effectiveElevation(b);
@@ -220,7 +210,7 @@ export function drawHexMap() {
       hasRoad, hasMountainIcon
     } = hex;
 
-    const effElev = effectiveElevation(hex);    // water=0, level1=0
+    const effElev = effectiveElevation(hex); // water=0, level1=0
     const base = this.hexToPixel(q, r, this.hexSize);
     const x = base.x + offsetX;
     const y = base.y + offsetY - LIFT_PER_LVL * effElev;
@@ -228,7 +218,7 @@ export function drawHexMap() {
     const fillColor = getFillForTile(hex);
     this.drawHex(q, r, x, y, this.hexSize, fillColor, effElev, type);
 
-    // Elevation number (visibility tied to debug toggle) — show RAW elevation
+    // Elevation number (raw), tied to debug toggle
     const rawElev = typeof hex.elevation === 'number' ? hex.elevation : 0;
     const { text: txtColor, stroke: strokeColor } = getContrastingTextColors(fillColor);
     const elevLabel = this.add.text(x, y, String(rawElev), {
@@ -291,7 +281,7 @@ export function drawHexMap() {
     if (hasVehicle) this.objects.push(this.add.text(x, y, '🚙', { fontSize: `${this.hexSize * 0.8}px` }).setOrigin(0.5).setDepth(5));
     if (hasMountainIcon) this.objects.push(this.add.text(x, y, '🏔️', { fontSize: `${this.hexSize * 0.9}px`, fontFamily: 'Arial, "Segoe UI Emoji", "Noto Color Emoji", sans-serif' }).setOrigin(0.5).setDepth(5));
 
-    // Roads across elevated centers: use effective elevations
+    // Roads across elevated centers (effective elevation)
     if (hasRoad) {
       const neighbors = getHexNeighbors(q, r)
         .map(n => this.mapData.find(h => h.q === n.q && h.r === n.r && h.hasRoad))
@@ -308,11 +298,8 @@ export function drawHexMap() {
         const y2 = p2.y + offsetY - LIFT_PER_LVL * e2;
 
         const line = this.add.graphics().setDepth(3);
-        const brightness = 0.60 + Math.min(4, Math.max(0, rawElev)) * 0.05;
-        const val = Math.max(0, Math.min(255, Math.round(153 * brightness)));
-        const roadColor = Phaser.Display.Color.GetColor(val, val, val);
-
-        line.lineStyle(2, roadColor, 0.7);
+        // neutral grey road
+        line.lineStyle(2, 0x999999, 0.7);
         line.beginPath();
         line.moveTo(p1.x + offsetX, y1);
         line.lineTo(p2.x + offsetX, y2);
@@ -324,23 +311,20 @@ export function drawHexMap() {
 }
 
 /**
- * Hex → pixel conversion (with padding) in **mild isometric projection**
+ * Hex → pixel in mild isometric projection
  */
 export function hexToPixel(q, r, size) {
-  // pointy-top axial
-  const x0 = size * Math.sqrt(3) * (q + 0.5 * (r & 1));
+  const x0 = size * Math.sqrt(3) * (q + 0.5 * (r & 1)); // axial pointy-top
   const y0 = size * 1.5 * r;
 
-  // milder isometric projection
   const xIso = x0 - y0 * ISO_SHEAR;
   const yIso = y0 * ISO_YSCALE;
 
-  // padding
   return { x: xIso + size * 2, y: yIso + size * 2 };
 }
 
 /**
- * Pixel → hex conversion + round (kept as original top-down mapping)
+ * Pixel → hex (top-down math retained)
  */
 export function pixelToHex(x, y, size) {
   x -= size * 2;
@@ -350,7 +334,7 @@ export function pixelToHex(x, y, size) {
   return roundHex(q, r);
 }
 
-/** Cube coordinate rounding */
+/** Cube rounding */
 export function roundHex(q, r) {
   const x = q, z = r, y = -x - z;
   let rx = Math.round(x), ry = Math.round(y), rz = Math.round(z);
@@ -362,15 +346,14 @@ export function roundHex(q, r) {
 }
 
 /**
- * Draw one hexagon (as polygon)
- * Cylindrical walls with **corner-stitched depths**: for each edge, the two
- * bottom vertices use the max depth of the two edges that join at that corner.
- * Also extends walls slightly along the edge to overlap neighbors.
+ * Draw one hex with cylindrical walls:
+ * - No strokes on top/walls (avoids AA seams)
+ * - Corner-stitched depths + overlap + inset to seal gaps
  */
 export function drawHex(q, r, x, y, size, color, effElevation = 0, type = 'grassland') {
   const gfx = this.add.graphics({ x: 0, y: 0 });
 
-  // top-face corners (iso-transformed)
+  // top-face corners (iso)
   const corners = [];
   for (let i = 0; i < 6; i++) {
     const ang = Phaser.Math.DegToRad(60 * i + 30);
@@ -380,14 +363,12 @@ export function drawHex(q, r, x, y, size, color, effElevation = 0, type = 'grass
     corners.push({ x: x + o.x, y: y + o.y });
   }
 
-  // Neighbor list in fixed angular order
+  // neighbor list (E, NE, NW, W, SW, SE)
   const neighborsFixed = getAxialNeighborsFixedOrder(q, r)
     .map(n => this.mapData.find(t => t.q === n.q && t.r === n.r));
-
-  // Edge order from our corner order is [E, NE, NW, W, SW, SE]
   const EDGE_TO_DIR = [0, 1, 2, 3, 4, 5];
 
-  // ---- 1) Precompute raw wall depths per edge (before stitching)
+  // 1) raw depths per edge
   const rawDepths = new Array(6).fill(0);
   const isWater = (type === 'water');
 
@@ -396,17 +377,17 @@ export function drawHex(q, r, x, y, size, color, effElevation = 0, type = 'grass
 
     const nb = neighborsFixed[EDGE_TO_DIR[edge]];
     const nbEff = effectiveElevation(nb);
-
     let diff = effElevation - nbEff;
     if (diff < 0) diff = 0;
 
-    const isBottomEdge = (edge === 3 || edge === 4);
-    const depth = diff > 0 ? (diff * LIFT_PER_LVL) : (isBottomEdge ? BASE_SLAB_THICKNESS : 0);
+    const isBottomEdge = (edge === 3 || edge === 4); // SW/SE slab on flats
+    const depth = diff > 0 ? (diff * LIFT_PER_LVL + DEPTH_EPSILON)
+                           : (isBottomEdge ? BASE_SLAB_THICKNESS : 0);
 
     rawDepths[edge] = depth;
   }
 
-  // ---- 2) Draw each wall using **stitched** depths at the two corners
+  // 2) draw stitched walls
   for (let edge = 0; edge < 6; edge++) {
     const depthHere = rawDepths[edge];
     if (depthHere <= 0) continue;
@@ -414,11 +395,9 @@ export function drawHex(q, r, x, y, size, color, effElevation = 0, type = 'grass
     const a = corners[edge];
     const b = corners[(edge + 1) % 6];
 
-    // stitched corner depths (max of touching edges)
     const dA = Math.max(rawDepths[edge], rawDepths[(edge + 5) % 6]);
     const dB = Math.max(rawDepths[edge], rawDepths[(edge + 1) % 6]);
 
-    // extend slightly along the edge to overlap adjacent walls
     const ex = b.x - a.x;
     const ey = b.y - a.y;
     const len = Math.max(1, Math.hypot(ex, ey));
@@ -431,10 +410,9 @@ export function drawHex(q, r, x, y, size, color, effElevation = 0, type = 'grass
     const b2 = { x: b.x + ux * WALL_EDGE_OVERLAP, y: b.y + dB };
 
     const wallFill = darkenColor(color, 0.72);
-    const wallStroke = darkenColor(color, 0.62);
 
     gfx.fillStyle(wallFill, 1);
-    gfx.lineStyle(1, wallStroke, 0.6);
+    // no stroke -> no seam
     gfx.beginPath();
     gfx.moveTo(topA.x, topA.y);
     gfx.lineTo(topB.x, topB.y);
@@ -442,11 +420,10 @@ export function drawHex(q, r, x, y, size, color, effElevation = 0, type = 'grass
     gfx.lineTo(a2.x, a2.y);
     gfx.closePath();
     gfx.fillPath();
-    gfx.strokePath();
   }
 
-  // ---- 3) Top face (no heavy black rim on land)
-  const topStrokeAlpha = isWater ? TOP_STROKE_ALPHA_WATER : TOP_STROKE_ALPHA_LAND;
+  // 3) Top face (no stroke on land; faint on water only)
+  const topStrokeAlpha = (type === 'water') ? 0.12 : 0.0;
   const topStrokeColor = darkenColor(color, 0.85);
 
   if (topStrokeAlpha > 0) {
@@ -462,22 +439,6 @@ export function drawHex(q, r, x, y, size, color, effElevation = 0, type = 'grass
   gfx.closePath();
   gfx.fillPath();
   if (topStrokeAlpha > 0) gfx.strokePath();
-
-  // Optional inner contours (use effective elevation)
-  const cx = x, cy = y;
-  for (let i = 1; i <= Math.min(3, effElevation); i++) {
-    gfx.lineStyle(0.5, 0x000000, 0.08);
-    const scale = 1 - i * 0.1;
-    gfx.beginPath();
-    corners.forEach(({ x: px, y: py }, idx) => {
-      const sx = cx + (px - cx) * scale;
-      const sy = cy + (py - cy) * scale;
-      if (idx === 0) gfx.moveTo(sx, sy);
-      else gfx.lineTo(sx, sy);
-    });
-    gfx.closePath();
-    gfx.strokePath();
-  }
 
   this.tileMap[`${q},${r}`] = gfx;
 }
