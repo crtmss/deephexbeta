@@ -33,7 +33,7 @@ function getHexNeighbors(q, r) {
 
 /**
  * Odd-r neighbor tiles in fixed order [E, NE, NW, W, SW, SE]
- * (matches pointy-top edge normals & our corner order)
+ * (matches pointy-top corner order we build)
  */
 function getNeighborsOffsetOrderTiles(q, r, mapData) {
   const even = (r % 2 === 0);
@@ -97,7 +97,7 @@ function tintWallFromBase(baseInt, dropLevels) {
   const hsv = Phaser.Display.Color.RGBToHSV(c.r, c.g, c.b);
   const drop05 = Math.max(0, Math.min(1, (dropLevels || 0) / 4)); // 0..1
   const reduce = 0.10 + drop05 * 0.18; // 10%..28%
-  const v = Math.max(0.28, hsv.v * (1 - reduce)); // never below 0.28 (prevents black)
+  const v = Math.max(0.28, hsv.v * (1 - reduce)); // never below 0.28
   const rgb = Phaser.Display.Color.HSVToRGB(hsv.h, hsv.s, v);
   return Phaser.Display.Color.GetColor(rgb.r, rgb.g, rgb.b);
 }
@@ -107,8 +107,8 @@ const ISO_SHEAR   = 0.15;
 const ISO_YSCALE  = 0.95;
 const LIFT_PER_LVL = 4;             // vertical lift per *effective* level (px)
 
-/** Visual walls/slabs (only bottom-left & bottom-right) */
-const BASE_SLAB_THICKNESS = 2;      // slab on BL/BR when Δ<=0
+/** Visual walls/slabs */
+const BASE_SLAB_THICKNESS = 2;      // thin slab when no drop
 
 /** AA seam killers */
 const WALL_TOP_INSET     = 0.9;     // tuck wall under top face
@@ -290,7 +290,7 @@ export function drawHexMap() {
     if (hasVehicle) this.objects.push(this.add.text(x, y, '🚙', { fontSize: `${this.hexSize * 0.8}px` }).setOrigin(0.5).setDepth(5));
     if (hasMountainIcon) this.objects.push(this.add.text(x, y, '🏔️', { fontSize: `${this.hexSize * 0.9}px`, fontFamily: 'Arial, "Segoe UI Emoji", "Noto Color Emoji", sans-serif' }).setOrigin(0.5).setDepth(5));
 
-    // Roads across elevated centers (effective elevation)
+    // Roads: connect effective-elevation centers
     if (hasRoad) {
       const neighbors = getHexNeighbors(q, r)
         .map(n => this.mapData.find(h => h.q === n.q && h.r === n.r && h.hasRoad))
@@ -354,10 +354,10 @@ export function roundHex(q, r) {
 }
 
 /**
- * Draw one hex with cylindrical walls on BL/BR only:
- * - Uses correct odd-r neighbors for SW/SE
- * - Walls are tinted slightly darker than the hex (never pure black)
- * - Corner-stitched depths + overlap + inset to seal gaps
+ * Draw one hex:
+ * - Detect the two visually bottom edges per-hex (after iso) and extrude only those.
+ * - Walls are tinted slightly darker than the tile (never black).
+ * - Corner-stitched depths + overlap + inset to seal gaps.
  */
 export function drawHex(q, r, x, y, size, color, effElevation = 0, type = 'grassland') {
   const gfx = this.add.graphics({ x: 0, y: 0 });
@@ -372,30 +372,38 @@ export function drawHex(q, r, x, y, size, color, effElevation = 0, type = 'grass
     corners.push({ x: x + o.x, y: y + o.y });
   }
 
+  // Compute all 6 edge midpoints (to find the two "most downward" edges)
+  const midY = [];
+  for (let e = 0; e < 6; e++) {
+    const a = corners[e];
+    const b = corners[(e + 1) % 6];
+    midY.push((a.y + b.y) / 2);
+  }
+  // indices of two edges with the largest Y (visually lowest)
+  const indices = [0,1,2,3,4,5].sort((i,j) => midY[j] - midY[i]).slice(0,2);
+  // Keep them ordered around the hex (so stitching uses neighbors properly)
+  indices.sort((a,b) => (a - b + 6) % 6 === 1 ? -1 : (b - a + 6) % 6 === 1 ? 1 : a - b);
+
   // neighbor tiles in odd-r order [E, NE, NW, W, SW, SE]
   const neighbors = getNeighborsOffsetOrderTiles(q, r, this.mapData);
 
-  // compute depths only for SW(edge=3) and SE(edge=4)
-  const edgesToDraw = [3, 4]; // BL, BR
+  // For each edge, compute (potential) wall depth (drop to neighbor)
   const rawDepths = new Array(6).fill(0);
-
   if (type !== 'water') {
-    edgesToDraw.forEach(edge => {
-      const nb = neighbors[edge]; // order matches [E,NE,NW,W,SW,SE]
+    for (let edge of indices) {
+      const nb = neighbors[edge];
       const nbEff = effectiveElevation(nb);
       let diff = effElevation - nbEff;
       if (diff < 0) diff = 0;
-
-      // if no drop, draw only a thin slab; if drop > 0, draw true depth
       const depth = diff > 0 ? (diff * LIFT_PER_LVL + DEPTH_EPSILON) : BASE_SLAB_THICKNESS;
       rawDepths[edge] = depth;
-    });
+    }
   }
 
-  // stitched walls (only for the two bottom edges)
-  edgesToDraw.forEach(edge => {
+  // Draw only the two bottom edges, with stitched corner depths
+  for (let edge of indices) {
     const depthHere = rawDepths[edge];
-    if (depthHere <= 0) return;
+    if (depthHere <= 0) continue;
 
     const a = corners[edge];
     const b = corners[(edge + 1) % 6];
@@ -414,9 +422,8 @@ export function drawHex(q, r, x, y, size, color, effElevation = 0, type = 'grass
     const a2 = { x: a.x - ux * WALL_EDGE_OVERLAP, y: a.y + dA };
     const b2 = { x: b.x + ux * WALL_EDGE_OVERLAP, y: b.y + dB };
 
-    // *** Use a slightly darker version of the tile color (no stroke) ***
-    const dropLevels = Math.max(0, Math.round((depthHere - DEPTH_EPSILON) / LIFT_PER_LVL));
-    const wallFill = tintWallFromBase(color, dropLevels);
+    const dropLvls = Math.max(0, Math.round((depthHere - DEPTH_EPSILON) / LIFT_PER_LVL));
+    const wallFill = tintWallFromBase(color, dropLvls);
 
     gfx.fillStyle(wallFill, 1);
     gfx.beginPath();
@@ -426,7 +433,7 @@ export function drawHex(q, r, x, y, size, color, effElevation = 0, type = 'grass
     gfx.lineTo(a2.x, a2.y);
     gfx.closePath();
     gfx.fillPath();
-  });
+  }
 
   // top face (no stroke on land; faint on water only)
   const topStrokeAlpha = (type === 'water') ? 0.12 : 0.0;
