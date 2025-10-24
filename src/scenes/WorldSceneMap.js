@@ -88,6 +88,20 @@ function darkenColor(intColor, factor) {
   return Phaser.Display.Color.GetColor(r, g, b);
 }
 
+/**
+ * Slightly-darkened wall tint derived from the tile color without ever going black.
+ * We reduce value (V) in HSV space by 10–28% depending on drop, then clamp to a floor.
+ */
+function tintWallFromBase(baseInt, dropLevels) {
+  const c = Phaser.Display.Color.IntegerToColor(baseInt);
+  const hsv = Phaser.Display.Color.RGBToHSV(c.r, c.g, c.b);
+  const drop05 = Math.max(0, Math.min(1, (dropLevels || 0) / 4)); // 0..1
+  const reduce = 0.10 + drop05 * 0.18; // 10%..28%
+  const v = Math.max(0.28, hsv.v * (1 - reduce)); // never below 0.28 (prevents black)
+  const rgb = Phaser.Display.Color.HSVToRGB(hsv.h, hsv.s, v);
+  return Phaser.Display.Color.GetColor(rgb.r, rgb.g, rgb.b);
+}
+
 /** Mild isometry */
 const ISO_SHEAR   = 0.15;
 const ISO_YSCALE  = 0.95;
@@ -342,7 +356,7 @@ export function roundHex(q, r) {
 /**
  * Draw one hex with cylindrical walls on BL/BR only:
  * - Uses correct odd-r neighbors for SW/SE
- * - No strokes on top/walls (avoids AA seams)
+ * - Walls are tinted slightly darker than the hex (never pure black)
  * - Corner-stitched depths + overlap + inset to seal gaps
  */
 export function drawHex(q, r, x, y, size, color, effElevation = 0, type = 'grassland') {
@@ -367,13 +381,13 @@ export function drawHex(q, r, x, y, size, color, effElevation = 0, type = 'grass
 
   if (type !== 'water') {
     edgesToDraw.forEach(edge => {
-      const nb = neighbors[edge]; // because order matches [E,NE,NW,W,SW,SE]
+      const nb = neighbors[edge]; // order matches [E,NE,NW,W,SW,SE]
       const nbEff = effectiveElevation(nb);
       let diff = effElevation - nbEff;
       if (diff < 0) diff = 0;
 
-      const depth = diff > 0 ? (diff * LIFT_PER_LVL + DEPTH_EPSILON)
-                             : BASE_SLAB_THICKNESS;
+      // if no drop, draw only a thin slab; if drop > 0, draw true depth
+      const depth = diff > 0 ? (diff * LIFT_PER_LVL + DEPTH_EPSILON) : BASE_SLAB_THICKNESS;
       rawDepths[edge] = depth;
     });
   }
@@ -400,7 +414,9 @@ export function drawHex(q, r, x, y, size, color, effElevation = 0, type = 'grass
     const a2 = { x: a.x - ux * WALL_EDGE_OVERLAP, y: a.y + dA };
     const b2 = { x: b.x + ux * WALL_EDGE_OVERLAP, y: b.y + dB };
 
-    const wallFill = darkenColor(color, 0.72);
+    // *** Use a slightly darker version of the tile color (no stroke) ***
+    const dropLevels = Math.max(0, Math.round((depthHere - DEPTH_EPSILON) / LIFT_PER_LVL));
+    const wallFill = tintWallFromBase(color, dropLevels);
 
     gfx.fillStyle(wallFill, 1);
     gfx.beginPath();
