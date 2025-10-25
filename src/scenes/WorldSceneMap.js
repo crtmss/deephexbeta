@@ -33,7 +33,7 @@ function getHexNeighbors(q, r) {
 
 /**
  * Odd-r neighbor tiles in fixed order [E, NE, NW, W, SW, SE]
- * (matches pointy-top corner order we build)
+ * (matches our corner/edge order)
  */
 function getNeighborsOffsetOrderTiles(q, r, mapData) {
   const even = (r % 2 === 0);
@@ -88,19 +88,16 @@ function darkenColor(intColor, factor) {
   return Phaser.Display.Color.GetColor(r, g, b);
 }
 
-/**
- * Slightly-darkened wall tint derived from the tile color without ever going black.
- * We reduce value (V) in HSV space by 10–28% depending on drop, then clamp to a floor.
- */
-function tintWallFromBase(baseInt, dropLevels) {
-  const c = Phaser.Display.Color.IntegerToColor(baseInt);
+/** Utility: HSV tint so walls are darker but never black */
+function tintWallFromBase(intColor, darkness = 0.18) {
+  const c = Phaser.Display.Color.IntegerToColor(intColor);
   const hsv = Phaser.Display.Color.RGBToHSV(c.r, c.g, c.b);
-  const drop05 = Math.max(0, Math.min(1, (dropLevels || 0) / 4)); // 0..1
-  const reduce = 0.10 + drop05 * 0.18; // 10%..28%
-  const v = Math.max(0.28, hsv.v * (1 - reduce)); // never below 0.28
+  const v = Math.max(0.35, Math.min(1, hsv.v - darkness));
   const rgb = Phaser.Display.Color.HSVToRGB(hsv.h, hsv.s, v);
   return Phaser.Display.Color.GetColor(rgb.r, rgb.g, rgb.b);
 }
+
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
 /** Mild isometry */
 const ISO_SHEAR   = 0.15;
@@ -108,17 +105,22 @@ const ISO_YSCALE  = 0.95;
 const LIFT_PER_LVL = 4;             // vertical lift per *effective* level (px)
 
 /** Visual walls/slabs */
-const BASE_SLAB_THICKNESS = 2;      // thin slab when no drop
-const SEAL_THICKNESS      = 1.6;    // hairline seam-filler for any positive drop on non-bottom edges
+const BASE_SLAB_THICKNESS = 2;      // always on BL/BR to sell isometry
+const SEAL_THICKNESS      = 2.0;    // thin seal drawn on the *lower* tile
 
-/** AA seam helpers */
-const WALL_TOP_INSET     = 1.0;     // tuck wall under top face
-const WALL_EDGE_OVERLAP  = 1.4;     // extend along edge to overlap neighbors
+/** AA seam killers / overlap */
+const WALL_TOP_INSET     = 1.4;     // tuck wall under top face
+const WALL_EDGE_OVERLAP  = 1.8;     // extend along edge to overlap neighbors
 const DEPTH_EPSILON      = 1.0;     // ensure positive-drop walls always cover
 
-/** Half-pixel snapping to fight subpixel AA */
-const SNAP = v => Math.round(v * 2) / 2;
-const pt   = (x, y) => ({ x: SNAP(x), y: SNAP(y) });
+/** Hex outline (to hide any residual seam and separate tiles) */
+const OUTLINE_COLOR = 0xBFC6D2;     // pastel grey
+const OUTLINE_ALPHA = 0.9;
+const OUTLINE_WIDTH = 1.25;
+
+/** snap to half pixel to reduce AA seams */
+const SNAP = (v) => Math.round(v * 2) / 2;
+const makePt = (x, y) => ({ x: SNAP(x), y: SNAP(y) });
 
 /** Iso offset (shear + compress) from hex center */
 function isoOffset(dx, dy) {
@@ -293,9 +295,12 @@ export function drawHexMap() {
     if (hasRuin)  this.objects.push(this.add.text(x, y, '🏛️', { fontSize: `${this.hexSize * 0.8}px` }).setOrigin(0.5).setDepth(5));
     if (hasCrashSite) this.objects.push(this.add.text(x, y, '🚀', { fontSize: `${this.hexSize * 0.8}px` }).setOrigin(0.5).setDepth(5));
     if (hasVehicle) this.objects.push(this.add.text(x, y, '🚙', { fontSize: `${this.hexSize * 0.8}px` }).setOrigin(0.5).setDepth(5));
-    if (hasMountainIcon) this.objects.push(this.add.text(x, y, '🏔️', { fontSize: `${this.hexSize * 0.9}px`, fontFamily: 'Arial, "Segoe UI Emoji", "Noto Color Emoji", sans-serif' }).setOrigin(0.5).setDepth(5));
+    if (hasMountainIcon) this.objects.push(this.add.text(x, y, '🏔️', {
+      fontSize: `${this.hexSize * 0.9}px`,
+      fontFamily: 'Arial, "Segoe UI Emoji", "Noto Color Emoji", sans-serif'
+    }).setOrigin(0.5).setDepth(5));
 
-    // Roads: connect effective-elevation centers
+    // Roads across elevated centers (effective elevation)
     if (hasRoad) {
       const neighbors = getHexNeighbors(q, r)
         .map(n => this.mapData.find(h => h.q === n.q && h.r === n.r && h.hasRoad))
@@ -359,117 +364,126 @@ export function roundHex(q, r) {
 }
 
 /**
- * Draw one hex:
- * - Pick the two visually lowest edges and draw proper faces there (like your current look).
- * - PLUS: draw a thin “seal” on *every* edge that has a height step to guarantee no black seams.
- * - Walls/seals are tinted from the top tile’s color (slightly darker), never pure black.
+ * Draw one hex with cylindrical walls.
+ * - Thick/visible cliffs only on bottom-left & bottom-right when this tile is higher.
+ * - Thin “seal” walls drawn on the *lower* tile for any positive drop edge.
+ * - Half-pixel snapping + generous overlap/inset.
+ * - ALWAYS stroke a pastel-grey outline on top to hide any residual seam.
  */
 export function drawHex(q, r, x, y, size, color, effElevation = 0, type = 'grassland') {
   const gfx = this.add.graphics({ x: 0, y: 0 });
 
-  // top-face corners (iso)
+  // top-face corners (iso) in order: [E, NE, NW, W, SW, SE]
   const corners = [];
   for (let i = 0; i < 6; i++) {
     const ang = Phaser.Math.DegToRad(60 * i + 30);
     const dx = size * Math.cos(ang);
     const dy = size * Math.sin(ang);
     const o = isoOffset(dx, dy);
-    corners.push(pt(x + o.x, y + o.y));
+    corners.push(makePt(x + o.x, y + o.y));
   }
 
-  // edge midpoints (to find the two lowest)
-  const midY = [];
-  for (let e = 0; e < 6; e++) {
-    const a = corners[e], b = corners[(e + 1) % 6];
-    midY.push((a.y + b.y) / 2);
-  }
-  let bottomEdges = [0,1,2,3,4,5].sort((i,j) => midY[j] - midY[i]).slice(0,2);
-  // keep local order
-  bottomEdges.sort((a,b) => (a - b + 6) % 6 === 1 ? -1 : (b - a + 6) % 6 === 1 ? 1 : a - b);
-
+  // neighbors (same order)
   const neighbors = getNeighborsOffsetOrderTiles(q, r, this.mapData);
-  const thisFill = color;
-
-  // helper to draw a quad wall
-  const drawWall = (a, b, depth, fillInt) => {
-    const ex = b.x - a.x, ey = b.y - a.y;
-    const len = Math.max(1, Math.hypot(ex, ey));
-    const ux = ex / len,  uy = ey / len;
-
-    const topA = pt(a.x - ux * WALL_EDGE_OVERLAP, a.y - uy * WALL_EDGE_OVERLAP - WALL_TOP_INSET);
-    const topB = pt(b.x + ux * WALL_EDGE_OVERLAP, b.y + uy * WALL_EDGE_OVERLAP - WALL_TOP_INSET);
-    const a2   = pt(a.x - ux * WALL_EDGE_OVERLAP, a.y + depth);
-    const b2   = pt(b.x + ux * WALL_EDGE_OVERLAP, b.y + depth);
-
-    gfx.fillStyle(fillInt, 1);
-    gfx.beginPath();
-    gfx.moveTo(topA.x, topA.y);
-    gfx.lineTo(topB.x, topB.y);
-    gfx.lineTo(b2.x, b2.y);
-    gfx.lineTo(a2.x, a2.y);
-    gfx.closePath();
-    gfx.fillPath();
-  };
+  const EDGE_TO_NEI = [0, 1, 2, 3, 4, 5];
+  const BOTTOM_EDGES = [3, 4]; // SW, SE
 
   if (type !== 'water') {
     for (let edge = 0; edge < 6; edge++) {
-      const nb   = neighbors[edge];
+      const nb = neighbors[EDGE_TO_NEI[edge]];
       const nbEff = effectiveElevation(nb);
-      const dropFromThis = Math.max(0, effElevation - nbEff); // this is higher than neighbor
-      const dropFromNb   = Math.max(0, nbEff - effElevation); // neighbor is higher than this
+      const higherDrop = effElevation - nbEff;   // >0 means THIS is higher (draw visible on BL/BR)
+      const lowerDrop  = nbEff - effElevation;   // >0 means THIS is lower (draw thin seal)
 
       const a = corners[edge];
       const b = corners[(edge + 1) % 6];
 
-      // A) THIN “SEAL” if neighbor is higher (prevents black crack from below)
-      if (dropFromNb > 0) {
-        const nbFill = nb ? getFillForTile(nb) : thisFill;
-        const sealColor = tintWallFromBase(nbFill, 1);
-        drawWall(a, b, Math.min(SEAL_THICKNESS, dropFromNb * LIFT_PER_LVL + DEPTH_EPSILON), sealColor);
+      const ex = b.x - a.x;
+      const ey = b.y - a.y;
+      const len = Math.max(1, Math.hypot(ex, ey));
+      const ux = ex / len, uy = ey / len;
+
+      // 1) THIN SEAL on the LOWER tile (this one) if neighbor is higher
+      if (lowerDrop > 0) {
+        const depth = Math.min(SEAL_THICKNESS, lowerDrop * LIFT_PER_LVL + DEPTH_EPSILON);
+        const topA = makePt(a.x - ux * WALL_EDGE_OVERLAP, a.y - uy * WALL_EDGE_OVERLAP - WALL_TOP_INSET);
+        const topB = makePt(b.x + ux * WALL_EDGE_OVERLAP, b.y + uy * WALL_EDGE_OVERLAP - WALL_TOP_INSET);
+        const a2   = makePt(a.x - ux * WALL_EDGE_OVERLAP, a.y + depth);
+        const b2   = makePt(b.x + ux * WALL_EDGE_OVERLAP, b.y + depth);
+
+        // use the neighbor's color slightly darkened so it matches the upper hex
+        const nbColor = nb ? getFillForTile(nb) : color;
+        const wallFill = tintWallFromBase(nbColor, 0.16);
+
+        gfx.fillStyle(wallFill, 1);
+        gfx.beginPath();
+        gfx.moveTo(topA.x, topA.y);
+        gfx.lineTo(topB.x, topB.y);
+        gfx.lineTo(b2.x, b2.y);
+        gfx.lineTo(a2.x, a2.y);
+        gfx.closePath();
+        gfx.fillPath();
       }
 
-      // B) THIN “SEAL” if this is higher BUT the edge is not one of the two bottom ones
-      if (dropFromThis > 0 && bottomEdges.indexOf(edge) === -1) {
-        const sealColor = tintWallFromBase(thisFill, 1);
-        drawWall(a, b, Math.min(SEAL_THICKNESS, dropFromThis * LIFT_PER_LVL + DEPTH_EPSILON), sealColor);
+      // 2) VISIBLE CLIFF only on BL/BR when THIS is higher
+      if (higherDrop > 0 && BOTTOM_EDGES.includes(edge)) {
+        const d = higherDrop * LIFT_PER_LVL + DEPTH_EPSILON;
+
+        const topA = makePt(a.x - ux * WALL_EDGE_OVERLAP, a.y - uy * WALL_EDGE_OVERLAP - WALL_TOP_INSET);
+        const topB = makePt(b.x + ux * WALL_EDGE_OVERLAP, b.y + uy * WALL_EDGE_OVERLAP - WALL_TOP_INSET);
+        const a2   = makePt(a.x - ux * WALL_EDGE_OVERLAP, a.y + d);
+        const b2   = makePt(b.x + ux * WALL_EDGE_OVERLAP, b.y + d);
+
+        const darkness = 0.18 + 0.04 * clamp(higherDrop, 0, 3);
+        const wallFill = tintWallFromBase(color, darkness);
+
+        gfx.fillStyle(wallFill, 1);
+        gfx.beginPath();
+        gfx.moveTo(topA.x, topA.y);
+        gfx.lineTo(topB.x, topB.y);
+        gfx.lineTo(b2.x, b2.y);
+        gfx.lineTo(a2.x, a2.y);
+        gfx.closePath();
+        gfx.fillPath();
+      }
+
+      // 3) Always draw a tiny slab on BL/BR to keep the “lifted” look when flat
+      if (higherDrop <= 0 && lowerDrop <= 0 && BOTTOM_EDGES.includes(edge)) {
+        const depth = BASE_SLAB_THICKNESS;
+        const topA = makePt(a.x - ux * WALL_EDGE_OVERLAP, a.y - uy * WALL_EDGE_OVERLAP - WALL_TOP_INSET);
+        const topB = makePt(b.x + ux * WALL_EDGE_OVERLAP, b.y + uy * WALL_EDGE_OVERLAP - WALL_TOP_INSET);
+        const a2   = makePt(a.x - ux * WALL_EDGE_OVERLAP, a.y + depth);
+        const b2   = makePt(b.x + ux * WALL_EDGE_OVERLAP, b.y + depth);
+
+        const wallFill = tintWallFromBase(color, 0.12);
+
+        gfx.fillStyle(wallFill, 1);
+        gfx.beginPath();
+        gfx.moveTo(topA.x, topA.y);
+        gfx.lineTo(topB.x, topB.y);
+        gfx.lineTo(b2.x, b2.y);
+        gfx.lineTo(a2.x, a2.y);
+        gfx.closePath();
+        gfx.fillPath();
       }
     }
-
-    // C) REAL faces only on the two visually lowest edges (your intended look)
-    bottomEdges.forEach(edge => {
-      const nb   = neighbors[edge];
-      const nbEff = effectiveElevation(nb);
-      const drop = Math.max(0, effElevation - nbEff);
-
-      const a = corners[edge];
-      const b = corners[(edge + 1) % 6];
-
-      const depth = (drop > 0)
-        ? (drop * LIFT_PER_LVL + DEPTH_EPSILON)
-        : BASE_SLAB_THICKNESS;
-
-      const wallColor = tintWallFromBase(thisFill, Math.max(1, drop));
-      drawWall(a, b, depth, wallColor);
-    });
   }
 
-  // top face (no stroke on land; faint on water only)
-  const topStrokeAlpha = (type === 'water') ? 0.12 : 0.0;
-  const topStrokeColor = darkenColor(thisFill, 0.85);
-
-  if (topStrokeAlpha > 0) {
-    gfx.lineStyle(1, topStrokeColor, topStrokeAlpha);
-  } else {
-    gfx.lineStyle(0, 0x000000, 0);
-  }
-
-  gfx.fillStyle(thisFill, 1);
+  // ---- Top face
+  gfx.fillStyle(color, 1);
   gfx.beginPath();
   gfx.moveTo(corners[0].x, corners[0].y);
   for (let i = 1; i < 6; i++) gfx.lineTo(corners[i].x, corners[i].y);
   gfx.closePath();
   gfx.fillPath();
-  if (topStrokeAlpha > 0) gfx.strokePath();
+
+  // ---- Pastel-grey outline drawn LAST (covers any micro-seam and separates tiles)
+  gfx.lineStyle(OUTLINE_WIDTH, OUTLINE_COLOR, OUTLINE_ALPHA);
+  gfx.beginPath();
+  gfx.moveTo(corners[0].x, corners[0].y);
+  for (let i = 1; i < 6; i++) gfx.lineTo(corners[i].x, corners[i].y);
+  gfx.closePath();
+  gfx.strokePath();
 
   this.tileMap[`${q},${r}`] = gfx;
 }
