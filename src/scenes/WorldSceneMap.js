@@ -109,11 +109,16 @@ const LIFT_PER_LVL = 4;             // vertical lift per *effective* level (px)
 
 /** Visual walls/slabs */
 const BASE_SLAB_THICKNESS = 2;      // thin slab when no drop
+const SEAL_THICKNESS      = 1.6;    // hairline seam-filler for any positive drop on non-bottom edges
 
-/** AA seam killers */
-const WALL_TOP_INSET     = 0.9;     // tuck wall under top face
-const WALL_EDGE_OVERLAP  = 1.2;     // extend along edge to overlap neighbors
+/** AA seam helpers */
+const WALL_TOP_INSET     = 1.0;     // tuck wall under top face
+const WALL_EDGE_OVERLAP  = 1.4;     // extend along edge to overlap neighbors
 const DEPTH_EPSILON      = 1.0;     // ensure positive-drop walls always cover
+
+/** Half-pixel snapping to fight subpixel AA */
+const SNAP = v => Math.round(v * 2) / 2;
+const pt   = (x, y) => ({ x: SNAP(x), y: SNAP(y) });
 
 /** Iso offset (shear + compress) from hex center */
 function isoOffset(dx, dy) {
@@ -355,9 +360,9 @@ export function roundHex(q, r) {
 
 /**
  * Draw one hex:
- * - Detect the two visually bottom edges per-hex (after iso) and extrude only those.
- * - Walls are tinted slightly darker than the tile (never black).
- * - Corner-stitched depths + overlap + inset to seal gaps.
+ * - Pick the two visually lowest edges and draw proper faces there (like your current look).
+ * - PLUS: draw a thin “seal” on *every* edge that has a height step to guarantee no black seams.
+ * - Walls/seals are tinted from the top tile’s color (slightly darker), never pure black.
  */
 export function drawHex(q, r, x, y, size, color, effElevation = 0, type = 'grassland') {
   const gfx = this.add.graphics({ x: 0, y: 0 });
@@ -369,63 +374,34 @@ export function drawHex(q, r, x, y, size, color, effElevation = 0, type = 'grass
     const dx = size * Math.cos(ang);
     const dy = size * Math.sin(ang);
     const o = isoOffset(dx, dy);
-    corners.push({ x: x + o.x, y: y + o.y });
+    corners.push(pt(x + o.x, y + o.y));
   }
 
-  // Compute all 6 edge midpoints (to find the two "most downward" edges)
+  // edge midpoints (to find the two lowest)
   const midY = [];
   for (let e = 0; e < 6; e++) {
-    const a = corners[e];
-    const b = corners[(e + 1) % 6];
+    const a = corners[e], b = corners[(e + 1) % 6];
     midY.push((a.y + b.y) / 2);
   }
-  // indices of two edges with the largest Y (visually lowest)
-  const indices = [0,1,2,3,4,5].sort((i,j) => midY[j] - midY[i]).slice(0,2);
-  // Keep them ordered around the hex (so stitching uses neighbors properly)
-  indices.sort((a,b) => (a - b + 6) % 6 === 1 ? -1 : (b - a + 6) % 6 === 1 ? 1 : a - b);
+  let bottomEdges = [0,1,2,3,4,5].sort((i,j) => midY[j] - midY[i]).slice(0,2);
+  // keep local order
+  bottomEdges.sort((a,b) => (a - b + 6) % 6 === 1 ? -1 : (b - a + 6) % 6 === 1 ? 1 : a - b);
 
-  // neighbor tiles in odd-r order [E, NE, NW, W, SW, SE]
   const neighbors = getNeighborsOffsetOrderTiles(q, r, this.mapData);
+  const thisFill = color;
 
-  // For each edge, compute (potential) wall depth (drop to neighbor)
-  const rawDepths = new Array(6).fill(0);
-  if (type !== 'water') {
-    for (let edge of indices) {
-      const nb = neighbors[edge];
-      const nbEff = effectiveElevation(nb);
-      let diff = effElevation - nbEff;
-      if (diff < 0) diff = 0;
-      const depth = diff > 0 ? (diff * LIFT_PER_LVL + DEPTH_EPSILON) : BASE_SLAB_THICKNESS;
-      rawDepths[edge] = depth;
-    }
-  }
-
-  // Draw only the two bottom edges, with stitched corner depths
-  for (let edge of indices) {
-    const depthHere = rawDepths[edge];
-    if (depthHere <= 0) continue;
-
-    const a = corners[edge];
-    const b = corners[(edge + 1) % 6];
-
-    const dA = Math.max(rawDepths[edge], rawDepths[(edge + 5) % 6]);
-    const dB = Math.max(rawDepths[edge], rawDepths[(edge + 1) % 6]);
-
-    const ex = b.x - a.x;
-    const ey = b.y - a.y;
+  // helper to draw a quad wall
+  const drawWall = (a, b, depth, fillInt) => {
+    const ex = b.x - a.x, ey = b.y - a.y;
     const len = Math.max(1, Math.hypot(ex, ey));
-    const ux = ex / len, uy = ey / len;
+    const ux = ex / len,  uy = ey / len;
 
-    const topA = { x: a.x - ux * WALL_EDGE_OVERLAP, y: a.y - uy * WALL_EDGE_OVERLAP - WALL_TOP_INSET };
-    const topB = { x: b.x + ux * WALL_EDGE_OVERLAP, y: b.y + uy * WALL_EDGE_OVERLAP - WALL_TOP_INSET };
+    const topA = pt(a.x - ux * WALL_EDGE_OVERLAP, a.y - uy * WALL_EDGE_OVERLAP - WALL_TOP_INSET);
+    const topB = pt(b.x + ux * WALL_EDGE_OVERLAP, b.y + uy * WALL_EDGE_OVERLAP - WALL_TOP_INSET);
+    const a2   = pt(a.x - ux * WALL_EDGE_OVERLAP, a.y + depth);
+    const b2   = pt(b.x + ux * WALL_EDGE_OVERLAP, b.y + depth);
 
-    const a2 = { x: a.x - ux * WALL_EDGE_OVERLAP, y: a.y + dA };
-    const b2 = { x: b.x + ux * WALL_EDGE_OVERLAP, y: b.y + dB };
-
-    const dropLvls = Math.max(0, Math.round((depthHere - DEPTH_EPSILON) / LIFT_PER_LVL));
-    const wallFill = tintWallFromBase(color, dropLvls);
-
-    gfx.fillStyle(wallFill, 1);
+    gfx.fillStyle(fillInt, 1);
     gfx.beginPath();
     gfx.moveTo(topA.x, topA.y);
     gfx.lineTo(topB.x, topB.y);
@@ -433,11 +409,53 @@ export function drawHex(q, r, x, y, size, color, effElevation = 0, type = 'grass
     gfx.lineTo(a2.x, a2.y);
     gfx.closePath();
     gfx.fillPath();
+  };
+
+  if (type !== 'water') {
+    for (let edge = 0; edge < 6; edge++) {
+      const nb   = neighbors[edge];
+      const nbEff = effectiveElevation(nb);
+      const dropFromThis = Math.max(0, effElevation - nbEff); // this is higher than neighbor
+      const dropFromNb   = Math.max(0, nbEff - effElevation); // neighbor is higher than this
+
+      const a = corners[edge];
+      const b = corners[(edge + 1) % 6];
+
+      // A) THIN “SEAL” if neighbor is higher (prevents black crack from below)
+      if (dropFromNb > 0) {
+        const nbFill = nb ? getFillForTile(nb) : thisFill;
+        const sealColor = tintWallFromBase(nbFill, 1);
+        drawWall(a, b, Math.min(SEAL_THICKNESS, dropFromNb * LIFT_PER_LVL + DEPTH_EPSILON), sealColor);
+      }
+
+      // B) THIN “SEAL” if this is higher BUT the edge is not one of the two bottom ones
+      if (dropFromThis > 0 && bottomEdges.indexOf(edge) === -1) {
+        const sealColor = tintWallFromBase(thisFill, 1);
+        drawWall(a, b, Math.min(SEAL_THICKNESS, dropFromThis * LIFT_PER_LVL + DEPTH_EPSILON), sealColor);
+      }
+    }
+
+    // C) REAL faces only on the two visually lowest edges (your intended look)
+    bottomEdges.forEach(edge => {
+      const nb   = neighbors[edge];
+      const nbEff = effectiveElevation(nb);
+      const drop = Math.max(0, effElevation - nbEff);
+
+      const a = corners[edge];
+      const b = corners[(edge + 1) % 6];
+
+      const depth = (drop > 0)
+        ? (drop * LIFT_PER_LVL + DEPTH_EPSILON)
+        : BASE_SLAB_THICKNESS;
+
+      const wallColor = tintWallFromBase(thisFill, Math.max(1, drop));
+      drawWall(a, b, depth, wallColor);
+    });
   }
 
   // top face (no stroke on land; faint on water only)
   const topStrokeAlpha = (type === 'water') ? 0.12 : 0.0;
-  const topStrokeColor = darkenColor(color, 0.85);
+  const topStrokeColor = darkenColor(thisFill, 0.85);
 
   if (topStrokeAlpha > 0) {
     gfx.lineStyle(1, topStrokeColor, topStrokeAlpha);
@@ -445,7 +463,7 @@ export function drawHex(q, r, x, y, size, color, effElevation = 0, type = 'grass
     gfx.lineStyle(0, 0x000000, 0);
   }
 
-  gfx.fillStyle(color, 1);
+  gfx.fillStyle(thisFill, 1);
   gfx.beginPath();
   gfx.moveTo(corners[0].x, corners[0].y);
   for (let i = 1; i < 6; i++) gfx.lineTo(corners[i].x, corners[i].y);
