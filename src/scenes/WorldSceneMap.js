@@ -21,9 +21,7 @@ export function generateHexMap(width, height, seed) {
   });
 }
 
-/**
- * Return neighboring axial coordinates (odd-r offset layout) — used by roads
- */
+/** Odd-r neighbors (roads) */
 function getHexNeighbors(q, r) {
   const directions = (r % 2 === 0)
     ? [[+1, 0], [0, -1], [-1, -1], [-1, 0], [-1, +1], [0, +1]]
@@ -31,10 +29,7 @@ function getHexNeighbors(q, r) {
   return directions.map(([dq, dr]) => ({ q: q + dq, r: r + dr }));
 }
 
-/**
- * Odd-r neighbor tiles in fixed order [E, NE, NW, W, SW, SE]
- * (matches our corner/edge order)
- */
+/** Odd-r neighbors in fixed corner order [E, NE, NW, W, SW, SE] */
 function getNeighborsOffsetOrderTiles(q, r, mapData) {
   const even = (r % 2 === 0);
   const offs = even
@@ -43,10 +38,7 @@ function getNeighborsOffsetOrderTiles(q, r, mapData) {
   return offs.map(([dq, dr]) => mapData.find(t => t.q === q + dq && t.r === r + dr) || null);
 }
 
-/** Effective visual elevation:
- *  - water => 0
- *  - land  => max(0, elevation - 1)  (level 1 is baseline like water)
- */
+/** Effective visual elevation (water==0; level 1 == water baseline) */
 function effectiveElevation(tile) {
   if (!tile) return 0;
   if (tile.type === 'water') return 0;
@@ -54,9 +46,7 @@ function effectiveElevation(tile) {
   return Math.max(0, e - 1);
 }
 
-/**
- * Fill color with mild brightening by RAW elevation; water not tinted.
- */
+/** Fill color with mild brightening by RAW elevation; water not tinted. */
 function getFillForTile(tile) {
   const baseColor = getColorForTerrain(tile.type);
   const elevation = tile.elevation ?? 0;
@@ -88,7 +78,7 @@ function darkenColor(intColor, factor) {
   return Phaser.Display.Color.GetColor(r, g, b);
 }
 
-/** Utility: HSV tint so walls are darker but never black */
+/** Walls darker than the tile but never black (HSV V clamp) */
 function tintWallFromBase(intColor, darkness = 0.18) {
   const c = Phaser.Display.Color.IntegerToColor(intColor);
   const hsv = Phaser.Display.Color.RGBToHSV(c.r, c.g, c.b);
@@ -102,32 +92,31 @@ const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 /** Mild isometry */
 const ISO_SHEAR   = 0.15;
 const ISO_YSCALE  = 0.95;
-const LIFT_PER_LVL = 4;             // vertical lift per *effective* level (px)
+const LIFT_PER_LVL = 4;
 
 /** Visual walls/slabs */
-const BASE_SLAB_THICKNESS = 2;      // always on BL/BR to sell isometry
-const SEAL_THICKNESS      = 2.0;    // thin seal drawn on the *lower* tile
+const BASE_SLAB_THICKNESS = 2;   // tiny slab on bottom edges when flat
+const SEAL_THICKNESS      = 2.0; // thin seal drawn on the *lower* tile
 
-/** AA seam killers / overlap */
-const WALL_TOP_INSET     = 1.4;     // tuck wall under top face
-const WALL_EDGE_OVERLAP  = 1.8;     // extend along edge to overlap neighbors
-const DEPTH_EPSILON      = 1.0;     // ensure positive-drop walls always cover
+/** Overlap / insets + half-pixel snapping to kill AA seams */
+const WALL_TOP_INSET     = 1.6;  // tuck wall under top face
+const WALL_EDGE_OVERLAP  = 2.2;  // extend along edge direction
+const DEPTH_EPSILON      = 1.0;  // ensure positive-drop walls always cover
 
-/** Hex outline (to hide any residual seam and separate tiles) */
-const OUTLINE_COLOR = 0xBFC6D2;     // pastel grey
-const OUTLINE_ALPHA = 0.9;
-const OUTLINE_WIDTH = 1.25;
-
-/** snap to half pixel to reduce AA seams */
-const SNAP = (v) => Math.round(v * 2) / 2;
+const SNAP = v => Math.round(v * 2) / 2;
 const makePt = (x, y) => ({ x: SNAP(x), y: SNAP(y) });
+
+/** Pastel frame (hex outline) */
+const FRAME_COLOR = 0xdadada;    // pastel grey
+const FRAME_ALPHA = 0.55;
+const FRAME_WIDTH = 1.0;
 
 /** Iso offset (shear + compress) from hex center */
 function isoOffset(dx, dy) {
   return { x: dx - dy * ISO_SHEAR, y: dy * ISO_YSCALE };
 }
 
-/** Sticky UI button top-right to toggle debug numbers */
+/** Debug toggle button (sticky at top-right) */
 function ensureDebugToggleButton() {
   if (typeof this.debugMode !== 'boolean') this.debugMode = false;
 
@@ -188,6 +177,9 @@ function ensureDebugToggleButton() {
 export function drawHexMap() {
   this.objects = this.objects || [];
   ensureDebugToggleButton.call(this);
+
+  // Safety: make background water-blue so any missed seam isn’t black
+  this.cameras?.main?.setBackgroundColor(0x4da6ff);
 
   // Center the map (based on iso centers without lift)
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -328,22 +320,16 @@ export function drawHexMap() {
   });
 }
 
-/**
- * Hex → pixel in mild isometric projection
- */
+/** Hex → pixel (mild isometric) */
 export function hexToPixel(q, r, size) {
-  const x0 = size * Math.sqrt(3) * (q + 0.5 * (r & 1)); // axial pointy-top
+  const x0 = size * Math.sqrt(3) * (q + 0.5 * (r & 1));
   const y0 = size * 1.5 * r;
-
   const xIso = x0 - y0 * ISO_SHEAR;
   const yIso = y0 * ISO_YSCALE;
-
   return { x: xIso + size * 2, y: yIso + size * 2 };
 }
 
-/**
- * Pixel → hex (top-down math retained)
- */
+/** Pixel → hex (top-down math retained) */
 export function pixelToHex(x, y, size) {
   x -= size * 2;
   y -= size * 2;
@@ -365,10 +351,10 @@ export function roundHex(q, r) {
 
 /**
  * Draw one hex with cylindrical walls.
- * - Thick/visible cliffs only on bottom-left & bottom-right when this tile is higher.
- * - Thin “seal” walls drawn on the *lower* tile for any positive drop edge.
+ * - Visible cliffs only on bottom-left / bottom-right when this tile is higher.
+ * - Thin “seal” walls on the *lower* tile for any positive drop (all edges).
  * - Half-pixel snapping + generous overlap/inset.
- * - ALWAYS stroke a pastel-grey outline on top to hide any residual seam.
+ * - NEW: subtle pastel-grey frame around the top face.
  */
 export function drawHex(q, r, x, y, size, color, effElevation = 0, type = 'grassland') {
   const gfx = this.add.graphics({ x: 0, y: 0 });
@@ -385,15 +371,14 @@ export function drawHex(q, r, x, y, size, color, effElevation = 0, type = 'grass
 
   // neighbors (same order)
   const neighbors = getNeighborsOffsetOrderTiles(q, r, this.mapData);
-  const EDGE_TO_NEI = [0, 1, 2, 3, 4, 5];
   const BOTTOM_EDGES = [3, 4]; // SW, SE
 
   if (type !== 'water') {
     for (let edge = 0; edge < 6; edge++) {
-      const nb = neighbors[EDGE_TO_NEI[edge]];
+      const nb = neighbors[edge];
       const nbEff = effectiveElevation(nb);
-      const higherDrop = effElevation - nbEff;   // >0 means THIS is higher (draw visible on BL/BR)
-      const lowerDrop  = nbEff - effElevation;   // >0 means THIS is lower (draw thin seal)
+      const higherDrop = effElevation - nbEff; // >0 => this is higher
+      const lowerDrop  = nbEff - effElevation; // >0 => this is lower
 
       const a = corners[edge];
       const b = corners[(edge + 1) % 6];
@@ -403,7 +388,7 @@ export function drawHex(q, r, x, y, size, color, effElevation = 0, type = 'grass
       const len = Math.max(1, Math.hypot(ex, ey));
       const ux = ex / len, uy = ey / len;
 
-      // 1) THIN SEAL on the LOWER tile (this one) if neighbor is higher
+      // (1) THIN SEAL on the LOWER tile for ANY positive drop
       if (lowerDrop > 0) {
         const depth = Math.min(SEAL_THICKNESS, lowerDrop * LIFT_PER_LVL + DEPTH_EPSILON);
         const topA = makePt(a.x - ux * WALL_EDGE_OVERLAP, a.y - uy * WALL_EDGE_OVERLAP - WALL_TOP_INSET);
@@ -411,7 +396,6 @@ export function drawHex(q, r, x, y, size, color, effElevation = 0, type = 'grass
         const a2   = makePt(a.x - ux * WALL_EDGE_OVERLAP, a.y + depth);
         const b2   = makePt(b.x + ux * WALL_EDGE_OVERLAP, b.y + depth);
 
-        // use the neighbor's color slightly darkened so it matches the upper hex
         const nbColor = nb ? getFillForTile(nb) : color;
         const wallFill = tintWallFromBase(nbColor, 0.16);
 
@@ -425,14 +409,14 @@ export function drawHex(q, r, x, y, size, color, effElevation = 0, type = 'grass
         gfx.fillPath();
       }
 
-      // 2) VISIBLE CLIFF only on BL/BR when THIS is higher
+      // (2) VISIBLE CLIFF only on BL/BR when THIS is higher
       if (higherDrop > 0 && BOTTOM_EDGES.includes(edge)) {
-        const d = higherDrop * LIFT_PER_LVL + DEPTH_EPSILON;
+        const depth = higherDrop * LIFT_PER_LVL + DEPTH_EPSILON;
 
         const topA = makePt(a.x - ux * WALL_EDGE_OVERLAP, a.y - uy * WALL_EDGE_OVERLAP - WALL_TOP_INSET);
         const topB = makePt(b.x + ux * WALL_EDGE_OVERLAP, b.y + uy * WALL_EDGE_OVERLAP - WALL_TOP_INSET);
-        const a2   = makePt(a.x - ux * WALL_EDGE_OVERLAP, a.y + d);
-        const b2   = makePt(b.x + ux * WALL_EDGE_OVERLAP, b.y + d);
+        const a2   = makePt(a.x - ux * WALL_EDGE_OVERLAP, a.y + depth);
+        const b2   = makePt(b.x + ux * WALL_EDGE_OVERLAP, b.y + depth);
 
         const darkness = 0.18 + 0.04 * clamp(higherDrop, 0, 3);
         const wallFill = tintWallFromBase(color, darkness);
@@ -447,7 +431,7 @@ export function drawHex(q, r, x, y, size, color, effElevation = 0, type = 'grass
         gfx.fillPath();
       }
 
-      // 3) Always draw a tiny slab on BL/BR to keep the “lifted” look when flat
+      // (3) Tiny slab on BL/BR when flat (sells “lifted” look)
       if (higherDrop <= 0 && lowerDrop <= 0 && BOTTOM_EDGES.includes(edge)) {
         const depth = BASE_SLAB_THICKNESS;
         const topA = makePt(a.x - ux * WALL_EDGE_OVERLAP, a.y - uy * WALL_EDGE_OVERLAP - WALL_TOP_INSET);
@@ -469,7 +453,7 @@ export function drawHex(q, r, x, y, size, color, effElevation = 0, type = 'grass
     }
   }
 
-  // ---- Top face
+  // (4) Top face — fill then a subtle pastel-grey frame
   gfx.fillStyle(color, 1);
   gfx.beginPath();
   gfx.moveTo(corners[0].x, corners[0].y);
@@ -477,12 +461,7 @@ export function drawHex(q, r, x, y, size, color, effElevation = 0, type = 'grass
   gfx.closePath();
   gfx.fillPath();
 
-  // ---- Pastel-grey outline drawn LAST (covers any micro-seam and separates tiles)
-  gfx.lineStyle(OUTLINE_WIDTH, OUTLINE_COLOR, OUTLINE_ALPHA);
-  gfx.beginPath();
-  gfx.moveTo(corners[0].x, corners[0].y);
-  for (let i = 1; i < 6; i++) gfx.lineTo(corners[i].x, corners[i].y);
-  gfx.closePath();
+  gfx.lineStyle(FRAME_WIDTH, FRAME_COLOR, FRAME_ALPHA);
   gfx.strokePath();
 
   this.tileMap[`${q},${r}`] = gfx;
