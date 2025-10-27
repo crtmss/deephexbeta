@@ -1,5 +1,5 @@
 import HexMap from '../engine/HexMap.js';
-import { drawLocationsAndRoads } from './worldscenemaplocations.js';
+import { drawLocationsAndRoads } from './WorldSceneMapLocations.js';
 
 /** Generate map with a dynamic water border (1–4 hexes thick per edge) */
 export function generateHexMap(width, height, seed) {
