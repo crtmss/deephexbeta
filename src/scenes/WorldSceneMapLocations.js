@@ -1,15 +1,9 @@
 // Spawns locations (forest/ruin/crash/vehicle/mountainIcon) and draws roads.
-// Call from your scene AFTER drawHexMap(), e.g.:
-//
-// import { drawLocationsAndRoads } from './worldscenemaplocations.js';
-// drawHexMap.call(this);
-// drawLocationsAndRoads.call(this);
+// This is automatically called by drawHexMap().
 
 import { getHexNeighbors, effectiveElevation, isoOffset, LIFT_PER_LVL } from './WorldSceneMap.js';
 
-/** Local helper: place decorative objects and roads for the current scene */
 export function drawLocationsAndRoads() {
-  // defaults in case drawHexMap() wasn’t called yet (should be called first)
   const offX = this.mapOffsetX ?? 0;
   const offY = this.mapOffsetY ?? 0;
 
