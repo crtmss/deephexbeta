@@ -2,7 +2,6 @@
 // Call from your scene AFTER drawHexMap(), e.g.:
 //
 // import { drawLocationsAndRoads } from './worldscenemaplocations.js';
-// ...
 // drawHexMap.call(this);
 // drawLocationsAndRoads.call(this);
 
@@ -10,14 +9,18 @@ import { getHexNeighbors, effectiveElevation, isoOffset, LIFT_PER_LVL } from './
 
 /** Local helper: place decorative objects and roads for the current scene */
 export function drawLocationsAndRoads() {
+  // defaults in case drawHexMap() wasn’t called yet (should be called first)
+  const offX = this.mapOffsetX ?? 0;
+  const offY = this.mapOffsetY ?? 0;
+
   // --- Decorative locations on tiles ---
   this.mapData.forEach(hex => {
     const { q, r, hasForest, hasRuin, hasCrashSite, hasVehicle, hasMountainIcon } = hex;
 
     const eff = effectiveElevation(hex);
     const base = this.hexToPixel(q, r, this.hexSize);
-    const x = base.x;
-    const y = base.y - LIFT_PER_LVL * eff;
+    const x = base.x + offX;
+    const y = base.y + offY - LIFT_PER_LVL * eff;
 
     // Forest
     if (hasForest) {
@@ -108,14 +111,14 @@ export function drawLocationsAndRoads() {
       const e1 = effectiveElevation(hex);
       const e2 = effectiveElevation(n);
 
-      const y1 = p1.y - LIFT_PER_LVL * e1;
-      const y2 = p2.y - LIFT_PER_LVL * e2;
+      const y1 = p1.y + offY - LIFT_PER_LVL * e1;
+      const y2 = p2.y + offY - LIFT_PER_LVL * e2;
 
       const line = this.add.graphics().setDepth(3);
       line.lineStyle(2, 0x999999, 0.7);
       line.beginPath();
-      line.moveTo(p1.x, y1);
-      line.lineTo(p2.x, y2);
+      line.moveTo(p1.x + offX, y1);
+      line.lineTo(p2.x + offX, y2);
       line.strokePath();
       this.objects.push(line);
     });
