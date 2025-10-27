@@ -1,4 +1,5 @@
 import HexMap from '../engine/HexMap.js';
+import { drawLocationsAndRoads } from './worldscenemaplocations.js';
 
 /** Generate map with a dynamic water border (1–4 hexes thick per edge) */
 export function generateHexMap(width, height, seed) {
@@ -225,6 +226,9 @@ export function drawHexMap() {
     elevLabel.isElevationLabel = true;
     this.objects.push(elevLabel);
   });
+
+  // 🔗 render locations & roads now (no other code changes needed elsewhere)
+  drawLocationsAndRoads.call(this);
 }
 
 /** Hex → pixel (mild isometric projection) */
