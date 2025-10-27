@@ -1,4 +1,3 @@
-// deephexbeta/src/scenes/WorldSceneMap.js
 import HexMap from '../engine/HexMap.js';
 
 /** Generate map with a dynamic water border (1–4 hexes thick per edge) */
@@ -19,8 +18,8 @@ export function generateHexMap(width, height, seed) {
   });
 }
 
-/** Odd-r neighbors for roads */
-function getHexNeighbors(q, r) {
+/** Odd-r neighbors for roads (kept here for external use) */
+export function getHexNeighbors(q, r) {
   const dirs = (r % 2 === 0)
     ? [[+1,0],[0,-1],[-1,-1],[-1,0],[-1,+1],[0,+1]]
     : [[+1,0],[+1,-1],[0,-1],[-1,0],[0,+1],[+1,+1]];
@@ -39,7 +38,7 @@ function getNeighborsOffsetOrderTiles(q, r, mapData) {
 }
 
 /** Visual elevation: water = 0, land level 1 also = 0 (baseline like water) */
-function effectiveElevation(tile) {
+export function effectiveElevation(tile) {
   if (!tile || tile.type === 'water') return 0;
   const e = typeof tile.elevation === 'number' ? tile.elevation : 0;
   return Math.max(0, e - 1);
@@ -88,7 +87,7 @@ function tintWallFromBase(baseInt, darkness = 0.18) {
 /** Mild isometry */
 const ISO_SHEAR   = 0.15;
 const ISO_YSCALE  = 0.95;
-const LIFT_PER_LVL = 4;
+export const LIFT_PER_LVL = 4;
 
 /** Wall sizes */
 const BASE_SLAB_THICKNESS = 2;   // tiny slab when no drop (visible on bottom edges)
@@ -104,7 +103,7 @@ const SNAP = v => Math.round(v * 2) / 2;
 const pt   = (x, y) => ({ x: SNAP(x), y: SNAP(y) });
 
 /** Iso offset */
-function isoOffset(dx, dy) {
+export function isoOffset(dx, dy) {
   return { x: dx - dy * ISO_SHEAR, y: dy * ISO_YSCALE };
 }
 
@@ -162,10 +161,13 @@ function ensureDebugToggleButton() {
   });
 }
 
-/** Draw the hex grid */
+/** Draw the hex grid (hexes only; locations & roads are in worldscenemaplocations.js) */
 export function drawHexMap() {
   this.objects = this.objects || [];
   ensureDebugToggleButton.call(this);
+
+  // ensure blue camera background
+  this.cameras?.main?.setBackgroundColor('#66aaff');
 
   // center the map (iso centers, no lift)
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -196,7 +198,7 @@ export function drawHexMap() {
   });
 
   sorted.forEach(hex => {
-    const { q, r, type, hasForest, hasRuin, hasCrashSite, hasVehicle, hasRoad, hasMountainIcon } = hex;
+    const { q, r, type } = hex;
 
     const eff = effectiveElevation(hex);
     const base = this.hexToPixel(q, r, this.hexSize);
@@ -218,68 +220,6 @@ export function drawHexMap() {
     elevLabel.setStroke(strokeColor, 2);
     elevLabel.isElevationLabel = true;
     this.objects.push(elevLabel);
-
-    // scenic objects
-    if (hasForest) {
-      const treeCount = Phaser.Math.Between(2, 4);
-      const placed = [];
-      let attempts = 0;
-      while (placed.length < treeCount && attempts < 40) {
-        const angle = Phaser.Math.FloatBetween(0, 2 * Math.PI);
-        const radius = Phaser.Math.FloatBetween(this.hexSize * 0.35, 0.65 * this.hexSize);
-        const dx = Math.cos(angle) * radius;
-        const dy = Math.sin(angle) * radius;
-        const o = isoOffset(dx, dy);
-        const posX = x + o.x;
-        const posY = y + o.y;
-        const minDist = this.hexSize * 0.3;
-
-        const tooClose = placed.some(p => Phaser.Math.Distance.Between(posX, posY, p.x, p.y) < minDist);
-        if (!tooClose) {
-          const sizePercent = 0.45 + Phaser.Math.FloatBetween(-0.05, 0.05);
-          const size = this.hexSize * sizePercent;
-          const tree = this.add.text(posX, posY, '🌲', { fontSize: `${size}px` })
-            .setOrigin(0.5).setDepth(5);
-          this.tweens.add({
-            targets: tree,
-            angle: { from: -1.5, to: 1.5 },
-            duration: Phaser.Math.Between(2500, 4000),
-            yoyo: true,
-            repeat: -1,
-            ease: 'Sine.easeInOut',
-            delay: Phaser.Math.Between(0, 1000)
-          });
-          this.objects.push(tree);
-          placed.push({ x: posX, y: posY });
-        }
-        attempts++;
-      }
-    }
-    if (hasRuin)        this.objects.push(this.add.text(x, y, '🏛️', { fontSize: `${this.hexSize * 0.8}px` }).setOrigin(0.5).setDepth(5));
-    if (hasCrashSite)   this.objects.push(this.add.text(x, y, '🚀',  { fontSize: `${this.hexSize * 0.8}px` }).setOrigin(0.5).setDepth(5));
-    if (hasVehicle)     this.objects.push(this.add.text(x, y, '🚙',  { fontSize: `${this.hexSize * 0.8}px` }).setOrigin(0.5).setDepth(5));
-    if (hasMountainIcon)this.objects.push(this.add.text(x, y, '🏔️', { fontSize: `${this.hexSize * 0.9}px`, fontFamily: 'Arial, "Segoe UI Emoji", "Noto Color Emoji", sans-serif' }).setOrigin(0.5).setDepth(5));
-
-    // roads (effective elevation)
-    if (hasRoad) {
-      const neighbors = getHexNeighbors(q, r)
-        .map(n => this.mapData.find(h => h.q === n.q && h.r === n.r && h.hasRoad))
-        .filter(Boolean);
-
-      neighbors.forEach(n => {
-        const p1 = this.hexToPixel(q, r, this.hexSize);
-        const p2 = this.hexToPixel(n.q, n.r, this.hexSize);
-        const y1 = p1.y + offsetY - LIFT_PER_LVL * effectiveElevation(hex);
-        const y2 = p2.y + offsetY - LIFT_PER_LVL * effectiveElevation(n);
-        const line = this.add.graphics().setDepth(3);
-        line.lineStyle(2, 0x999999, 0.7);
-        line.beginPath();
-        line.moveTo(p1.x + offsetX, y1);
-        line.lineTo(p2.x + offsetX, y2);
-        line.strokePath();
-        this.objects.push(line);
-      });
-    }
   });
 }
 
@@ -314,11 +254,11 @@ export function roundHex(q, r) {
 
 /**
  * Draw one hex:
- * - We *always* draw a wall on every edge for land tiles.
+ * - Always draw a wall on every edge for land tiles.
  * - If neighbor is lower → full depth (drop * LIFT + epsilon).
  * - If neighbor is equal/higher → a thin 1.6px “seal” skirt.
- * - Two visually-lowest edges receive stronger darkening (nicer isometric cue).
- * - Top face has a subtle pastel-grey frame to separate tiles.
+ * - Two visually-lowest edges receive stronger darkening (isometric cue).
+ * - Top face has a subtle pastel-grey frame.
  */
 export function drawHex(q, r, x, y, size, color, effElevation = 0, type = 'grassland') {
   const gfx = this.add.graphics({ x: 0, y: 0 });
@@ -331,7 +271,7 @@ export function drawHex(q, r, x, y, size, color, effElevation = 0, type = 'grass
     corners.push(pt(x + o.x, y + o.y));
   }
 
-  // find two visually lowest edges (by midpoint y) for stronger shading
+  // find two visually lowest edges for stronger shading
   const midY = corners.map((_, e) => (corners[e].y + corners[(e + 1) % 6].y) / 2);
   const bottom = [0,1,2,3,4,5].sort((i, j) => midY[j] - midY[i]).slice(0, 2);
   const isBottom = (e) => bottom[0] === e || bottom[1] === e;
