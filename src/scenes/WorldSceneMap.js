@@ -186,6 +186,10 @@ export function drawHexMap() {
     offsetY = cam.centerY - cy;
   }
 
+  // store offsets so locations/roads can use the same centering
+  this.mapOffsetX = offsetX;
+  this.mapOffsetY = offsetY;
+
   // draw order: lower effective elevation first
   const sorted = [...this.mapData].sort((a, b) => {
     const ea = effectiveElevation(a);
