@@ -1,6 +1,6 @@
 // src/scenes/WorldSceneMapLocations.js
-// Renders all non-road locations as EMOJIS (trees, ruins, crash sites, vehicles, mountain icon)
-// Roads are drawn here as vector lines. Placement aligns with WorldSceneMap.js isometric lift.
+// Spawns POIs and renders them (as EMOJIS) + draws roads (vector).
+// Guarantees: no POI on water tiles. Placement aligns with isometric lift.
 
 function mulberry32(a) {
   let t = a >>> 0;
@@ -16,6 +16,7 @@ const chance = (rnd, p) => rnd() < p;
 const keyOf = (q, r) => `${q},${r}`;
 const inBounds = (q, r, w, h) => q >= 0 && q < w && r >= 0 && r < h;
 
+// axial odd-r neighbors
 function neighborsOddR(q, r) {
   const even = (r % 2 === 0);
   return even
@@ -23,29 +24,65 @@ function neighborsOddR(q, r) {
     : [[+1,0],[+1,-1],[0,-1],[-1,0],[0,+1],[+1,+1]];
 }
 
-/* -------------------- Map mutation (POIs & roads) -------------------- */
-
+/* ======================
+   SPAWNING (stable-like)
+   ====================== */
+// NOTE: never place anything on water.
 function placeLocations(mapData, width, height, rnd) {
   const byKey = new Map(mapData.map(t => [keyOf(t.q, t.r), t]));
+
   for (const t of mapData) {
     const type = t.type || '';
+    const isWater = type === 'water';
+    if (isWater) {
+      // explicitly clear any stale flags on water (if present from older runs)
+      t.hasForest = false;
+      t.hasRuin = false;
+      t.hasCrashSite = false;
+      t.hasVehicle = false;
+      t.hasMountainIcon = false;
+      continue;
+    }
 
-    if (type === 'forest') t.hasForest = true;
-    else if (!t.hasForest && chance(rnd, 0.06)) t.hasForest = true;
+    // Forests: respect pre-tagged “forest” tiles; otherwise light sprinkle
+    if (type === 'forest') {
+      t.hasForest = true;
+    } else if (!t.hasForest && chance(rnd, 0.06)) {
+      t.hasForest = true;
+    }
 
-    if (!t.hasRuin && type !== 'ocean' && type !== 'mountain' && chance(rnd, 0.01)) t.hasRuin = true;
-    if (!t.hasCrashSite && type !== 'ocean' && chance(rnd, 0.006)) t.hasCrashSite = true;
-    if (!t.hasVehicle && (type === 'plains' || type === 'desert' || type === '') && chance(rnd, 0.008)) t.hasVehicle = true;
-    if (!t.hasMountainIcon && type !== 'mountain' && (t.elevation ?? 0) >= 2 && chance(rnd, 0.05)) t.hasMountainIcon = true;
+    // Ruins: rare, avoid mountains
+    if (!t.hasRuin && type !== 'mountain' && chance(rnd, 0.010)) {
+      t.hasRuin = true;
+    }
+
+    // Crash sites: very rare
+    if (!t.hasCrashSite && chance(rnd, 0.006)) {
+      t.hasCrashSite = true;
+    }
+
+    // Vehicles: sprinkle on neutral-ish ground
+    if (!t.hasVehicle && (type === 'plains' || type === 'desert' || type === 'grassland' || type === '') && chance(rnd, 0.008)) {
+      t.hasVehicle = true;
+    }
+
+    // Optional mountain icon on tall non-mountain tiles
+    if (!t.hasMountainIcon && type !== 'mountain' && (t.elevation ?? 0) >= 2 && chance(rnd, 0.05)) {
+      t.hasMountainIcon = true;
+    }
   }
-  // light clustering for forests
+
+  // Forest clustering: spread softly to neighbors, still avoiding water
   for (const t of mapData) {
     if (!t.hasForest) continue;
     for (const [dq, dr] of neighborsOddR(t.q, t.r)) {
       const q = t.q + dq, r = t.r + dr;
       if (!inBounds(q, r, width, height)) continue;
       const n = byKey.get(keyOf(q, r));
-      if (n && !n.hasForest && chance(mulberry32((t.q * 73856093) ^ (t.r * 19349663))(), 0.15)) n.hasForest = true;
+      if (!n || n.type === 'water') continue;
+      // per-tile seed for deterministic spread look
+      const localRnd = mulberry32((t.q * 73856093) ^ (t.r * 19349663));
+      if (!n.hasForest && chance(localRnd, 0.15)) n.hasForest = true;
     }
   }
 }
@@ -55,13 +92,13 @@ function generateRoads(mapData, width, height, seed) {
   const byKey = new Map(mapData.map(t => [keyOf(t.q, t.r), t]));
   const at = (q, r) => byKey.get(keyOf(q, r));
   const markRoad = (t, type) => {
-    if (!t) return;
+    if (!t || t.type === 'water') return; // no roads on water
     t.hasRoad = true;
     if (type === 'asphalt') t.roadType = 'asphalt';
     else if (!t.roadType) t.roadType = 'countryside';
   };
 
-  // asphalt "trunks"
+  // Asphalt “trunks” along a few rows (skip water)
   const trunks = rndInt(rnd, 2, 4);
   const chosenRows = new Set();
   while (chosenRows.size < trunks) {
@@ -70,33 +107,38 @@ function generateRoads(mapData, width, height, seed) {
   for (const r of chosenRows) {
     for (let q = 0; q < width; q++) {
       const t = at(q, r);
-      if (!t || t.type === 'ocean') continue;
+      if (!t || t.type === 'water') continue;
       markRoad(t, 'asphalt');
-      if (chance(rnd, 0.35)) {
+      if (rnd() < 0.35) {
         const even = (r % 2 === 0);
         const nq = q + (even ? 0 : 1);
-        const nr = r + (chance(rnd, 0.5) ? -1 : +1);
+        const nr = r + (rnd() < 0.5 ? -1 : +1);
         if (inBounds(nq, nr, width, height)) markRoad(at(nq, nr), 'asphalt');
       }
     }
   }
 
-  // countryside links between some POIs
-  const pois = mapData.filter(t => t.hasRuin || t.hasCrashSite || t.hasVehicle);
+  // Countryside links between a few POIs (avoid water)
+  const pois = mapData.filter(t => t.type !== 'water' && (t.hasRuin || t.hasCrashSite || t.hasVehicle));
   for (let i = 0; i + 1 < Math.min(pois.length, 12); i += 2) {
     const a = pois[i], b = pois[i + 1];
     if (!a || !b) break;
     let { q, r } = a;
     const goal = { q: b.q, r: b.r };
     let guard = width * height * 3;
+
     while ((q !== goal.q || r !== goal.r) && guard-- > 0) {
       const opts = neighborsOddR(q, r)
         .map(([dq, dr]) => ({ q: q + dq, r: r + dr }))
-        .filter(p => inBounds(p.q, p.r, width, height));
+        .filter(p => inBounds(p.q, p.r, width, height) && at(p.q, p.r)?.type !== 'water');
+
+      if (!opts.length) break;
+
+      // Greedy closer step
       let best = null, bestScore = Infinity;
       for (const p of opts) {
         const dq = goal.q - p.q, dr = goal.r - p.r;
-        const score = Math.abs(dq) + Math.abs(dr) + ((at(p.q, p.r)?.type === 'ocean') ? 10 : 0);
+        const score = Math.abs(dq) + Math.abs(dr);
         if (score < bestScore) { bestScore = score; best = p; }
       }
       if (!best) break;
@@ -114,7 +156,9 @@ export function applyLocationFlags(mapData, width, height, seed = 1337) {
   return mapData;
 }
 
-/* -------------------- Rendering -------------------- */
+/* ======================
+   RENDERING
+   ====================== */
 
 function effectiveElevationLocal(tile) {
   if (!tile || tile.type === 'water') return 0;
@@ -128,11 +172,13 @@ export function drawLocationsAndRoads() {
   const size = this.hexSize || 24;
   if (!Array.isArray(map) || !map.length) return;
 
+  // Ensure flags/roads applied once
   if (!map.__locationsApplied) {
     try { applyLocationFlags(map, this.mapWidth, this.mapHeight, this.seed ?? 1337); } catch {}
     Object.defineProperty(map, '__locationsApplied', { value: true, enumerable: false });
   }
 
+  // Clean old layers
   if (scene.roadsGraphics) scene.roadsGraphics.destroy();
   if (scene.locationsLayer) scene.locationsLayer.destroy();
   const roads = scene.add.graphics({ x: 0, y: 0 }).setDepth(30);
@@ -154,7 +200,7 @@ export function drawLocationsAndRoads() {
   const offsetY = this.mapOffsetY || 0;
   const LIFT = this?.LIFT_PER_LVL ?? 4;
 
-  // Roads as lines
+  // ---- Roads (vector) ----
   for (const t of map) {
     if (!t.hasRoad) continue;
     const eff1 = effectiveElevationLocal(t);
@@ -164,6 +210,7 @@ export function drawLocationsAndRoads() {
 
     for (const [dq, dr] of neighborsOddR(t.q, t.r)) {
       const q2 = t.q + dq, r2 = t.r + dr;
+      // draw each undirected edge once
       if (q2 < t.q || (q2 === t.q && r2 <= t.r)) continue;
       const n = at(q2, r2);
       if (!n || !n.hasRoad) continue;
@@ -185,7 +232,7 @@ export function drawLocationsAndRoads() {
     }
   }
 
-  // Locations as EMOJIS (trees as in stable)
+  // ---- Locations (emojis; never on water) ----
   const addEmoji = (x, y, char, fontPx, depth = 42) => {
     const t = scene.add.text(x, y, char, {
       fontSize: `${fontPx}px`,
@@ -196,12 +243,13 @@ export function drawLocationsAndRoads() {
   };
 
   for (const t of map) {
+    if (t.type === 'water') continue; // safety
     const base = centerOf(t.q, t.r);
     const eff = effectiveElevationLocal(t);
     const cx = base.x + offsetX;
     const cy = base.y + offsetY - LIFT * eff;
 
-    // 🌲 Forests: clusters of 2–4 trees, no overlap, size jitter, gentle sway
+    // 🌲 clustered trees (stable behavior)
     if (t.hasForest) {
       const treeCount = Phaser.Math.Between(2, 4);
       const placed = [];
