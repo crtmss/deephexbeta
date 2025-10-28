@@ -1,20 +1,18 @@
 // src/scenes/WorldSceneMap.js
-// Preserves visuals from main (24): colors, frames, cliffs, and isometric lift.
-// Now also exports roundHex so WorldScene.js can import it.
+// Preserves main (24) hex visuals (fill, rims, cliffs) and exports helpers.
+// Fixes: no duplicate/overlapping grids (single map container), mouse hover highlight.
 
 import HexMap from '../engine/HexMap.js';
 import { drawLocationsAndRoads } from './WorldSceneMapLocations.js';
 
-// ---- Public constants ----
 export const LIFT_PER_LVL = 4;
 const ISO_SHEAR  = 0.15;
 const ISO_YSCALE = 0.95;
 
-// ---- Helpers to reduce AA seams & keep consistent snapping ----
 const SNAP = v => Math.round(v * 2) / 2;
-const pt = (x, y) => ({ x: SNAP(x), y: SNAP(y) });
+const pt   = (x, y) => ({ x: SNAP(x), y: SNAP(y) });
 
-// ---- Terrain palette (kept as in main 24) ----
+/* -------- palette (same as before) -------- */
 export function getColorForTerrain(terrain) {
   switch (terrain) {
     case 'grassland': return 0x34a853;
@@ -27,11 +25,11 @@ export function getColorForTerrain(terrain) {
   }
 }
 
-// ---- Elevation helpers ----
+/* -------- elevation helpers -------- */
 export function effectiveElevation(tile) {
   if (!tile || tile.type === 'water') return 0;
   const e = typeof tile.elevation === 'number' ? tile.elevation : 0;
-  return Math.max(0, e - 1); // level 1 treated like baseline (water)
+  return Math.max(0, e - 1);
 }
 
 function darkenRGBInt(baseInt, factor) {
@@ -50,7 +48,7 @@ function tintWallFromBase(baseInt, darkness = 0.18) {
   return Phaser.Display.Color.GetColor(rgb.r, rgb.g, rgb.b);
 }
 
-// ---- Geometry / axial-odd-r ----
+/* -------- axial odd-r neighbors -------- */
 function neighborsOddR(q, r) {
   const even = (r % 2 === 0);
   return even
@@ -58,12 +56,11 @@ function neighborsOddR(q, r) {
     : [[+1,0],[+1,-1],[0,-1],[-1,0],[0,+1],[+1,+1]];
 }
 
-// ---- Isometric transforms ----
+/* -------- isometric transforms -------- */
 export function isoOffset(dx, dy) {
   return { x: dx - dy * ISO_SHEAR, y: dy * ISO_YSCALE };
 }
 
-// Axial → screen (mild isometric projection)
 export function hexToPixel(q, r, size) {
   const x0 = size * Math.sqrt(3) * (q + 0.5 * (r & 1));
   const y0 = size * 1.5 * r;
@@ -72,7 +69,6 @@ export function hexToPixel(q, r, size) {
   return { x: xIso + size * 2, y: yIso + size * 2 };
 }
 
-// Screen → axial (approximate; used for picking)
 export function pixelToHex(x, y, size) {
   x -= size * 2;
   y -= size * 2;
@@ -82,34 +78,18 @@ export function pixelToHex(x, y, size) {
   return { q, r };
 }
 
-// ---- NEW: axial rounding (cube rounding) ----
+// axial round via cube rounding
 export function roundHex(qf, rf) {
-  // Convert axial (q,r) to cube (x,y,z) with x=q, z=r, y=-x-z
-  const x = qf;
-  const z = rf;
-  const y = -x - z;
-
-  let rx = Math.round(x);
-  let ry = Math.round(y);
-  let rz = Math.round(z);
-
-  const dx = Math.abs(rx - x);
-  const dy = Math.abs(ry - y);
-  const dz = Math.abs(rz - z);
-
-  if (dx > dy && dx > dz) {
-    rx = -ry - rz;
-  } else if (dy > dz) {
-    ry = -rx - rz;
-  } else {
-    rz = -rx - ry;
-  }
-
-  // Back to axial
+  const x = qf, z = rf, y = -x - z;
+  let rx = Math.round(x), ry = Math.round(y), rz = Math.round(z);
+  const dx = Math.abs(rx - x), dy = Math.abs(ry - y), dz = Math.abs(rz - z);
+  if (dx > dy && dx > dz) rx = -ry - rz;
+  else if (dy > dz)       ry = -rx - rz;
+  else                    rz = -rx - ry;
   return { q: rx, r: rz };
 }
 
-// ---- Map generation (water border like main 24) ----
+/* -------- map generation with water borders -------- */
 export function generateHexMap(width, height, seed) {
   const hexMap = new HexMap(width, height, seed);
   const raw = hexMap.getMap();
@@ -127,8 +107,8 @@ export function generateHexMap(width, height, seed) {
   });
 }
 
-// ---- Wall (cliff) drawing along edges where neighbor is lower ----
-function drawHexWall(scene, xTop, yTop, edgePtsTop, dropPx, wallColor) {
+/* -------- walls / cliffs -------- */
+function drawHexWall(scene, edgePtsTop, dropPx, wallColor) {
   const [A, B] = edgePtsTop;
   const A2 = pt(A.x, A.y + dropPx);
   const B2 = pt(B.x, B.y + dropPx);
@@ -143,7 +123,6 @@ function drawHexWall(scene, xTop, yTop, edgePtsTop, dropPx, wallColor) {
   g.closePath();
   g.fillPath();
 
-  // thin dark separator line at the base to reduce AA seam
   g.lineStyle(1, darkenRGBInt(wallColor, 0.7), 0.9);
   g.beginPath();
   g.moveTo(A2.x, A2.y);
@@ -153,12 +132,12 @@ function drawHexWall(scene, xTop, yTop, edgePtsTop, dropPx, wallColor) {
   return g;
 }
 
-// ---- Hex face + frame (kept like main 24) ----
+/* -------- one hex (top + frame + cliffs) -------- */
 export function drawHex(q, r, x, y, size, fillColor, effElevation, terrain) {
   const w = size * Math.sqrt(3) / 2;
   const h = size / 2;
 
-  const p0 = pt(x, y - size);         // top
+  const p0 = pt(x, y - size);
   const p1 = pt(x + w, y - h);
   const p2 = pt(x + w, y + h);
   const p3 = pt(x, y + size);
@@ -166,7 +145,6 @@ export function drawHex(q, r, x, y, size, fillColor, effElevation, terrain) {
   const p5 = pt(x - w, y - h);
   const ring = [p0, p1, p2, p3, p4, p5];
 
-  // face
   const face = this.add.graphics().setDepth(3);
   face.fillStyle(fillColor, 1);
   face.beginPath();
@@ -175,7 +153,6 @@ export function drawHex(q, r, x, y, size, fillColor, effElevation, terrain) {
   face.closePath();
   face.fillPath();
 
-  // rim/frame
   const rim = this.add.graphics().setDepth(4);
   const rimColor = darkenRGBInt(fillColor, 0.75);
   rim.lineStyle(1.5, rimColor, 0.9);
@@ -185,7 +162,7 @@ export function drawHex(q, r, x, y, size, fillColor, effElevation, terrain) {
   rim.closePath();
   rim.strokePath();
 
-  // cliffs/walls to lower neighbors
+  // Cliffs down to lower neighbors
   const dropPerLvl = LIFT_PER_LVL;
   const wallColor = tintWallFromBase(fillColor, 0.22);
   const neighborCoords = neighborsOddR(q, r);
@@ -202,30 +179,51 @@ export function drawHex(q, r, x, y, size, fillColor, effElevation, terrain) {
 
     const A = ring[e];
     const B = ring[(e + 1) % 6];
-    drawHexWall(this, x, y, [A, B], diff * dropPerLvl, wallColor);
+    const g = drawHexWall(this, [A, B], diff * dropPerLvl, wallColor);
+    // return handles (so we can add them into the container)
+    rim._walls = rim._walls || [];
+    rim._walls.push(g);
   }
 
-  return { face, rim };
+  return { face, rim, ring };
 }
 
-// ---- Scene-level helpers used by Locations ----
-function getFillForTile(tile) {
-  const baseColor = getColorForTerrain(tile.type);
-  if (tile.type === 'water') return baseColor;
-  const elevation = tile.elevation ?? 0;
-  const t = Math.max(0, Math.min(1, elevation / 4)) * 0.5;
-  const base = Phaser.Display.Color.IntegerToColor(baseColor);
-  const r = Math.round(base.r + (255 - base.r) * t);
-  const g = Math.round(base.g + (255 - base.g) * t);
-  const b = Math.round(base.b + (255 - base.b) * t);
-  return Phaser.Display.Color.GetColor(r, g, b);
+/* -------- helpers for hex outline (hover) -------- */
+function drawHexOutline(scene, x, y, size, color = 0xffffff) {
+  const w = size * Math.sqrt(3) / 2;
+  const h = size / 2;
+  const p0 = pt(x, y - size);
+  const p1 = pt(x + w, y - h);
+  const p2 = pt(x + w, y + h);
+  const p3 = pt(x, y + size);
+  const p4 = pt(x - w, y + h);
+  const p5 = pt(x - w, y - h);
+  const g = scene.add.graphics().setDepth(10002);
+  g.lineStyle(3, color, 1);
+  g.beginPath();
+  g.moveTo(p0.x, p0.y);
+  g.lineTo(p1.x, p1.y);
+  g.lineTo(p2.x, p2.y);
+  g.lineTo(p3.x, p3.y);
+  g.lineTo(p4.x, p4.y);
+  g.lineTo(p5.x, p5.y);
+  g.closePath();
+  g.strokePath();
+  return g;
 }
 
-// ---- Public renderer of the whole map (preserves main 24 visuals) ----
+/* -------- main draw (single container; no duplicates) -------- */
 export function drawHexMap() {
   this.objects = this.objects || [];
 
-  // camera-based offset for centering
+  // Destroy old map container (prevents “double grid”)
+  if (this.mapContainer) {
+    this.mapContainer.destroy(true);
+    this.mapContainer = null;
+  }
+  this.mapContainer = this.add.container(0, 0).setDepth(1);
+
+  // center offsets (same projection as before)
   const cam = this.cameras?.main;
   const camW = cam?.width ?? 800;
   const totalW = this.mapWidth * this.hexSize * Math.sqrt(3) * 0.9;
@@ -235,11 +233,11 @@ export function drawHexMap() {
   this.mapOffsetX = offsetX;
   this.mapOffsetY = offsetY;
 
-  // fast lookup for neighbors in drawHex walls
+  // lookup for walls/cliffs
   const byKey = new Map(this.mapData.map(t => [`${t.q},${t.r}`, t]));
   this.tileAt = (q, r) => byKey.get(`${q},${r}`);
 
-  // sort by effective elevation to get proper painter’s order
+  // draw bottom-to-top by effective elevation
   const sorted = [...this.mapData].sort((a, b) => {
     const ea = effectiveElevation(a);
     const eb = effectiveElevation(b);
@@ -251,18 +249,51 @@ export function drawHexMap() {
   });
 
   for (const hex of sorted) {
-    const { q, r, type } = hex;
+    const { q, r } = hex;
     const eff = effectiveElevation(hex);
     const base = hexToPixel(q, r, this.hexSize);
     const x = base.x + offsetX;
     const y = base.y + offsetY - LIFT_PER_LVL * eff;
 
-    const fillColor = getFillForTile(hex);
-    drawHex.call(this, q, r, x, y, this.hexSize, fillColor, eff, type);
+    const fillColor = getColorForTerrain(hex.type);
+    const { face, rim } = drawHex.call(this, q, r, x, y, this.hexSize, fillColor, eff, hex.type);
+
+    // add into the map container (including walls created inside rim)
+    this.mapContainer.add(face);
+    this.mapContainer.add(rim);
+    if (rim._walls) rim._walls.forEach(w => this.mapContainer.add(w));
   }
 
-  // draw locations & roads (locations as emojis)
+  // Draw POIs + roads after tiles
   drawLocationsAndRoads.call(this);
+
+  // ---- Hover highlight (follows mouse) ----
+  if (this.hoverOutline) { this.hoverOutline.destroy(); this.hoverOutline = null; }
+  this.input?.on('pointermove', (pointer) => {
+    const worldX = pointer.worldX - this.mapOffsetX;
+    const worldY = pointer.worldY - this.mapOffsetY;
+    const frac = pixelToHex(worldX, worldY, this.hexSize);
+    const axial = roundHex(frac.q, frac.r);
+    const tile = this.tileAt(axial.q, axial.r);
+    if (!tile) {
+      if (this.hoverOutline) { this.hoverOutline.destroy(); this.hoverOutline = null; }
+      return;
+    }
+    const eff = effectiveElevation(tile);
+    const p = hexToPixel(axial.q, axial.r, this.hexSize);
+    const x = p.x + this.mapOffsetX;
+    const y = p.y + this.mapOffsetY - LIFT_PER_LVL * eff;
+
+    if (this.hoverOutline) this.hoverOutline.destroy();
+    this.hoverOutline = drawHexOutline(this, x, y, this.hexSize, 0xffffff);
+    // fade quickly so it feels “temporary”
+    this.tweens.add({
+      targets: this.hoverOutline,
+      alpha: { from: 1, to: 0.25 },
+      duration: 160,
+      ease: 'Sine.easeOut'
+    });
+  });
 }
 
 export default {
@@ -270,10 +301,10 @@ export default {
   isoOffset,
   hexToPixel,
   pixelToHex,
-  roundHex,          // <-- added
+  roundHex,
   effectiveElevation,
   getColorForTerrain,
-  drawHex,           // exported for WorldScene.js
+  drawHex,
   drawHexMap,
   generateHexMap,
 };
