@@ -3,27 +3,26 @@
 /**
  * WorldSceneMapLocations
  * ----------------------
- * This module is responsible for:
- *  - Mutating mapData to add "location flags" (forests, ruins, crash sites, etc.)
- *  - Generating simple road networks (asphalt & countryside)
- *  - Rendering those roads and markers onto the WorldScene using Phaser Graphics
+ * Responsibilities:
+ *  - Mutate mapData to add POI flags (forests, ruins, crash sites, vehicles, etc.)
+ *  - Generate simple road networks (asphalt & countryside)
+ *  - Render roads AND (as emojis) the other locations in this module
  *
  * Exports:
  *   - applyLocationFlags(mapData, width, height, seed?)
- *   - drawLocationsAndRoads()  // must be called with scene context: drawLocationsAndRoads.call(this)
+ *   - drawLocationsAndRoads()  // call with scene context: drawLocationsAndRoads.call(this)
  *
- * Expected properties/methods on the scene (this):
- *   - this.mapData: Array<{ q:number, r:number, type?:string, elevation?:number, ... }>
- *   - this.mapWidth, this.mapHeight: number
- *   - this.hexSize: number (fallback 24)
- *   - this.seed?: number
- *   - this.hexToPixel(q, r, size): { x:number, y:number }
- *   - this.LIFT_PER_LVL?: number (fallback 12) – used to slightly lift icons by elevation
+ * Scene expectations (this):
+ *   - mapData: Array<{q,r,type?,elevation?, ...}>
+ *   - mapWidth, mapHeight, hexSize, seed?
+ *   - hexToPixel(q,r,size): {x,y}
+ *   - LIFT_PER_LVL (exported by WorldSceneMap.js; available via `this.LIFT_PER_LVL`)
+ *   - mapOffsetX, mapOffsetY (set by WorldSceneMap.js before calling this)
  */
 
-/* =======================
- * Utilities
- * ======================= */
+/////////////////////////////
+// Small utilities
+/////////////////////////////
 
 function mulberry32(a) {
   let t = a >>> 0;
@@ -34,64 +33,37 @@ function mulberry32(a) {
     return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
   };
 }
+const rndInt = (rnd, min, max) => Math.floor(rnd() * (max - min + 1)) + min;
+const chance = (rnd, p) => rnd() < p;
+const keyOf = (q, r) => `${q},${r}`;
+const inBounds = (q, r, w, h) => q >= 0 && q < w && r >= 0 && r < h;
 
-function rndInt(rnd, min, max) {
-  return Math.floor(rnd() * (max - min + 1)) + min;
-}
-
-function chance(rnd, p) {
-  return rnd() < p;
-}
-
-function shuffleInPlace(arr, rnd) {
-  for (let i = arr.length - 1; i > 0; i--) {
-    const j = Math.floor(rnd() * (i + 1));
-    [arr[i], arr[j]] = [arr[j], arr[i]];
-  }
-  return arr;
-}
-
-function keyOf(q, r) {
-  return `${q},${r}`;
-}
-
-function inBounds(q, r, width, height) {
-  return q >= 0 && q < width && r >= 0 && r < height;
-}
-
-// odd-r offset neighbors
+// odd-r neighbors
 function neighborsOddR(q, r) {
   const even = (r % 2 === 0);
   return even
-    ? [[+1, 0],[0, -1],[-1, -1],[-1, 0],[-1, +1],[0, +1]]
-    : [[+1, 0],[+1, -1],[0, -1],[-1, 0],[0, +1],[+1, +1]];
+    ? [[+1,0],[0,-1],[-1,-1],[-1,0],[-1,+1],[0,+1]]
+    : [[+1,0],[+1,-1],[0,-1],[-1,0],[0,+1],[+1,+1]];
 }
 
-/* =======================
- * Map mutation (flags & roads)
- * ======================= */
+/////////////////////////////
+// Map mutation (POIs & roads)
+/////////////////////////////
 
-/**
- * Place simple points of interest and biome markers on the map.
- * This function is intentionally conservative: if your tiles already carry
- * semantic types (e.g. type === 'forest'), we respect those first and
- * add only small randomized accents.
- */
 function placeLocations(mapData, width, height, rnd) {
-  const tilesByKey = new Map(mapData.map(t => [keyOf(t.q, t.r), t]));
+  const byKey = new Map(mapData.map(t => [keyOf(t.q, t.r), t]));
 
   for (const t of mapData) {
-    // Prefer pre-tagged types if your generator created them:
     const type = t.type || '';
 
-    // Forests: if tile says forest, mark it. Otherwise light random sprinkle.
+    // Forests: respect tiles already marked as forest; lightly sprinkle otherwise
     if (type === 'forest') {
       t.hasForest = true;
     } else if (!t.hasForest && chance(rnd, 0.06)) {
       t.hasForest = true;
     }
 
-    // Ruins: rare, avoid mountains/ocean by simple heuristic on type
+    // Ruins: rare; avoid ocean/mountain
     if (!t.hasRuin && type !== 'ocean' && type !== 'mountain' && chance(rnd, 0.01)) {
       t.hasRuin = true;
     }
@@ -101,7 +73,7 @@ function placeLocations(mapData, width, height, rnd) {
       t.hasCrashSite = true;
     }
 
-    // Vehicles: sprinkle on plains/desert/roadside vibe
+    // Vehicles: sprinkle on neutral terrain
     if (!t.hasVehicle && (type === 'plains' || type === 'desert' || type === '') && chance(rnd, 0.008)) {
       t.hasVehicle = true;
     }
@@ -112,42 +84,30 @@ function placeLocations(mapData, width, height, rnd) {
     }
   }
 
-  // Slight clustering: if a tile has a forest, maybe spread to a neighbor (soften salt-and-pepper)
+  // Gentle forest clustering like a blur: spread to neighbors occasionally
   for (const t of mapData) {
     if (!t.hasForest) continue;
     for (const [dq, dr] of neighborsOddR(t.q, t.r)) {
       const q = t.q + dq, r = t.r + dr;
       if (!inBounds(q, r, width, height)) continue;
-      const n = tilesByKey.get(keyOf(q, r));
+      const n = byKey.get(keyOf(q, r));
       if (n && !n.hasForest && chance(rnd, 0.15)) n.hasForest = true;
     }
   }
 }
 
-/**
- * Simple road generator:
- *  - Starts a handful of "trunks" across the map horizontally or diagonally.
- *  - Connects a few POIs with countryside roads.
- *  - Annotates tiles with: hasRoad = true, roadType = 'asphalt' | 'countryside'
- */
 function generateRoads(mapData, width, height, seed) {
-  const rnd = mulberry32((seed >>> 0));
-  const tilesByKey = new Map(mapData.map(t => [keyOf(t.q, t.r), t]));
-  const tileAt = (q, r) => tilesByKey.get(keyOf(q, r));
-
-  // Helpers
+  const rnd = mulberry32(seed >>> 0);
+  const byKey = new Map(mapData.map(t => [keyOf(t.q, t.r), t]));
+  const at = (q, r) => byKey.get(keyOf(q, r));
   const markRoad = (t, type) => {
     if (!t) return;
     t.hasRoad = true;
-    // Prefer asphalt if any step says asphalt
-    if (type === 'asphalt') {
-      t.roadType = 'asphalt';
-    } else if (!t.roadType) {
-      t.roadType = 'countryside';
-    }
+    if (type === 'asphalt') t.roadType = 'asphalt';
+    else if (!t.roadType) t.roadType = 'countryside';
   };
 
-  // Major trunks: 2–4 rows that lay asphalt from west to east
+  // Asphalt "trunks" across a few rows
   const trunks = rndInt(rnd, 2, 4);
   const chosenRows = new Set();
   while (chosenRows.size < trunks) {
@@ -155,60 +115,49 @@ function generateRoads(mapData, width, height, seed) {
   }
   for (const r of chosenRows) {
     for (let q = 0; q < width; q++) {
-      const t = tileAt(q, r);
-      if (!t) continue;
-      // skip oceans if your map has them marked
-      if (t.type === 'ocean') continue;
+      const t = at(q, r);
+      if (!t || t.type === 'ocean') continue;
       markRoad(t, 'asphalt');
-      // Wiggle into diagonal neighbor so roads look more "hex-like"
       if (chance(rnd, 0.35)) {
         const even = (r % 2 === 0);
         const nq = q + (even ? 0 : 1);
         const nr = r + (chance(rnd, 0.5) ? -1 : +1);
-        if (inBounds(nq, nr, width, height)) markRoad(tileAt(nq, nr), 'asphalt');
+        if (inBounds(nq, nr, width, height)) markRoad(at(nq, nr), 'asphalt');
       }
     }
   }
 
-  // Collect POIs and connect a subset with countryside roads
+  // Connect some POIs with countryside roads
   const pois = mapData.filter(t => t.hasRuin || t.hasCrashSite || t.hasVehicle);
-  shuffleInPlace(pois, rnd);
-  const pairs = Math.min(pois.length >> 1, 6);
-  for (let i = 0; i < pairs; i++) {
-    const a = pois[i * 2];
-    const b = pois[i * 2 + 1];
+  for (let i = 0; i + 1 < Math.min(pois.length, 12); i += 2) {
+    const a = pois[i], b = pois[i + 1];
     if (!a || !b) break;
 
-    // Simple greedy walk from a to b
     let { q, r } = a;
     const goal = { q: b.q, r: b.r };
     let guard = width * height * 3;
+
     while ((q !== goal.q || r !== goal.r) && guard-- > 0) {
       const opts = neighborsOddR(q, r)
         .map(([dq, dr]) => ({ q: q + dq, r: r + dr }))
         .filter(p => inBounds(p.q, p.r, width, height));
 
-      // choose the neighbor that reduces hex-distance (rough heuristic)
+      // Greedy closer step (tax ocean)
       let best = null, bestScore = Infinity;
       for (const p of opts) {
-        const dq = goal.q - p.q;
-        const dr = goal.r - p.r;
-        const score = Math.abs(dq) + Math.abs(dr) + (tileAt(p.q, p.r)?.type === 'ocean' ? 10 : 0);
+        const dq = goal.q - p.q, dr = goal.r - p.r;
+        const score = Math.abs(dq) + Math.abs(dr) + ((at(p.q, p.r)?.type === 'ocean') ? 10 : 0);
         if (score < bestScore) { bestScore = score; best = p; }
       }
       if (!best) break;
 
-      // mark current and step as countryside
-      markRoad(tileAt(q, r), 'countryside');
-      markRoad(tileAt(best.q, best.r), 'countryside');
+      markRoad(at(q, r), 'countryside');
+      markRoad(at(best.q, best.r), 'countryside');
       q = best.q; r = best.r;
     }
   }
 }
 
-/**
- * Public: apply POI flags and build roads once.
- */
 export function applyLocationFlags(mapData, width, height, seed = 1337) {
   const rnd = mulberry32(seed >>> 0);
   placeLocations(mapData, width, height, rnd);
@@ -216,67 +165,88 @@ export function applyLocationFlags(mapData, width, height, seed = 1337) {
   return mapData;
 }
 
-/* =======================
- * Rendering (Phaser)
- * ======================= */
+/////////////////////////////
+// Rendering
+/////////////////////////////
 
 /**
- * Public: render roads + icons. Call with the WorldScene as `this`:
+ * Mirror of effectiveElevation() from WorldSceneMap.js:
+ * - water = 0; land elevation level 1 also -> 0 (baseline)
+ */
+function effectiveElevationLocal(tile) {
+  if (!tile || tile.type === 'water') return 0;
+  const e = typeof tile.elevation === 'number' ? tile.elevation : 0;
+  return Math.max(0, e - 1);
+}
+
+/**
+ * Render:
+ *  - roads as vector lines
+ *  - ALL other locations as EMOJIS (trees, ruins, crash sites, vehicles, mountain icons)
+ *
+ * Call with scene context:
  *   drawLocationsAndRoads.call(this)
  */
 export function drawLocationsAndRoads() {
-  const scene = this; // Phaser.Scene
+  const scene = this;
   const map = this.mapData;
   const size = this.hexSize || 24;
 
-  if (!map || !Array.isArray(map)) return;
+  if (!Array.isArray(map) || !map.length) return;
 
-  // Ensure flags/roads are applied once
+  // Ensure flags/roads applied once
   if (!map.__locationsApplied) {
-    try {
-      applyLocationFlags(map, this.mapWidth, this.mapHeight, this.seed ?? 1337);
-    } catch (_) { /* tolerate double-apply */ }
+    try { applyLocationFlags(map, this.mapWidth, this.mapHeight, this.seed ?? 1337); }
+    catch (_) { /* already applied */ }
     Object.defineProperty(map, '__locationsApplied', { value: true, enumerable: false });
   }
 
-  // Cleanup previous layers (hot reload / re-enter)
+  // Clean old layers
   if (scene.roadsGraphics) scene.roadsGraphics.destroy();
   if (scene.locationsLayer) scene.locationsLayer.destroy();
-
   const roads = scene.add.graphics({ x: 0, y: 0 }).setDepth(30);
   const layer = scene.add.container(0, 0).setDepth(40);
   scene.roadsGraphics = roads;
   scene.locationsLayer = layer;
 
-  // Caches & helpers
+  // helpers
   const centerCache = new Map();
   const centerOf = (q, r) => {
     const k = keyOf(q, r);
     let p = centerCache.get(k);
     if (!p) {
-      const { x, y } = scene.hexToPixel(q, r, size);
-      p = { x, y };
+      p = scene.hexToPixel(q, r, size);
       centerCache.set(k, p);
     }
     return p;
   };
+  const byKey = new Map(map.map(t => [keyOf(t.q, t.r), t]));
+  const at = (q, r) => byKey.get(keyOf(q, r));
 
-  // Build quick lookup for tiles
-  const tilesByKey = new Map(map.map(t => [keyOf(t.q, t.r), t]));
-  const tileAt = (q, r) => tilesByKey.get(keyOf(q, r));
+  const offsetX = this.mapOffsetX || 0;
+  const offsetY = this.mapOffsetY || 0;
+  const LIFT = this?.LIFT_PER_LVL ?? 4;
 
-  /* ----- Draw roads as edges between neighboring road tiles (draw once per edge) ----- */
+  // --------- Roads (vector lines, not emojis) ----------
   for (const t of map) {
     if (!t.hasRoad) continue;
+
+    const eff1 = effectiveElevationLocal(t);
     const p1 = centerOf(t.q, t.r);
+    const x1 = p1.x + offsetX;
+    const y1 = p1.y + offsetY - LIFT * eff1;
 
     for (const [dq, dr] of neighborsOddR(t.q, t.r)) {
       const q2 = t.q + dq, r2 = t.r + dr;
-      // draw each undirected edge once
+      // draw each edge once
       if (q2 < t.q || (q2 === t.q && r2 <= t.r)) continue;
-
-      const n = tileAt(q2, r2);
+      const n = at(q2, r2);
       if (!n || !n.hasRoad) continue;
+
+      const eff2 = effectiveElevationLocal(n);
+      const p2 = centerOf(q2, r2);
+      const x2 = p2.x + offsetX;
+      const y2 = p2.y + offsetY - LIFT * eff2;
 
       const asphalt = (t.roadType === 'asphalt') || (n.roadType === 'asphalt');
       const width = asphalt ? 6 : 3;
@@ -284,78 +254,95 @@ export function drawLocationsAndRoads() {
 
       roads.lineStyle(width, color, 0.95);
       roads.beginPath();
-      const p2 = centerOf(q2, r2);
-      roads.moveTo(p1.x, p1.y);
-      roads.lineTo(p2.x, p2.y);
+      roads.moveTo(x1, y1);
+      roads.lineTo(x2, y2);
       roads.strokePath();
     }
   }
 
-  /* ----- Icon drawing (vector graphics; no assets required) ----- */
-  const icon = (drawFn, x, y, depth = 41) => {
-    const g = scene.add.graphics({ x: 0, y: 0 }).setDepth(depth);
-    drawFn(g, x, y);
-    layer.add(g);
-    return g;
+  // --------- Emoji locations ----------
+  // stable behavior for trees: cluster 2–4 trees per forest tile, non-overlapping,
+  // slight size jitter, gentle sway tween.
+  const addEmoji = (x, y, char, fontPx, depth = 42) => {
+    const t = scene.add.text(x, y, char, {
+      fontSize: `${fontPx}px`,
+      fontFamily: 'Arial, "Segoe UI Emoji", "Noto Color Emoji", sans-serif'
+    }).setOrigin(0.5).setDepth(depth);
+    layer.add(t);
+    return t;
   };
-
-  const forestIcon = (g, x, y) => {
-    const h = size * 0.65;
-    g.fillStyle(0x1f7a1f, 1);
-    g.fillTriangle(x, y - h, x - h * 0.5, y, x + h * 0.5, y);
-    g.fillStyle(0x5a3a17, 1);
-    g.fillRect(x - h * 0.08, y, h * 0.16, h * 0.35);
-  };
-
-  const ruinIcon = (g, x, y) => {
-    const s = size * 0.45;
-    g.lineStyle(3, 0x5a4a3d, 1);
-    g.strokeRect(x - s, y - s * 0.8, s * 2, s * 1.2);
-    g.lineBetween(x - s, y - s * 0.8, x + s, y + s * 0.4);
-    g.lineBetween(x + s, y - s * 0.8, x - s, y + s * 0.4);
-  };
-
-  const crashIcon = (g, x, y) => {
-    const s = size * 0.5;
-    g.lineStyle(4, 0xbb2222, 1);
-    g.strokeCircle(x, y, s * 0.5);
-    g.lineBetween(x - s, y - s, x + s, y + s);
-    g.lineBetween(x - s, y + s, x + s, y - s);
-  };
-
-  const vehicleIcon = (g, x, y) => {
-    const w = size * 0.9, h = size * 0.45;
-    g.fillStyle(0x334455, 1);
-    g.fillRoundedRect(x - w * 0.5, y - h * 0.5, w, h, 6);
-    g.fillStyle(0x111111, 1);
-    g.fillCircle(x - w * 0.25, y + h * 0.5, h * 0.28);
-    g.fillCircle(x + w * 0.25, y + h * 0.5, h * 0.28);
-  };
-
-  const mountainIcon = (g, x, y) => {
-    const s = size * 0.7;
-    g.fillStyle(0x777777, 1);
-    g.fillTriangle(x - s, y + s * 0.4, x, y - s * 0.8, x + s, y + s * 0.4);
-    g.fillStyle(0xdddddd, 1);
-    g.fillTriangle(x - s * 0.25, y, x, y - s * 0.55, x + s * 0.25, y);
-  };
-
-  const liftPerLvl = this?.LIFT_PER_LVL ?? 12;
 
   for (const t of map) {
-    const p = centerOf(t.q, t.r);
-    const y = p.y - ((t.elevation ?? 0) * liftPerLvl);
+    const base = centerOf(t.q, t.r);
+    const eff = effectiveElevationLocal(t);
+    const cx = base.x + offsetX;
+    const cy = base.y + offsetY - LIFT * eff;
 
-    if (t.hasForest)      icon(forestIcon,   p.x, y);
-    if (t.hasRuin)        icon(ruinIcon,     p.x, y);
-    if (t.hasCrashSite)   icon(crashIcon,    p.x, y);
-    if (t.hasVehicle)     icon(vehicleIcon,  p.x, y);
-    if (t.hasMountainIcon && t.type !== 'mountain')
-                          icon(mountainIcon, p.x, y);
+    // 🌲 FORESTS — stable's clustered trees
+    if (t.hasForest) {
+      const treeCount = Phaser.Math.Between(2, 4);
+      const placed = [];
+      let attempts = 0;
+
+      while (placed.length < treeCount && attempts < 40) {
+        attempts++;
+        const angle = Phaser.Math.FloatBetween(0, 2 * Math.PI);
+        const radius = Phaser.Math.FloatBetween(size * 0.35, size * 0.65);
+        const dx = Math.cos(angle) * radius;
+        const dy = Math.sin(angle) * radius;
+        const posX = cx + dx;
+        const posY = cy + dy;
+        const minDist = size * 0.3;
+
+        const tooClose = placed.some(p => {
+          const dist = Phaser.Math.Distance.Between(posX, posY, p.x, p.y);
+          return dist < minDist;
+        });
+
+        if (!tooClose) {
+          const sizePercent = 0.45 + Phaser.Math.FloatBetween(-0.05, 0.05);
+          const fontPx = size * sizePercent;
+
+          const tree = addEmoji(posX, posY, '🌲', fontPx, 43);
+
+          // gentle sway tween (stable behavior)
+          scene.tweens.add({
+            targets: tree,
+            angle: { from: -1.5, to: 1.5 },
+            duration: Phaser.Math.Between(2500, 4000),
+            yoyo: true,
+            repeat: -1,
+            ease: 'Sine.easeInOut',
+            delay: Phaser.Math.Between(0, 1000)
+          });
+
+          placed.push({ x: posX, y: posY });
+        }
+      }
+    }
+
+    // 🏚️ RUINS
+    if (t.hasRuin) {
+      addEmoji(cx, cy, '🏚️', size * 0.8);
+    }
+
+    // 🚀 CRASH SITE
+    if (t.hasCrashSite) {
+      addEmoji(cx, cy, '🚀', size * 0.8);
+    }
+
+    // 🚙 VEHICLE
+    if (t.hasVehicle) {
+      addEmoji(cx, cy, '🚙', size * 0.8);
+    }
+
+    // 🏔️ MOUNTAIN ICON (optional, for tall non-mountain tiles)
+    if (t.hasMountainIcon && t.type !== 'mountain') {
+      addEmoji(cx, cy, '🏔️', size * 0.9);
+    }
   }
 }
 
-// (Optional) default export if your bundler expects it
 export default {
   applyLocationFlags,
   drawLocationsAndRoads,
