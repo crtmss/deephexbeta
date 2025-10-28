@@ -1,6 +1,6 @@
 // src/scenes/WorldSceneMap.js
-// Preserves the visuals from your main (24): colors, frames, cliffs, and isometric lift.
-// Exports drawHex (and others) so WorldScene.js can import them.
+// Preserves visuals from main (24): colors, frames, cliffs, and isometric lift.
+// Now also exports roundHex so WorldScene.js can import it.
 
 import HexMap from '../engine/HexMap.js';
 import { drawLocationsAndRoads } from './WorldSceneMapLocations.js';
@@ -82,6 +82,33 @@ export function pixelToHex(x, y, size) {
   return { q, r };
 }
 
+// ---- NEW: axial rounding (cube rounding) ----
+export function roundHex(qf, rf) {
+  // Convert axial (q,r) to cube (x,y,z) with x=q, z=r, y=-x-z
+  const x = qf;
+  const z = rf;
+  const y = -x - z;
+
+  let rx = Math.round(x);
+  let ry = Math.round(y);
+  let rz = Math.round(z);
+
+  const dx = Math.abs(rx - x);
+  const dy = Math.abs(ry - y);
+  const dz = Math.abs(rz - z);
+
+  if (dx > dy && dx > dz) {
+    rx = -ry - rz;
+  } else if (dy > dz) {
+    ry = -rx - rz;
+  } else {
+    rz = -rx - ry;
+  }
+
+  // Back to axial
+  return { q: rx, r: rz };
+}
+
 // ---- Map generation (water border like main 24) ----
 export function generateHexMap(width, height, seed) {
   const hexMap = new HexMap(width, height, seed);
@@ -102,7 +129,6 @@ export function generateHexMap(width, height, seed) {
 
 // ---- Wall (cliff) drawing along edges where neighbor is lower ----
 function drawHexWall(scene, xTop, yTop, edgePtsTop, dropPx, wallColor) {
-  // edgePtsTop: [pA, pB] points along the top face edge
   const [A, B] = edgePtsTop;
   const A2 = pt(A.x, A.y + dropPx);
   const B2 = pt(B.x, B.y + dropPx);
@@ -129,7 +155,6 @@ function drawHexWall(scene, xTop, yTop, edgePtsTop, dropPx, wallColor) {
 
 // ---- Hex face + frame (kept like main 24) ----
 export function drawHex(q, r, x, y, size, fillColor, effElevation, terrain) {
-  // top face (hexagon) points in isometric projection
   const w = size * Math.sqrt(3) / 2;
   const h = size / 2;
 
@@ -161,15 +186,14 @@ export function drawHex(q, r, x, y, size, fillColor, effElevation, terrain) {
   rim.strokePath();
 
   // cliffs/walls to lower neighbors
-  const dropPerLvl = LIFT_PER_LVL; // visually consistent drop
+  const dropPerLvl = LIFT_PER_LVL;
   const wallColor = tintWallFromBase(fillColor, 0.22);
-
   const neighborCoords = neighborsOddR(q, r);
-  // edges correspond (p0->p1), (p1->p2), ... (p5->p0)
+
   for (let e = 0; e < 6; e++) {
     const [dq, dr] = neighborCoords[e];
     const Nq = q + dq, Nr = r + dr;
-    const neighbor = this.tileAt?.(Nq, Nr); // scene should provide tileAt
+    const neighbor = this.tileAt?.(Nq, Nr);
     if (!neighbor) continue;
 
     const effN = effectiveElevation(neighbor);
@@ -181,7 +205,6 @@ export function drawHex(q, r, x, y, size, fillColor, effElevation, terrain) {
     drawHexWall(this, x, y, [A, B], diff * dropPerLvl, wallColor);
   }
 
-  // optional: debug overlay (unchanged behavior elsewhere)
   return { face, rim };
 }
 
@@ -236,8 +259,6 @@ export function drawHexMap() {
 
     const fillColor = getFillForTile(hex);
     drawHex.call(this, q, r, x, y, this.hexSize, fillColor, eff, type);
-
-    // optional elevation debug label (hooked up elsewhere if you need it)
   }
 
   // draw locations & roads (locations as emojis)
@@ -249,9 +270,10 @@ export default {
   isoOffset,
   hexToPixel,
   pixelToHex,
+  roundHex,          // <-- added
   effectiveElevation,
   getColorForTerrain,
-  drawHex,            // <-- exported so WorldScene.js can import it
+  drawHex,           // exported for WorldScene.js
   drawHexMap,
   generateHexMap,
 };
