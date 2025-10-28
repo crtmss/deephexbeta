@@ -1,6 +1,7 @@
 // src/scenes/WorldSceneMapLocations.js
-// POI spawning (emojis) + sparse, non-lattice roads using an explicit edge graph.
+// POI spawning (emojis) + sparse, non-lattice roads via an explicit edge graph.
 // Draws with the SAME projection as tiles: center (unsheared) → isoOffset → offsets.
+// Now self-contained: uses a local isoOffset if the scene doesn't provide one.
 
 function mulberry32(a) {
   let t = a >>> 0;
@@ -15,6 +16,13 @@ const rndInt = (rnd, min, max) => Math.floor(rnd() * (max - min + 1)) + min;
 const chance = (rnd, p) => rnd() < p;
 const keyOf = (q, r) => `${q},${r}`;
 const inBounds = (q, r, w, h) => q >= 0 && q < w && r >= 0 && r < h;
+
+// --- projection (local fallback) ---
+const ISO_SHEAR  = 0.15;
+const ISO_YSCALE = 0.95;
+function isoOffsetLocal(x, y) {
+  return { x: x - y * ISO_SHEAR, y: y * ISO_YSCALE };
+}
 
 // axial odd-r
 function neighborsOddR(q, r) {
@@ -33,11 +41,15 @@ function neighborTiles(byKey, width, height, q, r, skipWater = true) {
     if (skipWater && t.type === 'water') continue;
     out.push(t);
   }
+  return out;
 }
 
-/* -------- POI spawning (never on water) -------- */
+/* ======================
+   POI SPAWNING (never on water)
+   ====================== */
 function placeLocations(mapData, width, height, rnd) {
   const byKey = new Map(mapData.map(t => [keyOf(t.q, t.r), t]));
+
   for (const t of mapData) {
     const type = t.type || '';
     const water = type === 'water';
@@ -46,30 +58,40 @@ function placeLocations(mapData, width, height, rnd) {
       continue;
     }
 
+    // forests
     if (type === 'forest') t.hasForest = true;
     else if (!t.hasForest && chance(rnd, 0.06)) t.hasForest = true;
 
+    // ruins
     if (!t.hasRuin && type !== 'mountain' && chance(rnd, 0.010)) t.hasRuin = true;
+
+    // crash sites
     if (!t.hasCrashSite && chance(rnd, 0.006)) t.hasCrashSite = true;
+
+    // vehicles
     if (!t.hasVehicle && (type === 'plains' || type === 'desert' || type === 'grassland' || type === '') && chance(rnd, 0.008)) {
       t.hasVehicle = true;
     }
+
+    // tall non-mountain marker
     if (!t.hasMountainIcon && type !== 'mountain' && (t.elevation ?? 0) >= 2 && chance(rnd, 0.05)) {
       t.hasMountainIcon = true;
     }
   }
-  // soft clustering for forests (still never on water)
+
+  // soft forest clustering (no water)
   for (const t of mapData) {
     if (!t.hasForest) continue;
     const localRnd = mulberry32((t.q * 73856093) ^ (t.r * 19349663));
-    const byKey = new Map(mapData.map(tt => [keyOf(tt.q, tt.r), tt]));
-    for (const n of neighborTiles(byKey, width, height, t.q, t.r, true) || []) {
+    for (const n of neighborTiles(byKey, width, height, t.q, t.r, true)) {
       if (!n.hasForest && chance(localRnd, 0.15)) n.hasForest = true;
     }
   }
 }
 
-/* -------- Roads: explicit edge graph (sparse, non-lattice) -------- */
+/* ======================
+   ROADS: explicit edge graph (sparse, non-lattice)
+   ====================== */
 function markRoadEdge(a, b, type = 'countryside') {
   if (!a || !b) return;
   if (a.type === 'water' || b.type === 'water') return;
@@ -102,7 +124,6 @@ function generateRoads(mapData, width, height, seed) {
       const nq = cur.q + dq, nr = cur.r + dr;
       const n = at(nq, nr);
       if (!n || n.type === 'water') continue;
-      // Favor slight rightwards progress; keep some wobble
       const eastish = (i === 0 || i === 1 || i === 5) ? 0.6 : 0;
       const score = eastish + (rnd() - 0.5) * 0.2;
       if (score > bestScore) { bestScore = score; best = { n, dir: i }; }
@@ -127,7 +148,7 @@ function generateRoads(mapData, width, height, seed) {
       markRoadEdge(cur, nxt.n, 'asphalt');
       prevDir = nxt.dir;
       cur = nxt.n;
-      if (rnd() < 0.08) break; // terminate early sometimes
+      if (rnd() < 0.08) break; // terminate some trunks early
     }
   }
 
@@ -192,7 +213,9 @@ export function applyLocationFlags(mapData, width, height, seed = 1337) {
   return mapData;
 }
 
-/* -------- Rendering (uses same projection as tiles) -------- */
+/* ======================
+   RENDERING
+   ====================== */
 
 function effectiveElevationLocal(tile) {
   if (!tile || tile.type === 'water') return 0;
@@ -211,6 +234,7 @@ export function drawLocationsAndRoads() {
     Object.defineProperty(map, '__locationsApplied', { value: true, enumerable: false });
   }
 
+  // Clean previous layers
   if (scene.roadsGraphics) scene.roadsGraphics.destroy();
   if (scene.locationsLayer) scene.locationsLayer.destroy();
   const roads = scene.add.graphics({ x: 0, y: 0 }).setDepth(30);
@@ -220,12 +244,17 @@ export function drawLocationsAndRoads() {
 
   const byKey = new Map(map.map(t => [keyOf(t.q, t.r), t]));
   const centerCache = new Map();
+
+  // Use scene.isoOffset if it's available; otherwise local fallback.
+  const projectIso = (x, y) =>
+    (typeof scene.isoOffset === 'function') ? scene.isoOffset(x, y) : isoOffsetLocal(x, y);
+
   const centerIso = (q, r) => {
     const k = keyOf(q, r);
     let p = centerCache.get(k);
     if (!p) {
       const base = scene.hexToPixel(q, r, size);   // unsheared
-      const iso  = scene.isoOffset(base.x, base.y); // sheared
+      const iso  = projectIso(base.x, base.y);      // sheared
       p = { x: iso.x, y: iso.y };
       centerCache.set(k, p);
     }
@@ -236,7 +265,7 @@ export function drawLocationsAndRoads() {
   const offsetY = this.mapOffsetY || 0;
   const LIFT    = this?.LIFT_PER_LVL ?? 4;
 
-  // Roads — draw ONLY explicit edges
+  // ---- ROAD RENDER: draw ONLY explicit edges ----
   for (const t of map) {
     if (!t.roadLinks || !t.roadLinks.size) continue;
 
@@ -244,7 +273,7 @@ export function drawLocationsAndRoads() {
     const y1 = c1.y - LIFT * effectiveElevationLocal(t);
 
     for (const target of t.roadLinks) {
-      if (target <= keyOf(t.q, t.r)) continue; // draw undirected once
+      if (target <= keyOf(t.q, t.r)) continue; // undirected edge once
       const n = byKey.get(target);
       if (!n) continue;
 
@@ -263,7 +292,7 @@ export function drawLocationsAndRoads() {
     }
   }
 
-  // POIs (emojis) — never on water
+  // ---- POIs (emojis; never on water) ----
   const addEmoji = (x, y, char, fontPx, depth = 42) => {
     const t = scene.add.text(x, y, char, {
       fontSize: `${fontPx}px`,
@@ -280,6 +309,7 @@ export function drawLocationsAndRoads() {
     const cx = c.x + offsetX;
     const cy = c.y + offsetY - LIFT * effectiveElevationLocal(t);
 
+    // clustered trees (stable)
     if (t.hasForest) {
       const treeCount = Phaser.Math.Between(2, 4);
       const placed = [];
