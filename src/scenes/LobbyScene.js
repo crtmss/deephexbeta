@@ -1,5 +1,7 @@
 import { createLobby, joinLobby } from '../net/LobbyManager.js';
 import { supabase } from '../net/SupabaseClient.js';
+import HexMap from '../engine/HexMap.js';
+import { getColorForTerrain } from './WorldSceneMap.js'; // use existing terrain colors
 
 export default class LobbyScene extends Phaser.Scene {
     constructor() {
@@ -42,23 +44,38 @@ export default class LobbyScene extends Phaser.Scene {
         codeInput.node.style.textAlign = 'center';
         codeInput.node.style.width = '100px';
 
-        // Suggest a random 6-digit seed every time
+        // Random 6-digit seed suggestion
         const randomSeed = String(Math.floor(Math.random() * 1000000)).padStart(6, '0');
         codeInput.node.value = randomSeed;
 
-        // Enforce numeric input only
+        // enforce numeric only
         codeInput.node.addEventListener('input', () => {
             let value = codeInput.node.value.replace(/\D/g, '');
             if (value.length > 6) value = value.slice(0, 6);
             codeInput.node.value = value;
+            this.updatePreview(codeInput.node.value.padStart(6, '0'));
         });
 
-        // Pad to 6 digits on blur (leaving input)
         codeInput.node.addEventListener('blur', () => {
             let value = codeInput.node.value.trim();
             if (!value) value = '000000';
             codeInput.node.value = value.padStart(6, '0');
+            this.updatePreview(codeInput.node.value);
         });
+
+        // 🗺️ Create preview area
+        this.previewSize = 80; // hex radius in pixels (scaled down)
+        this.previewContainer = this.add.container(900, 200); // position right of inputs
+        this.previewGraphics = this.add.graphics();
+        this.previewContainer.add(this.previewGraphics);
+
+        this.add.text(870, 130, 'Map Preview', {
+            fontSize: '18px',
+            fill: '#ffffff'
+        });
+
+        // draw first preview
+        this.updatePreview(randomSeed);
 
         // Host button
         const hostBtn = this.add.dom(540, 330, 'button', {
@@ -87,7 +104,6 @@ export default class LobbyScene extends Phaser.Scene {
         hostBtn.on('click', async () => {
             const name = nameInput.node.value.trim();
             const code = codeInput.node.value.trim().padStart(6, '0');
-
             if (!name || !/^\d{6}$/.test(code)) {
                 alert('Enter your name and a 6-digit numeric seed.');
                 return;
@@ -108,7 +124,6 @@ export default class LobbyScene extends Phaser.Scene {
         joinBtn.on('click', async () => {
             const name = nameInput.node.value.trim();
             const code = codeInput.node.value.trim().padStart(6, '0');
-
             if (!name || !/^\d{6}$/.test(code)) {
                 alert('Enter your name and a 6-digit numeric seed.');
                 return;
@@ -123,5 +138,61 @@ export default class LobbyScene extends Phaser.Scene {
 
             this.scene.start('WorldScene', { playerName: name, roomCode: code, isHost: false });
         });
+    }
+
+    // ==========================
+    // 🔍 Preview mini island draw
+    // ==========================
+    updatePreview(seedString) {
+        if (!this.previewGraphics) return;
+
+        this.previewGraphics.clear();
+
+        // create small hex map using this seed
+        const hexMap = new HexMap(25, 25, seedString);
+        const mapData = hexMap.getMap();
+
+        const size = 6; // small hexes
+        const startX = 0;
+        const startY = 0;
+
+        // helper: convert q,r to pixel (odd-r)
+        const hexToPixel = (q, r, size) => {
+            const x = size * Math.sqrt(3) * (q + 0.5 * (r & 1));
+            const y = size * 1.5 * r;
+            return { x, y };
+        };
+
+        // center map on preview
+        const w = this.previewSize;
+        const offsetX = -w;
+        const offsetY = -w / 1.2;
+
+        for (const tile of mapData) {
+            const { q, r, type, elevation } = tile;
+            const { x, y } = hexToPixel(q, r, size);
+            const color = getColorForTerrain
+                ? getColorForTerrain(type, elevation)
+                : 0x999999;
+
+            this.drawHex(this.previewGraphics, x + offsetX, y + offsetY, size, color);
+        }
+    }
+
+    drawHex(graphics, x, y, size, color) {
+        const corners = [];
+        for (let i = 0; i < 6; i++) {
+            const angle = Phaser.Math.DegToRad(60 * i - 30);
+            corners.push({
+                x: x + size * Math.cos(angle),
+                y: y + size * Math.sin(angle)
+            });
+        }
+        graphics.fillStyle(color, 1);
+        graphics.beginPath();
+        graphics.moveTo(corners[0].x, corners[0].y);
+        for (let i = 1; i < 6; i++) graphics.lineTo(corners[i].x, corners[i].y);
+        graphics.closePath();
+        graphics.fillPath();
     }
 }
