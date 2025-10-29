@@ -32,13 +32,33 @@ export default class LobbyScene extends Phaser.Scene {
         nameInput.node.placeholder = 'Your name';
         nameInput.node.maxLength = 16;
 
-        // Room code input
-        this.add.text(430, 220, 'Room Code (4 letters):', { fontSize: '18px', fill: '#ffffff' });
+        // Room seed input (6 digits)
+        this.add.text(400, 220, 'Map Seed (6 digits):', { fontSize: '18px', fill: '#ffffff' });
         const codeInput = this.add.dom(640, 250, 'input');
         codeInput.setOrigin(0.5);
         codeInput.setDepth(1000);
-        codeInput.node.placeholder = 'ABCD';
-        codeInput.node.maxLength = 4;
+        codeInput.node.placeholder = '000000';
+        codeInput.node.maxLength = 6;
+        codeInput.node.style.textAlign = 'center';
+        codeInput.node.style.width = '100px';
+
+        // Suggest a random 6-digit seed every time
+        const randomSeed = String(Math.floor(Math.random() * 1000000)).padStart(6, '0');
+        codeInput.node.value = randomSeed;
+
+        // Enforce numeric input only
+        codeInput.node.addEventListener('input', () => {
+            let value = codeInput.node.value.replace(/\D/g, '');
+            if (value.length > 6) value = value.slice(0, 6);
+            codeInput.node.value = value;
+        });
+
+        // Pad to 6 digits on blur (leaving input)
+        codeInput.node.addEventListener('blur', () => {
+            let value = codeInput.node.value.trim();
+            if (!value) value = '000000';
+            codeInput.node.value = value.padStart(6, '0');
+        });
 
         // Host button
         const hostBtn = this.add.dom(540, 330, 'button', {
@@ -66,8 +86,12 @@ export default class LobbyScene extends Phaser.Scene {
         hostBtn.addListener('click');
         hostBtn.on('click', async () => {
             const name = nameInput.node.value.trim();
-            const code = codeInput.node.value.trim().toUpperCase();
-            if (!name || code.length !== 4) return alert('Enter name and 4-letter room code');
+            const code = codeInput.node.value.trim().padStart(6, '0');
+
+            if (!name || !/^\d{6}$/.test(code)) {
+                alert('Enter your name and a 6-digit numeric seed.');
+                return;
+            }
 
             const { data, error } = await createLobby(name, code);
             if (error) {
@@ -75,6 +99,7 @@ export default class LobbyScene extends Phaser.Scene {
                 alert('Failed to create lobby. Check console for details.');
                 return;
             }
+
             this.scene.start('WorldScene', { playerName: name, roomCode: code, isHost: true });
         });
 
@@ -82,8 +107,12 @@ export default class LobbyScene extends Phaser.Scene {
         joinBtn.addListener('click');
         joinBtn.on('click', async () => {
             const name = nameInput.node.value.trim();
-            const code = codeInput.node.value.trim().toUpperCase();
-            if (!name || code.length !== 4) return alert('Enter name and 4-letter room code');
+            const code = codeInput.node.value.trim().padStart(6, '0');
+
+            if (!name || !/^\d{6}$/.test(code)) {
+                alert('Enter your name and a 6-digit numeric seed.');
+                return;
+            }
 
             const { data, error } = await joinLobby(name, code);
             if (error) {
@@ -91,6 +120,7 @@ export default class LobbyScene extends Phaser.Scene {
                 alert('Failed to join lobby. Check console for details.');
                 return;
             }
+
             this.scene.start('WorldScene', { playerName: name, roomCode: code, isHost: false });
         });
     }
