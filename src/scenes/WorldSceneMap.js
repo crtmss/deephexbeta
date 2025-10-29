@@ -1,354 +1,383 @@
-// src/scenes/WorldSceneMap.js
-// Hex visuals preserved. Fixes:
-// 1) Cliffs render only on the two screen-facing edges (bottom-right & bottom-left).
-// 2) Avoid interior rim strokes between same-elevation neighbors → no thin black gaps.
+// deephexbeta/src/engine/HexMap.js
 
-import HexMap from '../engine/HexMap.js';
-import { drawLocationsAndRoads } from './WorldSceneMapLocations.js';
+import { cyrb128, sfc32 } from './PRNG.js';
 
-export const LIFT_PER_LVL = 4;
-
-// Isometry (mild)
-const ISO_SHEAR  = 0.15;
-const ISO_YSCALE = 0.95;
-
-// helpers
-const SNAP = v => Math.round(v * 2) / 2;
-const pt   = (x, y) => ({ x: SNAP(x), y: SNAP(y) });
-
-/* ---------- terrain palette ---------- */
-export function getColorForTerrain(terrain) {
-  switch (terrain) {
-    case 'grassland': return 0x3caf5a;
-    case 'sand':      return 0xFFF5B8;
-    case 'mud':       return 0x7E5A48;
-    case 'swamp':     return 0x5B463F;
-    case 'mountain':  return 0xA0A0A0;
-    case 'water':     return 0x54aafc;
-    default:          return 0x8e8e8e;
-  }
-}
-
-/* ---------- elevation helpers ---------- */
-export function effectiveElevation(tile) {
-  if (!tile || tile.type === 'water') return 0;
-  const e = typeof tile.elevation === 'number' ? tile.elevation : 0;
-  return Math.max(0, e - 1);
-}
-function darkenRGBInt(baseInt, factor) {
-  const c = Phaser.Display.Color.IntegerToColor(baseInt);
-  const r = Math.max(0, Math.min(255, Math.round(c.r * factor)));
-  const g = Math.max(0, Math.min(255, Math.round(c.g * factor)));
-  const b = Math.max(0, Math.min(255, Math.round(c.b * factor)));
-  return Phaser.Display.Color.GetColor(r, g, b);
-}
-function tintWallFromBase(baseInt, darkness = 0.18) {
-  const c = Phaser.Display.Color.IntegerToColor(baseInt);
-  const hsv = Phaser.Display.Color.RGBToHSV(c.r, c.g, c.b);
-  const v = Math.max(0.35, Math.min(1, hsv.v - darkness));
-  const rgb = Phaser.Display.Color.HSVToRGB(hsv.h, hsv.s, v);
-  return Phaser.Display.Color.GetColor(rgb.r, rgb.g, rgb.b);
-}
-
-/* ---------- axial odd-r neighbors ---------- */
-function neighborsOddR(q, r) {
-  const even = (r % 2 === 0);
-  return even
-    ? [[+1,0],[0,-1],[-1,-1],[-1,0],[-1,+1],[0,+1]]
-    : [[+1,0],[+1,-1],[0,-1],[-1,0],[0,+1],[+1,+1]];
-}
-
-/* ---------- projection utilities ---------- */
-// Return unsheared axial pixel in top-down layout
-export function hexToPixel(q, r, size) {
-  const x = size * Math.sqrt(3) * (q + 0.5 * (r & 1));
-  const y = size * 1.5 * r;
-  const xIso = x - y * ISO_SHEAR;
-  const yIso = y * ISO_YSCALE;
-  return { x: xIso, y: yIso };
-}
-export function isoOffset(x, y) {
-  return { x: x - y * ISO_SHEAR, y: y * ISO_YSCALE };
-}
-// Inverse: from isometric screen coords back to fractional axial (q,r).
-export function pixelToHex(screenX, screenY, size) {
-  const y0 = screenY / ISO_YSCALE;
-  const x0 = screenX + y0 * ISO_SHEAR;
-  const r = y0 / (size * 1.5);
-  const q = (x0 / (Math.sqrt(3) * size)) - 0.5 * (Math.floor(r) & 1);
-  return { q, r };
-}
-// axial rounding via cube rounding
-export function roundHex(qf, rf) {
-  const x = qf, z = rf, y = -x - z;
-  let rx = Math.round(x), ry = Math.round(y), rz = Math.round(z);
-  const dx = Math.abs(rx - x), dy = Math.abs(ry - y), dz = Math.abs(rz - z);
-  if (dx > dy && dx > dz) rx = -ry - rz;
-  else if (dy > dz)       ry = -rx - rz;
-  else                    rz = -rx - ry;
-  return { q: rx, r: rz };
-}
-
-/* ---------- generation (same water frame) ---------- */
-export function generateHexMap(width, height, seed) {
-  const hexMap = new HexMap(width, height, seed);
-  const raw = hexMap.getMap();
-  const left = Phaser.Math.Between(1, 4);
-  const right = Phaser.Math.Between(1, 4);
-  const top = Phaser.Math.Between(1, 4);
-  const bottom = Phaser.Math.Between(1, 4);
-  return raw.map(h => {
-    const { q, r } = h;
-    if (q < left || q >= width - right || r < top || r >= height - bottom) {
-      return { ...h, type: 'water' };
-    }
-    return h;
-  });
-}
-
-/* ---------- walls (cliffs) ---------- */
-function drawHexWall(scene, edgePtsTop, dropPx, wallColor) {
-  const [A, B] = edgePtsTop;
-  const A2 = pt(A.x, A.y + dropPx);
-  const B2 = pt(B.x, B.y + dropPx);
-
-  const g = scene.add.graphics().setDepth(2);
-  g.fillStyle(wallColor, 1);
-  g.beginPath();
-  g.moveTo(A.x, A.y);
-  g.lineTo(B.x, B.y);
-  g.lineTo(B2.x, B2.y);
-  g.lineTo(A2.x, A2.y);
-  g.closePath();
-  g.fillPath();
-
-  g.lineStyle(1, darkenRGBInt(wallColor, 0.7), 0.9);
-  g.beginPath();
-  g.moveTo(A2.x, A2.y);
-  g.lineTo(B2.x, B2.y);
-  g.strokePath();
-  return g;
-}
-
-/* ---------- face + frame (vertices use same isometry as centers) ---------- */
-export function drawHex(q, r, xIso, yIso, size, fillColor, effElevation, terrain) {
-  // vertex deltas (pointy-top)
-  const w = size * Math.sqrt(3) / 2;
-  const h = size / 2;
-
-  const d = [
-    { dx: 0,  dy: -size }, // 0 top
-    { dx: +w, dy: -h    }, // 1 top-right
-    { dx: +w, dy: +h    }, // 2 bottom-right  ← screen-facing
-    { dx: 0,  dy: +size }, // 3 bottom
-    { dx: -w, dy: +h    }, // 4 bottom-left   ← screen-facing
-    { dx: -w, dy: -h    }, // 5 top-left
-  ];
-
-  // transform vertices with same isometry, then add to center
-  const ring = d.map(({dx,dy}) => {
-    const off = isoOffset(dx, dy);
-    return pt(xIso + off.x, yIso + off.y);
-  });
-
-  // face
-  const face = this.add.graphics().setDepth(3);
-  face.fillStyle(fillColor, 1);
-  face.beginPath();
-  face.moveTo(ring[0].x, ring[0].y);
-  for (let i = 1; i < ring.length; i++) face.lineTo(ring[i].x, ring[i].y);
-  face.closePath();
-  face.fillPath();
-
-  // rim: draw only edges that are exterior borders
-  const rim = this.add.graphics().setDepth(4);
-  const rimColor = darkenRGBInt(fillColor, 0.75);
-  rim.lineStyle(1.25, rimColor, 0.9);
-
-  const neighborCoords = neighborsOddR(q, r);
-  for (let e = 0; e < 6; e++) {
-    const [dq, dr] = neighborCoords[e];
-    const n = this.tileAt?.(q + dq, r + dr);
-    const A = ring[e];
-    const B = ring[(e + 1) % 6];
-
-    // draw the edge only if it's a coastline, a map edge, or a different elevation
-    let drawEdge = false;
-    if (!n) drawEdge = true;
-    else {
-      const sameElevation = effectiveElevation(n) === effElevation;
-      if (n.type === 'water' && terrain !== 'water') drawEdge = true;
-      else if (!sameElevation) drawEdge = true;
-    }
-
-    if (drawEdge) {
-      rim.beginPath();
-      rim.moveTo(A.x, A.y);
-      rim.lineTo(B.x, B.y);
-      rim.strokePath();
-    }
-  }
-
-  // cliffs: ONLY on two screen-facing edges (2 and 4), and only if neighbor is lower.
-  const dropPerLvl = LIFT_PER_LVL;
-  const wallColor  = tintWallFromBase(fillColor, 0.22);
-
-  const cliffEdges = [2, 4]; // bottom-right and bottom-left
-  for (const e of cliffEdges) {
-    const [dq, dr] = neighborCoords[e];
-    const n = this.tileAt?.(q + dq, r + dr);
-    if (!n) continue;
-    const effN = effectiveElevation(n);
-    const diff = effElevation - effN;
-    if (diff <= 0) continue;
-
-    const A = ring[e];
-    const B = ring[(e + 1) % 6];
-    const g = drawHexWall(this, [A, B], diff * dropPerLvl, wallColor);
-    rim._walls = rim._walls || [];
-    rim._walls.push(g);
-  }
-
-  return { face, rim, ring };
-}
-
-/* ---------- color lift with elevation (subtle) ---------- */
-function getFillForTile(tile) {
-  const baseColor = getColorForTerrain(tile.type);
-  if (tile.type === 'water') return baseColor;
-
-  // Slight brighten per raw elevation step, capped; keeps palette intact.
-  const elevation = tile.elevation ?? 0;
-  const t = Math.min(0.55, Math.max(0, elevation) * 0.08);
-  const base = Phaser.Display.Color.IntegerToColor(baseColor);
-  const r = Math.round(base.r + (255 - base.r) * t);
-  const g = Math.round(base.g + (255 - base.g) * t);
-  const b = Math.round(base.b + (255 - base.b) * t);
-  return Phaser.Display.Color.GetColor(r, g, b);
-}
-
-/* ---------- outline used for hover ---------- */
-function drawHexOutline(scene, xIso, yIso, size, color = 0xffffff) {
-  const w = size * Math.sqrt(3) / 2;
-  const h = size / 2;
-  const d = [
-    { dx: 0,  dy: -size },
-    { dx: +w, dy: -h    },
-    { dx: +w, dy: +h    },
-    { dx: 0,  dy: +size },
-    { dx: -w, dy: +h    },
-    { dx: -w, dy: -h    },
-  ];
-  const ring = d.map(({dx,dy}) => {
-    const off = isoOffset(dx, dy);
-    return pt(xIso + off.x, yIso + off.y);
-  });
-  const g = scene.add.graphics().setDepth(10002);
-  g.lineStyle(3, color, 1);
-  g.beginPath();
-  g.moveTo(ring[0].x, ring[0].y);
-  for (let i = 1; i < ring.length; i++) g.lineTo(ring[i].x, ring[i].y);
-  g.closePath();
-  g.strokePath();
-  return g;
-}
-
-/* ---------- big renderer (single container; no duplicates) ---------- */
-export function drawHexMap() {
-  this.objects = this.objects || [];
-  if (this.mapContainer) { this.mapContainer.destroy(true); this.mapContainer = null; }
-  this.mapContainer = this.add.container(0, 0).setDepth(1);
-
-  // padding inside scene
-  const padX = this.hexSize * 2;
-  const padY = this.hexSize * 2;
-
-  // a simple centering offset (approx width in iso)
-  const cam = this.cameras?.main;
-  const camW = cam?.width ?? 800;
-  const gridW = this.mapWidth * this.hexSize * Math.sqrt(3); // unsheared width
-  const isoW  = gridW + (this.mapHeight * this.hexSize * 1.5) * ISO_SHEAR; // shear expands width a bit
-  const offsetX = Math.floor((camW - isoW) * 0.5) + padX;
-  const offsetY = 20 + padY;
-
-  this.mapOffsetX = offsetX;
-  this.mapOffsetY = offsetY;
-
-  // fast lookup for walls
-  const byKey = new Map(this.mapData.map(t => [`${t.q},${t.r}`, t]));
-  this.tileAt = (q, r) => byKey.get(`${q},${r}`);
-
-  // sort painter’s order
-  const sorted = [...this.mapData].sort((a, b) => {
-    const ea = effectiveElevation(a);
-    const eb = effectiveElevation(b);
-    if (ea !== eb) return ea - eb;
-    const da = (a.q + a.r) - (b.q + b.r);
-    if (da !== 0) return da;
-    if (a.r !== b.r) return a.r - b.r;
-    return a.q - b.q;
-  });
-
-  for (const hex of sorted) {
-    const { q, r } = hex;
-    const eff = effectiveElevation(hex);
-
-    // center in unsheared space → isometric
-    const p  = hexToPixel(q, r, this.hexSize);
-    const x  = p.x + offsetX;
-    const y  = p.y + offsetY - LIFT_PER_LVL * eff;
-
-    const fillColor = getFillForTile(hex);
-    const { face, rim } = drawHex.call(this, q, r, x, y, this.hexSize, fillColor, eff, hex.type);
-    this.mapContainer.add(face);
-    this.mapContainer.add(rim);
-    if (rim._walls) rim._walls.forEach(w => this.mapContainer.add(w));
-  }
-
-  // roads + emoji POIs
-  drawLocationsAndRoads.call(this);
-
-  // hover
-  if (this.hoverOutline) { this.hoverOutline.destroy(); this.hoverOutline = null; }
-  this.input?.on('pointermove', (pointer) => {
-    // to local world for conversion:
-    const worldX = pointer.worldX - this.mapOffsetX;
-    const worldY = pointer.worldY - this.mapOffsetY;
-
-    // back to fractional axial
-    const frac = pixelToHex(worldX, worldY, this.hexSize);
-    const axial = roundHex(frac.q, frac.r);
-    const tile = this.tileAt(axial.q, axial.r);
-    if (!tile) {
-      if (this.hoverOutline) { this.hoverOutline.destroy(); this.hoverOutline = null; }
-      return;
-    }
-
-    const eff = effectiveElevation(tile);
-    const p   = hexToPixel(axial.q, axial.r, this.hexSize);
-    const x   = p.x + this.mapOffsetX;
-    const y   = p.y + this.mapOffsetY - LIFT_PER_LVL * eff;
-
-    if (this.hoverOutline) this.hoverOutline.destroy();
-    this.hoverOutline = drawHexOutline(this, x, y, this.hexSize, 0xffffff);
-    this.tweens.add({
-      targets: this.hoverOutline,
-      alpha: { from: 1, to: 0.25 },
-      duration: 160,
-      ease: 'Sine.easeOut'
-    });
-  });
-}
-
-export default {
-  LIFT_PER_LVL,
-  isoOffset,
-  hexToPixel,
-  pixelToHex,
-  roundHex,
-  effectiveElevation,
-  getColorForTerrain,
-  drawHex,
-  drawHexMap,
-  generateHexMap,
+const terrainTypes = {
+  grassland: { movementCost: 1, color: '#34a853' },
+  sand:      { movementCost: 2, color: '#FFF59D' },
+  mud:       { movementCost: 3, color: '#795548' },
+  mountain:  { movementCost: Infinity, color: '#9E9E9E', impassable: true },
+  water:     { movementCost: Infinity, color: '#4da6ff', impassable: true },
+  swamp:     { movementCost: 3, color: '#4E342E' } // ← fixed stray 'a'
 };
+
+/* =============== Seed / RNG utilities (deterministic) =============== */
+
+// When you need a string→RNG quickly (kept for compatibility)
+function seededRandom(seed) {
+  const s = (typeof seed === 'string' && seed.length) ? seed : 'defaultseed';
+  let x = 0;
+  for (let i = 0; i < s.length; i++) x += s.charCodeAt(i);
+  return () => {
+    x = (x * 9301 + 49297) % 233280;
+    return x / 233280;
+  };
+}
+
+// Uniform int in [min,max]
+function rngInt(rng, min, max) {
+  return Math.floor(rng() * (max - min + 1)) + min;
+}
+
+// In-place Fisher–Yates shuffle with provided rng()
+function rngShuffle(arr, rng) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+/* =============== Hash & Noise for elevation (your original logic) =============== */
+
+/** Hash a string to a 32-bit int */
+function __hx_strHash(s) {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+/** Cheap 2D integer hash → [0,1) */
+function __hx_hash2D(q, r, seedStr) {
+  const sh = __hx_strHash(seedStr);
+  let h = (Math.imul(q, 374761393) ^ Math.imul(r, 668265263) ^ sh) >>> 0;
+  h ^= h >>> 13;
+  h = Math.imul(h, 1274126177) >>> 0;
+  h ^= h >>> 16;
+  return (h >>> 0) / 4294967296;
+}
+
+/** Smoothstep */
+function __hx_smooth(t) {
+  return t * t * (3 - 2 * t);
+}
+
+/** Value-noise style interpolation of 4 corner hashes */
+function __hx_valueNoise2D(x, y, seedStr) {
+  const x0 = Math.floor(x), y0 = Math.floor(y);
+  const x1 = x0 + 1,        y1 = y0 + 1;
+  const sx = __hx_smooth(x - x0);
+  const sy = __hx_smooth(y - y0);
+
+  const v00 = __hx_hash2D(x0, y0, seedStr);
+  const v10 = __hx_hash2D(x1, y0, seedStr);
+  const v01 = __hx_hash2D(x0, y1, seedStr);
+  const v11 = __hx_hash2D(x1, y1, seedStr);
+
+  const ix0 = v00 + sx * (v10 - v00);
+  const ix1 = v01 + sx * (v11 - v01);
+  return ix0 + sy * (ix1 - ix0);
+}
+
+/** Simple fBm (sum of octaves) → ~[0,1] */
+function __hx_fbm2D(x, y, seedStr, octaves = 4, lacunarity = 2.0, gain = 0.5) {
+  let amp = 0.5, freq = 1.0, sum = 0.0, ampSum = 0.0;
+  for (let i = 0; i < octaves; i++) {
+    sum += amp * __hx_valueNoise2D(x * freq, y * freq, seedStr);
+    ampSum += amp;
+    freq *= lacunarity;
+    amp *= gain;
+  }
+  return sum / (ampSum || 1);
+}
+
+/**
+ * Compute elevation 0..4 for a tile (visual-only).
+ * Water → 0; Mountains biased to 3–4; sand lower; others varied.
+ */
+function __hx_computeElevation(q, r, cols, rows, rawSeed, terrainType) {
+  const seedStr = (typeof rawSeed === 'string' && rawSeed) ? rawSeed : 'defaultseed';
+
+  // Rotate/scale axial-ish coords for nicer patterns
+  const x = q * 0.18 + 123.45;
+  const y = (q * 0.10 + r * 0.20) + 678.90;
+
+  let n = __hx_fbm2D(x, y, seedStr, 4, 2.0, 0.55); // [0,1]
+
+  // Gentle radial falloff from map center to keep edges lower on average
+  const cx = cols / 2, cy = rows / 2;
+  const dx = q - cx,   dy = r - cy;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  const maxd = Math.sqrt(cx * cx + cy * cy) || 1;
+  const falloff = 1 - (dist / maxd); // [0..1]
+  n = 0.75 * n + 0.25 * falloff;
+
+  // Terrain biasing
+  switch (terrainType) {
+    case 'water':     return 0;
+    case 'mountain':  n = Math.min(1, n * 0.7 + 0.5); break; // push up
+    case 'sand':      n = Math.max(0, n * 0.85 - 0.05); break; // pull down
+    case 'swamp':
+    case 'mud':       n = Math.max(0, n * 0.9  - 0.02); break; // slightly lower
+    default:          /* grassland etc. */ break;
+  }
+
+  // Quantize into 5 bands (0..4)
+  const e = Math.max(0, Math.min(4, Math.floor(n * 5)));
+  return e;
+}
+
+/* =============== Map Generation (fully seeded) =============== */
+/**
+ * @param {number} rows
+ * @param {number} cols
+ * @param {string} seedStr  - the numeric 6-digit seed string
+ * @param {function} rng    - a function () => [0,1) (sfc32/cyrb128 based)
+ * @returns {Array} flat array of tiles {q,r,type,elevation,movementCost,flags...}
+ */
+function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rng = null) {
+  // Provide a deterministic rng if none passed (kept compatibility)
+  const localRng = typeof rng === 'function' ? rng : seededRandom(seedStr);
+
+  const map = Array.from({ length: rows }, (_, r) =>
+    Array.from({ length: cols }, (_, q) => ({
+      q,
+      r,
+      type: 'grassland',
+      movementCost: terrainTypes.grassland.movementCost,
+      impassable: false
+    }))
+  );
+
+  // 🌊 Irregular island shape using radial falloff + seeded randomness
+  const centerQ = cols / 2;
+  const centerR = rows / 2;
+  const maxRadius = Math.min(centerQ, centerR) - 2;
+
+  for (let r = 0; r < rows; r++) {
+    for (let q = 0; q < cols; q++) {
+      const tile = map[r][q];
+      const dx = q - centerQ;
+      const dy = r - centerR;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      const noise = localRng() * 2.2;
+
+      if (dist + noise > maxRadius) {
+        Object.assign(tile, { type: 'water', ...terrainTypes.water });
+      }
+    }
+  }
+
+  function neighbors(q, r) {
+    const dirs = [[1, 0], [1, -1], [0, -1], [-1, 0], [-1, 1], [0, 1]];
+    return dirs
+      .map(([dq, dr]) => [q + dq, r + dr])
+      .filter(([x, y]) => map[y] && map[y][x]);
+  }
+
+  function placeBiome(type, minSize, maxSize, instances) {
+    for (let i = 0; i < instances; i++) {
+      const sizeTarget = rngInt(localRng, minSize, maxSize);
+      let placed = 0;
+      let attempts = 0;
+
+      while (placed < sizeTarget && attempts < 500) {
+        const q = rngInt(localRng, 0, cols - 1);
+        const r = rngInt(localRng, 0, rows - 1);
+        const tile = map[r][q];
+
+        if (tile.type !== 'grassland') {
+          attempts++;
+          continue;
+        }
+
+        const queue = [[q, r]];
+        let count = 0;
+
+        while (queue.length && placed < sizeTarget) {
+          const [x, y] = queue.shift();
+          const t = map[y][x];
+          if (t.type === 'grassland') {
+            Object.assign(t, { type, ...terrainTypes[type] });
+            placed++;
+            count++;
+          }
+
+          if (count < sizeTarget) {
+            neighbors(x, y).forEach(([nx, ny]) => {
+              const nTile = map[ny][nx];
+              if (nTile.type === 'grassland') queue.push([nx, ny]);
+            });
+          }
+        }
+
+        break;
+      }
+    }
+  }
+
+  // 🌱 Biomes
+  placeBiome('mud',   5, 9, 4);
+  placeBiome('sand',  5, 9, 4);
+  placeBiome('swamp', 5, 9, 3);
+
+  // 🏔️ Mountains (seeded)
+  const mountainChains = 6 + rngInt(localRng, 0, 2);
+  for (let i = 0; i < mountainChains; i++) {
+    let q = rngInt(localRng, 2, cols - 3);
+    let r = rngInt(localRng, 2, rows - 3);
+    const length = 3 + rngInt(localRng, 0, 2);
+
+    for (let j = 0; j < length; j++) {
+      const tile = map[r][q];
+      const distFromP1 = Math.sqrt((q - 2) ** 2 + (r - 2) ** 2);
+      const distFromP2 = Math.sqrt((q - cols + 2) ** 2 + (r - rows + 2) ** 2);
+
+      if (tile.type === 'grassland' && distFromP1 > 3 && distFromP2 > 3) {
+        Object.assign(tile, { type: 'mountain', ...terrainTypes.mountain });
+      }
+
+      const nbs = neighbors(q, r);
+      if (nbs.length) {
+        const [nq, nr] = nbs[rngInt(localRng, 0, nbs.length - 1)];
+        q = nq;
+        r = nr;
+      }
+    }
+  }
+
+  // === 🌳 Object Placement ===
+  const flatMap = map.flat();
+
+  const mark = (tile, key) => {
+    tile[key] = true;
+    tile.hasObject = true;
+  };
+
+  const isFree = t =>
+    !t.hasObject &&
+    !['mountain', 'water'].includes(t.type);
+
+  // 🌲 Forests (can coexist with 1 object)
+  const forestCandidates = flatMap.filter(t =>
+    ['grassland', 'mud'].includes(t.type)
+  );
+  rngShuffle(forestCandidates, localRng);
+  forestCandidates.slice(0, 39).forEach(tile => tile.hasForest = true);
+
+  // 🏛️ Ruins
+  const ruinCandidates = flatMap.filter(t =>
+    ['sand', 'swamp'].includes(t.type) && isFree(t)
+  );
+  rngShuffle(ruinCandidates, localRng);
+  ruinCandidates
+    .slice(0, rngInt(localRng, 2, 3))
+    .forEach(t => mark(t, 'hasRuin'));
+
+  // 🚀 Crash Sites
+  const crashCandidates = flatMap.filter(isFree);
+  rngShuffle(crashCandidates, localRng);
+  crashCandidates
+    .slice(0, rngInt(localRng, 2, 3))
+    .forEach(t => mark(t, 'hasCrashSite'));
+
+  // 🚙 Abandoned Vehicles
+  const vehicleCandidates = flatMap.filter(t =>
+    t.type === 'grassland' && isFree(t)
+  );
+  rngShuffle(vehicleCandidates, localRng);
+  vehicleCandidates
+    .slice(0, rngInt(localRng, 2, 3))
+    .forEach(t => mark(t, 'hasVehicle'));
+
+  // === 🛣️ Ancient Roads ===
+  const roadTiles = flatMap.filter(t =>
+    !['water', 'mountain'].includes(t.type) &&
+    !t.hasObject
+  );
+  rngShuffle(roadTiles, localRng);
+
+  const roadPaths = rngInt(localRng, 2, 3);
+  let totalRoadLength = rngInt(localRng, 7, 19);
+  let usedTiles = new Set();
+
+  for (let i = 0; i < roadPaths; i++) {
+    let remaining = Math.floor(totalRoadLength / (roadPaths - i));
+    totalRoadLength -= remaining;
+
+    let start = roadTiles.find(t => !usedTiles.has(`${t.q},${t.r}`));
+    if (!start) continue;
+
+    const queue = [start];
+    usedTiles.add(`${start.q},${start.r}`);
+    start.hasRoad = true;
+
+    while (queue.length && remaining > 0) {
+      const current = queue.shift();
+      const dirs = [
+        [+1, 0], [-1, 0], [0, +1], [0, -1], [+1, -1], [-1, +1]
+      ];
+      rngShuffle(dirs, localRng);
+
+      for (const [dq, dr] of dirs) {
+        const nq = current.q + dq;
+        const nr = current.r + dr;
+        const neighbor = flatMap.find(t => t.q === nq && t.r === nr);
+        if (
+          neighbor &&
+          !usedTiles.has(`${nq},${nr}`) &&
+          !['water', 'mountain'].includes(neighbor.type) &&
+          !neighbor.hasObject
+        ) {
+          neighbor.hasRoad = true;
+          usedTiles.add(`${nq},${nr}`);
+          queue.push(neighbor);
+          remaining--;
+          break;
+        }
+      }
+    }
+  }
+
+  // Elevation (visual) — seeded by the **seed string**
+  const seedForElevation = (typeof seedStr === 'string' && seedStr) ? seedStr : 'defaultseed';
+  for (let i = 0; i < flatMap.length; i++) {
+    const t = flatMap[i];
+    // Don’t overwrite if elevation already exists (idempotent)
+    if (typeof t.elevation !== 'number') {
+      t.elevation = __hx_computeElevation(t.q, t.r, cols, rows, seedForElevation, t.type);
+    }
+  }
+
+  return flatMap;
+}
+
+/* =============== Public Class (unchanged API) =============== */
+
+export default class HexMap {
+  constructor(width, height, seed) {
+    this.width = width;
+    this.height = height;
+    this.seed = (typeof seed === 'string') ? seed : String(seed ?? '000000');
+    this.map = [];
+    this.generateMap();
+  }
+
+  generateMap() {
+    // Build a strong deterministic RNG from your 6-digit seed
+    const seedVec = cyrb128(this.seed);    // [a,b,c,d]
+    const rng = sfc32(...seedVec);         // function () => [0,1)
+
+    // IMPORTANT: your original generateMap signature was (rows, cols, seed)
+    // and you were calling it as (this.width, this.height, rand) — wrong order & wrong type.
+    // Correct order: (rows, cols, seedString, rngFunction)
+    this.map = generateMap(this.height, this.width, this.seed, rng);
+  }
+
+  getMap() {
+    return this.map;
+  }
+}
