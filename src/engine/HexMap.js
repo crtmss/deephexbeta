@@ -8,18 +8,37 @@ const terrainTypes = {
   mud:       { movementCost: 3, color: '#795548' },
   mountain:  { movementCost: Infinity, color: '#9E9E9E', impassable: true },
   water:     { movementCost: Infinity, color: '#4da6ff', impassable: true },
-  swamp:     { movementCost: 3, color: '#4E342E' }
+  swamp:     { movementCost: 3, color: '#4E342E' } // ← fixed stray 'a'
 };
 
+/* =============== Seed / RNG utilities (deterministic) =============== */
+
+// When you need a string→RNG quickly (kept for compatibility)
 function seededRandom(seed) {
-  if (!seed || typeof seed !== 'string') seed = 'defaultseed';
+  const s = (typeof seed === 'string' && seed.length) ? seed : 'defaultseed';
   let x = 0;
-  for (let i = 0; i < seed.length; i++) x += seed.charCodeAt(i);
+  for (let i = 0; i < s.length; i++) x += s.charCodeAt(i);
   return () => {
     x = (x * 9301 + 49297) % 233280;
     return x / 233280;
   };
 }
+
+// Uniform int in [min,max]
+function rngInt(rng, min, max) {
+  return Math.floor(rng() * (max - min + 1)) + min;
+}
+
+// In-place Fisher–Yates shuffle with provided rng()
+function rngShuffle(arr, rng) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+/* =============== Hash & Noise for elevation (your original logic) =============== */
 
 /** Hash a string to a 32-bit int */
 function __hx_strHash(s) {
@@ -111,8 +130,18 @@ function __hx_computeElevation(q, r, cols, rows, rawSeed, terrainType) {
   return e;
 }
 
-function generateMap(rows = 25, cols = 25, seed = 'defaultseed') {
-  const rand = seededRandom(seed);
+/* =============== Map Generation (fully seeded) =============== */
+/**
+ * @param {number} rows
+ * @param {number} cols
+ * @param {string} seedStr  - the numeric 6-digit seed string
+ * @param {function} rng    - a function () => [0,1) (sfc32/cyrb128 based)
+ * @returns {Array} flat array of tiles {q,r,type,elevation,movementCost,flags...}
+ */
+function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rng = null) {
+  // Provide a deterministic rng if none passed (kept compatibility)
+  const localRng = typeof rng === 'function' ? rng : seededRandom(seedStr);
+
   const map = Array.from({ length: rows }, (_, r) =>
     Array.from({ length: cols }, (_, q) => ({
       q,
@@ -123,7 +152,7 @@ function generateMap(rows = 25, cols = 25, seed = 'defaultseed') {
     }))
   );
 
-  // 🌊 Irregular island shape using radial falloff + randomness
+  // 🌊 Irregular island shape using radial falloff + seeded randomness
   const centerQ = cols / 2;
   const centerR = rows / 2;
   const maxRadius = Math.min(centerQ, centerR) - 2;
@@ -134,7 +163,7 @@ function generateMap(rows = 25, cols = 25, seed = 'defaultseed') {
       const dx = q - centerQ;
       const dy = r - centerR;
       const dist = Math.sqrt(dx * dx + dy * dy);
-      const noise = rand() * 2.2;
+      const noise = localRng() * 2.2;
 
       if (dist + noise > maxRadius) {
         Object.assign(tile, { type: 'water', ...terrainTypes.water });
@@ -151,13 +180,13 @@ function generateMap(rows = 25, cols = 25, seed = 'defaultseed') {
 
   function placeBiome(type, minSize, maxSize, instances) {
     for (let i = 0; i < instances; i++) {
-      let size = minSize + Math.floor(rand() * (maxSize - minSize + 1));
+      const sizeTarget = rngInt(localRng, minSize, maxSize);
       let placed = 0;
       let attempts = 0;
 
-      while (placed < size && attempts < 500) {
-        const q = Math.floor(rand() * cols);
-        const r = Math.floor(rand() * rows);
+      while (placed < sizeTarget && attempts < 500) {
+        const q = rngInt(localRng, 0, cols - 1);
+        const r = rngInt(localRng, 0, rows - 1);
         const tile = map[r][q];
 
         if (tile.type !== 'grassland') {
@@ -168,7 +197,7 @@ function generateMap(rows = 25, cols = 25, seed = 'defaultseed') {
         const queue = [[q, r]];
         let count = 0;
 
-        while (queue.length && placed < size) {
+        while (queue.length && placed < sizeTarget) {
           const [x, y] = queue.shift();
           const t = map[y][x];
           if (t.type === 'grassland') {
@@ -177,7 +206,7 @@ function generateMap(rows = 25, cols = 25, seed = 'defaultseed') {
             count++;
           }
 
-          if (count < size) {
+          if (count < sizeTarget) {
             neighbors(x, y).forEach(([nx, ny]) => {
               const nTile = map[ny][nx];
               if (nTile.type === 'grassland') queue.push([nx, ny]);
@@ -191,16 +220,16 @@ function generateMap(rows = 25, cols = 25, seed = 'defaultseed') {
   }
 
   // 🌱 Biomes
-  placeBiome('mud', 5, 9, 4);
-  placeBiome('sand', 5, 9, 4);
+  placeBiome('mud',   5, 9, 4);
+  placeBiome('sand',  5, 9, 4);
   placeBiome('swamp', 5, 9, 3);
 
-  // 🏔️ Mountains
-  const mountainChains = 6 + Math.floor(rand() * 3);
+  // 🏔️ Mountains (seeded)
+  const mountainChains = 6 + rngInt(localRng, 0, 2);
   for (let i = 0; i < mountainChains; i++) {
-    let q = Math.floor(rand() * (cols - 4)) + 2;
-    let r = Math.floor(rand() * (rows - 4)) + 2;
-    const length = 3 + Math.floor(rand() * 3);
+    let q = rngInt(localRng, 2, cols - 3);
+    let r = rngInt(localRng, 2, rows - 3);
+    const length = 3 + rngInt(localRng, 0, 2);
 
     for (let j = 0; j < length; j++) {
       const tile = map[r][q];
@@ -213,7 +242,7 @@ function generateMap(rows = 25, cols = 25, seed = 'defaultseed') {
 
       const nbs = neighbors(q, r);
       if (nbs.length) {
-        const [nq, nr] = nbs[Math.floor(rand() * nbs.length)];
+        const [nq, nr] = nbs[rngInt(localRng, 0, nbs.length - 1)];
         q = nq;
         r = nr;
       }
@@ -236,37 +265,43 @@ function generateMap(rows = 25, cols = 25, seed = 'defaultseed') {
   const forestCandidates = flatMap.filter(t =>
     ['grassland', 'mud'].includes(t.type)
   );
-  Phaser.Utils.Array.Shuffle(forestCandidates);
+  rngShuffle(forestCandidates, localRng);
   forestCandidates.slice(0, 39).forEach(tile => tile.hasForest = true);
 
   // 🏛️ Ruins
   const ruinCandidates = flatMap.filter(t =>
     ['sand', 'swamp'].includes(t.type) && isFree(t)
   );
-  Phaser.Utils.Array.Shuffle(ruinCandidates);
-  ruinCandidates.slice(0, Phaser.Math.Between(2, 3)).forEach(t => mark(t, 'hasRuin'));
+  rngShuffle(ruinCandidates, localRng);
+  ruinCandidates
+    .slice(0, rngInt(localRng, 2, 3))
+    .forEach(t => mark(t, 'hasRuin'));
 
   // 🚀 Crash Sites
   const crashCandidates = flatMap.filter(isFree);
-  Phaser.Utils.Array.Shuffle(crashCandidates);
-  crashCandidates.slice(0, Phaser.Math.Between(2, 3)).forEach(t => mark(t, 'hasCrashSite'));
+  rngShuffle(crashCandidates, localRng);
+  crashCandidates
+    .slice(0, rngInt(localRng, 2, 3))
+    .forEach(t => mark(t, 'hasCrashSite'));
 
   // 🚙 Abandoned Vehicles
   const vehicleCandidates = flatMap.filter(t =>
     t.type === 'grassland' && isFree(t)
   );
-  Phaser.Utils.Array.Shuffle(vehicleCandidates);
-  vehicleCandidates.slice(0, Phaser.Math.Between(2, 3)).forEach(t => mark(t, 'hasVehicle'));
+  rngShuffle(vehicleCandidates, localRng);
+  vehicleCandidates
+    .slice(0, rngInt(localRng, 2, 3))
+    .forEach(t => mark(t, 'hasVehicle'));
 
   // === 🛣️ Ancient Roads ===
   const roadTiles = flatMap.filter(t =>
     !['water', 'mountain'].includes(t.type) &&
     !t.hasObject
   );
-  Phaser.Utils.Array.Shuffle(roadTiles);
+  rngShuffle(roadTiles, localRng);
 
-  const roadPaths = Phaser.Math.Between(2, 3);
-  let totalRoadLength = Phaser.Math.Between(7, 19);
+  const roadPaths = rngInt(localRng, 2, 3);
+  let totalRoadLength = rngInt(localRng, 7, 19);
   let usedTiles = new Set();
 
   for (let i = 0; i < roadPaths; i++) {
@@ -285,7 +320,7 @@ function generateMap(rows = 25, cols = 25, seed = 'defaultseed') {
       const dirs = [
         [+1, 0], [-1, 0], [0, +1], [0, -1], [+1, -1], [-1, +1]
       ];
-      Phaser.Utils.Array.Shuffle(dirs);
+      rngShuffle(dirs, localRng);
 
       for (const [dq, dr] of dirs) {
         const nq = current.q + dq;
@@ -307,7 +342,8 @@ function generateMap(rows = 25, cols = 25, seed = 'defaultseed') {
     }
   }
 
-  const seedForElevation = (typeof seed === 'string' && seed) ? seed : 'defaultseed';
+  // Elevation (visual) — seeded by the **seed string**
+  const seedForElevation = (typeof seedStr === 'string' && seedStr) ? seedStr : 'defaultseed';
   for (let i = 0; i < flatMap.length; i++) {
     const t = flatMap[i];
     // Don’t overwrite if elevation already exists (idempotent)
@@ -319,20 +355,26 @@ function generateMap(rows = 25, cols = 25, seed = 'defaultseed') {
   return flatMap;
 }
 
+/* =============== Public Class (unchanged API) =============== */
+
 export default class HexMap {
   constructor(width, height, seed) {
     this.width = width;
     this.height = height;
-    this.seed = seed;
+    this.seed = (typeof seed === 'string') ? seed : String(seed ?? '000000');
     this.map = [];
     this.generateMap();
   }
 
   generateMap() {
-    const randSeed = cyrb128(this.seed);
-    const rand = sfc32(...randSeed);
+    // Build a strong deterministic RNG from your 6-digit seed
+    const seedVec = cyrb128(this.seed);    // [a,b,c,d]
+    const rng = sfc32(...seedVec);         // function () => [0,1)
 
-    this.map = generateMap(this.width, this.height, rand);
+    // IMPORTANT: your original generateMap signature was (rows, cols, seed)
+    // and you were calling it as (this.width, this.height, rand) — wrong order & wrong type.
+    // Correct order: (rows, cols, seedString, rngFunction)
+    this.map = generateMap(this.height, this.width, this.seed, rng);
   }
 
   getMap() {
