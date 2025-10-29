@@ -1,7 +1,6 @@
 // src/scenes/WorldSceneMapLocations.js
-// POI spawning (emojis) + sparse, non-lattice roads via an explicit edge graph.
-// Draws with the SAME projection as tiles: center (unsheared) → isoOffset → offsets.
-// Now self-contained: uses a local isoOffset if the scene doesn't provide one.
+// Use scene.hexToPixel directly (it already includes the isometric projection).
+// Add only map offsets + elevation lift. No double-iso anymore.
 
 function mulberry32(a) {
   let t = a >>> 0;
@@ -15,22 +14,15 @@ function mulberry32(a) {
 const rndInt = (rnd, min, max) => Math.floor(rnd() * (max - min + 1)) + min;
 const chance = (rnd, p) => rnd() < p;
 const keyOf = (q, r) => `${q},${r}`;
-const inBounds = (q, r, w, h) => q >= 0 && q < w && r >= 0 && r < h;
 
-// --- projection (local fallback) ---
-const ISO_SHEAR  = 0.15;
-const ISO_YSCALE = 0.95;
-function isoOffsetLocal(x, y) {
-  return { x: x - y * ISO_SHEAR, y: y * ISO_YSCALE };
-}
-
-// axial odd-r
+function inBounds(q, r, w, h) { return q >= 0 && q < w && r >= 0 && r < h; }
 function neighborsOddR(q, r) {
   const even = (r % 2 === 0);
   return even
     ? [[+1,0],[0,-1],[-1,-1],[-1,0],[-1,+1],[0,+1]]
     : [[+1,0],[+1,-1],[0,-1],[-1,0],[0,+1],[+1,+1]];
 }
+
 function neighborTiles(byKey, width, height, q, r, skipWater = true) {
   const out = [];
   for (const [dq, dr] of neighborsOddR(q, r)) {
@@ -44,42 +36,25 @@ function neighborTiles(byKey, width, height, q, r, skipWater = true) {
   return out;
 }
 
-/* ======================
-   POI SPAWNING (never on water)
-   ====================== */
 function placeLocations(mapData, width, height, rnd) {
-  const byKey = new Map(mapData.map(t => [keyOf(t.q, t.r), t]));
-
   for (const t of mapData) {
-    const type = t.type || '';
-    const water = type === 'water';
-    if (water) {
+    if (t.type === 'water') {
       t.hasForest = t.hasRuin = t.hasCrashSite = t.hasVehicle = t.hasMountainIcon = false;
       continue;
     }
-
-    // forests
-    if (type === 'forest') t.hasForest = true;
+    if (t.type === 'forest') t.hasForest = true;
     else if (!t.hasForest && chance(rnd, 0.06)) t.hasForest = true;
 
-    // ruins
-    if (!t.hasRuin && type !== 'mountain' && chance(rnd, 0.010)) t.hasRuin = true;
-
-    // crash sites
+    if (!t.hasRuin && t.type !== 'mountain' && chance(rnd, 0.010)) t.hasRuin = true;
     if (!t.hasCrashSite && chance(rnd, 0.006)) t.hasCrashSite = true;
-
-    // vehicles
-    if (!t.hasVehicle && (type === 'plains' || type === 'desert' || type === 'grassland' || type === '') && chance(rnd, 0.008)) {
+    if (!t.hasVehicle && (t.type === 'plains' || t.type === 'desert' || t.type === 'grassland' || t.type === '') && chance(rnd, 0.008)) {
       t.hasVehicle = true;
     }
-
-    // tall non-mountain marker
-    if (!t.hasMountainIcon && type !== 'mountain' && (t.elevation ?? 0) >= 2 && chance(rnd, 0.05)) {
+    if (!t.hasMountainIcon && t.type !== 'mountain' && (t.elevation ?? 0) >= 2 && chance(rnd, 0.05)) {
       t.hasMountainIcon = true;
     }
   }
-
-  // soft forest clustering (no water)
+  const byKey = new Map(mapData.map(tt => [keyOf(tt.q, tt.r), tt]));
   for (const t of mapData) {
     if (!t.hasForest) continue;
     const localRnd = mulberry32((t.q * 73856093) ^ (t.r * 19349663));
@@ -89,90 +64,20 @@ function placeLocations(mapData, width, height, rnd) {
   }
 }
 
-/* ======================
-   ROADS: explicit edge graph (sparse, non-lattice)
-   ====================== */
 function markRoadEdge(a, b, type = 'countryside') {
   if (!a || !b) return;
   if (a.type === 'water' || b.type === 'water') return;
-
   a.hasRoad = b.hasRoad = true;
   a.roadType = a.roadType === 'asphalt' || type === 'asphalt' ? 'asphalt' : (a.roadType || 'countryside');
   b.roadType = b.roadType === 'asphalt' || type === 'asphalt' ? 'asphalt' : (b.roadType || 'countryside');
-
   a.roadLinks = a.roadLinks || new Set();
   b.roadLinks = b.roadLinks || new Set();
   a.roadLinks.add(keyOf(b.q, b.r));
   b.roadLinks.add(keyOf(a.q, a.r));
 }
-
-function generateRoads(mapData, width, height, seed) {
-  const rnd = mulberry32(seed >>> 0);
-  const byKey = new Map(mapData.map(t => [keyOf(t.q, t.r), t]));
-  const at = (q, r) => byKey.get(keyOf(q, r));
-
-  // meandering short trunks (0–2)
-  const numTrunks = rndInt(rnd, 0, 2);
-  const maxLen    = Math.floor(Math.max(width, height) * 1.1);
-
-  function stepDir(cur, prevDir) {
-    const dirs = neighborsOddR(0, 0);
-    let best = null, bestScore = -Infinity;
-    for (let i = 0; i < 6; i++) {
-      if (prevDir !== null && i === ((prevDir + 3) % 6)) continue;
-      const [dq, dr] = dirs[i];
-      const nq = cur.q + dq, nr = cur.r + dr;
-      const n = at(nq, nr);
-      if (!n || n.type === 'water') continue;
-      const eastish = (i === 0 || i === 1 || i === 5) ? 0.6 : 0;
-      const score = eastish + (rnd() - 0.5) * 0.2;
-      if (score > bestScore) { bestScore = score; best = { n, dir: i }; }
-    }
-    return best;
-  }
-
-  for (let t = 0; t < numTrunks; t++) {
-    let start = null, guard = 200;
-    while (!start && guard-- > 0) {
-      const q = rndInt(rnd, 1, Math.max(1, Math.floor(width / 3)));
-      const r = rndInt(rnd, 1, height - 2);
-      const cand = at(q, r);
-      if (cand && cand.type !== 'water') start = cand;
-    }
-    if (!start) continue;
-
-    let cur = start, prevDir = null, steps = 0;
-    while (steps++ < maxLen) {
-      const nxt = stepDir(cur, prevDir);
-      if (!nxt) break;
-      markRoadEdge(cur, nxt.n, 'asphalt');
-      prevDir = nxt.dir;
-      cur = nxt.n;
-      if (rnd() < 0.08) break; // terminate some trunks early
-    }
-  }
-
-  // A* to connect a couple of POIs
-  const pois = mapData.filter(t => t.type !== 'water' && (t.hasRuin || t.hasCrashSite || t.hasVehicle));
-  const pairs = Math.min(2, Math.floor(pois.length / 2));
-  for (let i = 0; i < pairs; i++) {
-    const a = pois[rndInt(rnd, 0, pois.length - 1)];
-    const b = pois[rndInt(rnd, 0, pois.length - 1)];
-    if (!a || !b || a === b) continue;
-    const path = astar(byKey, width, height, a, b);
-    if (path && path.length > 1) {
-      for (let j = 0; j + 1 < path.length; j++) {
-        markRoadEdge(path[j], path[j + 1], 'countryside');
-      }
-    }
-  }
-}
-
-// Tiny A* (skip water)
 function astar(byKey, width, height, start, goal) {
   const startK = keyOf(start.q, start.r);
   const goalK  = keyOf(goal.q, goal.r);
-
   const open = new Map([[startK, {k:startK,q:start.q,r:start.r,g:0,f:0,parent:null}]]);
   const closed = new Set();
   const h = (q, r) => Math.abs(q - goal.q) + Math.abs(r - goal.r);
@@ -191,7 +96,7 @@ function astar(byKey, width, height, start, goal) {
 
     for (const [dq, dr] of neighborsOddR(0, 0)) {
       const nq = cur.q + dq, nr = cur.r + dr;
-      if (!inBounds(nq, nr, width, height)) continue;
+      if (!byKey.has(keyOf(nq, nr))) continue;
       const t = byKey.get(keyOf(nq, nr));
       if (!t || t.type === 'water') continue;
       const nk = keyOf(nq, nr);
@@ -205,6 +110,62 @@ function astar(byKey, width, height, start, goal) {
   }
   return null;
 }
+function generateRoads(mapData, width, height, seed) {
+  const rnd = mulberry32(seed >>> 0);
+  const byKey = new Map(mapData.map(t => [keyOf(t.q, t.r), t]));
+  const at = (q, r) => byKey.get(keyOf(q, r));
+
+  const numTrunks = rndInt(rnd, 0, 2);
+  const maxLen    = Math.floor(Math.max(width, height) * 1.1);
+  function stepDir(cur, prevDir) {
+    const dirs = neighborsOddR(0, 0);
+    let best = null, bestScore = -Infinity;
+    for (let i = 0; i < 6; i++) {
+      if (prevDir !== null && i === ((prevDir + 3) % 6)) continue;
+      const [dq, dr] = dirs[i];
+      const n = at(cur.q + dq, cur.r + dr);
+      if (!n || n.type === 'water') continue;
+      const eastish = (i === 0 || i === 1 || i === 5) ? 0.6 : 0;
+      const score = eastish + (rnd() - 0.5) * 0.2;
+      if (score > bestScore) { bestScore = score; best = { n, dir: i }; }
+    }
+    return best;
+  }
+  for (let t = 0; t < numTrunks; t++) {
+    let start = null, guard = 200;
+    while (!start && guard-- > 0) {
+      const q = rndInt(rnd, 1, Math.max(1, Math.floor(width / 3)));
+      const r = rndInt(rnd, 1, height - 2);
+      const cand = at(q, r);
+      if (cand && cand.type !== 'water') start = cand;
+    }
+    if (!start) continue;
+
+    let cur = start, prevDir = null, steps = 0;
+    while (steps++ < maxLen) {
+      const nxt = stepDir(cur, prevDir);
+      if (!nxt) break;
+      markRoadEdge(cur, nxt.n, 'asphalt');
+      prevDir = nxt.dir;
+      cur = nxt.n;
+      if (rnd() < 0.08) break;
+    }
+  }
+
+  const pois = mapData.filter(t => t.type !== 'water' && (t.hasRuin || t.hasCrashSite || t.hasVehicle));
+  const pairs = Math.min(2, Math.floor(pois.length / 2));
+  for (let i = 0; i < pairs; i++) {
+    const a = pois[rndInt(rnd, 0, pois.length - 1)];
+    const b = pois[rndInt(rnd, 0, pois.length - 1)];
+    if (!a || !b || a === b) continue;
+    const path = astar(byKey, width, height, a, b);
+    if (path && path.length > 1) {
+      for (let j = 0; j + 1 < path.length; j++) {
+        markRoadEdge(path[j], path[j + 1], 'countryside');
+      }
+    }
+  }
+}
 
 export function applyLocationFlags(mapData, width, height, seed = 1337) {
   const rnd = mulberry32(seed >>> 0);
@@ -213,9 +174,7 @@ export function applyLocationFlags(mapData, width, height, seed = 1337) {
   return mapData;
 }
 
-/* ======================
-   RENDERING
-   ====================== */
+/* ------------- rendering (aligned with tile centers) ------------- */
 
 function effectiveElevationLocal(tile) {
   if (!tile || tile.type === 'water') return 0;
@@ -234,7 +193,6 @@ export function drawLocationsAndRoads() {
     Object.defineProperty(map, '__locationsApplied', { value: true, enumerable: false });
   }
 
-  // Clean previous layers
   if (scene.roadsGraphics) scene.roadsGraphics.destroy();
   if (scene.locationsLayer) scene.locationsLayer.destroy();
   const roads = scene.add.graphics({ x: 0, y: 0 }).setDepth(30);
@@ -243,41 +201,24 @@ export function drawLocationsAndRoads() {
   scene.locationsLayer = layer;
 
   const byKey = new Map(map.map(t => [keyOf(t.q, t.r), t]));
-  const centerCache = new Map();
-
-  // Use scene.isoOffset if it's available; otherwise local fallback.
-  const projectIso = (x, y) =>
-    (typeof scene.isoOffset === 'function') ? scene.isoOffset(x, y) : isoOffsetLocal(x, y);
-
-  const centerIso = (q, r) => {
-    const k = keyOf(q, r);
-    let p = centerCache.get(k);
-    if (!p) {
-      const base = scene.hexToPixel(q, r, size);   // unsheared
-      const iso  = projectIso(base.x, base.y);      // sheared
-      p = { x: iso.x, y: iso.y };
-      centerCache.set(k, p);
-    }
-    return p;
-  };
 
   const offsetX = this.mapOffsetX || 0;
   const offsetY = this.mapOffsetY || 0;
   const LIFT    = this?.LIFT_PER_LVL ?? 4;
 
-  // ---- ROAD RENDER: draw ONLY explicit edges ----
+  // ---- Roads: draw ONLY explicit edges
   for (const t of map) {
     if (!t.roadLinks || !t.roadLinks.size) continue;
 
-    const c1 = centerIso(t.q, t.r);
+    const c1 = scene.hexToPixel(t.q, t.r, size); // already ISO
     const y1 = c1.y - LIFT * effectiveElevationLocal(t);
 
     for (const target of t.roadLinks) {
-      if (target <= keyOf(t.q, t.r)) continue; // undirected edge once
+      if (target <= keyOf(t.q, t.r)) continue; // undirected once
       const n = byKey.get(target);
       if (!n) continue;
 
-      const c2 = centerIso(n.q, n.r);
+      const c2 = scene.hexToPixel(n.q, n.r, size);
       const y2 = c2.y - LIFT * effectiveElevationLocal(n);
 
       const asphalt = (t.roadType === 'asphalt' && n.roadType === 'asphalt');
@@ -292,7 +233,7 @@ export function drawLocationsAndRoads() {
     }
   }
 
-  // ---- POIs (emojis; never on water) ----
+  // ---- POIs (emojis; never on water)
   const addEmoji = (x, y, char, fontPx, depth = 42) => {
     const t = scene.add.text(x, y, char, {
       fontSize: `${fontPx}px`,
@@ -305,11 +246,10 @@ export function drawLocationsAndRoads() {
   for (const t of map) {
     if (t.type === 'water') continue;
 
-    const c = centerIso(t.q, t.r);
+    const c = scene.hexToPixel(t.q, t.r, size); // already ISO
     const cx = c.x + offsetX;
     const cy = c.y + offsetY - LIFT * effectiveElevationLocal(t);
 
-    // clustered trees (stable)
     if (t.hasForest) {
       const treeCount = Phaser.Math.Between(2, 4);
       const placed = [];
