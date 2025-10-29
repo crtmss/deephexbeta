@@ -1,9 +1,15 @@
 import { supabase } from './SupabaseClient.js';
 
+/**
+ * Creates a lobby with a 6-digit numeric code.
+ * The code itself is also used as the world seed.
+ */
 export async function createLobby(playerName, roomCode) {
-    const seed = Math.random().toString(36).substring(2, 10); // simple random seed
+    // The roomCode is a 6-digit numeric string — use as seed
+    const seed = roomCode;
+
     const state = {
-        seed,
+        seed, // numeric string used for map generation
         players: [playerName],
         currentTurn: playerName
     };
@@ -18,7 +24,7 @@ export async function createLobby(playerName, roomCode) {
                 player_1: playerName,
                 state
             }
-        ]); // ✅ No .select()
+        ]);
 
     if (error) {
         console.error('[Supabase ERROR] Failed to create lobby:', error.message);
@@ -27,6 +33,9 @@ export async function createLobby(playerName, roomCode) {
     return { data, error };
 }
 
+/**
+ * Joins an existing lobby.
+ */
 export async function joinLobby(playerName, roomCode) {
     const { data: lobbyData, error: fetchError } = await supabase
         .from('lobbies')
@@ -61,6 +70,9 @@ export async function joinLobby(playerName, roomCode) {
     return { data, error };
 }
 
+/**
+ * Fetches a lobby's game state (seed, players, etc.)
+ */
 export async function getLobbyState(roomCode) {
     const { data, error } = await supabase
         .from('lobbies')
