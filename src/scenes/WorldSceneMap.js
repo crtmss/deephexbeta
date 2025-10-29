@@ -1,14 +1,11 @@
-// src/scenes/WorldSceneMap.js
 import HexMap from '../engine/HexMap.js';
 import { drawLocationsAndRoads } from './WorldSceneMapLocations.js';
 
 export const LIFT_PER_LVL = 4;
 
-// Isometry
 const ISO_SHEAR  = 0.15;
 const ISO_YSCALE = 0.95;
 
-// IMPORTANT: no snapping — keeps shared vertices identical, no micro gaps.
 const pt = (x, y) => ({ x, y });
 
 /* ---------- terrain palette ---------- */
@@ -38,7 +35,6 @@ function darkenRGBInt(baseInt, factor) {
   return Phaser.Display.Color.GetColor(r, g, b);
 }
 function tintWallFromBase(baseInt, amount = 0.80) {
-  // amount < 1 → darker; 0.80 is ~20% darker
   return darkenRGBInt(baseInt, amount);
 }
 
@@ -82,7 +78,6 @@ export function roundHex(qf, rf) {
 export function generateHexMap(width, height, seed) {
   const hexMap = new HexMap(width, height, seed);
   const raw = hexMap.getMap();
-  // keep the border-frame behavior you had
   const left = Phaser.Math.Between(1, 4);
   const right = Phaser.Math.Between(1, 4);
   const top = Phaser.Math.Between(1, 4);
@@ -96,14 +91,12 @@ export function generateHexMap(width, height, seed) {
   });
 }
 
-/* ---------- walls (cliffs) ---------- */
-function drawHexWall(scene, edgePtsTop, dropPx, wallColor) {
-  const [A, B] = edgePtsTop;
+/* ---------- walls (cliffs & micro-skirts) ---------- */
+function drawEdgeQuad(scene, A, B, dropPx, color, depth = 3) {
   const A2 = pt(A.x, A.y + dropPx);
   const B2 = pt(B.x, B.y + dropPx);
-
-  const g = scene.add.graphics().setDepth(3); // above face, under rim
-  g.fillStyle(wallColor, 1); // OPAQUE
+  const g = scene.add.graphics().setDepth(depth);
+  g.fillStyle(color, 1); // opaque
   g.beginPath();
   g.moveTo(A.x, A.y);
   g.lineTo(B.x, B.y);
@@ -142,14 +135,13 @@ export function drawHex(q, r, xIso, yIso, size, fillColor, effElevation, terrain
   face.closePath();
   face.fillPath();
 
-  // cliffs (opaque, darker) only on edges 2 & 4 if neighbor lower
+  // walls: full cliffs on 2 & 4; tiny skirts on other edges where neighbor is lower
   const neighborCoords = neighborsOddR(q, r);
   const dropPerLvl = LIFT_PER_LVL;
   const wallColor  = tintWallFromBase(fillColor, 0.80);
-  const cliffEdges = [2, 4];
 
   const walls = [];
-  for (const e of cliffEdges) {
+  for (let e = 0; e < 6; e++) {
     const [dq, dr] = neighborCoords[e];
     const n = this.tileAt?.(q + dq, r + dr);
     if (!n) continue;
@@ -159,14 +151,21 @@ export function drawHex(q, r, xIso, yIso, size, fillColor, effElevation, terrain
 
     const A = ring[e];
     const B = ring[(e + 1) % 6];
-    const g = drawHexWall(this, [A, B], diff * dropPerLvl, wallColor);
-    walls.push(g);
+
+    if (e === 2 || e === 4) {
+      // real opaque cliff
+      walls.push(drawEdgeQuad(this, A, B, diff * dropPerLvl, wallColor, 3));
+    } else {
+      // micro-skirt just to close AA seams (1.6 px)
+      const skirt = Math.min(2, Math.max(1.2, diff * 0.8));
+      walls.push(drawEdgeQuad(this, A, B, skirt, wallColor, 3));
+    }
   }
 
-  // full rim (thin, darker) over everything → no missing edges
+  // full rim on top to cover any remaining AA
   const rim = this.add.graphics().setDepth(4);
   const rimColor = darkenRGBInt(fillColor, 0.75);
-  rim.lineStyle(1.25, rimColor, 1);
+  rim.lineStyle(1.6, rimColor, 1);
   rim.beginPath();
   rim.moveTo(ring[0].x, ring[0].y);
   for (let i = 1; i < 6; i++) rim.lineTo(ring[i].x, ring[i].y);
@@ -177,7 +176,7 @@ export function drawHex(q, r, xIso, yIso, size, fillColor, effElevation, terrain
   return { face, rim, ring };
 }
 
-/* ---------- fill color with elevation lift ---------- */
+/* ---------- elevation tint ---------- */
 function getFillForTile(tile) {
   const baseColor = getColorForTerrain(tile.type);
   if (tile.type === 'water') return baseColor;
@@ -216,7 +215,7 @@ function drawHexOutline(scene, xIso, yIso, size, color = 0xffffff) {
   return g;
 }
 
-/* ---------- main renderer ---------- */
+/* ---------- renderer ---------- */
 export function drawHexMap() {
   this.objects = this.objects || [];
   if (this.mapContainer) { this.mapContainer.destroy(true); this.mapContainer = null; }
@@ -257,9 +256,9 @@ export function drawHexMap() {
 
     const fillColor = getFillForTile(hex);
     const { face, rim } = drawHex.call(this, q, r, x, y, this.hexSize, fillColor, eff, hex.type);
-    this.mapContainer.add(face);
-    if (rim._walls) rim._walls.forEach(w => this.mapContainer.add(w)); // cliffs above face
-    this.mapContainer.add(rim); // rim on top to cover seams
+    this.mapContainer.add(face);                   // face
+    if (rim._walls) rim._walls.forEach(w => this.mapContainer.add(w)); // cliffs/skirts
+    this.mapContainer.add(rim);                    // rim on top
   }
 
   drawLocationsAndRoads.call(this);
