@@ -118,13 +118,28 @@ export default class WorldScene extends Phaser.Scene {
       });
     }
 
-    // 🖱️ Pointer Click: Move or Select
+    // Helper: cube distance between a fractional axial and rounded axial
+    const cubeDistToCenter = (qf, rf, qr) => {
+      const xf = qf, zf = rf, yf = -xf - zf;
+      const xr = qr.q, zr = qr.r, yr = -xr - zr;
+      return Math.max(Math.abs(xf - xr), Math.abs(yf - yr), Math.abs(zf - zr));
+    };
+
+    // 🖱️ Pointer Click: Move or Select (fixed offsets & hitbox)
     this.input.on("pointerdown", pointer => {
       if (pointer.rightButtonDown()) return;
 
-      const { worldX, worldY } = pointer;
-      const approx = this.pixelToHex(worldX, worldY, this.hexSize);
+      // account for map draw offsets before decoding
+      const localX = pointer.worldX - (this.mapOffsetX || 0);
+      const localY = pointer.worldY - (this.mapOffsetY || 0);
+
+      const approx = this.pixelToHex(localX, localY, this.hexSize);
       const rounded = this.roundHex(approx.q, approx.r);
+
+      // Guard: ensure this click is truly inside the nearest hex (stable hitbox)
+      // If the fractional→rounded distance is large, it means we clicked between hexes.
+      if (cubeDistToCenter(approx.q, approx.r, rounded) > 0.6) return;
+
       const tile = this.mapData.find(h => h.q === rounded.q && h.r === rounded.r);
       const playerHere = this.players.find(p => p.q === rounded.q && p.r === rounded.r);
 
@@ -172,12 +187,15 @@ export default class WorldScene extends Phaser.Scene {
       }
     });
 
-    // 🧭 Pointer Move: Draw Path Preview
+    // 🧭 Pointer Move: Draw Path Preview (fixed offsets)
     this.input.on("pointermove", pointer => {
       if (!this.selectedUnit || this.isUnitMoving) return;
 
-      const { worldX, worldY } = pointer;
-      const approx = this.pixelToHex(worldX, worldY, this.hexSize);
+      // account for map draw offsets before decoding
+      const localX = pointer.worldX - (this.mapOffsetX || 0);
+      const localY = pointer.worldY - (this.mapOffsetY || 0);
+
+      const approx = this.pixelToHex(localX, localY, this.hexSize);
       const rounded = this.roundHex(approx.q, approx.r);
 
       const isBlocked = tile => !tile || tile.type === 'water' || tile.type === 'mountain';
