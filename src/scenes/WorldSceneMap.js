@@ -83,12 +83,27 @@ export function generateHexMap(width, height, seed) {
   });
 }
 
-/* ---------- geometry-based neighbor lookup ---------- */
-function neighborAcrossEdge(scene, q, r, ring, edgeIndex) {
+/* ---------- geometry-based neighbor lookup (with outward push) ---------- */
+function neighborAcrossEdge(scene, ring, edgeIndex, centerX, centerY) {
   const A = ring[edgeIndex];
   const B = ring[(edgeIndex + 1) % 6];
-  const mx = (A.x + B.x) * 0.5;
-  const my = (A.y + B.y) * 0.5;
+
+  // Midpoint of the edge in screen/iso coords
+  let mx = (A.x + B.x) * 0.5;
+  let my = (A.y + B.y) * 0.5;
+
+  // Push a tiny epsilon outward from the center across this edge.
+  // This guarantees we sample the *neighbor* hex, not our own, after rounding.
+  const vx = mx - centerX;
+  const vy = my - centerY;
+  const len = Math.hypot(vx, vy) || 1;
+  const nx = vx / len;
+  const ny = vy / len;
+  const EPS = 1.75; // ~1–2 px works well for all sizes we use
+  mx += nx * EPS;
+  my += ny * EPS;
+
+  // Convert to local (remove map offsets) before pixel→hex
   const localX = mx - (scene.mapOffsetX || 0);
   const localY = my - (scene.mapOffsetY || 0);
   const frac = scene.pixelToHex(localX, localY, scene.hexSize);
@@ -101,7 +116,7 @@ function drawEdgeQuad(scene, A, B, dropPx, color, depth = 3) {
   const A2 = pt(A.x, A.y + dropPx);
   const B2 = pt(B.x, B.y + dropPx);
   const g = scene.add.graphics().setDepth(depth);
-  g.fillStyle(color, 1);
+  g.fillStyle(color, 1); // opaque
   g.beginPath();
   g.moveTo(A.x, A.y);
   g.lineTo(B.x, B.y);
@@ -131,6 +146,7 @@ export function drawHex(q, r, xIso, yIso, size, fillColor, effElevation, terrain
     return pt(xIso + off.x, yIso + off.y);
   });
 
+  // face
   const face = this.add.graphics().setDepth(2);
   face.fillStyle(fillColor, 1);
   face.beginPath();
@@ -139,12 +155,14 @@ export function drawHex(q, r, xIso, yIso, size, fillColor, effElevation, terrain
   face.closePath();
   face.fillPath();
 
+  // walls: full cliffs on 2 & 4; tiny skirts on other edges where neighbor is lower
   const dropPerLvl = LIFT_PER_LVL;
   const wallColor  = tintWallFromBase(fillColor, 0.80);
-  const walls = [];
 
+  const walls = [];
   for (let e = 0; e < 6; e++) {
-    const n = neighborAcrossEdge(this, q, r, ring, e);
+    // robust neighbor detection
+    const n = neighborAcrossEdge(this, ring, e, xIso, yIso);
     if (!n) continue;
     const effN = effectiveElevation(n);
     const diff = effElevation - effN;
@@ -154,13 +172,16 @@ export function drawHex(q, r, xIso, yIso, size, fillColor, effElevation, terrain
     const B = ring[(e + 1) % 6];
 
     if (e === 2 || e === 4) {
+      // real opaque cliff
       walls.push(drawEdgeQuad(this, A, B, diff * dropPerLvl, wallColor, 3));
     } else {
+      // micro-skirt just to close AA seams (1.2–2 px)
       const skirt = Math.min(2, Math.max(1.2, diff * 0.8));
       walls.push(drawEdgeQuad(this, A, B, skirt, wallColor, 3));
     }
   }
 
+  // full rim on top to cover any remaining AA
   const rim = this.add.graphics().setDepth(4);
   const rimColor = darkenRGBInt(fillColor, 0.75);
   rim.lineStyle(1.6, rimColor, 1);
@@ -239,7 +260,7 @@ export function drawHexMap() {
     const ea = effectiveElevation(a);
     const eb = effectiveElevation(b);
     if (ea !== eb) return ea - eb;
-    const da = (a.q + a.r) - (b.q + b.r);
+    const da = (a.q + a.r) - (b.q + b.q);
     if (da !== 0) return da;
     if (a.r !== b.r) return a.r - b.r;
     return a.q - b.q;
@@ -254,9 +275,9 @@ export function drawHexMap() {
 
     const fillColor = getFillForTile(hex);
     const { face, rim } = drawHex.call(this, q, r, x, y, this.hexSize, fillColor, eff, hex.type);
-    this.mapContainer.add(face);
-    if (rim._walls) rim._walls.forEach(w => this.mapContainer.add(w));
-    this.mapContainer.add(rim);
+    this.mapContainer.add(face);                   // face
+    if (rim._walls) rim._walls.forEach(w => this.mapContainer.add(w)); // cliffs/skirts
+    this.mapContainer.add(rim);                    // rim on top
   }
 
   drawLocationsAndRoads.call(this);
