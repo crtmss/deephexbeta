@@ -1,7 +1,7 @@
 // src/scenes/WorldSceneMap.js
-// Hex visuals preserved (faces, rims, cliffs), now with corrected isometric projection
-// for BOTH centers and vertices (no row/column drift). Also exports the helpers
-// expected by WorldScene.js, and keeps the hover outline.
+// Hex visuals preserved. Fixes:
+// 1) Cliffs render only on the two screen-facing edges (bottom-right & bottom-left).
+// 2) Avoid interior rim strokes between same-elevation neighbors → no thin black gaps.
 
 import HexMap from '../engine/HexMap.js';
 import { drawLocationsAndRoads } from './WorldSceneMapLocations.js';
@@ -19,7 +19,7 @@ const pt   = (x, y) => ({ x: SNAP(x), y: SNAP(y) });
 /* ---------- terrain palette ---------- */
 export function getColorForTerrain(terrain) {
   switch (terrain) {
-    case 'grassland': return 0x3caf5a;  // slightly fresher greens
+    case 'grassland': return 0x3caf5a;
     case 'sand':      return 0xFFF5B8;
     case 'mud':       return 0x7E5A48;
     case 'swamp':     return 0x5B463F;
@@ -59,29 +59,25 @@ function neighborsOddR(q, r) {
 }
 
 /* ---------- projection utilities ---------- */
-// Return **unsheared** axial pixel in top-down layout
+// Return unsheared axial pixel in top-down layout
 export function hexToPixel(q, r, size) {
   const x = size * Math.sqrt(3) * (q + 0.5 * (r & 1));
   const y = size * 1.5 * r;
-  return { x, y };
+  const xIso = x - y * ISO_SHEAR;
+  const yIso = y * ISO_YSCALE;
+  return { x: xIso, y: yIso };
 }
-// Apply isometry to any (x,y) pair
 export function isoOffset(x, y) {
   return { x: x - y * ISO_SHEAR, y: y * ISO_YSCALE };
 }
-
-// Inverse: from **isometric screen coords** back to fractional axial (q,r).
-// (Assumes you already subtracted map offsets and padding.)
+// Inverse: from isometric screen coords back to fractional axial (q,r).
 export function pixelToHex(screenX, screenY, size) {
-  // un-shear / un-scale
   const y0 = screenY / ISO_YSCALE;
   const x0 = screenX + y0 * ISO_SHEAR;
-
   const r = y0 / (size * 1.5);
-  const q = (x0 - ((Math.floor(r) & 1) * size * Math.sqrt(3) / 2)) / (size * Math.sqrt(3));
+  const q = (x0 / (Math.sqrt(3) * size)) - 0.5 * (Math.floor(r) & 1);
   return { q, r };
 }
-
 // axial rounding via cube rounding
 export function roundHex(qf, rf) {
   const x = qf, z = rf, y = -x - z;
@@ -141,15 +137,15 @@ export function drawHex(q, r, xIso, yIso, size, fillColor, effElevation, terrain
   const h = size / 2;
 
   const d = [
-    { dx: 0,  dy: -size },
-    { dx: +w, dy: -h    },
-    { dx: +w, dy: +h    },
-    { dx: 0,  dy: +size },
-    { dx: -w, dy: +h    },
-    { dx: -w, dy: -h    },
+    { dx: 0,  dy: -size }, // 0 top
+    { dx: +w, dy: -h    }, // 1 top-right
+    { dx: +w, dy: +h    }, // 2 bottom-right  ← screen-facing
+    { dx: 0,  dy: +size }, // 3 bottom
+    { dx: -w, dy: +h    }, // 4 bottom-left   ← screen-facing
+    { dx: -w, dy: -h    }, // 5 top-left
   ];
 
-  // transform each vertex delta with same isometry, then add to center
+  // transform vertices with same isometry, then add to center
   const ring = d.map(({dx,dy}) => {
     const off = isoOffset(dx, dy);
     return pt(xIso + off.x, yIso + off.y);
@@ -164,27 +160,48 @@ export function drawHex(q, r, xIso, yIso, size, fillColor, effElevation, terrain
   face.closePath();
   face.fillPath();
 
-  // rim
+  // rim: draw only edges that are exterior borders
   const rim = this.add.graphics().setDepth(4);
   const rimColor = darkenRGBInt(fillColor, 0.75);
-  rim.lineStyle(1.5, rimColor, 0.9);
-  rim.beginPath();
-  rim.moveTo(ring[0].x, ring[0].y);
-  for (let i = 1; i < ring.length; i++) rim.lineTo(ring[i].x, ring[i].y);
-  rim.closePath();
-  rim.strokePath();
+  rim.lineStyle(1.25, rimColor, 0.9);
 
-  // cliffs
-  const dropPerLvl = LIFT_PER_LVL;
-  const wallColor  = tintWallFromBase(fillColor, 0.22);
   const neighborCoords = neighborsOddR(q, r);
   for (let e = 0; e < 6; e++) {
     const [dq, dr] = neighborCoords[e];
-    const neighbor = this.tileAt?.(q + dq, r + dr);
-    if (!neighbor) continue;
-    const effN = effectiveElevation(neighbor);
+    const n = this.tileAt?.(q + dq, r + dr);
+    const A = ring[e];
+    const B = ring[(e + 1) % 6];
+
+    // draw the edge only if it's a coastline, a map edge, or a different elevation
+    let drawEdge = false;
+    if (!n) drawEdge = true;
+    else {
+      const sameElevation = effectiveElevation(n) === effElevation;
+      if (n.type === 'water' && terrain !== 'water') drawEdge = true;
+      else if (!sameElevation) drawEdge = true;
+    }
+
+    if (drawEdge) {
+      rim.beginPath();
+      rim.moveTo(A.x, A.y);
+      rim.lineTo(B.x, B.y);
+      rim.strokePath();
+    }
+  }
+
+  // cliffs: ONLY on two screen-facing edges (2 and 4), and only if neighbor is lower.
+  const dropPerLvl = LIFT_PER_LVL;
+  const wallColor  = tintWallFromBase(fillColor, 0.22);
+
+  const cliffEdges = [2, 4]; // bottom-right and bottom-left
+  for (const e of cliffEdges) {
+    const [dq, dr] = neighborCoords[e];
+    const n = this.tileAt?.(q + dq, r + dr);
+    if (!n) continue;
+    const effN = effectiveElevation(n);
     const diff = effElevation - effN;
     if (diff <= 0) continue;
+
     const A = ring[e];
     const B = ring[(e + 1) % 6];
     const g = drawHexWall(this, [A, B], diff * dropPerLvl, wallColor);
@@ -277,10 +294,9 @@ export function drawHexMap() {
     const eff = effectiveElevation(hex);
 
     // center in unsheared space → isometric
-    const c0  = hexToPixel(q, r, this.hexSize);
-    const iso = isoOffset(c0.x, c0.y);
-    const x   = iso.x + offsetX;
-    const y   = iso.y + offsetY - LIFT_PER_LVL * eff;
+    const p  = hexToPixel(q, r, this.hexSize);
+    const x  = p.x + offsetX;
+    const y  = p.y + offsetY - LIFT_PER_LVL * eff;
 
     const fillColor = getFillForTile(hex);
     const { face, rim } = drawHex.call(this, q, r, x, y, this.hexSize, fillColor, eff, hex.type);
@@ -309,10 +325,9 @@ export function drawHexMap() {
     }
 
     const eff = effectiveElevation(tile);
-    const c0  = hexToPixel(axial.q, axial.r, this.hexSize);
-    const iso = isoOffset(c0.x, c0.y);
-    const x   = iso.x + this.mapOffsetX;
-    const y   = iso.y + this.mapOffsetY - LIFT_PER_LVL * eff;
+    const p   = hexToPixel(axial.q, axial.r, this.hexSize);
+    const x   = p.x + this.mapOffsetX;
+    const y   = p.y + this.mapOffsetY - LIFT_PER_LVL * eff;
 
     if (this.hoverOutline) this.hoverOutline.destroy();
     this.hoverOutline = drawHexOutline(this, x, y, this.hexSize, 0xffffff);
