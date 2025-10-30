@@ -111,34 +111,6 @@ function neighborAcrossEdge(scene, ring, edgeIndex, centerX, centerY) {
   return scene.tileAt?.(rounded.q, rounded.r);
 }
 
-/* ---------- pick screen-facing edges using UNSHEARED vectors ---------- */
-function pickScreenFacingEdgesUnsheared(ring, centerX, centerY) {
-  // For a small vector, iso transform is: dx' = dx - dy*s, dy' = dy*k
-  // Inverse for vectors: dy = dy'/k, dx = dx' + (dy'/k)*s
-  let leftIdx = 0, rightIdx = 0;
-  let bestLeftDy = -Infinity, bestRightDy = -Infinity;
-
-  for (let e = 0; e < 6; e++) {
-    const A = ring[e];
-    const B = ring[(e + 1) % 6];
-    const mx = (A.x + B.x) * 0.5;
-    const my = (A.y + B.y) * 0.5;
-
-    const dxp = mx - centerX;          // iso delta x'
-    const dyp = my - centerY;          // iso delta y'
-    const dy  = dyp / ISO_YSCALE;      // un-sheared delta y
-    const dx  = dxp + dy * ISO_SHEAR;  // un-sheared delta x
-
-    // Down is dy > 0 (screen coordinates). Choose one left (dx<0) and one right (dx>=0)
-    if (dx < 0) {
-      if (dy > bestLeftDy) { bestLeftDy = dy; leftIdx = e; }
-    } else {
-      if (dy > bestRightDy) { bestRightDy = dy; rightIdx = e; }
-    }
-  }
-  return { leftIdx, rightIdx };
-}
-
 /* ---------- walls (cliffs & micro-skirts) ---------- */
 function drawEdgeQuad(scene, A, B, dropPx, color, depth = 3) {
   const A2 = pt(A.x, A.y + dropPx);
@@ -160,13 +132,15 @@ export function drawHex(q, r, xIso, yIso, size, fillColor, effElevation, terrain
   const w = size * Math.sqrt(3) / 2;
   const h = size / 2;
 
+  // Ring indices (0..5) — clockwise from top:
+  // 0 top, 1 top-right, 2 bottom-right, 3 bottom, 4 bottom-left, 5 top-left
   const d = [
-    { dx: 0,  dy: -size }, // 0 top
-    { dx: +w, dy: -h    }, // 1 top-right
-    { dx: +w, dy: +h    }, // 2 bottom-right
-    { dx: 0,  dy: +size }, // 3 bottom
-    { dx: -w, dy: +h    }, // 4 bottom-left
-    { dx: -w, dy: -h    }, // 5 top-left
+    { dx: 0,  dy: -size }, // 0
+    { dx: +w, dy: -h    }, // 1
+    { dx: +w, dy: +h    }, // 2  (bottom-right)
+    { dx: 0,  dy: +size }, // 3
+    { dx: -w, dy: +h    }, // 4  (bottom-left)
+    { dx: -w, dy: -h    }, // 5
   ];
 
   const ring = d.map(({dx,dy}) => {
@@ -183,10 +157,7 @@ export function drawHex(q, r, xIso, yIso, size, fillColor, effElevation, terrain
   face.closePath();
   face.fillPath();
 
-  // Decide which two edges are the screen-facing "bottom" edges (left & right) stably
-  const { leftIdx, rightIdx } = pickScreenFacingEdgesUnsheared(ring, xIso, yIso);
-
-  // walls: full cliffs on the two facing edges; tiny skirts elsewhere (if neighbor lower)
+  // Full opaque cliffs ONLY on ring edges 2 & 4 (your sides 2 & 3).
   const dropPerLvl = LIFT_PER_LVL;
   const wallColor  = tintWallFromBase(fillColor, 0.80);
 
@@ -201,11 +172,11 @@ export function drawHex(q, r, xIso, yIso, size, fillColor, effElevation, terrain
     const A = ring[e];
     const B = ring[(e + 1) % 6];
 
-    if (e === leftIdx || e === rightIdx) {
-      // full opaque cliff
+    if (e === 2 || e === 4) {
+      // full opaque cliff (bottom-right & bottom-left)
       walls.push(drawEdgeQuad(this, A, B, diff * dropPerLvl, wallColor, 3));
     } else {
-      // micro-skirt to seal AA seams
+      // micro-skirt to seal AA seams on non-facing edges
       const skirt = Math.min(2, Math.max(1.2, diff * 0.8));
       walls.push(drawEdgeQuad(this, A, B, skirt, wallColor, 3));
     }
@@ -290,7 +261,7 @@ export function drawHexMap() {
     const ea = effectiveElevation(a);
     const eb = effectiveElevation(b);
     if (ea !== eb) return ea - eb;
-    const da = (a.q + a.r) - (b.q + b.r);
+    const da = (a.q + a.r) - (b.q + b.r); // fixed earlier typo here
     if (da !== 0) return da;
     if (a.r !== b.r) return a.r - b.r;
     return a.q - b.q;
@@ -305,9 +276,9 @@ export function drawHexMap() {
 
     const fillColor = getFillForTile(hex);
     const { face, rim } = drawHex.call(this, q, r, x, y, this.hexSize, fillColor, eff, hex.type);
-    this.mapContainer.add(face);
-    if (rim._walls) rim._walls.forEach(w => this.mapContainer.add(w));
-    this.mapContainer.add(rim);
+    this.mapContainer.add(face);                   // face
+    if (rim._walls) rim._walls.forEach(w => this.mapContainer.add(w)); // cliffs/skirts
+    this.mapContainer.add(rim);                    // rim on top
   }
 
   drawLocationsAndRoads.call(this);
