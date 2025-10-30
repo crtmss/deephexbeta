@@ -111,11 +111,12 @@ function neighborAcrossEdge(scene, ring, edgeIndex, centerX, centerY) {
   return scene.tileAt?.(rounded.q, rounded.r);
 }
 
-/* ---------- pick screen-facing edges (bottom-left & bottom-right) ---------- */
-function pickScreenFacingEdges(ring, centerX, centerY) {
-  // Choose the two edges whose midpoints are below the center (largest +Y).
-  // Break ties by left/right half to ensure one on each side.
-  let leftIdx = 0, rightIdx = 0, bestLeftNy = -Infinity, bestRightNy = -Infinity;
+/* ---------- pick screen-facing edges using UNSHEARED vectors ---------- */
+function pickScreenFacingEdgesUnsheared(ring, centerX, centerY) {
+  // For a small vector, iso transform is: dx' = dx - dy*s, dy' = dy*k
+  // Inverse for vectors: dy = dy'/k, dx = dx' + (dy'/k)*s
+  let leftIdx = 0, rightIdx = 0;
+  let bestLeftDy = -Infinity, bestRightDy = -Infinity;
 
   for (let e = 0; e < 6; e++) {
     const A = ring[e];
@@ -123,18 +124,18 @@ function pickScreenFacingEdges(ring, centerX, centerY) {
     const mx = (A.x + B.x) * 0.5;
     const my = (A.y + B.y) * 0.5;
 
-    const vx = mx - centerX;
-    const vy = my - centerY;
-    const len = Math.hypot(vx, vy) || 1;
-    const ny = vy / len; // downward is positive in screen coords
+    const dxp = mx - centerX;          // iso delta x'
+    const dyp = my - centerY;          // iso delta y'
+    const dy  = dyp / ISO_YSCALE;      // un-sheared delta y
+    const dx  = dxp + dy * ISO_SHEAR;  // un-sheared delta x
 
-    if (mx < centerX) {
-      if (ny > bestLeftNy) { bestLeftNy = ny; leftIdx = e; }
+    // Down is dy > 0 (screen coordinates). Choose one left (dx<0) and one right (dx>=0)
+    if (dx < 0) {
+      if (dy > bestLeftDy) { bestLeftDy = dy; leftIdx = e; }
     } else {
-      if (ny > bestRightNy) { bestRightNy = ny; rightIdx = e; }
+      if (dy > bestRightDy) { bestRightDy = dy; rightIdx = e; }
     }
   }
-
   return { leftIdx, rightIdx };
 }
 
@@ -182,8 +183,8 @@ export function drawHex(q, r, xIso, yIso, size, fillColor, effElevation, terrain
   face.closePath();
   face.fillPath();
 
-  // Decide which two edges are the screen-facing "bottom" edges (left & right)
-  const { leftIdx, rightIdx } = pickScreenFacingEdges(ring, xIso, yIso);
+  // Decide which two edges are the screen-facing "bottom" edges (left & right) stably
+  const { leftIdx, rightIdx } = pickScreenFacingEdgesUnsheared(ring, xIso, yIso);
 
   // walls: full cliffs on the two facing edges; tiny skirts elsewhere (if neighbor lower)
   const dropPerLvl = LIFT_PER_LVL;
@@ -289,7 +290,7 @@ export function drawHexMap() {
     const ea = effectiveElevation(a);
     const eb = effectiveElevation(b);
     if (ea !== eb) return ea - eb;
-    const da = (a.q + a.r) - (b.q + b.r); // fixed typo here
+    const da = (a.q + a.r) - (b.q + b.r);
     if (da !== 0) return da;
     if (a.r !== b.r) return a.r - b.r;
     return a.q - b.q;
@@ -304,9 +305,9 @@ export function drawHexMap() {
 
     const fillColor = getFillForTile(hex);
     const { face, rim } = drawHex.call(this, q, r, x, y, this.hexSize, fillColor, eff, hex.type);
-    this.mapContainer.add(face);                   // face
-    if (rim._walls) rim._walls.forEach(w => this.mapContainer.add(w)); // cliffs/skirts
-    this.mapContainer.add(rim);                    // rim on top
+    this.mapContainer.add(face);
+    if (rim._walls) rim._walls.forEach(w => this.mapContainer.add(w));
+    this.mapContainer.add(rim);
   }
 
   drawLocationsAndRoads.call(this);
