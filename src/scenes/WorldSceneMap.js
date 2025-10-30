@@ -88,18 +88,18 @@ function neighborAcrossEdge(scene, ring, edgeIndex, centerX, centerY) {
   const A = ring[edgeIndex];
   const B = ring[(edgeIndex + 1) % 6];
 
-  // Midpoint of the edge in screen/iso coords
+  // Edge midpoint (iso/screen coords)
   let mx = (A.x + B.x) * 0.5;
   let my = (A.y + B.y) * 0.5;
 
-  // Push a tiny epsilon outward from the center across this edge.
-  // This guarantees we sample the *neighbor* hex, not our own, after rounding.
+  // Push a tiny epsilon outward from the center across this edge
+  // so rounding never snaps back to the same tile.
   const vx = mx - centerX;
   const vy = my - centerY;
   const len = Math.hypot(vx, vy) || 1;
   const nx = vx / len;
   const ny = vy / len;
-  const EPS = 1.75; // ~1–2 px works well for all sizes we use
+  const EPS = 1.75;
   mx += nx * EPS;
   my += ny * EPS;
 
@@ -109,6 +109,33 @@ function neighborAcrossEdge(scene, ring, edgeIndex, centerX, centerY) {
   const frac = scene.pixelToHex(localX, localY, scene.hexSize);
   const rounded = scene.roundHex(frac.q, frac.r);
   return scene.tileAt?.(rounded.q, rounded.r);
+}
+
+/* ---------- pick screen-facing edges (bottom-left & bottom-right) ---------- */
+function pickScreenFacingEdges(ring, centerX, centerY) {
+  // Choose the two edges whose midpoints are below the center (largest +Y).
+  // Break ties by left/right half to ensure one on each side.
+  let leftIdx = 0, rightIdx = 0, bestLeftNy = -Infinity, bestRightNy = -Infinity;
+
+  for (let e = 0; e < 6; e++) {
+    const A = ring[e];
+    const B = ring[(e + 1) % 6];
+    const mx = (A.x + B.x) * 0.5;
+    const my = (A.y + B.y) * 0.5;
+
+    const vx = mx - centerX;
+    const vy = my - centerY;
+    const len = Math.hypot(vx, vy) || 1;
+    const ny = vy / len; // downward is positive in screen coords
+
+    if (mx < centerX) {
+      if (ny > bestLeftNy) { bestLeftNy = ny; leftIdx = e; }
+    } else {
+      if (ny > bestRightNy) { bestRightNy = ny; rightIdx = e; }
+    }
+  }
+
+  return { leftIdx, rightIdx };
 }
 
 /* ---------- walls (cliffs & micro-skirts) ---------- */
@@ -135,9 +162,9 @@ export function drawHex(q, r, xIso, yIso, size, fillColor, effElevation, terrain
   const d = [
     { dx: 0,  dy: -size }, // 0 top
     { dx: +w, dy: -h    }, // 1 top-right
-    { dx: +w, dy: +h    }, // 2 bottom-right (screen-facing)
+    { dx: +w, dy: +h    }, // 2 bottom-right
     { dx: 0,  dy: +size }, // 3 bottom
-    { dx: -w, dy: +h    }, // 4 bottom-left  (screen-facing)
+    { dx: -w, dy: +h    }, // 4 bottom-left
     { dx: -w, dy: -h    }, // 5 top-left
   ];
 
@@ -155,13 +182,15 @@ export function drawHex(q, r, xIso, yIso, size, fillColor, effElevation, terrain
   face.closePath();
   face.fillPath();
 
-  // walls: full cliffs on 2 & 4; tiny skirts on other edges where neighbor is lower
+  // Decide which two edges are the screen-facing "bottom" edges (left & right)
+  const { leftIdx, rightIdx } = pickScreenFacingEdges(ring, xIso, yIso);
+
+  // walls: full cliffs on the two facing edges; tiny skirts elsewhere (if neighbor lower)
   const dropPerLvl = LIFT_PER_LVL;
   const wallColor  = tintWallFromBase(fillColor, 0.80);
 
   const walls = [];
   for (let e = 0; e < 6; e++) {
-    // robust neighbor detection
     const n = neighborAcrossEdge(this, ring, e, xIso, yIso);
     if (!n) continue;
     const effN = effectiveElevation(n);
@@ -171,17 +200,17 @@ export function drawHex(q, r, xIso, yIso, size, fillColor, effElevation, terrain
     const A = ring[e];
     const B = ring[(e + 1) % 6];
 
-    if (e === 2 || e === 4) {
-      // real opaque cliff
+    if (e === leftIdx || e === rightIdx) {
+      // full opaque cliff
       walls.push(drawEdgeQuad(this, A, B, diff * dropPerLvl, wallColor, 3));
     } else {
-      // micro-skirt just to close AA seams (1.2–2 px)
+      // micro-skirt to seal AA seams
       const skirt = Math.min(2, Math.max(1.2, diff * 0.8));
       walls.push(drawEdgeQuad(this, A, B, skirt, wallColor, 3));
     }
   }
 
-  // full rim on top to cover any remaining AA
+  // thin rim on top to cover any remaining AA
   const rim = this.add.graphics().setDepth(4);
   const rimColor = darkenRGBInt(fillColor, 0.75);
   rim.lineStyle(1.6, rimColor, 1);
@@ -260,7 +289,7 @@ export function drawHexMap() {
     const ea = effectiveElevation(a);
     const eb = effectiveElevation(b);
     if (ea !== eb) return ea - eb;
-    const da = (a.q + a.r) - (b.q + b.q);
+    const da = (a.q + a.r) - (b.q + b.r); // fixed typo here
     if (da !== 0) return da;
     if (a.r !== b.r) return a.r - b.r;
     return a.q - b.q;
