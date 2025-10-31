@@ -177,32 +177,28 @@ export function drawHex(q, r, xIso, yIso, size, fillColor, effElevation/*, terra
   };
 
   // === Neighbors by your side numbering ===
-  // sides: 0=NE, 1=E, 2=SE, 3=SW, 4=W, 5=NW
-  const n0 = neighborBySide(this.tileAt, q, r, 0);
-  const n1 = neighborBySide(this.tileAt, q, r, 1);
-  const n2 = neighborBySide(this.tileAt, q, r, 2);
-  const n3 = neighborBySide(this.tileAt, q, r, 3);
-  const n4 = neighborBySide(this.tileAt, q, r, 4);
-  const n5 = neighborBySide(this.tileAt, q, r, 5);
+// === Neighbors by your side numbering ===
+// sides: 0=NE, 1=E, 2=SE, 3=SW, 4=W, 5=NW
+const n0 = neighborBySide(this.tileAt, q, r, 0);
+const n1 = neighborBySide(this.tileAt, q, r, 1);
+const n2 = neighborBySide(this.tileAt, q, r, 2);
+const n3 = neighborBySide(this.tileAt, q, r, 3);
+const n4 = neighborBySide(this.tileAt, q, r, 4);
+const n5 = neighborBySide(this.tileAt, q, r, 5);
 
-  // Map your sides -> ring edge indices
-  // 0 (NE) -> edge 0, 1 (E) -> 1, 2 (SE) -> 2,
-  // 3 (SW) -> **4**, 4 (W) -> 4? (W vertical is edge 4? No: W vertical is edge 4? Actually:
-  // Edges: 0:top-TR, 1:TR-BR (right), 2:BR-bottom, 3:bottom-BL (bottom), 4:BL-TL (left-diag), 5:TL-top (left-top)
-  // For skirts we’ll just use the same mapping array below:
-  const sideToEdge = [0, 1, 2, 4, 4, 5];
+// === Render REQUIRED cliffs on your screen-facing sides ===
+// ✅ bottom-right cliff (side 2) -> edge 2 (unchanged)
+if (n2) maybeCliff(2, n2);
 
-  // === Render REQUIRED cliffs on your screen-facing sides (2 and 3) ===
-  // side 2 (SE) => edge 2
-  if (n2) maybeCliff(2, n2);
-  // side 3 (SW) => edge 4
-  if (n3) maybeCliff(4, n3);
+// ❌ was: if (n3) maybeCliff(4, n3);
+// ✅ bottom-left cliff is side 4, not 3 -> edge 4
+if (n4) maybeCliff(4, n4);
 
-  // === Optional: thin skirts on other edges if neighbor lower (to seal seams) ===
-  if (n0) maybeSkirt(0, n0);
-  if (n1) maybeSkirt(1, n1);
-  if (n4) maybeSkirt(4, n4);
-  if (n5) maybeSkirt(5, n5);
+// (optional thin skirts to seal AA seams)
+if (n0) maybeSkirt(0, n0);
+if (n1) maybeSkirt(1, n1);
+if (n3) maybeSkirt(3, n3);  // bottom edge can keep a tiny skirt
+if (n5) maybeSkirt(5, n5);
 
   // thin rim on top to cover any remaining AA
   const rim = this.add.graphics().setDepth(4);
