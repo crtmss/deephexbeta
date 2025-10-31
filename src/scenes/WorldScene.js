@@ -65,6 +65,7 @@ export default class WorldScene extends Phaser.Scene {
       return list[(idx + 1) % list.length];
     };
 
+    // bind geometry helpers to scene
     this.hexToPixel = hexToPixel.bind(this);
     this.pixelToHex = pixelToHex.bind(this);
     this.roundHex = roundHex.bind(this);
@@ -130,7 +131,7 @@ export default class WorldScene extends Phaser.Scene {
       const playerHere = this.players.find(p => p.q === rounded.q && p.r === rounded.r);
 
       this.selectedHex = rounded;
-      this.debugHex(rounded.q, rounded.r);
+      this.debugHex(rounded.q, rounded.r); // enhanced debug
 
       if (this.selectedUnit) {
         if (this.selectedUnit.q === rounded.q && this.selectedUnit.r === rounded.r) {
@@ -238,9 +239,10 @@ export default class WorldScene extends Phaser.Scene {
     this.pathLabels = [];
   }
 
-  // === CLICK DEBUG: print adjacent levels per YOUR side numbering ===
+  // --- CLICK DEBUG: neighbor levels per YOUR side numbering using odd-r axial deltas ---
   debugHex(q, r) {
-    const center = this.hexToPixel(q, r, this.hexSize); // local (no map offsets)
+    // Local outline
+    const center = this.hexToPixel(q, r, this.hexSize);
     this.debugGraphics.clear();
     this.debugGraphics.lineStyle(2, 0xff00ff, 1);
     this.drawHex(this.debugGraphics, center.x, center.y, this.hexSize);
@@ -263,51 +265,26 @@ export default class WorldScene extends Phaser.Scene {
     console.log(`• Enemy Units: ${enemiesHere.length}`);
     console.log(`• Objects: ${objects.join(", ") || "None"}`);
 
-    // Build ring points (same order as renderer: 0 top, 1 top-right, 2 bottom-right, 3 bottom, 4 bottom-left, 5 top-left)
-    const w = this.hexSize * Math.sqrt(3) / 2;
-    const h = this.hexSize / 2;
-    const deltas = [
-      { dx: 0,  dy: -this.hexSize }, // 0 top
-      { dx: +w, dy: -h           }, // 1 top-right
-      { dx: +w, dy: +h           }, // 2 bottom-right
-      { dx: 0,  dy: +this.hexSize }, // 3 bottom
-      { dx: -w, dy: +h           }, // 4 bottom-left
-      { dx: -w, dy: -h           }, // 5 top-left
-    ];
-    const ring = deltas.map(({dx, dy}) => {
-      const off = isoOffset(dx, dy);
-      return { x: center.x + off.x, y: center.y + off.y };
-    });
+    // --- odd-r axial deltas mapped to your sides (0..5) ---
+    // sides: 0=NE, 1=E, 2=SE, 3=SW, 4=W, 5=NW
+    const isOdd = (r & 1) === 1;
 
-    // Your side numbering:
-    // 0 top-right slanted = ring edge 0
-    // 1 right vertical     = ring edge 1
-    // 2 bottom-right       = ring edge 2
-    // 3 bottom-left        = ring edge 3
-    // 4 left vertical      = ring edge 4
-    // 5 top-left           = ring edge 5
-    const sideToEdge = [0,1,2,3,4,5];
+    // even row deltas
+    const evenNE = [0, -1], evenE = [+1, 0], evenSE = [0, +1];
+    const evenSW = [-1, +1], evenW = [-1, 0], evenNW = [-1, -1];
 
-    const sampleNeighbor = (edgeIndex, eps) => {
-      const A = ring[edgeIndex];
-      const B = ring[(edgeIndex + 1) % 6];
-      let mx = (A.x + B.x) * 0.5;
-      let my = (A.y + B.y) * 0.5;
-      const vx = mx - center.x, vy = my - center.y;
-      const L = Math.hypot(vx, vy) || 1;
-      mx += (vx / L) * eps;
-      my += (vy / L) * eps;
-      const approx = this.pixelToHex(mx, my, this.hexSize);
-      const nbr = this.roundHex(approx.q, approx.r);
-      return this.mapData.find(h => h.q === nbr.q && h.r === nbr.r) || null;
-    };
+    // odd row deltas
+    const oddNE = [+1, -1], oddE = [+1, 0], oddSE = [+1, +1];
+    const oddSW = [0, +1], oddW = [-1, 0], oddNW = [0, -1];
+
+    const deltas = isOdd
+      ? [oddNE, oddE, oddSE, oddSW, oddW, oddNW]
+      : [evenNE, evenE, evenSE, evenSW, evenW, evenNW];
 
     for (let side = 0; side < 6; side++) {
-      const e = sideToEdge[side];
-      // Try with eps=1.75; if it still resolves to self, bump to 3.0
-      let nTile = sampleNeighbor(e, 1.75);
-      if (nTile && nTile.q === q && nTile.r === r) nTile = sampleNeighbor(e, 3.0);
-
+      const [dq, dr] = deltas[side];
+      const nq = q + dq, nr = r + dr;
+      const nTile = this.mapData.find(h => h.q === nq && h.r === nr);
       if (!nTile) {
         console.log(`Side ${side} - adjacent to hex level N/A (off map)`);
       } else {
