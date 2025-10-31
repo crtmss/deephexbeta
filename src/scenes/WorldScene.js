@@ -4,7 +4,8 @@ import { findPath } from '../engine/AStar.js';
 import { setupCameraControls, setupTurnUI } from './WorldSceneUI.js';
 import { spawnUnitsAndEnemies, subscribeToGameUpdates } from './WorldSceneUnits.js';
 import {
-  drawHexMap, hexToPixel, pixelToHex, roundHex, drawHex, getColorForTerrain, isoOffset
+  drawHexMap, hexToPixel, pixelToHex, roundHex, drawHex, getColorForTerrain, isoOffset,
+  generateHexMap
 } from './WorldSceneMap.js';
 
 export default class WorldScene extends Phaser.Scene {
@@ -27,6 +28,8 @@ export default class WorldScene extends Phaser.Scene {
     const mapPixelHeight = this.hexSize * 1.5 * (this.mapHeight + 0.5) + pad * 2;
     this.cameras.main.setBounds(0, 0, mapPixelWidth, mapPixelHeight);
     this.cameras.main.setZoom(1.0);
+    // Match background to water tile color
+    this.cameras.main.setBackgroundColor('#7CC4FF');
 
     const { roomCode, playerName, isHost } = this.scene.settings.data;
     const { getLobbyState } = await import('../net/LobbyManager.js');
@@ -81,8 +84,10 @@ export default class WorldScene extends Phaser.Scene {
     this.pathLabels = [];
     this.debugGraphics = this.add.graphics({ x: 0, y: 0 }).setDepth(100);
 
-    this.hexMap = new HexMap(this.mapWidth, this.mapHeight, this.seed);
-    this.mapData = this.hexMap.getMap();
+    // === USE BIOME/GEOGRAPHY MAP ===
+    // this.hexMap = new HexMap(this.mapWidth, this.mapHeight, this.seed);
+    // this.mapData = this.hexMap.getMap();
+    this.mapData = generateHexMap(this.mapWidth, this.mapHeight, this.seed);
     drawHexMap.call(this);
 
     await spawnUnitsAndEnemies.call(this);
