@@ -4,7 +4,7 @@ import { findPath } from '../engine/AStar.js';
 import { setupCameraControls, setupTurnUI } from './WorldSceneUI.js';
 import { spawnUnitsAndEnemies, subscribeToGameUpdates } from './WorldSceneUnits.js';
 import {
-  drawHexMap, hexToPixel, pixelToHex, roundHex, drawHex, getColorForTerrain
+  drawHexMap, hexToPixel, pixelToHex, roundHex, drawHex, getColorForTerrain, isoOffset
 } from './WorldSceneMap.js';
 
 export default class WorldScene extends Phaser.Scene {
@@ -118,28 +118,13 @@ export default class WorldScene extends Phaser.Scene {
       });
     }
 
-    // Helper: cube distance between a fractional axial and rounded axial
-    const cubeDistToCenter = (qf, rf, qr) => {
-      const xf = qf, zf = rf, yf = -xf - zf;
-      const xr = qr.q, zr = qr.r, yr = -xr - zr;
-      return Math.max(Math.abs(xf - xr), Math.abs(yf - yr), Math.abs(zf - zr));
-    };
-
-    // 🖱️ Pointer Click: Move or Select (fixed offsets & hitbox)
+    // 🖱️ Pointer Click: Move or Select
     this.input.on("pointerdown", pointer => {
       if (pointer.rightButtonDown()) return;
 
-      // account for map draw offsets before decoding
-      const localX = pointer.worldX - (this.mapOffsetX || 0);
-      const localY = pointer.worldY - (this.mapOffsetY || 0);
-
-      const approx = this.pixelToHex(localX, localY, this.hexSize);
+      const { worldX, worldY } = pointer;
+      const approx = this.pixelToHex(worldX - (this.mapOffsetX || 0), worldY - (this.mapOffsetY || 0), this.hexSize);
       const rounded = this.roundHex(approx.q, approx.r);
-
-      // Guard: ensure this click is truly inside the nearest hex (stable hitbox)
-      // If the fractional→rounded distance is large, it means we clicked between hexes.
-      if (cubeDistToCenter(approx.q, approx.r, rounded) > 0.6) return;
-
       const tile = this.mapData.find(h => h.q === rounded.q && h.r === rounded.r);
       const playerHere = this.players.find(p => p.q === rounded.q && p.r === rounded.r);
 
@@ -187,15 +172,12 @@ export default class WorldScene extends Phaser.Scene {
       }
     });
 
-    // 🧭 Pointer Move: Draw Path Preview (fixed offsets)
+    // 🧭 Pointer Move: Draw Path Preview
     this.input.on("pointermove", pointer => {
       if (!this.selectedUnit || this.isUnitMoving) return;
 
-      // account for map draw offsets before decoding
-      const localX = pointer.worldX - (this.mapOffsetX || 0);
-      const localY = pointer.worldY - (this.mapOffsetY || 0);
-
-      const approx = this.pixelToHex(localX, localY, this.hexSize);
+      const { worldX, worldY } = pointer;
+      const approx = this.pixelToHex(worldX - (this.mapOffsetX || 0), worldY - (this.mapOffsetY || 0), this.hexSize);
       const rounded = this.roundHex(approx.q, approx.r);
 
       const isBlocked = tile => !tile || tile.type === 'water' || tile.type === 'mountain';
@@ -256,6 +238,7 @@ export default class WorldScene extends Phaser.Scene {
   }
 
   debugHex(q, r) {
+    // Draw outline at local-iso coords (no mapOffset added)
     const center = this.hexToPixel(q, r, this.hexSize);
     this.debugGraphics.clear();
     this.debugGraphics.lineStyle(2, 0xff00ff, 1);
@@ -274,9 +257,47 @@ export default class WorldScene extends Phaser.Scene {
 
     console.log(`[HEX INSPECT] (${q}, ${r})`);
     console.log(`• Terrain: ${tile?.type}`);
+    console.log(`• Level (elevation): ${tile?.elevation ?? 'N/A'}`);
     console.log(`• Player Unit: ${playerHere ? "Yes" : "No"}`);
     console.log(`• Enemy Units: ${enemiesHere.length}`);
     console.log(`• Objects: ${objects.join(", ") || "None"}`);
+
+    // === NEW: neighbor levels per side 0..5 ===
+    // Build ring in local iso coords (consistent with drawHex / WorldSceneMap)
+    const w = this.hexSize * Math.sqrt(3) / 2;
+    const h = this.hexSize / 2;
+    const deltas = [
+      { dx: 0,  dy: -this.hexSize }, // side 0 (top)
+      { dx: +w, dy: -h           }, // side 1 (top-right)
+      { dx: +w, dy: +h           }, // side 2 (bottom-right)
+      { dx: 0,  dy: +this.hexSize }, // side 3 (bottom)
+      { dx: -w, dy: +h           }, // side 4 (bottom-left)
+      { dx: -w, dy: -h           }, // side 5 (top-left)
+    ];
+    const ring = deltas.map(({dx, dy}) => {
+      const off = isoOffset(dx, dy);
+      return { x: center.x + off.x, y: center.y + off.y };
+    });
+
+    const EPS = 1.75;
+    for (let e = 0; e < 6; e++) {
+      const A = ring[e];
+      const B = ring[(e + 1) % 6];
+      // Midpoint and a nudge outward from center to guarantee we hit neighbor
+      let mx = (A.x + B.x) * 0.5;
+      let my = (A.y + B.y) * 0.5;
+      const vx = mx - center.x, vy = my - center.y;
+      const len = Math.hypot(vx, vy) || 1;
+      mx += (vx / len) * EPS;
+      my += (vy / len) * EPS;
+
+      // Local coords → axial (no offsets added here)
+      const approx = this.pixelToHex(mx, my, this.hexSize);
+      const nbr = this.roundHex(approx.q, approx.r);
+      const nTile = this.mapData.find(h => h.q === nbr.q && h.r === nbr.r);
+      const levelStr = (nTile && typeof nTile.elevation === 'number') ? nTile.elevation : 'N/A';
+      console.log(`Side ${e} - adjacent to hex level ${levelStr}${nTile ? ` (terrain ${nTile.type})` : ''}`);
+    }
   }
 
   startStepMovement() {
