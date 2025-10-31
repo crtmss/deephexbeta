@@ -190,7 +190,6 @@ const n5 = neighborBySide(this.tileAt, q, r, 5);
 // ✅ bottom-right cliff (side 2) -> edge 2 (unchanged)
 if (n2) maybeCliff(2, n2);
 
-// ❌ was: if (n3) maybeCliff(4, n3);
 // ✅ bottom-left cliff is side 4, not 3 -> edge 4
 if (n3) maybeCliff(3, n3);
 
