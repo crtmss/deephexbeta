@@ -35,28 +35,20 @@ function darkenRGBInt(baseInt, factor) {
   const b = Math.round(c.b * factor);
   return Phaser.Display.Color.GetColor(r, g, b);
 }
-// Slightly darker walls for better contrast vs. pastel face
 function tintWallFromBase(baseInt, amount = 0.72) {
   return darkenRGBInt(baseInt, amount);
 }
 
-/* ---------- axial odd-r neighbors (mapped to your 0..5 sides) ----------
-   Your sides: 0=NE, 1=E, 2=SE, 3=SW, 4=W, 5=NW                                */
+/* ---------- axial odd-r neighbors (0=NE,1=E,2=SE,3=SW,4=W,5=NW) ---------- */
 function neighborBySide(tileAt, q, r, side) {
   const isOdd = (r & 1) === 1;
-
-  // even row deltas
   const evenNE = [0, -1], evenE = [+1, 0], evenSE = [0, +1];
   const evenSW = [-1, +1], evenW = [-1, 0], evenNW = [-1, -1];
-
-  // odd row deltas
   const oddNE = [+1, -1], oddE = [+1, 0], oddSE = [+1, +1];
   const oddSW = [0, +1], oddW = [-1, 0], oddNW = [0, -1];
-
   const deltas = isOdd
     ? [oddNE, oddE, oddSE, oddSW, oddW, oddNW]
     : [evenNE, evenE, evenSE, evenSW, evenW, evenNW];
-
   const [dq, dr] = deltas[side];
   return tileAt(q + dq, r + dr);
 }
@@ -111,7 +103,7 @@ function drawEdgeQuad(scene, A, B, dropPx, color, depth = 3) {
   const A2 = pt(A.x, A.y + dropPx);
   const B2 = pt(B.x, B.y + dropPx);
   const g = scene.add.graphics().setDepth(depth);
-  g.fillStyle(color, 1); // opaque
+  g.fillStyle(color, 1);
   g.beginPath();
   g.moveTo(A.x, A.y);
   g.lineTo(B.x, B.y);
@@ -127,7 +119,6 @@ export function drawHex(q, r, xIso, yIso, size, fillColor, effElevation/*, terra
   const w = size * Math.sqrt(3) / 2;
   const h = size / 2;
 
-  // vertices (flat-top)
   const d = [
     { dx: 0,  dy: -size }, // 0 top
     { dx: +w, dy: -h    }, // 1 top-right
@@ -154,8 +145,6 @@ export function drawHex(q, r, xIso, yIso, size, fillColor, effElevation/*, terra
   const dropPerLvl = LIFT_PER_LVL;
 
   const walls = [];
-
-  // Helper to draw cliff if neighbor lower
   const maybeCliff = (edgeIndex, neighborTile) => {
     const effN = effectiveElevation(neighborTile);
     const diff = effElevation - effN;
@@ -164,8 +153,6 @@ export function drawHex(q, r, xIso, yIso, size, fillColor, effElevation/*, terra
     const B = ring[(edgeIndex + 1) % 6];
     walls.push(drawEdgeQuad(this, A, B, diff * dropPerLvl, wallColor, 3));
   };
-
-  // Helper to draw micro-skirt (thin) for other edges if neighbor lower
   const maybeSkirt = (edgeIndex, neighborTile) => {
     const effN = effectiveElevation(neighborTile);
     const diff = effElevation - effN;
@@ -176,8 +163,7 @@ export function drawHex(q, r, xIso, yIso, size, fillColor, effElevation/*, terra
     walls.push(drawEdgeQuad(this, A, B, skirt, wallColor, 3));
   };
 
-  // === Neighbors by your side numbering ===
-  // sides: 0=NE, 1=E, 2=SE, 3=SW, 4=W, 5=NW
+  // Neighbors by your side numbering
   const n0 = neighborBySide(this.tileAt, q, r, 0);
   const n1 = neighborBySide(this.tileAt, q, r, 1);
   const n2 = neighborBySide(this.tileAt, q, r, 2);
@@ -185,19 +171,17 @@ export function drawHex(q, r, xIso, yIso, size, fillColor, effElevation/*, terra
   const n4 = neighborBySide(this.tileAt, q, r, 4);
   const n5 = neighborBySide(this.tileAt, q, r, 5);
 
-  // === Render REQUIRED cliffs on your screen-facing sides ===
-  // bottom-right cliff (side 2) -> edge 2
-  if (n2) maybeCliff(2, n2);
-  // bottom edge per your working setup (side 3) -> edge 3
-  if (n3) maybeCliff(3, n3);
+  // Required screen-facing cliffs (your working mapping)
+  if (n2) maybeCliff(2, n2); // bottom-right
+  if (n3) maybeCliff(3, n3); // bottom edge per your fix
 
-  // (optional thin skirts to seal AA seams)
+  // Optional skirts to seal AA seams
   if (n0) maybeSkirt(0, n0);
   if (n1) maybeSkirt(1, n1);
   if (n4) maybeSkirt(4, n4);
   if (n5) maybeSkirt(5, n5);
 
-  // thin rim on top to cover any remaining AA
+  // rim
   const rim = this.add.graphics().setDepth(4);
   const rimColor = darkenRGBInt(fillColor, 0.75);
   rim.lineStyle(1.6, rimColor, 1);
@@ -211,14 +195,14 @@ export function drawHex(q, r, xIso, yIso, size, fillColor, effElevation/*, terra
   return { face, rim, ring };
 }
 
-/* ---------- elevation tint (clear level steps) ---------- */
+/* ---------- elevation tint (stronger levels) ---------- */
 function getFillForTile(tile) {
   const baseColor = getColorForTerrain(tile.type);
   if (tile.type === 'water') return baseColor;
 
-  // Stronger, discrete level tints toward white to make elevation easy to read.
-  //    level:   0     1     2     3     4
-  const LEVEL_TINTS = [0.00, 0.12, 0.22, 0.32, 0.42];
+  // Much clearer per-level stepping toward white
+  //    0     1     2     3     4
+  const LEVEL_TINTS = [0.00, 0.18, 0.34, 0.50, 0.66];
 
   const lvl = Math.max(0, Math.min(4, (typeof tile.elevation === 'number' ? tile.elevation : 0)));
   const t   = LEVEL_TINTS[lvl];
@@ -297,9 +281,9 @@ export function drawHexMap() {
 
     const fillColor = getFillForTile(hex);
     const { face, rim } = drawHex.call(this, q, r, x, y, this.hexSize, fillColor, eff, hex.type);
-    this.mapContainer.add(face);                   // face
-    if (rim._walls) rim._walls.forEach(w => this.mapContainer.add(w)); // cliffs/skirts
-    this.mapContainer.add(rim);                    // rim on top
+    this.mapContainer.add(face);
+    if (rim._walls) rim._walls.forEach(w => this.mapContainer.add(w));
+    this.mapContainer.add(rim);
   }
 
   drawLocationsAndRoads.call(this);
@@ -310,7 +294,7 @@ export function drawHexMap() {
     const worldY = pointer.worldY - this.mapOffsetY;
 
     const frac = pixelToHex(worldX, worldY, this.hexSize);
-    const axial = roundHex(frac.q, frac.r);
+    the axial = roundHex(frac.q, frac.r);
     const tile = this.tileAt(axial.q, axial.r);
     if (!tile) {
       if (this.hoverOutline) { this.hoverOutline.destroy(); this.hoverOutline = null; }
