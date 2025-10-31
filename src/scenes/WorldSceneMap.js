@@ -92,21 +92,155 @@ export function roundHex(qf, rf) {
   return { q: rx, r: rz };
 }
 
-/* ---------- generation ---------- */
+/* ---------- tiny deterministic RNG (seeded from string) ---------- */
+function hashStr32(s) {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+function xorshift32(seed) {
+  let x = (seed || 1) >>> 0;
+  return () => {
+    x ^= x << 13; x >>>= 0;
+    x ^= x >> 17; x >>>= 0;
+    x ^= x << 5;  x >>>= 0;
+    return (x >>> 0) / 4294967296;
+  };
+}
+
+/* ---------- generation with BIOMES (on top of geography) ---------- */
 export function generateHexMap(width, height, seed) {
+  // base map (elevation & initial terrain) from engine
   const hexMap = new HexMap(width, height, seed);
   const raw = hexMap.getMap();
+
+  // Simple coast trim (keep your existing geography; you may have a richer pass elsewhere)
   const left = Phaser.Math.Between(1, 4);
   const right = Phaser.Math.Between(1, 4);
   const top = Phaser.Math.Between(1, 4);
   const bottom = Phaser.Math.Between(1, 4);
-  return raw.map(h => {
+
+  const map = raw.map(h => {
     const { q, r } = h;
     if (q < left || q >= width - right || r < top || r >= height - bottom) {
       return { ...h, type: 'water' };
     }
-    return h;
+    return { ...h };
   });
+
+  // ----- Pick biome deterministically from seed -----
+  const rng = xorshift32(hashStr32(String(seed ?? 'defaultseed')));
+  const roll = rng(); // [0,1)
+  // 5 biomes (equal weight by default; tweak if desired)
+  const BIOME =
+    roll < 0.20 ? 'icy' :
+    roll < 0.40 ? 'volcanic' :
+    roll < 0.60 ? 'desert' :
+    roll < 0.80 ? 'temperate' :
+                  'swamp';
+
+  // ----- Helper to draw from weighted table -----
+  function pickWeighted(weights /* [{k: 'grassland', w: 0.5}, ...] */) {
+    let sum = 0;
+    for (const it of weights) sum += it.w;
+    let r = rng() * sum;
+    for (const it of weights) {
+      if ((r -= it.w) <= 0) return it.k;
+    }
+    return weights[weights.length - 1].k;
+  }
+
+  // ----- Apply biome mix to NON-water, NON-peak tiles -----
+  // We always keep "mountains present" by forcing elevation 4 to mountain.
+  let mountainCount = 0;
+  for (const t of map) {
+    if (t.type === 'water') continue;
+    const elev = typeof t.elevation === 'number' ? t.elevation : 0;
+
+    if (elev === 4) {
+      t.type = 'mountain';
+      mountainCount++;
+      continue;
+    }
+
+    // Re-type by biome (don’t touch water; peaks handled above)
+    switch (BIOME) {
+      case 'icy': {
+        // 60–70% snow/ice, rest grassland (plus mountains from elevation)
+        const coldShare = 0.60 + rng() * 0.10; // 0.60..0.70
+        const isCold = rng() < coldShare;
+        if (isCold) {
+          t.type = (rng() < 0.55) ? 'snow' : 'ice';
+        } else {
+          t.type = 'grassland';
+        }
+        break;
+      }
+      case 'volcanic': {
+        // ~40% volcano_ash; rest sand/grassland/mud
+        const volcanic = rng() < 0.40;
+        if (volcanic) {
+          t.type = 'volcano_ash';
+        } else {
+          t.type = pickWeighted([
+            { k: 'sand',      w: 0.25 },
+            { k: 'grassland', w: 0.45 },
+            { k: 'mud',       w: 0.30 },
+          ]);
+        }
+        break;
+      }
+      case 'desert': {
+        // ≥40% sand; rest grassland/mud/swamp small
+        const sandy = rng() < 0.40;
+        if (sandy) {
+          t.type = 'sand';
+        } else {
+          t.type = pickWeighted([
+            { k: 'grassland', w: 0.50 },
+            { k: 'mud',       w: 0.35 },
+            { k: 'swamp',     w: 0.15 },
+          ]);
+        }
+        break;
+      }
+      case 'temperate': {
+        // classic mix without ice/snow/volcanic
+        t.type = pickWeighted([
+          { k: 'grassland', w: 0.50 },
+          { k: 'sand',      w: 0.15 },
+          { k: 'mud',       w: 0.20 },
+          { k: 'swamp',     w: 0.15 },
+        ]);
+        break;
+      }
+      case 'swamp': {
+        // mostly mud & grassland, no snow/ice/volcanic
+        t.type = pickWeighted([
+          { k: 'mud',       w: 0.50 },
+          { k: 'grassland', w: 0.35 },
+          { k: 'swamp',     w: 0.15 },
+        ]);
+        break;
+      }
+    }
+  }
+
+  // ----- Guarantee at least a few mountains even if elevation pass was flat -----
+  if (mountainCount === 0) {
+    const candidates = map.filter(t => t.type !== 'water');
+    // pick top 10% by elevation, mark a handful as mountains
+    candidates.sort((a, b) => (b.elevation ?? 0) - (a.elevation ?? 0));
+    const want = Math.max(2, Math.floor(candidates.length * 0.02));
+    for (let i = 0; i < Math.min(want, candidates.length); i++) {
+      candidates[i].type = 'mountain';
+    }
+  }
+
+  return map;
 }
 
 /* ---------- wall (cliff) quad ---------- */
@@ -189,10 +323,8 @@ export function drawHex(q, r, xIso, yIso, size, fillColor, effElevation/*, terra
   const n4 = neighborBySide(this.tileAt, q, r, 4);
   const n5 = neighborBySide(this.tileAt, q, r, 5);
 
-  // === Render REQUIRED cliffs on your screen-facing sides ===
-  // Bottom-right cliff -> side 2 (edge 2)
+  // Screen-facing edges: 2 (SE) & 3 (SW bottom)
   if (n2) maybeCliff(2, n2);
-  // Bottom side worked in your tests -> side 3 (edge 3)
   if (n3) maybeCliff(3, n3);
 
   // (optional thin skirts to seal AA seams elsewhere)
