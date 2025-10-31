@@ -88,22 +88,32 @@ function neighbors(q, r, map) {
 }
 
 function markWater(tile) {
-  Object.assign(tile, { type: 'water', ...terrainTypes.water, elevation: 0, hasObject: false,
-    hasForest:false, hasRuin:false, hasCrashSite:false, hasVehicle:false, hasRoad:false });
+  Object.assign(tile, {
+    type: 'water', ...terrainTypes.water, elevation: 0, hasObject: false,
+    hasForest:false, hasRuin:false, hasCrashSite:false, hasVehicle:false, hasRoad:false
+  });
 }
 
-/* ---------- GEOGRAPHY PRESETS (seeded) ---------- */
+/* ===========================================================
+   GEOGRAPHY PRESETS (seeded)
+   - Removed preset 1 (“Normal round island”)
+   - Reduced water carving by 15% across presets
+   =========================================================== */
 function applyGeography(map, cols, rows, seedStr, rand) {
-  // Feature pick (1..6)
-  const pickF = Math.floor(rand() * 6) + 1;
+  // pick among presets 2..6 only
+  const pickF = 2 + Math.floor(rand() * 5); // 2..6
+
+  // reduce extra water carving by 15%
+  const WATER_SCALE = 0.85;
 
   // Helper: carve by mask threshold until target % reached.
   function carveByMask(targetPctMin, targetPctMax, maskFn) {
     const total = cols * rows;
-    const target = Math.round(total * (targetPctMin + rand() * (targetPctMax - targetPctMin)));
-    let carved = 0;
+    const baseTarget = Math.round(
+      total * (targetPctMin + rand() * (targetPctMax - targetPctMin))
+    );
+    const target = Math.round(baseTarget * WATER_SCALE);
 
-    // build candidates sorted by mask descending (higher first ⇒ more likely water)
     const candidates = [];
     for (let r = 0; r < rows; r++) {
       for (let q = 0; q < cols; q++) {
@@ -115,6 +125,7 @@ function applyGeography(map, cols, rows, seedStr, rand) {
     }
     candidates.sort((a, b) => b.m - a.m);
 
+    let carved = 0;
     for (let i = 0; i < candidates.length && carved < target; i++) {
       const { q, r } = candidates[i];
       const t = map[r][q];
@@ -130,26 +141,16 @@ function applyGeography(map, cols, rows, seedStr, rand) {
   const fbm = (x, y, f = 1.0) => __hx_fbm2D(x * f + 41.2, y * f - 17.9, seedStr, 4, 2.0, 0.5);
 
   switch (pickF) {
-    // 1) Normal round island (light touch)
-    case 1: {
-      carveByMask(0.05, 0.10, (q, r) => {
-        const X = nx(q), Y = ny(r);
-        const d = Math.hypot(X, Y);
-        return 0.6 * d + 0.4 * fbm(X, Y, 2.2);
-      });
-      break;
-    }
-    // 2) Big lagoon (central negative mask)
+    // 2) Big lagoon (central negative mask) — 15–35% (scaled by WATER_SCALE)
     case 2: {
       carveByMask(0.15, 0.35, (q, r) => {
         const X = nx(q), Y = ny(r);
-        // squashed ellipse + noise
         const r2 = (X * X) / 0.5 + (Y * Y) / 0.25;
         return 1.2 - r2 + 0.4 * fbm(X, Y, 3.0);
       });
       break;
     }
-    // 3) Big lake at center
+    // 3) Big lake at center — 10–20%
     case 3: {
       carveByMask(0.10, 0.20, (q, r) => {
         const X = nx(q), Y = ny(r);
@@ -158,7 +159,7 @@ function applyGeography(map, cols, rows, seedStr, rand) {
       });
       break;
     }
-    // 4) 2-3 small bays from edges
+    // 4) 2–3 small bays from edges — 20–30%
     case 4: {
       const bays = 2 + Math.floor(rand() * 2); // 2..3
       const bayParams = [];
@@ -188,18 +189,16 @@ function applyGeography(map, cols, rows, seedStr, rand) {
       });
       break;
     }
-    // 5) Scattered terrain separated by "rivers"
+    // 5) Scattered terrain separated by “rivers” — 15–30%
     case 5: {
       carveByMask(0.15, 0.30, (q, r) => {
         const X = nx(q), Y = ny(r);
-        // sinuous bands
         const bands = 0.5 + 0.5 * Math.sin((X * 4.0 + Y * 3.0) + 6.28 * fbm(X, Y, 1.2));
-        // higher means more likely to water
         return bands * 0.8 + 0.4 * fbm(X, Y, 2.8);
       });
       break;
     }
-    // 6) 2–3 big islands separated by water channels
+    // 6) 2–3 big islands separated by water channels — 15–35%
     case 6: {
       const islands = 2 + Math.floor(rand() * 2);
       const centers = [];
@@ -208,13 +207,11 @@ function applyGeography(map, cols, rows, seedStr, rand) {
       }
       carveByMask(0.15, 0.35, (q, r) => {
         const X = nx(q), Y = ny(r);
-        // distance to nearest center
         let dmin = 10;
         for (const c of centers) {
           const d = Math.hypot(X - c.x, Y - c.y);
           if (d < dmin) dmin = d;
         }
-        // invert: far from any center → water
         return dmin + 0.35 * fbm(X, Y, 2.3);
       });
       break;
@@ -232,10 +229,11 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
     }))
   );
 
-  // Base island ring falloff
+  // ==== Base island mask: +15% land (≈ radius * 1.075) ====
+  const LAND_RADIUS_BOOST = 1.075; // sqrt(1.15) ≈ 1.073
   const centerQ = cols / 2;
   const centerR = rows / 2;
-  const maxRadius = Math.min(centerQ, centerR) - 2;
+  const maxRadius = (Math.min(centerQ, centerR) - 2) * LAND_RADIUS_BOOST;
 
   for (let r = 0; r < rows; r++) {
     for (let q = 0; q < cols; q++) {
@@ -250,12 +248,10 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
     }
   }
 
-  // Seeded geography presets (carving extra water)
+  // Seeded geography presets (carving extra water) — reduced by 15%
   applyGeography(map, cols, rows, seedStr, rand);
 
   // Biomes
-  const flatMap = map.flat();
-
   function placeBiome(type, minSize, maxSize, instances) {
     for (let i = 0; i < instances; i++) {
       let size = minSize + Math.floor(rand() * (maxSize - minSize + 1));
@@ -337,7 +333,7 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
   Phaser.Utils.Array.Shuffle(vehicleCandidates);
   vehicleCandidates.slice(0, Phaser.Math.Between(2, 3)).forEach(t => markObj(t, 'hasVehicle'));
 
-  // Roads (restricted)
+  // Roads
   const roadTiles = flat.filter(t => !['water', 'mountain'].includes(t.type) && !t.hasObject);
   Phaser.Utils.Array.Shuffle(roadTiles);
   const roadPaths = Phaser.Math.Between(2, 3);
@@ -389,6 +385,7 @@ export default class HexMap {
   generateMap() {
     const rngSeed = cyrb128(this.seed);
     const rand = sfc32(...rngSeed);
+    // rows = height, cols = width
     this.map = generateMap(this.height, this.width, this.seed, rand);
   }
 
