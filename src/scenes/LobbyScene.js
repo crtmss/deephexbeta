@@ -43,12 +43,30 @@ export default class LobbyScene extends Phaser.Scene {
         codeInput.node.maxLength = 6;
         codeInput.node.style.textAlign = 'center';
         codeInput.node.style.width = '100px';
+        codeInput.node.inputMode = 'numeric';
+        codeInput.node.pattern = '\\d{6}';
 
-        // Random 6-digit seed suggestion
-        const randomSeed = String(Math.floor(Math.random() * 1000000)).padStart(6, '0');
+        // 🎲 Random Seed Button
+        const randomBtn = this.add.dom(760, 250, 'button', {
+            backgroundColor: '#444',
+            color: '#fff',
+            fontSize: '14px',
+            padding: '6px 10px',
+            border: 'none',
+            cursor: 'pointer',
+            borderRadius: '6px',
+            marginLeft: '8px'
+        }, '🎲 Random');
+        randomBtn.setOrigin(0.5);
+        randomBtn.setDepth(1000);
+
+        const randSeed6 = () => String(Math.floor(Math.random() * 1000000)).padStart(6, '0');
+
+        // Random 6-digit seed suggestion on load
+        const randomSeed = randSeed6();
         codeInput.node.value = randomSeed;
 
-        // enforce numeric only
+        // enforce numeric only + live preview update
         codeInput.node.addEventListener('input', () => {
             let value = codeInput.node.value.replace(/\D/g, '');
             if (value.length > 6) value = value.slice(0, 6);
@@ -61,6 +79,14 @@ export default class LobbyScene extends Phaser.Scene {
             if (!value) value = '000000';
             codeInput.node.value = value.padStart(6, '0');
             this.updatePreview(codeInput.node.value);
+        });
+
+        // Random button click: set a new seed and refresh preview
+        randomBtn.addListener('click');
+        randomBtn.on('click', () => {
+            const s = randSeed6();
+            codeInput.node.value = s;
+            this.updatePreview(s);
         });
 
         // 🗺️ Create preview area
@@ -169,11 +195,10 @@ export default class LobbyScene extends Phaser.Scene {
         const offsetY = -w / 1.2;
 
         for (const tile of mapData) {
-            const { q, r, type, elevation } = tile;
+            const { q, r, type /*, elevation*/ } = tile;
             const { x, y } = hexToPixel(q, r, size);
-            const color = getColorForTerrain
-                ? getColorForTerrain(type, elevation)
-                : 0x999999;
+            // Keep palette consistent with in-game terrain render
+            const color = getColorForTerrain ? getColorForTerrain(type) : 0x999999;
 
             this.drawHex(this.previewGraphics, x + offsetX, y + offsetY, size, color);
         }
