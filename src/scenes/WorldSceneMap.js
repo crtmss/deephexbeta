@@ -1,3 +1,4 @@
+// deephexbeta/src/scenes/WorldSceneMap.js
 import HexMap from '../engine/HexMap.js';
 import { drawLocationsAndRoads } from './WorldSceneMapLocations.js';
 
@@ -36,6 +37,27 @@ function darkenRGBInt(baseInt, factor) {
 }
 function tintWallFromBase(baseInt, amount = 0.80) {
   return darkenRGBInt(baseInt, amount);
+}
+
+/* ---------- axial odd-r neighbors (mapped to your 0..5 sides) ----------
+   Your sides: 0=NE, 1=E, 2=SE, 3=SW, 4=W, 5=NW                                */
+function neighborBySide(tileAt, q, r, side) {
+  const isOdd = (r & 1) === 1;
+
+  // even row deltas
+  const evenNE = [0, -1], evenE = [+1, 0], evenSE = [0, +1];
+  const evenSW = [-1, +1], evenW = [-1, 0], evenNW = [-1, -1];
+
+  // odd row deltas
+  const oddNE = [+1, -1], oddE = [+1, 0], oddSE = [+1, +1];
+  const oddSW = [0, +1], oddW = [-1, 0], oddNW = [0, -1];
+
+  const deltas = isOdd
+    ? [oddNE, oddE, oddSE, oddSW, oddW, oddNW]
+    : [evenNE, evenE, evenSE, evenSW, evenW, evenNW];
+
+  const [dq, dr] = deltas[side];
+  return tileAt(q + dq, r + dr);
 }
 
 /* ---------- projection utilities ---------- */
@@ -83,35 +105,7 @@ export function generateHexMap(width, height, seed) {
   });
 }
 
-/* ---------- geometry-based neighbor lookup (with outward push) ---------- */
-function neighborAcrossEdge(scene, ring, edgeIndex, centerX, centerY) {
-  const A = ring[edgeIndex];
-  const B = ring[(edgeIndex + 1) % 6];
-
-  // Edge midpoint (iso/screen coords)
-  let mx = (A.x + B.x) * 0.5;
-  let my = (A.y + B.y) * 0.5;
-
-  // Push a tiny epsilon outward from the center across this edge
-  // so rounding never snaps back to the same tile.
-  const vx = mx - centerX;
-  const vy = my - centerY;
-  const len = Math.hypot(vx, vy) || 1;
-  const nx = vx / len;
-  const ny = vy / len;
-  const EPS = 1.75;
-  mx += nx * EPS;
-  my += ny * EPS;
-
-  // Convert to local (remove map offsets) before pixel→hex
-  const localX = mx - (scene.mapOffsetX || 0);
-  const localY = my - (scene.mapOffsetY || 0);
-  const frac = scene.pixelToHex(localX, localY, scene.hexSize);
-  const rounded = scene.roundHex(frac.q, frac.r);
-  return scene.tileAt?.(rounded.q, rounded.r);
-}
-
-/* ---------- walls (cliffs & micro-skirts) ---------- */
+/* ---------- wall (cliff) quad ---------- */
 function drawEdgeQuad(scene, A, B, dropPx, color, depth = 3) {
   const A2 = pt(A.x, A.y + dropPx);
   const B2 = pt(B.x, B.y + dropPx);
@@ -127,22 +121,20 @@ function drawEdgeQuad(scene, A, B, dropPx, color, depth = 3) {
   return g;
 }
 
-/* ---------- face + frame ---------- */
-export function drawHex(q, r, xIso, yIso, size, fillColor, effElevation, terrain) {
+/* ---------- face + cliffs ---------- */
+export function drawHex(q, r, xIso, yIso, size, fillColor, effElevation/*, terrain*/ ) {
   const w = size * Math.sqrt(3) / 2;
   const h = size / 2;
 
-  // Ring indices (0..5) — clockwise from top:
-  // 0 top, 1 top-right, 2 bottom-right, 3 bottom, 4 bottom-left, 5 top-left
+  // vertices (flat-top)
   const d = [
-    { dx: 0,  dy: -size }, // 0
-    { dx: +w, dy: -h    }, // 1
-    { dx: +w, dy: +h    }, // 2  (bottom-right)
-    { dx: 0,  dy: +size }, // 3
-    { dx: -w, dy: +h    }, // 4  (bottom-left)
-    { dx: -w, dy: -h    }, // 5
+    { dx: 0,  dy: -size }, // 0 top
+    { dx: +w, dy: -h    }, // 1 top-right
+    { dx: +w, dy: +h    }, // 2 bottom-right
+    { dx: 0,  dy: +size }, // 3 bottom
+    { dx: -w, dy: +h    }, // 4 bottom-left
+    { dx: -w, dy: -h    }, // 5 top-left
   ];
-
   const ring = d.map(({dx,dy}) => {
     const off = isoOffset(dx, dy);
     return pt(xIso + off.x, yIso + off.y);
@@ -157,30 +149,60 @@ export function drawHex(q, r, xIso, yIso, size, fillColor, effElevation, terrain
   face.closePath();
   face.fillPath();
 
-  // Full opaque cliffs ONLY on ring edges 2 & 4 (your sides 2 & 3).
-  const dropPerLvl = LIFT_PER_LVL;
   const wallColor  = tintWallFromBase(fillColor, 0.80);
+  const dropPerLvl = LIFT_PER_LVL;
 
   const walls = [];
-  for (let e = 0; e < 6; e++) {
-    const n = neighborAcrossEdge(this, ring, e, xIso, yIso);
-    if (!n) continue;
-    const effN = effectiveElevation(n);
+
+  // Helper to draw cliff if neighbor lower
+  const maybeCliff = (edgeIndex, neighborTile) => {
+    const effN = effectiveElevation(neighborTile);
     const diff = effElevation - effN;
-    if (diff <= 0) continue;
+    if (diff <= 0) return;
+    const A = ring[edgeIndex];
+    const B = ring[(edgeIndex + 1) % 6];
+    // full opaque cliff
+    walls.push(drawEdgeQuad(this, A, B, diff * dropPerLvl, wallColor, 3));
+  };
 
-    const A = ring[e];
-    const B = ring[(e + 1) % 6];
+  // Helper to draw micro-skirt (thin) for other edges if neighbor lower
+  const maybeSkirt = (edgeIndex, neighborTile) => {
+    const effN = effectiveElevation(neighborTile);
+    const diff = effElevation - effN;
+    if (diff <= 0) return;
+    const A = ring[edgeIndex];
+    const B = ring[(edgeIndex + 1) % 6];
+    const skirt = Math.min(2, Math.max(1.2, diff * 0.8));
+    walls.push(drawEdgeQuad(this, A, B, skirt, wallColor, 3));
+  };
 
-    if (e === 2 || e === 4) {
-      // full opaque cliff (bottom-right & bottom-left)
-      walls.push(drawEdgeQuad(this, A, B, diff * dropPerLvl, wallColor, 3));
-    } else {
-      // micro-skirt to seal AA seams on non-facing edges
-      const skirt = Math.min(2, Math.max(1.2, diff * 0.8));
-      walls.push(drawEdgeQuad(this, A, B, skirt, wallColor, 3));
-    }
-  }
+  // === Neighbors by your side numbering ===
+  // sides: 0=NE, 1=E, 2=SE, 3=SW, 4=W, 5=NW
+  const n0 = neighborBySide(this.tileAt, q, r, 0);
+  const n1 = neighborBySide(this.tileAt, q, r, 1);
+  const n2 = neighborBySide(this.tileAt, q, r, 2);
+  const n3 = neighborBySide(this.tileAt, q, r, 3);
+  const n4 = neighborBySide(this.tileAt, q, r, 4);
+  const n5 = neighborBySide(this.tileAt, q, r, 5);
+
+  // Map your sides -> ring edge indices
+  // 0 (NE) -> edge 0, 1 (E) -> 1, 2 (SE) -> 2,
+  // 3 (SW) -> **4**, 4 (W) -> 4? (W vertical is edge 4? No: W vertical is edge 4? Actually:
+  // Edges: 0:top-TR, 1:TR-BR (right), 2:BR-bottom, 3:bottom-BL (bottom), 4:BL-TL (left-diag), 5:TL-top (left-top)
+  // For skirts we’ll just use the same mapping array below:
+  const sideToEdge = [0, 1, 2, 4, 4, 5];
+
+  // === Render REQUIRED cliffs on your screen-facing sides (2 and 3) ===
+  // side 2 (SE) => edge 2
+  if (n2) maybeCliff(2, n2);
+  // side 3 (SW) => edge 4
+  if (n3) maybeCliff(4, n3);
+
+  // === Optional: thin skirts on other edges if neighbor lower (to seal seams) ===
+  if (n0) maybeSkirt(0, n0);
+  if (n1) maybeSkirt(1, n1);
+  if (n4) maybeSkirt(4, n4);
+  if (n5) maybeSkirt(5, n5);
 
   // thin rim on top to cover any remaining AA
   const rim = this.add.graphics().setDepth(4);
@@ -261,7 +283,7 @@ export function drawHexMap() {
     const ea = effectiveElevation(a);
     const eb = effectiveElevation(b);
     if (ea !== eb) return ea - eb;
-    const da = (a.q + a.r) - (b.q + b.r); // fixed earlier typo here
+    const da = (a.q + a.r) - (b.q + b.r);
     if (da !== 0) return da;
     if (a.r !== b.r) return a.r - b.r;
     return a.q - b.q;
