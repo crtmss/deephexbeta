@@ -1,348 +1,395 @@
-// deephexbeta/src/scenes/WorldSceneMap.js
-import HexMap from '../engine/HexMap.js';
-import { drawLocationsAndRoads } from './WorldSceneMapLocations.js';
+// deephexbeta/src/engine/HexMap.js
+import { cyrb128, sfc32 } from './PRNG.js';
 
-export const LIFT_PER_LVL = 4;
-
-const ISO_SHEAR  = 0.15;
-const ISO_YSCALE = 0.95;
-
-const pt = (x, y) => ({ x, y });
-
-/* ---------- terrain palette (pastel) ---------- */
-export function getColorForTerrain(terrain) {
-  switch (terrain) {
-    case 'grassland': return 0x8bd17c; // #8BD17C
-    case 'sand':      return 0xF6E7A1; // #F6E7A1
-    case 'mud':       return 0xB48A78; // #B48A78
-    case 'swamp':     return 0x8AA18A; // #8AA18A
-    case 'mountain':  return 0xC9C9C9; // #C9C9C9
-    case 'water':     return 0x7CC4FF; // #7CC4FF
-    default:          return 0xA7A7A7; // neutral gray
-  }
-}
-
-/* ---------- elevation helpers ---------- */
-export function effectiveElevation(tile) {
-  if (!tile || tile.type === 'water') return 0;
-  const e = typeof tile.elevation === 'number' ? tile.elevation : 0;
-  return Math.max(0, e - 1);
-}
-function darkenRGBInt(baseInt, factor) {
-  const c = Phaser.Display.Color.IntegerToColor(baseInt);
-  const r = Math.round(c.r * factor);
-  const g = Math.round(c.g * factor);
-  const b = Math.round(c.b * factor);
-  return Phaser.Display.Color.GetColor(r, g, b);
-}
-// slightly darker walls for better contrast vs. pastel face
-function tintWallFromBase(baseInt, amount = 0.72) {
-  return darkenRGBInt(baseInt, amount);
-}
-
-/* ---------- axial odd-r neighbors (0=NE,1=E,2=SE,3=SW,4=W,5=NW) ---------- */
-function neighborBySide(tileAt, q, r, side) {
-  const isOdd = (r & 1) === 1;
-
-  // even row deltas
-  const evenNE = [0, -1], evenE = [+1, 0], evenSE = [0, +1];
-  const evenSW = [-1, +1], evenW = [-1, 0], evenNW = [-1, -1];
-
-  // odd row deltas
-  const oddNE = [+1, -1], oddE = [+1, 0], oddSE = [+1, +1];
-  const oddSW = [0, +1], oddW = [-1, 0], oddNW = [0, -1];
-
-  const deltas = isOdd
-    ? [oddNE, oddE, oddSE, oddSW, oddW, oddNW]
-    : [evenNE, evenE, evenSE, evenSW, evenW, evenNW];
-
-  const [dq, dr] = deltas[side];
-  return tileAt(q + dq, r + dr);
-}
-
-/* ---------- projection utilities ---------- */
-export function hexToPixel(q, r, size) {
-  const x = size * Math.sqrt(3) * (q + 0.5 * (r & 1));
-  const y = size * 1.5 * r;
-  const xIso = x - y * ISO_SHEAR;
-  const yIso = y * ISO_YSCALE;
-  return { x: xIso, y: yIso };
-}
-export function isoOffset(x, y) {
-  return { x: x - y * ISO_SHEAR, y: y * ISO_YSCALE };
-}
-export function pixelToHex(screenX, screenY, size) {
-  const y0 = screenY / ISO_YSCALE;
-  const x0 = screenX + y0 * ISO_SHEAR;
-  const r = y0 / (size * 1.5);
-  const q = (x0 / (Math.sqrt(3) * size)) - 0.5 * (Math.floor(r) & 1);
-  return { q, r };
-}
-export function roundHex(qf, rf) {
-  const x = qf, z = rf, y = -x - z;
-  let rx = Math.round(x), ry = Math.round(y), rz = Math.round(z);
-  const dx = Math.abs(rx - x), dy = Math.abs(ry - y), dz = Math.abs(rz - z);
-  if (dx > dy && dx > dz) rx = -ry - rz;
-  else if (dy > dz)       ry = -rx - rz;
-  else                    rz = -rx - ry;
-  return { q: rx, r: rz };
-}
-
-/* ---------- generation ---------- */
-export function generateHexMap(width, height, seed) {
-  const hexMap = new HexMap(width, height, seed);
-  const raw = hexMap.getMap();
-  const left = Phaser.Math.Between(1, 4);
-  const right = Phaser.Math.Between(1, 4);
-  const top = Phaser.Math.Between(1, 4);
-  const bottom = Phaser.Math.Between(1, 4);
-  return raw.map(h => {
-    const { q, r } = h;
-    if (q < left || q >= width - right || r < top || r >= height - bottom) {
-      return { ...h, type: 'water' };
-    }
-    return h;
-  });
-}
-
-/* ---------- wall (cliff) quad ---------- */
-function drawEdgeQuad(scene, A, B, dropPx, color, depth = 3) {
-  const A2 = pt(A.x, A.y + dropPx);
-  const B2 = pt(B.x, B.y + dropPx);
-  const g = scene.add.graphics().setDepth(depth);
-  g.fillStyle(color, 1); // opaque
-  g.beginPath();
-  g.moveTo(A.x, A.y);
-  g.lineTo(B.x, B.y);
-  g.lineTo(B2.x, B2.y);
-  g.lineTo(A2.x, A2.y);
-  g.closePath();
-  g.fillPath();
-  return g;
-}
-
-/* ---------- face + cliffs ---------- */
-export function drawHex(q, r, xIso, yIso, size, fillColor, effElevation/*, terrain*/ ) {
-  const w = size * Math.sqrt(3) / 2;
-  const h = size / 2;
-
-  // vertices (flat-top)
-  const d = [
-    { dx: 0,  dy: -size }, // 0 top
-    { dx: +w, dy: -h    }, // 1 top-right
-    { dx: +w, dy: +h    }, // 2 bottom-right
-    { dx: 0,  dy: +size }, // 3 bottom
-    { dx: -w, dy: +h    }, // 4 bottom-left
-    { dx: -w, dy: -h    }, // 5 top-left
-  ];
-  const ring = d.map(({dx,dy}) => {
-    const off = isoOffset(dx, dy);
-    return pt(xIso + off.x, yIso + off.y);
-  });
-
-  // face
-  const face = this.add.graphics().setDepth(2);
-  face.fillStyle(fillColor, 1);
-  face.beginPath();
-  face.moveTo(ring[0].x, ring[0].y);
-  for (let i = 1; i < 6; i++) face.lineTo(ring[i].x, ring[i].y);
-  face.closePath();
-  face.fillPath();
-
-  const wallColor  = tintWallFromBase(fillColor, 0.72);
-  const dropPerLvl = LIFT_PER_LVL;
-
-  const walls = [];
-
-  // Helper to draw cliff if neighbor lower
-  const maybeCliff = (edgeIndex, neighborTile) => {
-    const effN = effectiveElevation(neighborTile);
-    const diff = effElevation - effN;
-    if (diff <= 0) return;
-    const A = ring[edgeIndex];
-    const B = ring[(edgeIndex + 1) % 6];
-    // full opaque cliff
-    walls.push(drawEdgeQuad(this, A, B, diff * dropPerLvl, wallColor, 3));
-  };
-
-  // Helper to draw micro-skirt (thin) for other edges if neighbor lower
-  const maybeSkirt = (edgeIndex, neighborTile) => {
-    const effN = effectiveElevation(neighborTile);
-    const diff = effElevation - effN;
-    if (diff <= 0) return;
-    const A = ring[edgeIndex];
-    const B = ring[(edgeIndex + 1) % 6];
-    const skirt = Math.min(2, Math.max(1.2, diff * 0.8));
-    walls.push(drawEdgeQuad(this, A, B, skirt, wallColor, 3));
-  };
-
-  // === Neighbors by your side numbering ===
-  // sides: 0=NE, 1=E, 2=SE, 3=SW, 4=W, 5=NW
-  const n0 = neighborBySide(this.tileAt, q, r, 0);
-  const n1 = neighborBySide(this.tileAt, q, r, 1);
-  const n2 = neighborBySide(this.tileAt, q, r, 2);
-  const n3 = neighborBySide(this.tileAt, q, r, 3);
-  const n4 = neighborBySide(this.tileAt, q, r, 4);
-  const n5 = neighborBySide(this.tileAt, q, r, 5);
-
-  // === Render REQUIRED cliffs on your screen-facing sides ===
-  // ✅ bottom-right cliff (side 2) -> edge 2
-  if (n2) maybeCliff(2, n2);
-
-  // ✅ bottom edge per your working setup (side 3) -> edge 3
-  if (n3) maybeCliff(3, n3);
-
-  // (optional thin skirts to seal AA seams)
-  if (n0) maybeSkirt(0, n0);
-  if (n1) maybeSkirt(1, n1);
-  if (n4) maybeSkirt(4, n4);
-  if (n5) maybeSkirt(5, n5);
-
-  // thin rim on top to cover any remaining AA
-  const rim = this.add.graphics().setDepth(4);
-  const rimColor = darkenRGBInt(fillColor, 0.75);
-  rim.lineStyle(1.6, rimColor, 1);
-  rim.beginPath();
-  rim.moveTo(ring[0].x, ring[0].y);
-  for (let i = 1; i < 6; i++) rim.lineTo(ring[i].x, ring[i].y);
-  rim.closePath();
-  rim.strokePath();
-
-  rim._walls = walls;
-  return { face, rim, ring };
-}
-
-/* ---------- elevation tint (stronger levels) ---------- */
-function getFillForTile(tile) {
-  const baseColor = getColorForTerrain(tile.type);
-  if (tile.type === 'water') return baseColor;
-
-  // clear per-level stepping toward white
-  //    0     1     2     3     4
-  const LEVEL_TINTS = [0.00, 0.18, 0.34, 0.50, 0.66];
-
-  const lvl = Math.max(0, Math.min(4, (typeof tile.elevation === 'number' ? tile.elevation : 0)));
-  const t   = LEVEL_TINTS[lvl];
-
-  const base = Phaser.Display.Color.IntegerToColor(baseColor);
-  const r = Math.round(base.r + (255 - base.r) * t);
-  const g = Math.round(base.g + (255 - base.g) * t);
-  const b = Math.round(base.b + (255 - base.b) * t);
-  return Phaser.Display.Color.GetColor(r, g, b);
-}
-
-/* ---------- hover outline ---------- */
-function drawHexOutline(scene, xIso, yIso, size, color = 0xffffff) {
-  const w = size * Math.sqrt(3) / 2;
-  const h = size / 2;
-  const d = [
-    { dx: 0,  dy: -size },
-    { dx: +w, dy: -h    },
-    { dx: +w, dy: +h    },
-    { dx: 0,  dy: +size },
-    { dx: -w, dy: +h    },
-    { dx: -w, dy: -h    },
-  ];
-  const ring = d.map(({dx,dy}) => {
-    const off = isoOffset(dx, dy);
-    return pt(xIso + off.x, yIso + off.y);
-  });
-  const g = scene.add.graphics().setDepth(10002);
-  g.lineStyle(3, color, 1);
-  g.beginPath();
-  g.moveTo(ring[0].x, ring[0].y);
-  for (let i = 1; i < 6; i++) g.lineTo(ring[i].x, ring[i].y);
-  g.closePath();
-  g.strokePath();
-  return g;
-}
-
-/* ---------- renderer ---------- */
-export function drawHexMap() {
-  this.objects = this.objects || [];
-  if (this.mapContainer) { this.mapContainer.destroy(true); this.mapContainer = null; }
-  this.mapContainer = this.add.container(0, 0).setDepth(1);
-
-  const padX = this.hexSize * 2;
-  const padY = this.hexSize * 2;
-
-  const cam = this.cameras?.main;
-  const camW = cam?.width ?? 800;
-  const gridW = this.mapWidth * this.hexSize * Math.sqrt(3);
-  const isoW  = gridW + (this.mapHeight * this.hexSize * 1.5) * ISO_SHEAR;
-  const offsetX = Math.floor((camW - isoW) * 0.5) + padX;
-  const offsetY = 20 + padY;
-
-  this.mapOffsetX = offsetX;
-  this.mapOffsetY = offsetY;
-
-  const byKey = new Map(this.mapData.map(t => [`${t.q},${t.r}`, t]));
-  this.tileAt = (q, r) => byKey.get(`${q},${r}`);
-
-  const sorted = [...this.mapData].sort((a, b) => {
-    const ea = effectiveElevation(a);
-    const eb = effectiveElevation(b);
-    if (ea !== eb) return ea - eb;
-    const da = (a.q + a.r) - (b.q + b.r);
-    if (da !== 0) return da;
-    if (a.r !== b.r) return a.r - b.r;
-    return a.q - b.q;
-  });
-
-  for (const hex of sorted) {
-    const { q, r } = hex;
-    const eff = effectiveElevation(hex);
-    const p  = hexToPixel(q, r, this.hexSize);
-    const x  = p.x + offsetX;
-    const y  = p.y + offsetY - LIFT_PER_LVL * eff;
-
-    const fillColor = getFillForTile(hex);
-    const { face, rim } = drawHex.call(this, q, r, x, y, this.hexSize, fillColor, eff, hex.type);
-    this.mapContainer.add(face);                   // face
-    if (rim._walls) rim._walls.forEach(w => this.mapContainer.add(w)); // cliffs/skirts
-    this.mapContainer.add(rim);                    // rim on top
-  }
-
-  drawLocationsAndRoads.call(this);
-
-  if (this.hoverOutline) { this.hoverOutline.destroy(); this.hoverOutline = null; }
-  this.input?.on('pointermove', (pointer) => {
-    const worldX = pointer.worldX - this.mapOffsetX;
-    const worldY = pointer.worldY - this.mapOffsetY;
-
-    const frac = pixelToHex(worldX, worldY, this.hexSize);
-    const axial = roundHex(frac.q, frac.r); // <-- fixed line
-    const tile = this.tileAt(axial.q, axial.r);
-    if (!tile) {
-      if (this.hoverOutline) { this.hoverOutline.destroy(); this.hoverOutline = null; }
-      return;
-    }
-
-    const eff = effectiveElevation(tile);
-    const p   = hexToPixel(axial.q, axial.r, this.hexSize);
-    const x   = p.x + this.mapOffsetX;
-    const y   = p.y + this.mapOffsetY - LIFT_PER_LVL * eff;
-
-    if (this.hoverOutline) this.hoverOutline.destroy();
-    this.hoverOutline = drawHexOutline(this, x, y, this.hexSize, 0xffffff);
-    this.tweens.add({
-      targets: this.hoverOutline,
-      alpha: { from: 1, to: 0.25 },
-      duration: 160,
-      ease: 'Sine.easeOut'
-    });
-  });
-}
-
-export default {
-  LIFT_PER_LVL,
-  isoOffset,
-  hexToPixel,
-  pixelToHex,
-  roundHex,
-  effectiveElevation,
-  getColorForTerrain,
-  drawHex,
-  drawHexMap,
-  generateHexMap,
+const terrainTypes = {
+  grassland: { movementCost: 1, color: '#34a853' },
+  sand:      { movementCost: 2, color: '#FFF59D' },
+  mud:       { movementCost: 3, color: '#795548' },
+  mountain:  { movementCost: Infinity, color: '#9E9E9E', impassable: true },
+  water:     { movementCost: Infinity, color: '#4da6ff', impassable: true },
+  swamp:     { movementCost: 3, color: '#4E342E' }
 };
+
+/** Hash a string to a 32-bit int */
+function __hx_strHash(s) {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+/** Cheap 2D integer hash → [0,1) */
+function __hx_hash2D(q, r, seedStr) {
+  const sh = __hx_strHash(seedStr);
+  let h = (Math.imul(q, 374761393) ^ Math.imul(r, 668265263) ^ sh) >>> 0;
+  h ^= h >>> 13;
+  h = Math.imul(h, 1274126177) >>> 0;
+  h ^= h >>> 16;
+  return (h >>> 0) / 4294967296;
+}
+function __hx_smooth(t) { return t * t * (3 - 2 * t); }
+function __hx_valueNoise2D(x, y, seedStr) {
+  const x0 = Math.floor(x), y0 = Math.floor(y);
+  const x1 = x0 + 1,        y1 = y0 + 1;
+  const sx = __hx_smooth(x - x0);
+  const sy = __hx_smooth(y - y0);
+  const v00 = __hx_hash2D(x0, y0, seedStr);
+  const v10 = __hx_hash2D(x1, y0, seedStr);
+  const v01 = __hx_hash2D(x0, y1, seedStr);
+  const v11 = __hx_hash2D(x1, y1, seedStr);
+  const ix0 = v00 + sx * (v10 - v00);
+  const ix1 = v01 + sx * (v11 - v01);
+  return ix0 + sy * (ix1 - ix0);
+}
+function __hx_fbm2D(x, y, seedStr, octaves = 4, lac = 2.0, gain = 0.5) {
+  let amp = 0.5, freq = 1.0, sum = 0.0, ampSum = 0.0;
+  for (let i = 0; i < octaves; i++) {
+    sum += amp * __hx_valueNoise2D(x * freq, y * freq, seedStr);
+    ampSum += amp;
+    freq *= lac; amp *= gain;
+  }
+  return sum / (ampSum || 1);
+}
+
+/**
+ * Compute elevation 0..4 for a tile (visual-only).
+ * Water → 0; Mountains biased to 3–4; sand lower; others varied.
+ */
+function __hx_computeElevation(q, r, cols, rows, rawSeed, terrainType) {
+  const seedStr = (typeof rawSeed === 'string' && rawSeed) ? rawSeed : 'defaultseed';
+  const x = q * 0.18 + 123.45;
+  const y = (q * 0.10 + r * 0.20) + 678.90;
+  let n = __hx_fbm2D(x, y, seedStr, 4, 2.0, 0.55);
+  const cx = cols / 2, cy = rows / 2;
+  const dx = q - cx,   dy = r - cy;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  const maxd = Math.sqrt(cx * cx + cy * cy) || 1;
+  const falloff = 1 - (dist / maxd);
+  n = 0.75 * n + 0.25 * falloff;
+
+  switch (terrainType) {
+    case 'water':     return 0;
+    case 'mountain':  n = Math.min(1, n * 0.7 + 0.5); break;
+    case 'sand':      n = Math.max(0, n * 0.85 - 0.05); break;
+    case 'swamp':
+    case 'mud':       n = Math.max(0, n * 0.9  - 0.02); break;
+  }
+  const e = Math.max(0, Math.min(4, Math.floor(n * 5)));
+  return e;
+}
+
+/* ---------- helpers ---------- */
+function neighbors(q, r, map) {
+  const dirs = [[1, 0], [1, -1], [0, -1], [-1, 0], [-1, 1], [0, 1]];
+  return dirs
+    .map(([dq, dr]) => [q + dq, r + dr])
+    .filter(([x, y]) => map[y] && map[y][x]);
+}
+
+function markWater(tile) {
+  Object.assign(tile, {
+    type: 'water', ...terrainTypes.water, elevation: 0, hasObject: false,
+    hasForest:false, hasRuin:false, hasCrashSite:false, hasVehicle:false, hasRoad:false
+  });
+}
+
+/* ===========================================================
+   GEOGRAPHY PRESETS (seeded)
+   - Removed preset 1 (“Normal round island”)
+   - Reduced water carving by 15% across presets
+   =========================================================== */
+function applyGeography(map, cols, rows, seedStr, rand) {
+  // pick among presets 2..6 only
+  const pickF = 2 + Math.floor(rand() * 5); // 2..6
+
+  // reduce extra water carving by 15%
+  const WATER_SCALE = 0.85;
+
+  // Helper: carve by mask threshold until target % reached.
+  function carveByMask(targetPctMin, targetPctMax, maskFn) {
+    const total = cols * rows;
+    const baseTarget = Math.round(
+      total * (targetPctMin + rand() * (targetPctMax - targetPctMin))
+    );
+    const target = Math.round(baseTarget * WATER_SCALE);
+
+    const candidates = [];
+    for (let r = 0; r < rows; r++) {
+      for (let q = 0; q < cols; q++) {
+        const t = map[r][q];
+        if (t.type === 'water') continue;
+        const m = maskFn(q, r);
+        candidates.push({ q, r, m });
+      }
+    }
+    candidates.sort((a, b) => b.m - a.m);
+
+    let carved = 0;
+    for (let i = 0; i < candidates.length && carved < target; i++) {
+      const { q, r } = candidates[i];
+      const t = map[r][q];
+      if (t.type !== 'water') { markWater(t); carved++; }
+    }
+  }
+
+  // Normalize coords helper
+  const cx = cols / 2, cy = rows / 2;
+  const nx = x => (x - cx) / (cols * 0.5);
+  const ny = y => (y - cy) / (rows * 0.5);
+
+  const fbm = (x, y, f = 1.0) => __hx_fbm2D(x * f + 41.2, y * f - 17.9, seedStr, 4, 2.0, 0.5);
+
+  switch (pickF) {
+    // 2) Big lagoon (central negative mask) — 15–35% (scaled by WATER_SCALE)
+    case 2: {
+      carveByMask(0.15, 0.35, (q, r) => {
+        const X = nx(q), Y = ny(r);
+        const r2 = (X * X) / 0.5 + (Y * Y) / 0.25;
+        return 1.2 - r2 + 0.4 * fbm(X, Y, 3.0);
+      });
+      break;
+    }
+    // 3) Big lake at center — 10–20%
+    case 3: {
+      carveByMask(0.10, 0.20, (q, r) => {
+        const X = nx(q), Y = ny(r);
+        const d = Math.hypot(X * 0.9, Y * 0.9);
+        return 1.0 - d + 0.35 * fbm(X, Y, 2.5);
+      });
+      break;
+    }
+    // 4) 2–3 small bays from edges — 20–30%
+    case 4: {
+      const bays = 2 + Math.floor(rand() * 2); // 2..3
+      const bayParams = [];
+      for (let i = 0; i < bays; i++) {
+        bayParams.push({
+          side: Math.floor(rand() * 4), // 0=top,1=right,2=bottom,3=left
+          t: rand() * 0.6 + 0.2,        // along-edge anchor
+          w: rand() * 0.25 + 0.15,      // width
+          d: rand() * 0.35 + 0.25       // depth
+        });
+      }
+      carveByMask(0.20, 0.30, (q, r) => {
+        const X = nx(q), Y = ny(r);
+        let m = 0.0;
+        for (const b of bayParams) {
+          let ax = 0, ay = 0;
+          if (b.side === 0) { ax = (b.t - 0.5) * 2; ay = -1; }
+          if (b.side === 2) { ax = (b.t - 0.5) * 2; ay = +1; }
+          if (b.side === 1) { ax = +1; ay = (b.t - 0.5) * 2; }
+          if (b.side === 3) { ax = -1; ay = (b.t - 0.5) * 2; }
+          const dx = X - ax * (1 - b.d);
+          const dy = Y - ay * (1 - b.d);
+          const r2 = (dx * dx) / (b.w * b.w) + (dy * dy) / (b.d * b.d);
+          m = Math.max(m, 1.1 - r2);
+        }
+        return m + 0.25 * fbm(X, Y, 3.5);
+      });
+      break;
+    }
+    // 5) Scattered terrain separated by “rivers” — 15–30%
+    case 5: {
+      carveByMask(0.15, 0.30, (q, r) => {
+        const X = nx(q), Y = ny(r);
+        const bands = 0.5 + 0.5 * Math.sin((X * 4.0 + Y * 3.0) + 6.28 * fbm(X, Y, 1.2));
+        return bands * 0.8 + 0.4 * fbm(X, Y, 2.8);
+      });
+      break;
+    }
+    // 6) 2–3 big islands separated by water channels — 15–35%
+    case 6: {
+      const islands = 2 + Math.floor(rand() * 2);
+      const centers = [];
+      for (let i = 0; i < islands; i++) {
+        centers.push({ x: (rand() * 1.6 - 0.8), y: (rand() * 1.6 - 0.8) });
+      }
+      carveByMask(0.15, 0.35, (q, r) => {
+        const X = nx(q), Y = ny(r);
+        let dmin = 10;
+        for (const c of centers) {
+          const d = Math.hypot(X - c.x, Y - c.y);
+          if (d < dmin) dmin = d;
+        }
+        return dmin + 0.35 * fbm(X, Y, 2.3);
+      });
+      break;
+    }
+  }
+}
+
+function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
+  const map = Array.from({ length: rows }, (_, r) =>
+    Array.from({ length: cols }, (_, q) => ({
+      q, r,
+      type: 'grassland',
+      movementCost: terrainTypes.grassland.movementCost,
+      impassable: false
+    }))
+  );
+
+  // ==== Base island mask: +15% land (≈ radius * 1.075) ====
+  const LAND_RADIUS_BOOST = 1.075; // sqrt(1.15) ≈ 1.073
+  const centerQ = cols / 2;
+  const centerR = rows / 2;
+  const maxRadius = (Math.min(centerQ, centerR) - 2) * LAND_RADIUS_BOOST;
+
+  for (let r = 0; r < rows; r++) {
+    for (let q = 0; q < cols; q++) {
+      const tile = map[r][q];
+      const dx = q - centerQ;
+      const dy = r - centerR;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      const noise = rand() * 2.2;
+      if (dist + noise > maxRadius) {
+        markWater(tile);
+      }
+    }
+  }
+
+  // Seeded geography presets (carving extra water) — reduced by 15%
+  applyGeography(map, cols, rows, seedStr, rand);
+
+  // Biomes
+  function placeBiome(type, minSize, maxSize, instances) {
+    for (let i = 0; i < instances; i++) {
+      let size = minSize + Math.floor(rand() * (maxSize - minSize + 1));
+      let placed = 0, attempts = 0;
+      while (placed < size && attempts < 500) {
+        const q = Math.floor(rand() * cols);
+        const r = Math.floor(rand() * rows);
+        const tile = map[r][q];
+        if (tile.type !== 'grassland') { attempts++; continue; }
+        const queue = [[q, r]];
+        let count = 0;
+        while (queue.length && placed < size) {
+          const [x, y] = queue.shift();
+          const t = map[y][x];
+          if (t.type === 'grassland') {
+            Object.assign(t, { type, ...terrainTypes[type] });
+            placed++; count++;
+          }
+          if (count < size) {
+            neighbors(x, y, map).forEach(([nx, ny]) => {
+              const nTile = map[ny][nx];
+              if (nTile.type === 'grassland') queue.push([nx, ny]);
+            });
+          }
+        }
+        break;
+      }
+    }
+  }
+
+  placeBiome('mud',   5, 9, 4);
+  placeBiome('sand',  5, 9, 4);
+  placeBiome('swamp', 5, 9, 3);
+
+  // Mountains
+  const mountainChains = 6 + Math.floor(rand() * 3);
+  for (let i = 0; i < mountainChains; i++) {
+    let q = Math.floor(rand() * (cols - 4)) + 2;
+    let r = Math.floor(rand() * (rows - 4)) + 2;
+    const length = 3 + Math.floor(rand() * 3);
+
+    for (let j = 0; j < length; j++) {
+      const tile = map[r][q];
+      const distFromP1 = Math.sqrt((q - 2) ** 2 + (r - 2) ** 2);
+      const distFromP2 = Math.sqrt((q - cols + 2) ** 2 + (r - rows + 2) ** 2);
+      if (tile.type === 'grassland' && distFromP1 > 3 && distFromP2 > 3) {
+        Object.assign(tile, { type: 'mountain', ...terrainTypes.mountain });
+      }
+      const nbs = neighbors(q, r, map);
+      if (nbs.length) {
+        const [nq, nr] = nbs[Math.floor(rand() * nbs.length)];
+        q = nq; r = nr;
+      }
+    }
+  }
+
+  // Objects placement (respect water/mountain)
+  const flat = map.flat();
+  const markObj = (tile, key) => { tile[key] = true; tile.hasObject = true; };
+  const isFree = t => !t.hasObject && !['mountain', 'water'].includes(t.type);
+
+  // Forests
+  const forestCandidates = flat.filter(t => ['grassland', 'mud'].includes(t.type));
+  Phaser.Utils.Array.Shuffle(forestCandidates);
+  forestCandidates.slice(0, 39).forEach(tile => tile.hasForest = true);
+
+  // Ruins
+  const ruinCandidates = flat.filter(t => ['sand', 'swamp'].includes(t.type) && isFree(t));
+  Phaser.Utils.Array.Shuffle(ruinCandidates);
+  ruinCandidates.slice(0, Phaser.Math.Between(2, 3)).forEach(t => markObj(t, 'hasRuin'));
+
+  // Crash Sites
+  const crashCandidates = flat.filter(isFree);
+  Phaser.Utils.Array.Shuffle(crashCandidates);
+  crashCandidates.slice(0, Phaser.Math.Between(2, 3)).forEach(t => markObj(t, 'hasCrashSite'));
+
+  // Vehicles
+  const vehicleCandidates = flat.filter(t => t.type === 'grassland' && isFree(t));
+  Phaser.Utils.Array.Shuffle(vehicleCandidates);
+  vehicleCandidates.slice(0, Phaser.Math.Between(2, 3)).forEach(t => markObj(t, 'hasVehicle'));
+
+  // Roads
+  const roadTiles = flat.filter(t => !['water', 'mountain'].includes(t.type) && !t.hasObject);
+  Phaser.Utils.Array.Shuffle(roadTiles);
+  const roadPaths = Phaser.Math.Between(2, 3);
+  let totalRoadLength = Phaser.Math.Between(7, 19);
+  const used = new Set();
+  for (let i = 0; i < roadPaths; i++) {
+    let remaining = Math.floor(totalRoadLength / (roadPaths - i));
+    totalRoadLength -= remaining;
+    let start = roadTiles.find(t => !used.has(`${t.q},${t.r}`));
+    if (!start) continue;
+    const queue = [start];
+    used.add(`${start.q},${start.r}`);
+    start.hasRoad = true;
+    while (queue.length && remaining > 0) {
+      const current = queue.shift();
+      const dirs = [[+1,0],[-1,0],[0,+1],[0,-1],[+1,-1],[-1,+1]];
+      Phaser.Utils.Array.Shuffle(dirs);
+      for (const [dq, dr] of dirs) {
+        const nq = current.q + dq, nr = current.r + dr;
+        const neighbor = flat.find(t => t.q === nq && t.r === nr);
+        if (neighbor && !used.has(`${nq},${nr}`) &&
+            !['water', 'mountain'].includes(neighbor.type) && !neighbor.hasObject) {
+          neighbor.hasRoad = true;
+          used.add(`${nq},${nr}`); queue.push(neighbor); remaining--; break;
+        }
+      }
+    }
+  }
+
+  // Elevation
+  for (const t of flat) {
+    if (typeof t.elevation !== 'number') {
+      t.elevation = __hx_computeElevation(t.q, t.r, cols, rows, seedStr, t.type);
+    }
+  }
+
+  return flat;
+}
+
+export default class HexMap {
+  constructor(width, height, seed) {
+    this.width = width;
+    this.height = height;
+    this.seed = String(seed ?? 'defaultseed');
+    this.map = [];
+    this.generateMap();
+  }
+
+  generateMap() {
+    const rngSeed = cyrb128(this.seed);
+    const rand = sfc32(...rngSeed);
+    // rows = height, cols = width
+    this.map = generateMap(this.height, this.width, this.seed, rand);
+  }
+
+  getMap() {
+    return this.map;
+  }
+}
