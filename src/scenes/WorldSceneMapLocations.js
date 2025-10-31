@@ -36,24 +36,43 @@ function neighborTiles(byKey, width, height, q, r, skipWater = true) {
   return out;
 }
 
+// === Placement & flags =======================================================
+// NOTE: Enforces peak rule: mountain icon ONLY for level-4 tiles.
+//       (We normalize hasMountainIcon from elevation here, so no random peaks.)
 function placeLocations(mapData, width, height, rnd) {
   for (const t of mapData) {
+    // Always clear POIs on water.
     if (t.type === 'water') {
-      t.hasForest = t.hasRuin = t.hasCrashSite = t.hasVehicle = t.hasMountainIcon = false;
+      t.hasForest = t.hasRuin = t.hasCrashSite = t.hasVehicle = false;
+      t.hasMountainIcon = false;
       continue;
     }
+
+    // --- Peaks: icon only if elevation === 4 ---
+    const elev = typeof t.elevation === 'number' ? t.elevation : 0;
+    t.hasMountainIcon = (elev === 4);
+
+    // Forests (keep stable behavior: explicit forest OR light random growth)
     if (t.type === 'forest') t.hasForest = true;
     else if (!t.hasForest && chance(rnd, 0.06)) t.hasForest = true;
 
+    // Ruins
     if (!t.hasRuin && t.type !== 'mountain' && chance(rnd, 0.010)) t.hasRuin = true;
+
+    // Crash Sites
     if (!t.hasCrashSite && chance(rnd, 0.006)) t.hasCrashSite = true;
-    if (!t.hasVehicle && (t.type === 'plains' || t.type === 'desert' || t.type === 'grassland' || t.type === '') && chance(rnd, 0.008)) {
+
+    // Vehicles (keep your surface filters)
+    if (!t.hasVehicle &&
+        (t.type === 'plains' || t.type === 'desert' || t.type === 'grassland' || t.type === '') &&
+        chance(rnd, 0.008)) {
       t.hasVehicle = true;
     }
-    if (!t.hasMountainIcon && t.type !== 'mountain' && (t.elevation ?? 0) >= 2 && chance(rnd, 0.05)) {
-      t.hasMountainIcon = true;
-    }
+
+    // No random mountain icons on non-peak tiles (was removed on purpose).
   }
+
+  // Forest spreading (local seed so clusters are deterministic per tile)
   const byKey = new Map(mapData.map(tt => [keyOf(tt.q, tt.r), tt]));
   for (const t of mapData) {
     if (!t.hasForest) continue;
@@ -64,12 +83,15 @@ function placeLocations(mapData, width, height, rnd) {
   }
 }
 
+// === Roads (graph-based, with A*) ============================================
 function markRoadEdge(a, b, type = 'countryside') {
   if (!a || !b) return;
   if (a.type === 'water' || b.type === 'water') return;
+
   a.hasRoad = b.hasRoad = true;
   a.roadType = a.roadType === 'asphalt' || type === 'asphalt' ? 'asphalt' : (a.roadType || 'countryside');
   b.roadType = b.roadType === 'asphalt' || type === 'asphalt' ? 'asphalt' : (b.roadType || 'countryside');
+
   a.roadLinks = a.roadLinks || new Set();
   b.roadLinks = b.roadLinks || new Set();
   a.roadLinks.add(keyOf(b.q, b.r));
@@ -86,21 +108,22 @@ function astar(byKey, width, height, start, goal) {
     let cur = null;
     for (const n of open.values()) if (!cur || n.f < cur.f) cur = n;
     open.delete(cur.k);
+
     if (cur.k === goalK) {
       const path = [];
       for (let n = cur; n; n = n.parent) path.push(byKey.get(keyOf(n.q, n.r)));
       path.reverse();
       return path;
     }
-    closed.add(cur.k);
 
+    closed.add(cur.k);
     for (const [dq, dr] of neighborsOddR(0, 0)) {
       const nq = cur.q + dq, nr = cur.r + dr;
-      if (!byKey.has(keyOf(nq, nr))) continue;
-      const t = byKey.get(keyOf(nq, nr));
-      if (!t || t.type === 'water') continue;
       const nk = keyOf(nq, nr);
-      if (closed.has(nk)) continue;
+      if (!byKey.has(nk) || closed.has(nk)) continue;
+
+      const t = byKey.get(nk);
+      if (!t || t.type === 'water') continue;
 
       const g = cur.g + 1;
       const f = g + h(nq, nr);
@@ -115,8 +138,10 @@ function generateRoads(mapData, width, height, seed) {
   const byKey = new Map(mapData.map(t => [keyOf(t.q, t.r), t]));
   const at = (q, r) => byKey.get(keyOf(q, r));
 
+  // Trunk roads
   const numTrunks = rndInt(rnd, 0, 2);
   const maxLen    = Math.floor(Math.max(width, height) * 1.1);
+
   function stepDir(cur, prevDir) {
     const dirs = neighborsOddR(0, 0);
     let best = null, bestScore = -Infinity;
@@ -125,12 +150,15 @@ function generateRoads(mapData, width, height, seed) {
       const [dq, dr] = dirs[i];
       const n = at(cur.q + dq, cur.r + dr);
       if (!n || n.type === 'water') continue;
+
+      // Bias slightly to avoid hexy patterns (keep variety)
       const eastish = (i === 0 || i === 1 || i === 5) ? 0.6 : 0;
       const score = eastish + (rnd() - 0.5) * 0.2;
       if (score > bestScore) { bestScore = score; best = { n, dir: i }; }
     }
     return best;
   }
+
   for (let t = 0; t < numTrunks; t++) {
     let start = null, guard = 200;
     while (!start && guard-- > 0) {
@@ -152,6 +180,7 @@ function generateRoads(mapData, width, height, seed) {
     }
   }
 
+  // POI connectors
   const pois = mapData.filter(t => t.type !== 'water' && (t.hasRuin || t.hasCrashSite || t.hasVehicle));
   const pairs = Math.min(2, Math.floor(pois.length / 2));
   for (let i = 0; i < pairs; i++) {
@@ -188,11 +217,13 @@ export function drawLocationsAndRoads() {
   const size = this.hexSize || 24;
   if (!Array.isArray(map) || !map.length) return;
 
+  // Apply placement once per map build
   if (!map.__locationsApplied) {
     try { applyLocationFlags(map, this.mapWidth, this.mapHeight, this.seed ?? 1337); } catch {}
     Object.defineProperty(map, '__locationsApplied', { value: true, enumerable: false });
   }
 
+  // Reset layers
   if (scene.roadsGraphics) scene.roadsGraphics.destroy();
   if (scene.locationsLayer) scene.locationsLayer.destroy();
   const roads = scene.add.graphics({ x: 0, y: 0 }).setDepth(30);
@@ -250,6 +281,12 @@ export function drawLocationsAndRoads() {
     const cx = c.x + offsetX;
     const cy = c.y + offsetY - LIFT * effectiveElevationLocal(t);
 
+    // --- Peaks first: show only the mountain icon on level-4 tiles ---
+    if (t.hasMountainIcon) {
+      addEmoji(cx, cy, '⛰️', size * 0.9, 46);
+      continue; // Do not place other POIs on peaks
+    }
+
     if (t.hasForest) {
       const treeCount = Phaser.Math.Between(2, 4);
       const placed = [];
@@ -275,11 +312,11 @@ export function drawLocationsAndRoads() {
       }
     }
 
-    if (t.hasRuin)        addEmoji(cx, cy, '🏚️', size * 0.8);
-    if (t.hasCrashSite)   addEmoji(cx, cy, '🚀', size * 0.8);
-    if (t.hasVehicle)     addEmoji(cx, cy, '🚙', size * 0.8);
-    if (t.hasMountainIcon && t.type !== 'mountain')
-                          addEmoji(cx, cy, '🏔️', size * 0.9);
+    if (t.hasRuin)        addEmoji(cx, cy, '🏚️', size * 0.8, 44);
+    if (t.hasCrashSite)   addEmoji(cx, cy, '🚀', size * 0.8, 44);
+    if (t.hasVehicle)     addEmoji(cx, cy, '🚙', size * 0.8, 44);
+
+    // No extra mountain icons here unless it's a level-4 peak (handled above).
   }
 }
 
