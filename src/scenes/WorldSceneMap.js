@@ -192,12 +192,12 @@ if (n2) maybeCliff(2, n2);
 
 // ❌ was: if (n3) maybeCliff(4, n3);
 // ✅ bottom-left cliff is side 4, not 3 -> edge 4
-if (n3) maybeCliff(4, n3);
+if (n3) maybeCliff(3, n3);
 
 // (optional thin skirts to seal AA seams)
 if (n0) maybeSkirt(0, n0);
 if (n1) maybeSkirt(1, n1);
-if (n4) maybeSkirt(3, n4);
+if (n4) maybeSkirt(4, n4);
 if (n5) maybeSkirt(5, n5);
 
   // thin rim on top to cover any remaining AA
