@@ -9,16 +9,16 @@ const ISO_YSCALE = 0.95;
 
 const pt = (x, y) => ({ x, y });
 
-/* ---------- terrain palette ---------- */
+/* ---------- terrain palette (pastel) ---------- */
 export function getColorForTerrain(terrain) {
   switch (terrain) {
-    case 'grassland': return 0x3caf5a;
-    case 'sand':      return 0xFFF5B8;
-    case 'mud':       return 0x7E5A48;
-    case 'swamp':     return 0x5B463F;
-    case 'mountain':  return 0xA0A0A0;
-    case 'water':     return 0x54aafc;
-    default:          return 0x8e8e8e;
+    case 'grassland': return 0x8bd17c; // #8BD17C
+    case 'sand':      return 0xF6E7A1; // #F6E7A1
+    case 'mud':       return 0xB48A78; // #B48A78
+    case 'swamp':     return 0x8AA18A; // #8AA18A
+    case 'mountain':  return 0xC9C9C9; // #C9C9C9
+    case 'water':     return 0x7CC4FF; // #7CC4FF
+    default:          return 0xA7A7A7; // neutral gray
   }
 }
 
@@ -35,7 +35,8 @@ function darkenRGBInt(baseInt, factor) {
   const b = Math.round(c.b * factor);
   return Phaser.Display.Color.GetColor(r, g, b);
 }
-function tintWallFromBase(baseInt, amount = 0.80) {
+// Slightly darker walls for better contrast vs. pastel face
+function tintWallFromBase(baseInt, amount = 0.72) {
   return darkenRGBInt(baseInt, amount);
 }
 
@@ -149,7 +150,7 @@ export function drawHex(q, r, xIso, yIso, size, fillColor, effElevation/*, terra
   face.closePath();
   face.fillPath();
 
-  const wallColor  = tintWallFromBase(fillColor, 0.80);
+  const wallColor  = tintWallFromBase(fillColor, 0.72);
   const dropPerLvl = LIFT_PER_LVL;
 
   const walls = [];
@@ -161,7 +162,6 @@ export function drawHex(q, r, xIso, yIso, size, fillColor, effElevation/*, terra
     if (diff <= 0) return;
     const A = ring[edgeIndex];
     const B = ring[(edgeIndex + 1) % 6];
-    // full opaque cliff
     walls.push(drawEdgeQuad(this, A, B, diff * dropPerLvl, wallColor, 3));
   };
 
@@ -177,27 +177,25 @@ export function drawHex(q, r, xIso, yIso, size, fillColor, effElevation/*, terra
   };
 
   // === Neighbors by your side numbering ===
-// === Neighbors by your side numbering ===
-// sides: 0=NE, 1=E, 2=SE, 3=SW, 4=W, 5=NW
-const n0 = neighborBySide(this.tileAt, q, r, 0);
-const n1 = neighborBySide(this.tileAt, q, r, 1);
-const n2 = neighborBySide(this.tileAt, q, r, 2);
-const n3 = neighborBySide(this.tileAt, q, r, 3);
-const n4 = neighborBySide(this.tileAt, q, r, 4);
-const n5 = neighborBySide(this.tileAt, q, r, 5);
+  // sides: 0=NE, 1=E, 2=SE, 3=SW, 4=W, 5=NW
+  const n0 = neighborBySide(this.tileAt, q, r, 0);
+  const n1 = neighborBySide(this.tileAt, q, r, 1);
+  const n2 = neighborBySide(this.tileAt, q, r, 2);
+  const n3 = neighborBySide(this.tileAt, q, r, 3);
+  const n4 = neighborBySide(this.tileAt, q, r, 4);
+  const n5 = neighborBySide(this.tileAt, q, r, 5);
 
-// === Render REQUIRED cliffs on your screen-facing sides ===
-// ✅ bottom-right cliff (side 2) -> edge 2 (unchanged)
-if (n2) maybeCliff(2, n2);
+  // === Render REQUIRED cliffs on your screen-facing sides ===
+  // bottom-right cliff (side 2) -> edge 2
+  if (n2) maybeCliff(2, n2);
+  // bottom edge per your working setup (side 3) -> edge 3
+  if (n3) maybeCliff(3, n3);
 
-// ✅ bottom-left cliff is side 4, not 3 -> edge 4
-if (n3) maybeCliff(3, n3);
-
-// (optional thin skirts to seal AA seams)
-if (n0) maybeSkirt(0, n0);
-if (n1) maybeSkirt(1, n1);
-if (n4) maybeSkirt(4, n4);
-if (n5) maybeSkirt(5, n5);
+  // (optional thin skirts to seal AA seams)
+  if (n0) maybeSkirt(0, n0);
+  if (n1) maybeSkirt(1, n1);
+  if (n4) maybeSkirt(4, n4);
+  if (n5) maybeSkirt(5, n5);
 
   // thin rim on top to cover any remaining AA
   const rim = this.add.graphics().setDepth(4);
@@ -213,12 +211,18 @@ if (n5) maybeSkirt(5, n5);
   return { face, rim, ring };
 }
 
-/* ---------- elevation tint ---------- */
+/* ---------- elevation tint (clear level steps) ---------- */
 function getFillForTile(tile) {
   const baseColor = getColorForTerrain(tile.type);
   if (tile.type === 'water') return baseColor;
-  const elevation = tile.elevation ?? 0;
-  const t = Math.min(0.55, Math.max(0, elevation) * 0.08);
+
+  // Stronger, discrete level tints toward white to make elevation easy to read.
+  //    level:   0     1     2     3     4
+  const LEVEL_TINTS = [0.00, 0.12, 0.22, 0.32, 0.42];
+
+  const lvl = Math.max(0, Math.min(4, (typeof tile.elevation === 'number' ? tile.elevation : 0)));
+  const t   = LEVEL_TINTS[lvl];
+
   const base = Phaser.Display.Color.IntegerToColor(baseColor);
   const r = Math.round(base.r + (255 - base.r) * t);
   const g = Math.round(base.g + (255 - base.g) * t);
