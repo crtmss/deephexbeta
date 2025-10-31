@@ -65,7 +65,6 @@ export default class WorldScene extends Phaser.Scene {
       return list[(idx + 1) % list.length];
     };
 
-    // bind geometry helpers to scene
     this.hexToPixel = hexToPixel.bind(this);
     this.pixelToHex = pixelToHex.bind(this);
     this.roundHex = roundHex.bind(this);
@@ -131,7 +130,7 @@ export default class WorldScene extends Phaser.Scene {
       const playerHere = this.players.find(p => p.q === rounded.q && p.r === rounded.r);
 
       this.selectedHex = rounded;
-      this.debugHex(rounded.q, rounded.r); // ⬅️ enhanced debug
+      this.debugHex(rounded.q, rounded.r);
 
       if (this.selectedUnit) {
         if (this.selectedUnit.q === rounded.q && this.selectedUnit.r === rounded.r) {
@@ -239,54 +238,9 @@ export default class WorldScene extends Phaser.Scene {
     this.pathLabels = [];
   }
 
-  // --- helper for debugHex: choose ring-edge for your side numbering using unsheared vectors ---
-  _sideToRingEdge(center, ring) {
-    // In iso space: x' = x - y*s ; y' = y*k
-    const SHEAR = 0.15, YSCALE = 0.95;
-
-    // Your intended unit vectors in *unsheared* local space:
-    // 0 top-right, 1 right, 2 bottom-right, 3 bottom-left, 4 left, 5 top-left
-    const dirs = [
-      {x: +0.5, y: -Math.sqrt(3)/2}, // 0 TR
-      {x: +1.0, y:  0.0},            // 1 R
-      {x: +0.5, y: +Math.sqrt(3)/2}, // 2 BR
-      {x: -0.5, y: +Math.sqrt(3)/2}, // 3 BL
-      {x: -1.0, y:  0.0},            // 4 L
-      {x: -0.5, y: -Math.sqrt(3)/2}, // 5 TL
-    ];
-
-    // For each ring edge, compute unsheared unit vector from center to edge midpoint
-    const edgeVecs = [];
-    for (let e = 0; e < 6; e++) {
-      const A = ring[e];
-      const B = ring[(e + 1) % 6];
-      const mxp = (A.x + B.x) * 0.5 - center.x; // iso delta x'
-      const myp = (A.y + B.y) * 0.5 - center.y; // iso delta y'
-      // Un-shear vector: y = y'/k ; x = x' + (y'/k)*s
-      const uy = myp / YSCALE;
-      const ux = mxp + uy * SHEAR;
-      const L = Math.hypot(ux, uy) || 1;
-      edgeVecs.push({ x: ux / L, y: uy / L }); // unit unsheared
-    }
-
-    // Map each user side to the best-matching ring edge by dot product
-    const map = new Array(6).fill(0);
-    for (let side = 0; side < 6; side++) {
-      const d = dirs[side];
-      let best = 0, bestDot = -Infinity;
-      for (let e = 0; e < 6; e++) {
-        const v = edgeVecs[e];
-        const dot = v.x * d.x + v.y * d.y;
-        if (dot > bestDot) { bestDot = dot; best = e; }
-      }
-      map[side] = best;
-    }
-    return map; // array length 6: map[side] -> ringEdgeIndex
-  }
-
+  // === CLICK DEBUG: print adjacent levels per YOUR side numbering ===
   debugHex(q, r) {
-    // Local center (no map offsets)
-    const center = this.hexToPixel(q, r, this.hexSize);
+    const center = this.hexToPixel(q, r, this.hexSize); // local (no map offsets)
     this.debugGraphics.clear();
     this.debugGraphics.lineStyle(2, 0xff00ff, 1);
     this.drawHex(this.debugGraphics, center.x, center.y, this.hexSize);
@@ -309,48 +263,56 @@ export default class WorldScene extends Phaser.Scene {
     console.log(`• Enemy Units: ${enemiesHere.length}`);
     console.log(`• Objects: ${objects.join(", ") || "None"}`);
 
-    // Build ring in local iso coords (consistent with renderer)
+    // Build ring points (same order as renderer: 0 top, 1 top-right, 2 bottom-right, 3 bottom, 4 bottom-left, 5 top-left)
     const w = this.hexSize * Math.sqrt(3) / 2;
     const h = this.hexSize / 2;
     const deltas = [
-      { dx: 0,  dy: -this.hexSize }, // ring edge 0 (top)
-      { dx: +w, dy: -h           }, // 1 (top-right)
-      { dx: +w, dy: +h           }, // 2 (bottom-right)
-      { dx: 0,  dy: +this.hexSize }, // 3 (bottom)
-      { dx: -w, dy: +h           }, // 4 (bottom-left)
-      { dx: -w, dy: -h           }, // 5 (top-left)
+      { dx: 0,  dy: -this.hexSize }, // 0 top
+      { dx: +w, dy: -h           }, // 1 top-right
+      { dx: +w, dy: +h           }, // 2 bottom-right
+      { dx: 0,  dy: +this.hexSize }, // 3 bottom
+      { dx: -w, dy: +h           }, // 4 bottom-left
+      { dx: -w, dy: -h           }, // 5 top-left
     ];
     const ring = deltas.map(({dx, dy}) => {
       const off = isoOffset(dx, dy);
       return { x: center.x + off.x, y: center.y + off.y };
     });
 
-    // Map your sides (0..5) to ring edges via unsheared vector matching
-    const sideToEdge = this._sideToRingEdge(center, ring);
+    // Your side numbering:
+    // 0 top-right slanted = ring edge 0
+    // 1 right vertical     = ring edge 1
+    // 2 bottom-right       = ring edge 2
+    // 3 bottom-left        = ring edge 3
+    // 4 left vertical      = ring edge 4
+    // 5 top-left           = ring edge 5
+    const sideToEdge = [0,1,2,3,4,5];
 
-    // For each side, sample the neighbor by going slightly over the chosen edge
-    const EPS = 1.75;
-    for (let side = 0; side < 6; side++) {
-      const e = sideToEdge[side];
-      const A = ring[e];
-      const B = ring[(e + 1) % 6];
+    const sampleNeighbor = (edgeIndex, eps) => {
+      const A = ring[edgeIndex];
+      const B = ring[(edgeIndex + 1) % 6];
       let mx = (A.x + B.x) * 0.5;
       let my = (A.y + B.y) * 0.5;
       const vx = mx - center.x, vy = my - center.y;
       const L = Math.hypot(vx, vy) || 1;
-      mx += (vx / L) * EPS;
-      my += (vy / L) * EPS;
-
-      // already local → axial
+      mx += (vx / L) * eps;
+      my += (vy / L) * eps;
       const approx = this.pixelToHex(mx, my, this.hexSize);
       const nbr = this.roundHex(approx.q, approx.r);
-      const nTile = this.mapData.find(h => h.q === nbr.q && h.r === nbr.r);
+      return this.mapData.find(h => h.q === nbr.q && h.r === nbr.r) || null;
+    };
+
+    for (let side = 0; side < 6; side++) {
+      const e = sideToEdge[side];
+      // Try with eps=1.75; if it still resolves to self, bump to 3.0
+      let nTile = sampleNeighbor(e, 1.75);
+      if (nTile && nTile.q === q && nTile.r === r) nTile = sampleNeighbor(e, 3.0);
 
       if (!nTile) {
         console.log(`Side ${side} - adjacent to hex level N/A (off map)`);
       } else {
-        const levelStr = (typeof nTile.elevation === 'number') ? nTile.elevation : 'N/A';
-        console.log(`Side ${side} - adjacent to hex level ${levelStr} (terrain ${nTile.type})`);
+        const lvl = (typeof nTile.elevation === 'number') ? nTile.elevation : 'N/A';
+        console.log(`Side ${side} - adjacent to hex level ${lvl} (terrain ${nTile.type})`);
       }
     }
   }
