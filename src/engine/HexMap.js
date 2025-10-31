@@ -1,13 +1,18 @@
 // deephexbeta/src/engine/HexMap.js
-import { cyrb128, sfc32 } from './PRNG.js';
+import { cyrb128, sfc32 } from '../engine/PRNG.js';
 
 const terrainTypes = {
-  grassland: { movementCost: 1, color: '#34a853' },
-  sand:      { movementCost: 2, color: '#FFF59D' },
-  mud:       { movementCost: 3, color: '#795548' },
-  mountain:  { movementCost: Infinity, color: '#9E9E9E', impassable: true },
-  water:     { movementCost: Infinity, color: '#4da6ff', impassable: true },
-  swamp:     { movementCost: 3, color: '#4E342E' }
+  grassland:   { movementCost: 1, color: '#34a853' },
+  sand:        { movementCost: 2, color: '#FFF59D' },
+  mud:         { movementCost: 3, color: '#795548' },
+  mountain:    { movementCost: Infinity, color: '#9E9E9E', impassable: true },
+  water:       { movementCost: Infinity, color: '#4da6ff', impassable: true },
+  swamp:       { movementCost: 3, color: '#4E342E' },
+
+  // NEW biomes
+  volcano_ash: { movementCost: 2, color: '#9A9A9A' },   // grey, mildly slow
+  ice:         { movementCost: 2, color: '#CFEFFF' },   // slippery/light blue
+  snow:        { movementCost: 3, color: '#F7FBFF' }    // heavy snow
 };
 
 /** Hash a string to a 32-bit int */
@@ -70,16 +75,20 @@ function __hx_computeElevation(q, r, cols, rows, rawSeed, terrainType) {
 
   switch (terrainType) {
     case 'water':     return 0;
-    case 'mountain':  n = Math.min(1, n * 0.7 + 0.5); break;
-    case 'sand':      n = Math.max(0, n * 0.85 - 0.05); break;
+    case 'mountain':  n = Math.min(1, n * 0.7 + 0.5); break; // push up
+    case 'sand':      n = Math.max(0, n * 0.85 - 0.05); break; // pull down
     case 'swamp':
-    case 'mud':       n = Math.max(0, n * 0.9  - 0.02); break;
+    case 'mud':       n = Math.max(0, n * 0.9  - 0.02); break; // slightly lower
+    case 'volcano_ash':
+      n = Math.max(0, n * 0.95 - 0.02); break;
+    case 'ice':
+    case 'snow':
+      n = Math.max(0, n * 0.98 - 0.01); break;
   }
   const e = Math.max(0, Math.min(4, Math.floor(n * 5)));
   return e;
 }
 
-/* ---------- helpers ---------- */
 function neighbors(q, r, map) {
   const dirs = [[1, 0], [1, -1], [0, -1], [-1, 0], [-1, 1], [0, 1]];
   return dirs
@@ -96,17 +105,15 @@ function markWater(tile) {
 
 /* ===========================================================
    GEOGRAPHY PRESETS (seeded)
-   - Removed preset 1 (“Normal round island”)
-   - Reduced water carving by 15% across presets
+   (using the already-updated version where preset 1 was removed,
+    and water carving reduced by 15%)
    =========================================================== */
 function applyGeography(map, cols, rows, seedStr, rand) {
   // pick among presets 2..6 only
   const pickF = 2 + Math.floor(rand() * 5); // 2..6
 
-  // reduce extra water carving by 15%
   const WATER_SCALE = 0.85;
 
-  // Helper: carve by mask threshold until target % reached.
   function carveByMask(targetPctMin, targetPctMax, maskFn) {
     const total = cols * rows;
     const baseTarget = Math.round(
@@ -133,16 +140,13 @@ function applyGeography(map, cols, rows, seedStr, rand) {
     }
   }
 
-  // Normalize coords helper
   const cx = cols / 2, cy = rows / 2;
   const nx = x => (x - cx) / (cols * 0.5);
   const ny = y => (y - cy) / (rows * 0.5);
-
   const fbm = (x, y, f = 1.0) => __hx_fbm2D(x * f + 41.2, y * f - 17.9, seedStr, 4, 2.0, 0.5);
 
   switch (pickF) {
-    // 2) Big lagoon (central negative mask) — 15–35% (scaled by WATER_SCALE)
-    case 2: {
+    case 2: { // Big lagoon
       carveByMask(0.15, 0.35, (q, r) => {
         const X = nx(q), Y = ny(r);
         const r2 = (X * X) / 0.5 + (Y * Y) / 0.25;
@@ -150,8 +154,7 @@ function applyGeography(map, cols, rows, seedStr, rand) {
       });
       break;
     }
-    // 3) Big lake at center — 10–20%
-    case 3: {
+    case 3: { // Big center lake
       carveByMask(0.10, 0.20, (q, r) => {
         const X = nx(q), Y = ny(r);
         const d = Math.hypot(X * 0.9, Y * 0.9);
@@ -159,16 +162,15 @@ function applyGeography(map, cols, rows, seedStr, rand) {
       });
       break;
     }
-    // 4) 2–3 small bays from edges — 20–30%
-    case 4: {
-      const bays = 2 + Math.floor(rand() * 2); // 2..3
+    case 4: { // 2–3 bays
+      const bays = 2 + Math.floor(rand() * 2);
       const bayParams = [];
       for (let i = 0; i < bays; i++) {
         bayParams.push({
-          side: Math.floor(rand() * 4), // 0=top,1=right,2=bottom,3=left
-          t: rand() * 0.6 + 0.2,        // along-edge anchor
-          w: rand() * 0.25 + 0.15,      // width
-          d: rand() * 0.35 + 0.25       // depth
+          side: Math.floor(rand() * 4),
+          t: rand() * 0.6 + 0.2,
+          w: rand() * 0.25 + 0.15,
+          d: rand() * 0.35 + 0.25
         });
       }
       carveByMask(0.20, 0.30, (q, r) => {
@@ -189,8 +191,7 @@ function applyGeography(map, cols, rows, seedStr, rand) {
       });
       break;
     }
-    // 5) Scattered terrain separated by “rivers” — 15–30%
-    case 5: {
+    case 5: { // Scattered terrain via “rivers”
       carveByMask(0.15, 0.30, (q, r) => {
         const X = nx(q), Y = ny(r);
         const bands = 0.5 + 0.5 * Math.sin((X * 4.0 + Y * 3.0) + 6.28 * fbm(X, Y, 1.2));
@@ -198,8 +199,7 @@ function applyGeography(map, cols, rows, seedStr, rand) {
       });
       break;
     }
-    // 6) 2–3 big islands separated by water channels — 15–35%
-    case 6: {
+    case 6: { // 2–3 big islands
       const islands = 2 + Math.floor(rand() * 2);
       const centers = [];
       for (let i = 0; i < islands; i++) {
@@ -229,8 +229,8 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
     }))
   );
 
-  // ==== Base island mask: +15% land (≈ radius * 1.075) ====
-  const LAND_RADIUS_BOOST = 1.075; // sqrt(1.15) ≈ 1.073
+  // Base island mask (already boosted in your prior step)
+  const LAND_RADIUS_BOOST = 1.075;
   const centerQ = cols / 2;
   const centerR = rows / 2;
   const maxRadius = (Math.min(centerQ, centerR) - 2) * LAND_RADIUS_BOOST;
@@ -248,10 +248,10 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
     }
   }
 
-  // Seeded geography presets (carving extra water) — reduced by 15%
+  // Presets carving (reduced 15% water)
   applyGeography(map, cols, rows, seedStr, rand);
 
-  // Biomes
+  // --- Biomes (existing) ---
   function placeBiome(type, minSize, maxSize, instances) {
     for (let i = 0; i < instances; i++) {
       let size = minSize + Math.floor(rand() * (maxSize - minSize + 1));
@@ -282,11 +282,17 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
     }
   }
 
+  // Existing
   placeBiome('mud',   5, 9, 4);
   placeBiome('sand',  5, 9, 4);
   placeBiome('swamp', 5, 9, 3);
 
-  // Mountains
+  // NEW biomes (light instances so they season the map)
+  placeBiome('volcano_ash', 5, 10, 2);
+  placeBiome('ice',         5, 10, 2);
+  placeBiome('snow',        5, 10, 2);
+
+  // Mountains (chain) — keep shaping, but we’ll normalize to level 4 later
   const mountainChains = 6 + Math.floor(rand() * 3);
   for (let i = 0; i < mountainChains; i++) {
     let q = Math.floor(rand() * (cols - 4)) + 2;
@@ -297,7 +303,8 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
       const tile = map[r][q];
       const distFromP1 = Math.sqrt((q - 2) ** 2 + (r - 2) ** 2);
       const distFromP2 = Math.sqrt((q - cols + 2) ** 2 + (r - rows + 2) ** 2);
-      if (tile.type === 'grassland' && distFromP1 > 3 && distFromP2 > 3) {
+      if (tile.type !== 'water' && distFromP1 > 3 && distFromP2 > 3) {
+        // temporarily tag as mountain; final pass will enforce lvl 4 or downgrade
         Object.assign(tile, { type: 'mountain', ...terrainTypes.mountain });
       }
       const nbs = neighbors(q, r, map);
@@ -308,7 +315,7 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
     }
   }
 
-  // Objects placement (respect water/mountain)
+  // Objects placement (respect water/mountain afterwards)
   const flat = map.flat();
   const markObj = (tile, key) => { tile[key] = true; tile.hasObject = true; };
   const isFree = t => !t.hasObject && !['mountain', 'water'].includes(t.type);
@@ -319,7 +326,7 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
   forestCandidates.slice(0, 39).forEach(tile => tile.hasForest = true);
 
   // Ruins
-  const ruinCandidates = flat.filter(t => ['sand', 'swamp'].includes(t.type) && isFree(t));
+  const ruinCandidates = flat.filter(t => ['sand', 'swamp', 'volcano_ash', 'ice', 'snow'].includes(t.type) && isFree(t));
   Phaser.Utils.Array.Shuffle(ruinCandidates);
   ruinCandidates.slice(0, Phaser.Math.Between(2, 3)).forEach(t => markObj(t, 'hasRuin'));
 
@@ -370,6 +377,25 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
     }
   }
 
+  // === Final normalization: only level-4 tiles are true mountains & impassable ===
+  for (const t of flat) {
+    if (t.type !== 'water' && t.elevation === 4) {
+      // Force to mountain and block
+      t.type = 'mountain';
+      t.impassable = true;
+      t.movementCost = Infinity;
+      t.hasMountainIcon = true;
+    } else {
+      t.hasMountainIcon = false;
+      // Any left-over "mountain" tags below level 4 are downgraded to grassland
+      if (t.type === 'mountain') {
+        t.type = 'grassland';
+        t.impassable = false;
+        t.movementCost = terrainTypes.grassland.movementCost;
+      }
+    }
+  }
+
   return flat;
 }
 
@@ -385,7 +411,6 @@ export default class HexMap {
   generateMap() {
     const rngSeed = cyrb128(this.seed);
     const rand = sfc32(...rngSeed);
-    // rows = height, cols = width
     this.map = generateMap(this.height, this.width, this.seed, rand);
   }
 
