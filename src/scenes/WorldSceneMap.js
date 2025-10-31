@@ -9,16 +9,20 @@ const ISO_YSCALE = 0.95;
 
 const pt = (x, y) => ({ x, y });
 
-/* ---------- terrain palette (pastel) ---------- */
+/* ---------- terrain palette (pastel + new) ---------- */
 export function getColorForTerrain(terrain) {
   switch (terrain) {
-    case 'grassland': return 0x8bd17c; // #8BD17C
-    case 'sand':      return 0xF6E7A1; // #F6E7A1
-    case 'mud':       return 0xB48A78; // #B48A78
-    case 'swamp':     return 0x8AA18A; // #8AA18A
-    case 'mountain':  return 0xC9C9C9; // #C9C9C9
-    case 'water':     return 0x7CC4FF; // #7CC4FF
-    default:          return 0xA7A7A7; // neutral gray
+    case 'grassland':   return 0x8bd17c; // #8BD17C
+    case 'sand':        return 0xF6E7A1; // #F6E7A1
+    case 'mud':         return 0xB48A78; // #B48A78
+    case 'swamp':       return 0x8AA18A; // #8AA18A
+    case 'mountain':    return 0xC9C9C9; // #C9C9C9
+    case 'water':       return 0x7CC4FF; // #7CC4FF
+    // NEW:
+    case 'volcano_ash': return 0x9A9A9A; // grey
+    case 'ice':         return 0xCFEFFF; // light blue
+    case 'snow':        return 0xF7FBFF; // very light
+    default:            return 0xA7A7A7; // neutral gray
   }
 }
 
@@ -186,13 +190,12 @@ export function drawHex(q, r, xIso, yIso, size, fillColor, effElevation/*, terra
   const n5 = neighborBySide(this.tileAt, q, r, 5);
 
   // === Render REQUIRED cliffs on your screen-facing sides ===
-  // ✅ bottom-right cliff (side 2) -> edge 2
+  // Bottom-right cliff -> side 2 (edge 2)
   if (n2) maybeCliff(2, n2);
-
-  // ✅ bottom edge per your working setup (side 3) -> edge 3
+  // Bottom side worked in your tests -> side 3 (edge 3)
   if (n3) maybeCliff(3, n3);
 
-  // (optional thin skirts to seal AA seams)
+  // (optional thin skirts to seal AA seams elsewhere)
   if (n0) maybeSkirt(0, n0);
   if (n1) maybeSkirt(1, n1);
   if (n4) maybeSkirt(4, n4);
@@ -212,12 +215,12 @@ export function drawHex(q, r, xIso, yIso, size, fillColor, effElevation/*, terra
   return { face, rim, ring };
 }
 
-/* ---------- elevation tint (stronger levels) ---------- */
+/* ---------- elevation tint (clear level steps) ---------- */
 function getFillForTile(tile) {
   const baseColor = getColorForTerrain(tile.type);
   if (tile.type === 'water') return baseColor;
 
-  // clear per-level stepping toward white
+  // Clear per-level stepping toward white (stronger contrast)
   //    0     1     2     3     4
   const LEVEL_TINTS = [0.00, 0.18, 0.34, 0.50, 0.66];
 
@@ -303,15 +306,17 @@ export function drawHexMap() {
     this.mapContainer.add(rim);                    // rim on top
   }
 
+  // Draw locations & roads on top (emojis)
   drawLocationsAndRoads.call(this);
 
+  // Hover highlight (kept)
   if (this.hoverOutline) { this.hoverOutline.destroy(); this.hoverOutline = null; }
   this.input?.on('pointermove', (pointer) => {
     const worldX = pointer.worldX - this.mapOffsetX;
     const worldY = pointer.worldY - this.mapOffsetY;
 
     const frac = pixelToHex(worldX, worldY, this.hexSize);
-    const axial = roundHex(frac.q, frac.r); // <-- fixed line
+    const axial = roundHex(frac.q, frac.r);
     const tile = this.tileAt(axial.q, axial.r);
     if (!tile) {
       if (this.hoverOutline) { this.hoverOutline.destroy(); this.hoverOutline = null; }
