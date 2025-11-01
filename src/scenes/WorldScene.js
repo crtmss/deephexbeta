@@ -4,9 +4,53 @@ import { findPath } from '../engine/AStar.js';
 import { setupCameraControls, setupTurnUI } from './WorldSceneUI.js';
 import { spawnUnitsAndEnemies, subscribeToGameUpdates } from './WorldSceneUnits.js';
 import {
-  drawHexMap, hexToPixel, pixelToHex, roundHex, drawHex, getColorForTerrain, isoOffset,
-  generateHexMap
+  drawHexMap, hexToPixel, pixelToHex, roundHex, drawHex, getColorForTerrain, isoOffset
 } from './WorldSceneMap.js';
+
+/* =========================
+   Deterministic world summary
+   (mirrors the lobby so labels match)
+   ========================= */
+function __hashStr32(s) {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+function __xorshift32(seed) {
+  let x = (seed || 1) >>> 0;
+  return () => {
+    x ^= x << 13; x >>>= 0;
+    x ^= x >> 17; x >>>= 0;
+    x ^= x << 5;  x >>>= 0;
+    return (x >>> 0) / 4294967296;
+  };
+}
+function getWorldSummaryForSeed(seed) {
+  const rng = __xorshift32(__hashStr32(String(seed ?? 'default')));
+
+  const geoRoll = rng();
+  const bioRoll = rng();
+
+  let geography;
+  if (geoRoll < 0.15) geography = 'Big Lagoon';
+  else if (geoRoll < 0.30) geography = 'Central Lake';
+  else if (geoRoll < 0.50) geography = 'Small Bays';
+  else if (geoRoll < 0.70) geography = 'Scattered Terrain';
+  else if (geoRoll < 0.85) geography = 'Diagonal Island';
+  else geography = 'Multiple Islands';
+
+  let biome;
+  if (bioRoll < 0.20) biome = 'Icy Biome';
+  else if (bioRoll < 0.40) biome = 'Volcanic Biome';
+  else if (bioRoll < 0.60) biome = 'Desert Biome';
+  else if (bioRoll < 0.80) biome = 'Temperate Biome';
+  else biome = 'Swamp Biome';
+
+  return { geography, biome };
+}
 
 export default class WorldScene extends Phaser.Scene {
   constructor() {
@@ -28,8 +72,6 @@ export default class WorldScene extends Phaser.Scene {
     const mapPixelHeight = this.hexSize * 1.5 * (this.mapHeight + 0.5) + pad * 2;
     this.cameras.main.setBounds(0, 0, mapPixelWidth, mapPixelHeight);
     this.cameras.main.setZoom(1.0);
-    // Match background to water tile color
-    this.cameras.main.setBackgroundColor('#7CC4FF');
 
     const { roomCode, playerName, isHost } = this.scene.settings.data;
     const { getLobbyState } = await import('../net/LobbyManager.js');
@@ -84,11 +126,14 @@ export default class WorldScene extends Phaser.Scene {
     this.pathLabels = [];
     this.debugGraphics = this.add.graphics({ x: 0, y: 0 }).setDepth(100);
 
-    // === USE BIOME/GEOGRAPHY MAP ===
-    // this.hexMap = new HexMap(this.mapWidth, this.mapHeight, this.seed);
-    // this.mapData = this.hexMap.getMap();
-    this.mapData = generateHexMap(this.mapWidth, this.mapHeight, this.seed);
+    this.hexMap = new HexMap(this.mapWidth, this.mapHeight, this.seed);
+    this.mapData = this.hexMap.getMap();
     drawHexMap.call(this);
+
+    // === Top-center world meta badge (Geography & Biome)
+    const { geography, biome } =
+      (this.hexMap.worldInfo ?? this.hexMap.worldMeta) || getWorldSummaryForSeed(this.seed);
+    this.addWorldMetaBadge(geography, biome);
 
     await spawnUnitsAndEnemies.call(this);
     subscribeToGameUpdates.call(this);
@@ -236,6 +281,35 @@ export default class WorldScene extends Phaser.Scene {
         }
       }
     });
+  }
+
+  addWorldMetaBadge(geography, biome) {
+    // Container at top center, fixed to screen
+    const cam = this.cameras.main;
+    const cx = cam.width / 2;
+
+    const container = this.add.container(cx, 18).setScrollFactor(0).setDepth(2000);
+    const text1 = this.add.text(0, 0, `🌍 Geography: ${geography}`, {
+      fontSize: '16px',
+      color: '#e8f6ff'
+    }).setOrigin(0.5, 0.5).setDepth(2001);
+
+    const text2 = this.add.text(0, 20, `🌿 Biome: ${biome}`, {
+      fontSize: '16px',
+      color: '#e8f6ff'
+    }).setOrigin(0.5, 0.5).setDepth(2001);
+
+    // background pill
+    const w = Math.max(text1.width, text2.width) + 24;
+    const h = 44;
+    const bg = this.add.graphics().setDepth(2000);
+    bg.fillStyle(0x000000, 0.35);
+    bg.fillRoundedRect(-w/2, -10, w, h, 10);
+    bg.lineStyle(1, 0xffffff, 0.15);
+    bg.strokeRoundedRect(-w/2, -10, w, h, 10);
+
+    container.add([bg, text1, text2]);
+    this.worldMetaBadge = container;
   }
 
   clearPathPreview() {
