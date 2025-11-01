@@ -128,6 +128,7 @@ export default class WorldScene extends Phaser.Scene {
 
     this.hexMap = new HexMap(this.mapWidth, this.mapHeight, this.seed);
     this.mapData = this.hexMap.getMap();
+    delete this.mapData.__locationsApplied;
     drawHexMap.call(this);
 
     // === Top-center world meta badge (Geography & Biome)
