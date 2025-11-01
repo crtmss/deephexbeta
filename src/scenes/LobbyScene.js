@@ -4,47 +4,136 @@ import { supabase } from '../net/SupabaseClient.js';
 import HexMap from '../engine/HexMap.js';
 import { getColorForTerrain } from './WorldSceneMap.js';
 
-// --- helper functions matching WorldSceneMap.js ---
-function hashStr32(s) {
-  let h = 2166136261 >>> 0;
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i);
-    h = Math.imul(h, 16777619);
+/* -------------------------------------------
+   Lightweight helpers (non-visual)
+-------------------------------------------- */
+function keyOf(q, r) { return `${q},${r}`; }
+function analyzeMapForSummary(mapData, W = 25, H = 25) {
+  // Build quick lookup
+  const byKey = new Map(mapData.map(t => [keyOf(t.q, t.r), t]));
+  const land = mapData.filter(t => t.type !== 'water');
+  const water = mapData.length - land.length;
+  const landRatio = land.length / mapData.length;
+
+  // ----- BIOME inference from tile mix -----
+  const count = tName => land.filter(t => t.type === tName).length;
+  const nSnow    = count('snow');
+  const nIce     = count('ice');
+  const nAsh     = count('volcano_ash');
+  const nSand    = count('sand');
+  const nMud     = count('mud');
+  const nSwamp   = count('swamp');
+
+  let biome = 'Temperate Biome';
+  if ((nSnow + nIce) / Math.max(1, land.length) > 0.55) {
+    biome = 'Icy Biome';
+  } else if (nAsh / Math.max(1, land.length) > 0.45) {
+    biome = 'Volcanic Biome';
+  } else if (nSand / Math.max(1, land.length) > 0.45) {
+    biome = 'Desert Biome';
+  } else if ((nMud + nSwamp) / Math.max(1, land.length) > 0.50) {
+    biome = 'Swamp Biome';
   }
-  return h >>> 0;
-}
-function xorshift32(seed) {
-  let x = (seed || 1) >>> 0;
-  return () => {
-    x ^= x << 13; x >>>= 0;
-    x ^= x >> 17; x >>>= 0;
-    x ^= x << 5;  x >>>= 0;
-    return (x >>> 0) / 4294967296;
-  };
-}
-function getWorldSummary(seed) {
-  const rng = xorshift32(hashStr32(String(seed ?? 'default')));
-  const geoRoll = rng();
-  const bioRoll = rng();
 
-  let geography;
-  if (geoRoll < 0.15) geography = 'Big Lagoon';
-  else if (geoRoll < 0.30) geography = 'Central Lake';
-  else if (geoRoll < 0.50) geography = 'Small Bays';
-  else if (geoRoll < 0.70) geography = 'Scattered Terrain';
-  else if (geoRoll < 0.85) geography = 'Diagonal Island';
-  else geography = 'Multiple Islands';
+  // ----- GEOGRAPHY inference from shape -----
+  // Land components (BFS over axial odd-r adjacency)
+  const neighborsOddR = (q, r) =>
+    (r % 2 === 0)
+      ? [[+1,0],[0,-1],[-1,-1],[-1,0],[-1,+1],[0,+1]]
+      : [[+1,0],[+1,-1],[0,-1],[-1,0],[0,+1],[+1,+1]];
 
-  let biome;
-  if (bioRoll < 0.20) biome = 'Icy Biome';
-  else if (bioRoll < 0.40) biome = 'Volcanic Biome';
-  else if (bioRoll < 0.60) biome = 'Desert Biome';
-  else if (bioRoll < 0.80) biome = 'Temperate Biome';
-  else biome = 'Swamp Biome';
+  const visited = new Set();
+  const compSizes = [];
+  for (const t of land) {
+    const k = keyOf(t.q, t.r);
+    if (visited.has(k)) continue;
+    // BFS
+    let size = 0;
+    const q = [t];
+    visited.add(k);
+    while (q.length) {
+      const cur = q.shift();
+      size++;
+      for (const [dq, dr] of neighborsOddR(cur.q, cur.r)) {
+        const nk = keyOf(cur.q + dq, cur.r + dr);
+        if (visited.has(nk)) continue;
+        const nt = byKey.get(nk);
+        if (nt && nt.type !== 'water') {
+          visited.add(nk);
+          q.push(nt);
+        }
+      }
+    }
+    compSizes.push(size);
+  }
+  compSizes.sort((a, b) => b - a);
+  const components = compSizes.length;
+
+  // Central water test (for "Central Lake" or "Big Lagoon")
+  const minQ = Math.floor(W * 0.3), maxQ = Math.ceil(W * 0.7);
+  const minR = Math.floor(H * 0.3), maxR = Math.ceil(H * 0.7);
+  let centralWater = 0, centralTotal = 0;
+  for (let r = minR; r < maxR; r++) {
+    for (let q = minQ; q < maxQ; q++) {
+      const t = byKey.get(keyOf(q, r));
+      if (!t) continue;
+      centralTotal++;
+      if (t.type === 'water') centralWater++;
+    }
+  }
+  const centralWaterRatio = centralTotal ? centralWater / centralTotal : 0;
+
+  // Shoreline measure (many bays → higher shoreline/land ratio)
+  let shoreline = 0;
+  for (const t of land) {
+    for (const [dq, dr] of neighborsOddR(t.q, t.r)) {
+      const n = byKey.get(keyOf(t.q + dq, t.r + dr));
+      if (!n || n.type === 'water') shoreline++;
+    }
+  }
+  const shorePerLand = shoreline / Math.max(1, land.length);
+
+  // Diagonal elongation via covariance
+  let sx = 0, sy = 0;
+  for (const t of land) { sx += t.q; sy += t.r; }
+  const mx = sx / Math.max(1, land.length);
+  const my = sy / Math.max(1, land.length);
+  let sxx = 0, syy = 0, sxy = 0;
+  for (const t of land) {
+    const dx = t.q - mx, dy = t.r - my;
+    sxx += dx * dx; syy += dy * dy; sxy += dx * dy;
+  }
+  const diagness = Math.abs(sxy) / Math.max(1, Math.sqrt(sxx * syy)); // 0..1 approx
+
+  // Decide geography (heuristic order)
+  let geography = 'Diagonal Island';
+  if (components >= 3) {
+    geography = 'Multiple Islands';
+  } else if (centralWaterRatio > 0.25 && landRatio > 0.4) {
+    geography = 'Central Lake';
+  } else if (shorePerLand > 1.8) {
+    geography = 'Small Bays';
+  } else if (diagness > 0.55) {
+    geography = 'Diagonal Island';
+  } else {
+    // Scattered terrain if many thin water channels across land
+    const waterTouchingLand = mapData.filter(t => t.type === 'water').filter(t => {
+      for (const [dq, dr] of neighborsOddR(t.q, t.r)) {
+        const n = byKey.get(keyOf(t.q + dq, t.r + dr));
+        if (n && n.type !== 'water') return true;
+      }
+      return false;
+    }).length;
+    const channeled = waterTouchingLand / Math.max(1, water) > 0.7;
+    geography = channeled ? 'Scattered Terrain' : 'Big Lagoon';
+  }
 
   return { geography, biome };
 }
 
+/* -------------------------------------------
+   Lobby Scene
+-------------------------------------------- */
 export default class LobbyScene extends Phaser.Scene {
   constructor() {
     super('LobbyScene');
@@ -83,7 +172,7 @@ export default class LobbyScene extends Phaser.Scene {
     codeInput.node.style.textAlign = 'center';
     codeInput.node.style.width = '110px';
 
-    // 🎲 Random Seed button — place it clearly under the seed field
+    // 🎲 Random Seed button (restored & visible)
     const randomBtn = this.add.dom(640, 290, 'button', {
       backgroundColor: '#555',
       color: '#fff',
@@ -94,25 +183,23 @@ export default class LobbyScene extends Phaser.Scene {
       cursor: 'pointer'
     }, '🎲 Random Seed');
     randomBtn.setOrigin(0.5);
-    randomBtn.setDepth(1250);       // higher than other DOM elements
-    randomBtn.setScrollFactor(0);   // keep in place even if camera moves
+    randomBtn.setDepth(1250);
+    randomBtn.setScrollFactor(0);
 
-    // Random 6-digit seed on load
+    // Initial random seed
     const randomSeed = String(Math.floor(Math.random() * 1000000)).padStart(6, '0');
     codeInput.node.value = randomSeed;
 
-    // Preview & summary labels
-    this.add.text(870, 130, 'Map Preview', {
-      fontSize: '18px',
-      fill: '#ffffff'
-    });
+    // Preview header
+    this.add.text(870, 130, 'Map Preview', { fontSize: '18px', fill: '#ffffff' });
 
+    // Preview canvas
     this.previewSize = 80;
     this.previewContainer = this.add.container(900, 200);
     this.previewGraphics = this.add.graphics();
     this.previewContainer.add(this.previewGraphics);
 
-    // Geography / Biome labels
+    // Labels (geography / biome)
     this.geographyText = this.add.text(820, 380, '', {
       fontSize: '18px',
       fill: '#aadfff'
@@ -122,7 +209,7 @@ export default class LobbyScene extends Phaser.Scene {
       fill: '#aadfff'
     });
 
-    // Numeric input validation and preview update
+    // Numeric-only + preview updates
     codeInput.node.addEventListener('input', () => {
       let value = codeInput.node.value.replace(/\D/g, '');
       if (value.length > 6) value = value.slice(0, 6);
@@ -144,7 +231,7 @@ export default class LobbyScene extends Phaser.Scene {
       this.updatePreview(newSeed);
     });
 
-    // Initial preview
+    // First preview draw
     this.updatePreview(randomSeed);
 
     // Host button
@@ -208,54 +295,56 @@ export default class LobbyScene extends Phaser.Scene {
     });
   }
 
-  // Draw small map preview
+  // --- Draw small hex preview + true summary from the generated map
   updatePreview(seedString) {
     if (!this.previewGraphics) return;
     this.previewGraphics.clear();
 
+    // Generate exactly what WorldScene will use
     const hexMap = new HexMap(25, 25, seedString);
     const mapData = hexMap.getMap();
 
+    // Mini hex geometry (flat-top)
     const size = 6;
-    const hexToPixel = (q, r, size) => {
-      const x = size * Math.sqrt(3) * (q + 0.5 * (r & 1));
-      const y = size * 1.5 * r;
+    const hexToPixel = (q, r, s) => {
+      const x = s * Math.sqrt(3) * (q + 0.5 * (r & 1));
+      const y = s * 1.5 * r;
       return { x, y };
     };
 
+    // Center preview
     const w = this.previewSize;
     const offsetX = -w;
     const offsetY = -w / 1.2;
 
+    // Fill water background (match world water color if desired)
+    this.previewGraphics.fillStyle(0x7CC4FF, 1);
+    this.previewGraphics.fillRect(-w - 10, -w - 10, w * 2 + 60, w * 2 + 60);
+
     for (const tile of mapData) {
       const { q, r, type, elevation } = tile;
       const { x, y } = hexToPixel(q, r, size);
-      const color = getColorForTerrain
-        ? getColorForTerrain(type, elevation)
-        : 0x999999;
+      const color = getColorForTerrain ? getColorForTerrain(type, elevation) : 0x999999;
 
-      this.drawHex(this.previewGraphics, x + offsetX, y + offsetY, size, color);
+      // draw flat hex
+      const corners = [];
+      for (let i = 0; i < 6; i++) {
+        const ang = Phaser.Math.DegToRad(60 * i - 30);
+        corners.push({ x: x + size * Math.cos(ang), y: y + size * Math.sin(ang) });
+      }
+      this.previewGraphics.fillStyle(color, 1);
+      this.previewGraphics.beginPath();
+      this.previewGraphics.moveTo(corners[0].x + offsetX, corners[0].y + offsetY);
+      for (let i = 1; i < 6; i++) {
+        this.previewGraphics.lineTo(corners[i].x + offsetX, corners[i].y + offsetY);
+      }
+      this.previewGraphics.closePath();
+      this.previewGraphics.fillPath();
     }
 
-    const { geography, biome } = getWorldSummary(seedString);
+    // Derive true summary from map content
+    const { geography, biome } = analyzeMapForSummary(mapData, 25, 25);
     this.geographyText.setText(`🌍 Geography: ${geography}`);
     this.biomeText.setText(`🌿 Biome: ${biome}`);
-  }
-
-  drawHex(graphics, x, y, size, color) {
-    const corners = [];
-    for (let i = 0; i < 6; i++) {
-      const angle = Phaser.Math.DegToRad(60 * i - 30);
-      corners.push({
-        x: x + size * Math.cos(angle),
-        y: y + size * Math.sin(angle)
-      });
-    }
-    graphics.fillStyle(color, 1);
-    graphics.beginPath();
-    graphics.moveTo(corners[0].x, corners[0].y);
-    for (let i = 1; i < 6; i++) graphics.lineTo(corners[i].x, corners[i].y);
-    graphics.closePath();
-    graphics.fillPath();
   }
 }
