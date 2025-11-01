@@ -103,10 +103,22 @@ function markWater(tile) {
   });
 }
 
+/* =========================
+   Utilities for coverage
+   ========================= */
+function coverageRatio(flat) {
+  const land = flat.filter(t => t.type !== 'water').length;
+  return land / flat.length;
+}
+function distToCenter(cols, rows, q, r) {
+  const cx = cols / 2, cy = rows / 2;
+  const dx = q - cx, dy = r - cy;
+  return Math.hypot(dx, dy);
+}
+
 /* ===========================================================
    GEOGRAPHY PRESETS (seeded)
-   (using the already-updated version where preset 1 was removed,
-    and water carving reduced by 15%)
+   (preset 1 removed; water carving reduced by 15%)
    =========================================================== */
 function applyGeography(map, cols, rows, seedStr, rand) {
   // pick among presets 2..6 only
@@ -219,6 +231,102 @@ function applyGeography(map, cols, rows, seedStr, rand) {
   }
 }
 
+/* =========================
+   Biome helpers (seeded)
+   ========================= */
+function shuffleInPlace(a, rand) {
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+}
+function assignExact(pool, type, count, rand) {
+  if (count <= 0) return;
+  const idxs = pool.map((_, i) => i);
+  shuffleInPlace(idxs, rand);
+  for (let k = 0; k < idxs.length && count > 0; k++) {
+    const t = pool[idxs[k]];
+    if (!t) continue;
+    t.type = type;
+    t.movementCost = terrainTypes[type].movementCost;
+    t.impassable = !!terrainTypes[type].impassable;
+    count--;
+  }
+}
+function paintBiome(flat, cols, rows, rand) {
+  // Deterministic pick from seed RNG
+  const choices = ['icy', 'volcanic', 'desert', 'temperate', 'swamp'];
+  const biome = choices[Math.floor(rand() * choices.length)];
+
+  // Work on land that is not hard water; keep explicit mountains as-is for now
+  const land = flat.filter(t => t.type !== 'water' && t.type !== 'mountain');
+
+  const N = land.length;
+  const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
+
+  // Reset to grassland baseline before painting
+  for (const t of land) {
+    t.type = 'grassland';
+    t.movementCost = terrainTypes.grassland.movementCost;
+    t.impassable = false;
+  }
+
+  if (biome === 'volcanic') {
+    // 50% ash; remaining split mud/swamp/grassland (30/30/40)
+    const ashN = Math.round(0.50 * N);
+    assignExact(land, 'volcano_ash', ashN, rand);
+
+    const remaining = land.filter(t => t.type === 'grassland'); // unpainted
+    const remN = remaining.length;
+    assignExact(remaining, 'mud', Math.round(remN * 0.30), rand);
+    assignExact(remaining.filter(t => t.type === 'grassland'), 'swamp', Math.round(remN * 0.30), rand);
+    // rest stays grassland
+
+  } else if (biome === 'desert') {
+    // 50% sand; remaining split mud/swamp/grassland (30/30/40)
+    const sandN = Math.round(0.50 * N);
+    assignExact(land, 'sand', sandN, rand);
+
+    const remaining = land.filter(t => !['sand'].includes(t.type));
+    const remN = remaining.length;
+    assignExact(remaining, 'mud', Math.round(remN * 0.30), rand);
+    assignExact(remaining.filter(t => t.type === 'grassland'), 'swamp', Math.round(remN * 0.30), rand);
+
+  } else if (biome === 'icy') {
+    // 60–70% snow+ice (split ~60/40), rest grassland
+    const frac = 0.60 + 0.10 * rand();
+    const coldN = Math.round(frac * N);
+    const iceN  = Math.round(coldN * 0.40);
+    const snowN = coldN - iceN;
+    assignExact(land, 'ice',  iceN, rand);
+    assignExact(land.filter(t => t.type === 'grassland'), 'snow', snowN, rand);
+    // remaining grassland
+
+  } else if (biome === 'swamp') {
+    // Mostly mud + grassland, some swamp — no ash/snow/ice
+    const mudN  = Math.round(0.40 * N);
+    const swpN  = Math.round(0.20 * N);
+    assignExact(land, 'mud', mudN, rand);
+    assignExact(land.filter(t => t.type === 'grassland'), 'swamp', swpN, rand);
+    // remaining grassland
+
+  } else { // temperate
+    // classic: mostly grassland, small mud/sand/swamp
+    const mudN  = Math.round(0.15 * N);
+    const sandN = Math.round(0.15 * N);
+    const swpN  = Math.round(0.15 * N);
+    assignExact(land, 'mud', mudN, rand);
+    assignExact(land.filter(t => t.type === 'grassland'), 'sand', sandN, rand);
+    assignExact(land.filter(t => t.type === 'grassland'), 'swamp', swpN, rand);
+    // rest grassland
+  }
+
+  return biome;
+}
+
+/* =========================
+   Map generation
+   ========================= */
 function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
   const map = Array.from({ length: rows }, (_, r) =>
     Array.from({ length: cols }, (_, q) => ({
@@ -229,7 +337,7 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
     }))
   );
 
-  // Base island mask (already boosted in your prior step)
+  // Base island mask (boost land slightly)
   const LAND_RADIUS_BOOST = 1.075;
   const centerQ = cols / 2;
   const centerR = rows / 2;
@@ -248,51 +356,31 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
     }
   }
 
-  // Presets carving (reduced 15% water)
+  // Geography presets (reduced ~15% water)
   applyGeography(map, cols, rows, seedStr, rand);
 
-  // --- Biomes (existing) ---
-  function placeBiome(type, minSize, maxSize, instances) {
-    for (let i = 0; i < instances; i++) {
-      let size = minSize + Math.floor(rand() * (maxSize - minSize + 1));
-      let placed = 0, attempts = 0;
-      while (placed < size && attempts < 500) {
-        const q = Math.floor(rand() * cols);
-        const r = Math.floor(rand() * rows);
-        const tile = map[r][q];
-        if (tile.type !== 'grassland') { attempts++; continue; }
-        const queue = [[q, r]];
-        let count = 0;
-        while (queue.length && placed < size) {
-          const [x, y] = queue.shift();
-          const t = map[y][x];
-          if (t.type === 'grassland') {
-            Object.assign(t, { type, ...terrainTypes[type] });
-            placed++; count++;
-          }
-          if (count < size) {
-            neighbors(x, y, map).forEach(([nx, ny]) => {
-              const nTile = map[ny][nx];
-              if (nTile.type === 'grassland') queue.push([nx, ny]);
-            });
-          }
-        }
-        break;
-      }
+  // === Ensure minimum land coverage (>= 40%) ===
+  const flat0 = map.flat();
+  const MIN_COVER = 0.40;
+  if (coverageRatio(flat0) < MIN_COVER) {
+    const waters = flat0
+      .filter(t => t.type === 'water')
+      .map(t => ({ t, d: distToCenter(cols, rows, t.q, t.r) }));
+    waters.sort((a, b) => a.d - b.d); // fill inward first
+    let i = 0;
+    while (i < waters.length && coverageRatio(flat0) < MIN_COVER) {
+      const w = waters[i++].t;
+      w.type = 'grassland';
+      w.movementCost = terrainTypes.grassland.movementCost;
+      w.impassable = false;
     }
   }
 
-  // Existing
-  placeBiome('mud',   5, 9, 4);
-  placeBiome('sand',  5, 9, 4);
-  placeBiome('swamp', 5, 9, 3);
+  // --- Biomes (seeded, overwrite land composition deterministically) ---
+  const flatForBiome = map.flat();
+  paintBiome(flatForBiome, cols, rows, rand);
 
-  // NEW biomes (light instances so they season the map)
-  placeBiome('volcano_ash', 5, 10, 2);
-  placeBiome('ice',         5, 10, 2);
-  placeBiome('snow',        5, 10, 2);
-
-  // Mountains (chain) — keep shaping, but we’ll normalize to level 4 later
+  // Mountains (chain) — keep shaping, but normalize to level 4 later
   const mountainChains = 6 + Math.floor(rand() * 3);
   for (let i = 0; i < mountainChains; i++) {
     let q = Math.floor(rand() * (cols - 4)) + 2;
