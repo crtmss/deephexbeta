@@ -4,17 +4,13 @@ import { supabase } from '../net/SupabaseClient.js';
 import HexMap from '../engine/HexMap.js';
 import { getColorForTerrain } from './WorldSceneMap.js';
 
-/* -------------------------------------------
-   Lightweight analysis helpers (no RNG guess)
--------------------------------------------- */
+/* ---------- tiny helpers used only for preview labels ---------- */
 function keyOf(q, r) { return `${q},${r}`; }
 function analyzeMapForSummary(mapData, W = 25, H = 25) {
   const byKey = new Map(mapData.map(t => [keyOf(t.q, t.r), t]));
   const land = mapData.filter(t => t.type !== 'water');
-  const water = mapData.length - land.length;
-  const landRatio = land.length / mapData.length;
-
   const count = tName => land.filter(t => t.type === tName).length;
+
   const nSnow  = count('snow');
   const nIce   = count('ice');
   const nAsh   = count('volcano_ash');
@@ -23,105 +19,56 @@ function analyzeMapForSummary(mapData, W = 25, H = 25) {
   const nSwamp = count('swamp');
 
   let biome = 'Temperate Biome';
-  if ((nSnow + nIce) / Math.max(1, land.length) > 0.55) biome = 'Icy Biome';
-  else if (nAsh / Math.max(1, land.length) > 0.45)      biome = 'Volcanic Biome';
-  else if (nSand / Math.max(1, land.length) > 0.45)     biome = 'Desert Biome';
-  else if ((nMud + nSwamp) / Math.max(1, land.length) > 0.50) biome = 'Swamp Biome';
+  const landN = Math.max(1, land.length);
+  if ((nSnow + nIce) / landN > 0.55) biome = 'Icy Biome';
+  else if (nAsh / landN > 0.45)      biome = 'Volcanic Biome';
+  else if (nSand / landN > 0.45)     biome = 'Desert Biome';
+  else if ((nMud + nSwamp) / landN > 0.50) biome = 'Swamp Biome';
 
+  // geography, quick heuristic
   const neighborsOddR = (q, r) =>
     (r % 2 === 0)
       ? [[+1,0],[0,-1],[-1,-1],[-1,0],[-1,+1],[0,+1]]
       : [[+1,0],[+1,-1],[0,-1],[-1,0],[0,+1],[+1,+1]];
 
   const visited = new Set();
-  const compSizes = [];
+  let comps = 0;
   for (const t of land) {
     const k = keyOf(t.q, t.r);
     if (visited.has(k)) continue;
-    let size = 0;
+    comps++;
     const q = [t];
     visited.add(k);
     while (q.length) {
       const cur = q.shift();
-      size++;
       for (const [dq, dr] of neighborsOddR(cur.q, cur.r)) {
         const nk = keyOf(cur.q + dq, cur.r + dr);
-        if (visited.has(nk)) continue;
-        const nt = byKey.get(nk);
-        if (nt && nt.type !== 'water') {
-          visited.add(nk);
-          q.push(nt);
+        if (!visited.has(nk)) {
+          const nt = byKey.get(nk);
+          if (nt && nt.type !== 'water') { visited.add(nk); q.push(nt); }
         }
       }
     }
-    compSizes.push(size);
   }
-  compSizes.sort((a, b) => b - a);
-  const components = compSizes.length;
-
-  const minQ = Math.floor(W * 0.3), maxQ = Math.ceil(W * 0.7);
-  const minR = Math.floor(H * 0.3), maxR = Math.ceil(H * 0.7);
-  let centralWater = 0, centralTotal = 0;
-  for (let r = minR; r < maxR; r++) {
-    for (let q = minQ; q < maxQ; q++) {
-      const t = byKey.get(keyOf(q, r));
-      if (!t) continue;
-      centralTotal++;
-      if (t.type === 'water') centralWater++;
-    }
-  }
-  const centralWaterRatio = centralTotal ? centralWater / centralTotal : 0;
-
-  let shoreline = 0;
-  for (const t of land) {
-    for (const [dq, dr] of neighborsOddR(t.q, t.r)) {
-      const n = byKey.get(keyOf(t.q + dq, t.r + dr));
-      if (!n || n.type === 'water') shoreline++;
-    }
-  }
-  const shorePerLand = shoreline / Math.max(1, land.length);
-
-  let sx = 0, sy = 0;
-  for (const t of land) { sx += t.q; sy += t.r; }
-  const mx = sx / Math.max(1, land.length);
-  const my = sy / Math.max(1, land.length);
-  let sxx = 0, syy = 0, sxy = 0;
-  for (const t of land) {
-    const dx = t.q - mx, dy = t.r - my;
-    sxx += dx * dx; syy += dy * dy; sxy += dx * dy;
-  }
-  const diagness = Math.abs(sxy) / Math.max(1, Math.sqrt(sxx * syy));
 
   let geography = 'Diagonal Island';
-  if (components >= 3) {
-    geography = 'Multiple Islands';
-  } else if (centralWaterRatio > 0.25 && landRatio > 0.4) {
-    geography = 'Central Lake';
-  } else if (shorePerLand > 1.8) {
-    geography = 'Small Bays';
-  } else if (diagness > 0.55) {
-    geography = 'Diagonal Island';
-  } else {
-    const waterTouchingLand = mapData
-      .filter(t => t.type === 'water')
-      .filter(t => {
-        for (const [dq, dr] of neighborsOddR(t.q, t.r)) {
-          const n = byKey.get(keyOf(t.q + dq, t.r + dr));
-          if (n && n.type !== 'water') return true;
-        }
-        return false;
-      }).length;
-    const water = mapData.length - land.length;
-    const channeled = water ? (waterTouchingLand / water > 0.7) : false;
-    geography = channeled ? 'Scattered Terrain' : 'Big Lagoon';
+  if (comps >= 3) geography = 'Multiple Islands';
+  else {
+    // central water % to detect donut/lagoon-ish
+    const minQ = Math.floor(W * 0.3), maxQ = Math.ceil(W * 0.7);
+    const minR = Math.floor(H * 0.3), maxR = Math.ceil(H * 0.7);
+    let cW = 0, cT = 0;
+    for (let r = minR; r < maxR; r++) for (let q = minQ; q < maxQ; q++) {
+      const t = byKey.get(keyOf(q, r)); if (!t) continue; cT++; if (t.type === 'water') cW++;
+    }
+    const centralWater = cT ? cW / cT : 0;
+    if (centralWater > 0.25) geography = 'Central Lake';
+    else geography = 'Small Bays'; // quick fallback; exact type decided in engine
   }
 
-  return { geography, biome };
+  return { biome, geography };
 }
 
-/* -------------------------------------------
-   Lobby Scene
--------------------------------------------- */
 export default class LobbyScene extends Phaser.Scene {
   constructor() { super('LobbyScene'); }
 
@@ -137,37 +84,41 @@ export default class LobbyScene extends Phaser.Scene {
     // Name
     this.add.text(460, 130, 'Your Name:', { fontSize: '18px', fill: '#ffffff' });
     const nameInput = this.add.dom(640, 160, 'input').setOrigin(0.5).setDepth(1200);
-    nameInput.node.placeholder = 'Your name'; nameInput.node.maxLength = 16;
+    nameInput.node.placeholder = 'Your name';
+    nameInput.node.maxLength   = 16;
 
-    // Seed
+    // Seed input
     this.add.text(400, 220, 'Map Seed (6 digits):', { fontSize: '18px', fill: '#ffffff' });
     const codeInput = this.add.dom(640, 250, 'input').setOrigin(0.5).setDepth(1200);
     codeInput.node.placeholder = '000000';
-    codeInput.node.maxLength = 6;
+    codeInput.node.maxLength   = 6;
     codeInput.node.style.textAlign = 'center';
-    codeInput.node.style.width = '110px';
+    codeInput.node.style.width     = '110px';
 
-    // 🎲 Random seed button
+    // 🎲 Random seed button directly under seed field
     const randomBtn = this.add.dom(640, 290, 'button', {
       backgroundColor: '#555', color: '#fff', fontSize: '14px',
       padding: '8px 14px', border: '1px solid #888', borderRadius: '6px', cursor: 'pointer'
     }, '🎲 Random Seed').setOrigin(0.5).setDepth(1250).setScrollFactor(0);
 
+    // Initial random seed
     const randomSeed = String(Math.floor(Math.random() * 1000000)).padStart(6, '0');
     codeInput.node.value = randomSeed;
 
-    // Preview area
+    // Preview header
     this.add.text(870, 130, 'Map Preview', { fontSize: '18px', fill: '#ffffff' });
+
+    // Preview container (hexes only)
     this.previewSize = 80;
     this.previewContainer = this.add.container(900, 200);
-    this.previewGraphics = this.add.graphics();
+    this.previewGraphics  = this.add.graphics();
     this.previewContainer.add(this.previewGraphics);
 
     // Labels
     this.geographyText = this.add.text(820, 380, '', { fontSize: '18px', fill: '#aadfff' });
     this.biomeText     = this.add.text(820, 410, '', { fontSize: '18px', fill: '#aadfff' });
 
-    // Input guards + preview update
+    // Seed input events
     codeInput.node.addEventListener('input', () => {
       let v = codeInput.node.value.replace(/\D/g, '');
       if (v.length > 6) v = v.slice(0, 6);
@@ -181,6 +132,7 @@ export default class LobbyScene extends Phaser.Scene {
       this.updatePreview(codeInput.node.value);
     });
 
+    // Random seed handler
     randomBtn.addListener('click');
     randomBtn.on('click', () => {
       const newSeed = String(Math.floor(Math.random() * 1000000)).padStart(6, '0');
@@ -191,19 +143,19 @@ export default class LobbyScene extends Phaser.Scene {
     // First preview
     this.updatePreview(randomSeed);
 
-    // Host
+    // Host button
     const hostBtn = this.add.dom(540, 330, 'button', {
       backgroundColor: '#006400', color: '#fff', fontSize: '18px',
       padding: '10px 20px', border: 'none', borderRadius: '6px', cursor: 'pointer'
     }, 'Host Game').setDepth(1200);
 
-    // Join
+    // Join button
     const joinBtn = this.add.dom(720, 330, 'button', {
       backgroundColor: '#1E90FF', color: '#fff', fontSize: '18px',
       padding: '10px 20px', border: 'none', borderRadius: '6px', cursor: 'pointer'
     }, 'Join Game').setDepth(1200);
 
-    // Host logic (force-sync seed into lobby state)
+    // —— Host logic: create lobby & FORCE-SEED in state so WorldScene matches preview
     hostBtn.addListener('click');
     hostBtn.on('click', async () => {
       const name = nameInput.node.value.trim();
@@ -213,16 +165,16 @@ export default class LobbyScene extends Phaser.Scene {
       const { data, error } = await createLobby(name, code);
       if (error) { console.error('[Supabase ERROR] Failed to create lobby:', error.message); alert('Failed to create lobby. Check console.'); return; }
 
-      // 🔒 Ensure the seed in the lobby state matches what you previewed
       try {
         const { data: row, error: readErr } = await supabase
           .from('lobbies').select('state').eq('room_code', code).single();
         if (!readErr && row?.state) {
           const state = row.state || {};
           if (state.seed !== code) {
-            const newState = { ...state, seed: code };
             const { error: updErr } = await supabase
-              .from('lobbies').update({ state: newState }).eq('room_code', code);
+              .from('lobbies')
+              .update({ state: { ...state, seed: code } })
+              .eq('room_code', code);
             if (updErr) console.warn('[Supabase] Seed sync update failed:', updErr.message);
           }
         }
@@ -233,7 +185,7 @@ export default class LobbyScene extends Phaser.Scene {
       this.scene.start('WorldScene', { playerName: name, roomCode: code, isHost: true });
     });
 
-    // Join logic (no seed mutation here; relies on host’s stored seed)
+    // —— Join logic (reads host’s stored seed)
     joinBtn.addListener('click');
     joinBtn.on('click', async () => {
       const name = nameInput.node.value.trim();
@@ -247,18 +199,13 @@ export default class LobbyScene extends Phaser.Scene {
     });
   }
 
-  // --- Preview drawing + true summary from the generated map
+  // —— hex-only preview draw (no background fill)
   updatePreview(seedString) {
     if (!this.previewGraphics) return;
     this.previewGraphics.clear();
 
-    const hexMap = new HexMap(25, 25, seedString);
+    const hexMap  = new HexMap(25, 25, seedString);
     const mapData = hexMap.getMap();
-
-    // water background to avoid black gaps
-    const w = this.previewSize;
-    this.previewGraphics.fillStyle(0x7CC4FF, 1);
-    this.previewGraphics.fillRect(-w - 10, -w - 10, w * 2 + 60, w * 2 + 60);
 
     const size = 6;
     const hexToPixel = (q, r, s) => {
@@ -267,6 +214,7 @@ export default class LobbyScene extends Phaser.Scene {
       return { x, y };
     };
 
+    const w = this.previewSize;
     const offsetX = -w;
     const offsetY = -w / 1.2;
 
@@ -288,6 +236,7 @@ export default class LobbyScene extends Phaser.Scene {
       this.previewGraphics.fillPath();
     }
 
+    // labels from the ACTUAL preview map
     const { geography, biome } = analyzeMapForSummary(mapData, 25, 25);
     this.geographyText.setText(`🌍 Geography: ${geography}`);
     this.biomeText.setText(`🌿 Biome: ${biome}`);
