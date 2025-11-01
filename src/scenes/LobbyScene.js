@@ -22,8 +22,6 @@ function xorshift32(seed) {
     return (x >>> 0) / 4294967296;
   };
 }
-
-// Deterministic geography and biome generation preview
 function getWorldSummary(seed) {
   const rng = xorshift32(hashStr32(String(seed ?? 'default')));
   const geoRoll = rng();
@@ -71,7 +69,7 @@ export default class LobbyScene extends Phaser.Scene {
     this.add.text(460, 130, 'Your Name:', { fontSize: '18px', fill: '#ffffff' });
     const nameInput = this.add.dom(640, 160, 'input');
     nameInput.setOrigin(0.5);
-    nameInput.setDepth(1000);
+    nameInput.setDepth(1200);
     nameInput.node.placeholder = 'Your name';
     nameInput.node.maxLength = 16;
 
@@ -79,23 +77,25 @@ export default class LobbyScene extends Phaser.Scene {
     this.add.text(400, 220, 'Map Seed (6 digits):', { fontSize: '18px', fill: '#ffffff' });
     const codeInput = this.add.dom(640, 250, 'input');
     codeInput.setOrigin(0.5);
-    codeInput.setDepth(1000);
+    codeInput.setDepth(1200);
     codeInput.node.placeholder = '000000';
     codeInput.node.maxLength = 6;
     codeInput.node.style.textAlign = 'center';
-    codeInput.node.style.width = '100px';
+    codeInput.node.style.width = '110px';
 
-    // 🎲 Random Seed button
-    const randomBtn = this.add.dom(770, 250, 'button', {
-      backgroundColor: '#444',
+    // 🎲 Random Seed button — place it clearly under the seed field
+    const randomBtn = this.add.dom(640, 290, 'button', {
+      backgroundColor: '#555',
       color: '#fff',
       fontSize: '14px',
-      padding: '6px 10px',
-      border: 'none',
+      padding: '8px 14px',
+      border: '1px solid #888',
+      borderRadius: '6px',
       cursor: 'pointer'
     }, '🎲 Random Seed');
-    randomBtn.setOrigin(0, 0.5);
-    randomBtn.setDepth(1000);
+    randomBtn.setOrigin(0.5);
+    randomBtn.setDepth(1250);       // higher than other DOM elements
+    randomBtn.setScrollFactor(0);   // keep in place even if camera moves
 
     // Random 6-digit seed on load
     const randomSeed = String(Math.floor(Math.random() * 1000000)).padStart(6, '0');
@@ -112,7 +112,7 @@ export default class LobbyScene extends Phaser.Scene {
     this.previewGraphics = this.add.graphics();
     this.previewContainer.add(this.previewGraphics);
 
-    // Text boxes showing geography and biome
+    // Geography / Biome labels
     this.geographyText = this.add.text(820, 380, '', {
       fontSize: '18px',
       fill: '#aadfff'
@@ -129,7 +129,6 @@ export default class LobbyScene extends Phaser.Scene {
       codeInput.node.value = value;
       this.updatePreview(codeInput.node.value.padStart(6, '0'));
     });
-
     codeInput.node.addEventListener('blur', () => {
       let value = codeInput.node.value.trim();
       if (!value) value = '000000';
@@ -155,9 +154,10 @@ export default class LobbyScene extends Phaser.Scene {
       fontSize: '18px',
       padding: '10px 20px',
       border: 'none',
+      borderRadius: '6px',
       cursor: 'pointer'
     }, 'Host Game');
-    hostBtn.setDepth(1000);
+    hostBtn.setDepth(1200);
 
     // Join button
     const joinBtn = this.add.dom(720, 330, 'button', {
@@ -166,9 +166,10 @@ export default class LobbyScene extends Phaser.Scene {
       fontSize: '18px',
       padding: '10px 20px',
       border: 'none',
+      borderRadius: '6px',
       cursor: 'pointer'
     }, 'Join Game');
-    joinBtn.setDepth(1000);
+    joinBtn.setDepth(1200);
 
     // Host logic
     hostBtn.addListener('click');
@@ -179,14 +180,12 @@ export default class LobbyScene extends Phaser.Scene {
         alert('Enter your name and a 6-digit numeric seed.');
         return;
       }
-
       const { data, error } = await createLobby(name, code);
       if (error) {
         console.error('[Supabase ERROR] Failed to create lobby:', error.message);
         alert('Failed to create lobby. Check console for details.');
         return;
       }
-
       this.scene.start('WorldScene', { playerName: name, roomCode: code, isHost: true });
     });
 
@@ -199,14 +198,12 @@ export default class LobbyScene extends Phaser.Scene {
         alert('Enter your name and a 6-digit numeric seed.');
         return;
       }
-
       const { data, error } = await joinLobby(name, code);
       if (error) {
         console.error('[Supabase ERROR] Failed to join lobby:', error.message);
         alert('Failed to join lobby. Check console for details.');
         return;
       }
-
       this.scene.start('WorldScene', { playerName: name, roomCode: code, isHost: false });
     });
   }
@@ -216,12 +213,10 @@ export default class LobbyScene extends Phaser.Scene {
     if (!this.previewGraphics) return;
     this.previewGraphics.clear();
 
-    // create small hex map
     const hexMap = new HexMap(25, 25, seedString);
     const mapData = hexMap.getMap();
 
     const size = 6;
-
     const hexToPixel = (q, r, size) => {
       const x = size * Math.sqrt(3) * (q + 0.5 * (r & 1));
       const y = size * 1.5 * r;
@@ -242,7 +237,6 @@ export default class LobbyScene extends Phaser.Scene {
       this.drawHex(this.previewGraphics, x + offsetX, y + offsetY, size, color);
     }
 
-    // Update geography/biome text
     const { geography, biome } = getWorldSummary(seedString);
     this.geographyText.setText(`🌍 Geography: ${geography}`);
     this.biomeText.setText(`🌿 Biome: ${biome}`);
