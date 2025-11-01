@@ -4,7 +4,7 @@ import { supabase } from '../net/SupabaseClient.js';
 import HexMap from '../engine/HexMap.js';
 import { getColorForTerrain } from './WorldSceneMap.js';
 
-/* ---------- small helpers used only to label the preview ---------- */
+/* ---------- fallback helpers (used only if worldMeta is missing) ---------- */
 const keyOf = (q, r) => `${q},${r}`;
 const inBounds = (q, r, w, h) => q >= 0 && q < w && r >= 0 && r < h;
 function neighborsOddR(q, r) {
@@ -123,36 +123,38 @@ export default class LobbyScene extends Phaser.Scene {
     // Preview title + canvas
     this.add.text(870, 130, 'Map Preview', { fontSize: '18px', fill: '#ffffff' });
     this.previewSize = 80;
+    this.previewWidth  = 25;
+    this.previewHeight = 25;
     this.previewContainer = this.add.container(900, 200);
     this.previewGraphics = this.add.graphics();
     this.previewContainer.add(this.previewGraphics);
 
-    // Labels (will be computed from the generated map)
+    // Labels (from generated map meta, with fallback)
     this.geographyText = this.add.text(820, 380, '', { fontSize: '18px', fill: '#aadfff' });
     this.biomeText     = this.add.text(820, 410, '', { fontSize: '18px', fill: '#aadfff' });
 
-    // Keep the latest generated map for the preview (so order is explicit)
-    this.previewWidth  = 25;
-    this.previewHeight = 25;
-    this.currentHexMap = null;     // <- map object created first
-    this.currentTiles  = null;     // <- flat tiles array
+    // Keep last generated map/tiles
+    this.currentHexMap = null;
+    this.currentTiles  = null;
 
     // Seed init + events
     const firstSeed = String(Math.floor(Math.random() * 1_000_000)).padStart(6, '0');
     codeInput.node.value = firstSeed;
 
     const regenerateAndPreview = (seed) => {
-      // (1) generate map
+      // (1) generate map deterministically from seed
       this.currentHexMap = new HexMap(this.previewWidth, this.previewHeight, seed);
       this.currentTiles  = this.currentHexMap.getMap();
 
-      // (2) render preview from the already-generated tiles
+      // (2) draw preview from these exact tiles
       this.drawPreviewFromTiles(this.currentTiles);
 
-      // (3) classify from those tiles (so labels == what you see)
-      const geo  = classifyGeographyFromTiles(this.currentTiles, this.previewWidth, this.previewHeight);
-      const biome = classifyBiomeFromTiles(this.currentTiles);
-      this.geographyText.setText(`🌍 Geography: ${geo}`);
+      // (3) labels: prefer worldMeta (exact match), else fallback classifiers
+      const meta = this.currentHexMap.worldMeta || this.currentTiles.__worldMeta || null;
+      const geography = meta?.geography || classifyGeographyFromTiles(this.currentTiles, this.previewWidth, this.previewHeight);
+      const biome     = meta?.biome      || classifyBiomeFromTiles(this.currentTiles);
+
+      this.geographyText.setText(`🌍 Geography: ${geography}`);
       this.biomeText.setText(`🌿 Biome: ${biome}`);
     };
 
@@ -175,7 +177,7 @@ export default class LobbyScene extends Phaser.Scene {
       regenerateAndPreview(seed);
     });
 
-    // first run
+    // First run
     regenerateAndPreview(firstSeed);
 
     // Host / Join
@@ -221,6 +223,7 @@ export default class LobbyScene extends Phaser.Scene {
       return { x, y };
     };
 
+    // Center the preview content
     const gridW = size * Math.sqrt(3) * (this.previewWidth + 0.5);
     const gridH = size * 1.5 * (this.previewHeight + 0.5);
     const offsetX = -gridW * 0.45;
