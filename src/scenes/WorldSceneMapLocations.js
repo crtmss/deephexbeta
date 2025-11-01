@@ -36,9 +36,32 @@ function neighborTiles(byKey, width, height, q, r, skipWater = true) {
   return out;
 }
 
-// === Placement & flags =======================================================
-// NOTE: Enforces peak rule: mountain icon ONLY for level-4 tiles.
-//       (We normalize hasMountainIcon from elevation here, so no random peaks.)
+/* --------------------- Biome-aware tree emoji --------------------- */
+function resolveBiome(scene, mapData) {
+  // Prefer map’s meta (produced in HexMap); fallback to any attached on tiles.
+  return scene?.hexMap?.worldMeta?.biome ||
+         mapData?.__worldMeta?.biome ||
+         'Temperate Biome';
+}
+function treeEmojiFor(biome, tileType) {
+  // Tile overrides first (keeps visuals coherent if biomes mix):
+  if (tileType === 'volcano_ash') return '🌴';
+  if (tileType === 'sand')        return '🌴';
+  if (tileType === 'swamp')       return '🌳';
+  if (tileType === 'ice' || tileType === 'snow') return '🌲';
+
+  // Biome defaults:
+  const b = (biome || '').toLowerCase();
+  if (b.includes('volcan'))  return '🌴';
+  if (b.includes('desert'))  return '🌴';
+  if (b.includes('icy'))     return '🌲';
+  if (b.includes('swamp'))   return '🌳';
+  return '🌳'; // temperate default
+}
+
+/* ================= Placement & flags =================
+   Enforces peak rule: mountain icon ONLY on elevation === 4
+   (No random mountain icons elsewhere) */
 function placeLocations(mapData, width, height, rnd) {
   for (const t of mapData) {
     // Always clear POIs on water.
@@ -68,8 +91,6 @@ function placeLocations(mapData, width, height, rnd) {
         chance(rnd, 0.008)) {
       t.hasVehicle = true;
     }
-
-    // No random mountain icons on non-peak tiles (was removed on purpose).
   }
 
   // Forest spreading (local seed so clusters are deterministic per tile)
@@ -83,7 +104,7 @@ function placeLocations(mapData, width, height, rnd) {
   }
 }
 
-// === Roads (graph-based, with A*) ============================================
+/* ================= Roads (graph-based, with A*) ================= */
 function markRoadEdge(a, b, type = 'countryside') {
   if (!a || !b) return;
   if (a.type === 'water' || b.type === 'water') return;
@@ -274,6 +295,9 @@ export function drawLocationsAndRoads() {
     return t;
   };
 
+  // Resolve biome once for tree selection
+  const biomeName = resolveBiome(scene, map);
+
   for (const t of map) {
     if (t.type === 'water') continue;
 
@@ -288,6 +312,7 @@ export function drawLocationsAndRoads() {
     }
 
     if (t.hasForest) {
+      const treeGlyph = treeEmojiFor(biomeName, t.type);
       const treeCount = Phaser.Math.Between(2, 4);
       const placed = [];
       let tries = 0;
@@ -298,7 +323,7 @@ export function drawLocationsAndRoads() {
         const posY = cy + Math.sin(ang) * rad;
         if (placed.some(p => Phaser.Math.Distance.Between(posX, posY, p.x, p.y) < size * 0.3)) continue;
         const fontPx = size * (0.45 + Phaser.Math.FloatBetween(-0.05, 0.05));
-        const tree = addEmoji(posX, posY, '🌲', fontPx, 43);
+        const tree = addEmoji(posX, posY, treeGlyph, fontPx, 43);
         scene.tweens.add({
           targets: tree,
           angle: { from: -1.5, to: 1.5 },
