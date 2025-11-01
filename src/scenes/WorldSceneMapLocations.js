@@ -85,9 +85,9 @@ function placeLocations(mapData, width, height, rnd) {
     // Crash Sites
     if (!t.hasCrashSite && chance(rnd, 0.006)) t.hasCrashSite = true;
 
-    // Vehicles (keep your surface filters)
+    // Vehicles (keep your surface filters) — include 'sand' explicitly
     if (!t.hasVehicle &&
-        (t.type === 'plains' || t.type === 'desert' || t.type === 'grassland' || t.type === '') &&
+        (t.type === 'plains' || t.type === 'desert' || t.type === 'sand' || t.type === 'grassland' || t.type === '') &&
         chance(rnd, 0.008)) {
       t.hasVehicle = true;
     }
@@ -304,6 +304,12 @@ export function drawLocationsAndRoads() {
     const c = scene.hexToPixel(t.q, t.r, size); // already ISO
     const cx = c.x + offsetX;
     const cy = c.y + offsetY - LIFT * effectiveElevationLocal(t);
+
+    // --- Fallback: ensure peaks show even if placement pass didn't set the flag ---
+    if (!t.hasMountainIcon) {
+      const elev = typeof t.elevation === 'number' ? t.elevation : 0;
+      if (elev === 4) t.hasMountainIcon = true;
+    }
 
     // --- Peaks first: show only the mountain icon on level-4 tiles ---
     if (t.hasMountainIcon) {
