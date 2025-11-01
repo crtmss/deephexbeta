@@ -85,7 +85,19 @@ export default class LobbyScene extends Phaser.Scene {
     codeInput.node.style.textAlign = 'center';
     codeInput.node.style.width = '100px';
 
-    // Random 6-digit seed
+    // 🎲 Random Seed button
+    const randomBtn = this.add.dom(770, 250, 'button', {
+      backgroundColor: '#444',
+      color: '#fff',
+      fontSize: '14px',
+      padding: '6px 10px',
+      border: 'none',
+      cursor: 'pointer'
+    }, '🎲 Random Seed');
+    randomBtn.setOrigin(0, 0.5);
+    randomBtn.setDepth(1000);
+
+    // Random 6-digit seed on load
     const randomSeed = String(Math.floor(Math.random() * 1000000)).padStart(6, '0');
     codeInput.node.value = randomSeed;
 
@@ -123,6 +135,14 @@ export default class LobbyScene extends Phaser.Scene {
       if (!value) value = '000000';
       codeInput.node.value = value.padStart(6, '0');
       this.updatePreview(codeInput.node.value);
+    });
+
+    // Random button handler
+    randomBtn.addListener('click');
+    randomBtn.on('click', () => {
+      const newSeed = String(Math.floor(Math.random() * 1000000)).padStart(6, '0');
+      codeInput.node.value = newSeed;
+      this.updatePreview(newSeed);
     });
 
     // Initial preview
@@ -201,8 +221,6 @@ export default class LobbyScene extends Phaser.Scene {
     const mapData = hexMap.getMap();
 
     const size = 6;
-    const startX = 0;
-    const startY = 0;
 
     const hexToPixel = (q, r, size) => {
       const x = size * Math.sqrt(3) * (q + 0.5 * (r & 1));
