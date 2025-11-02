@@ -381,9 +381,13 @@ export function drawLocationsAndRoads() {
       lm = any ? { q:any.q, r:any.r, emoji:'🌄', type:'plateau', label:'Plateau' } : null;
     }
 
-    let geoCells = buildCellsIfMissing({ geoLandmark: lm, geoCells: meta.geoCells }, map, this.mapWidth, this.mapHeight);
+    // Start with base footprint (9 or 6 cells)
+    const baseCells = buildCellsIfMissing({ geoLandmark: lm, geoCells: meta.geoCells }, map, this.mapWidth, this.mapHeight);
     const byKeyLocal = new Map(map.map(t => [keyOf(t.q, t.r), t]));
-    const geoSet = new Set(geoCells.map(c => keyOf(c.q, c.r)));
+    const baseSet = new Set(baseCells.map(c => keyOf(c.q, c.r)));
+
+    // Set that will suppress POIs (actual affected tiles)
+    const noPOISet = new Set();
 
     // Volcano: ensure level-4 mountain center & neighbors -> ash
     if (lm && lm.type === 'volcano') {
@@ -402,76 +406,69 @@ export function drawLocationsAndRoads() {
         center.elevation = 4;
         center.hasMountainIcon = false; // suppress mountain icon, show 🌋 instead
         lm.q = center.q; lm.r = center.r;
+        noPOISet.add(keyOf(center.q, center.r));
         for (const [dq, dr] of neighborsOddR(center.q, center.r)) {
           const n = byKeyLocal.get(keyOf(center.q + dq, center.r + dr));
           if (!n) continue;
           if (n.type !== 'water' && n.type !== 'mountain') n.type = 'volcano_ash';
           n.hasForest = n.hasRuin = n.hasCrashSite = n.hasVehicle = false;
           n.hasMountainIcon = false;
-          geoSet.add(keyOf(n.q, n.r));
+          noPOISet.add(keyOf(n.q, n.r));
         }
       }
     }
 
     // Glacier: convert footprint (including water) to ice
     if (lm && lm.type === 'glacier') {
-      for (const c of geoCells) {
+      for (const c of baseCells) {
         const t = byKeyLocal.get(keyOf(c.q, c.r));
         if (!t) continue;
         t.type = 'ice';
         t.hasForest = t.hasRuin = t.hasCrashSite = t.hasVehicle = false;
         t.hasMountainIcon = false;
+        noPOISet.add(keyOf(t.q, t.r));
       }
     }
 
-    // Plateau: 6 tiles elevation 3; ring to elevation 1
+    // Plateau: 6 tiles elevation 3; (ring lowering left out of footprint)
     if (lm && lm.type === 'plateau') {
-      for (const c of geoCells) {
+      for (const c of baseCells) {
         const t = byKeyLocal.get(keyOf(c.q, c.r));
         if (!t) continue;
         t.type = 'grassland';
         t.elevation = 3;
         t.hasMountainIcon = false;
         t.hasForest = t.hasRuin = t.hasCrashSite = t.hasVehicle = false;
-      }
-      for (const c of geoCells) {
-        const t = byKeyLocal.get(keyOf(c.q, c.r));
-        if (!t) continue;
-        for (const [dq, dr] of neighborsOddR(t.q, t.r)) {
-          const n = byKeyLocal.get(keyOf(t.q + dq, t.r + dr));
-          if (n && !geoSet.has(keyOf(n.q, n.r))) {
-            n.elevation = 1;
-            n.hasMountainIcon = false;
-          }
-        }
+        noPOISet.add(keyOf(t.q, t.r));
       }
     }
 
     // Desert / Bog
     if (lm && (lm.type === 'desert' || lm.type === 'bog')) {
       const target = lm.type === 'desert' ? 'sand' : 'swamp';
-      for (const c of geoCells) {
+      for (const c of baseCells) {
         const t = byKeyLocal.get(keyOf(c.q, c.r));
         if (!t) continue;
         t.type = target;
         t.hasForest = t.hasRuin = t.hasCrashSite = t.hasVehicle = false;
         t.hasMountainIcon = false;
+        noPOISet.add(keyOf(t.q, t.r));
       }
     }
 
-    const centerAxial = centroidOf([...geoSet].map(k => {
-      const [q, r] = k.split(',').map(Number);
-      return { q, r };
-    }));
+    // Center for label/emoji: volcano uses peak; others use centroid of base footprint
+    const centerAxial = (lm && lm.type === 'volcano')
+      ? { q: lm.q, r: lm.r }
+      : centroidOf(baseCells);
     const centerTile = centerAxial
       ? closestTileTo(map, centerAxial, tt => tt.type !== 'water')
       : map.find(t => t.q === lm.q && t.r === lm.r);
 
-    Object.defineProperty(map, '__geoLandmark',   { value: lm,        enumerable: false });
-    Object.defineProperty(map, '__geoCells',      { value: [...geoSet].map(k => { const [q,r]=k.split(',').map(Number); return {q,r}; }), enumerable: false });
-    Object.defineProperty(map, '__geoCellsSet',   { value: geoSet,    enumerable: false });
-    Object.defineProperty(map, '__geoCenterTile', { value: centerTile || null, enumerable: false });
-    Object.defineProperty(map, '__geoBuilt',      { value: true,      enumerable: false });
+    Object.defineProperty(map, '__geoLandmark',   { value: lm,           enumerable: false });
+    Object.defineProperty(map, '__geoCells',      { value: baseCells,    enumerable: false }); // keep original footprint
+    Object.defineProperty(map, '__geoNoPOISet',   { value: noPOISet,     enumerable: false }); // tiles to suppress icons
+    Object.defineProperty(map, '__geoCenterTile', { value: centerTile||null, enumerable: false });
+    Object.defineProperty(map, '__geoBuilt',      { value: true,         enumerable: false });
   }
 
   // ---- Landmark emoji + label once
@@ -536,12 +533,12 @@ export function drawLocationsAndRoads() {
     }
   }
 
-  const geoCellsSet = map.__geoCellsSet;
+  const noPOISet = map.__geoNoPOISet;
 
-  // ---- Per-tile POIs (skip geo-object tiles entirely)
+  // ---- Per-tile POIs (skip geo-object affected tiles entirely)
   for (const t of map) {
     if (t.type === 'water') continue;
-    if (geoCellsSet && geoCellsSet.has(keyOf(t.q, t.r))) continue;
+    if (noPOISet && noPOISet.has(keyOf(t.q, t.r))) continue;
 
     const c = scene.hexToPixel(t.q, t.r, size);
     const cx = c.x + offsetX;
