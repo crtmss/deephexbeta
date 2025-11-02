@@ -126,6 +126,18 @@ export default class WorldScene extends Phaser.Scene {
     this.pathLabels = [];
     this.debugGraphics = this.add.graphics({ x: 0, y: 0 }).setDepth(100);
 
+    // === HEX INSPECT glue (so geo-object clicks can feed into it)
+    this.events.on('hex-inspect', (text) => this.hexInspect(text));
+    this.events.on('hex-inspect-extra', ({ header, lines }) => {
+      const payload = [`[HEX INSPECT] ${header}`, ...(lines || [])].join('\n');
+      this.hexInspect(payload);
+    });
+    // cleanup on shutdown
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.events.off('hex-inspect');
+      this.events.off('hex-inspect-extra');
+    });
+
     this.hexMap = new HexMap(this.mapWidth, this.mapHeight, this.seed);
     this.mapData = this.hexMap.getMap();
     delete this.mapData.__locationsApplied;
@@ -282,6 +294,17 @@ export default class WorldScene extends Phaser.Scene {
         }
       }
     });
+  }
+
+  // Minimal inspector that the geo-object code can call.
+  // Feel free to replace with your in-game panel later.
+  hexInspect(text) {
+    if (!text) return;
+    const lines = String(text).split('\n');
+    const title = lines.shift() || '[HEX INSPECT]';
+    console.groupCollapsed(title);
+    lines.forEach(l => console.log(l));
+    console.groupEnd();
   }
 
   addWorldMetaBadge(geography, biome) {
