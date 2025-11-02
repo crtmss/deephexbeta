@@ -323,12 +323,10 @@ export function drawLocationsAndRoads() {
   const roads = scene.add.graphics({ x: 0, y: 0 }).setDepth(30);
   const layer = scene.add.container(0, 0).setDepth(40);
 
-  // Put outlines well ABOVE tiles/roads/icons so they’re always visible
+  // High depth so outlines sit above tiles/roads/icons
   const geoOutline = scene.add.graphics({ x: 0, y: 0 }).setDepth(120);
   geoOutline.clear();
-  geoOutline.setLineStyle(4, 0xffffff, 1); // temp; real color set per biome later
-  geoOutline.lineJoin = Phaser.LINE_JOIN.ROUND;
-  geoOutline.lineCap = Phaser.LINE_CAP.ROUND;
+  geoOutline.lineStyle(4, 0xffffff, 1); // temp; real color set below
 
   scene.roadsGraphics = roads;
   scene.locationsLayer = layer;
@@ -384,9 +382,10 @@ export function drawLocationsAndRoads() {
     }
 
     let geoCells = buildCellsIfMissing({ geoLandmark: lm, geoCells: meta.geoCells }, map, this.mapWidth, this.mapHeight);
+    const byKeyLocal = new Map(map.map(t => [keyOf(t.q, t.r), t]));
     const geoSet = new Set(geoCells.map(c => keyOf(c.q, c.r)));
 
-    // Volcano: ensure center is a level-4 mountain & neighbors -> ash
+    // Volcano: ensure level-4 mountain center & neighbors -> ash
     if (lm && lm.type === 'volcano') {
       let center = map.find(t => t.q === lm.q && t.r === lm.r);
       const isPeak = (t) => t && (t.type === 'mountain' || t.hasMountainIcon || t.elevation === 4);
@@ -404,12 +403,12 @@ export function drawLocationsAndRoads() {
         center.hasMountainIcon = false; // suppress mountain icon, show 🌋 instead
         lm.q = center.q; lm.r = center.r;
         for (const [dq, dr] of neighborsOddR(center.q, center.r)) {
-          const n = byKey.get(keyOf(center.q + dq, center.r + dr));
+          const n = byKeyLocal.get(keyOf(center.q + dq, center.r + dr));
           if (!n) continue;
           if (n.type !== 'water' && n.type !== 'mountain') n.type = 'volcano_ash';
           n.hasForest = n.hasRuin = n.hasCrashSite = n.hasVehicle = false;
           n.hasMountainIcon = false;
-          geoSet.add(keyOf(n.q, n.r)); // neighbors belong to object halo
+          geoSet.add(keyOf(n.q, n.r));
         }
       }
     }
@@ -417,18 +416,18 @@ export function drawLocationsAndRoads() {
     // Glacier: convert footprint (including water) to ice
     if (lm && lm.type === 'glacier') {
       for (const c of geoCells) {
-        const t = byKey.get(keyOf(c.q, c.r));
+        const t = byKeyLocal.get(keyOf(c.q, c.r));
         if (!t) continue;
-        t.type = 'ice'; // convert water->ice too
+        t.type = 'ice';
         t.hasForest = t.hasRuin = t.hasCrashSite = t.hasVehicle = false;
         t.hasMountainIcon = false;
       }
     }
 
-    // Plateau: 6 tiles elevation 3; ring to level 1 (not highlighted)
+    // Plateau: 6 tiles elevation 3; ring to elevation 1
     if (lm && lm.type === 'plateau') {
       for (const c of geoCells) {
-        const t = byKey.get(keyOf(c.q, c.r));
+        const t = byKeyLocal.get(keyOf(c.q, c.r));
         if (!t) continue;
         t.type = 'grassland';
         t.elevation = 3;
@@ -436,10 +435,10 @@ export function drawLocationsAndRoads() {
         t.hasForest = t.hasRuin = t.hasCrashSite = t.hasVehicle = false;
       }
       for (const c of geoCells) {
-        const t = byKey.get(keyOf(c.q, c.r));
+        const t = byKeyLocal.get(keyOf(c.q, c.r));
         if (!t) continue;
         for (const [dq, dr] of neighborsOddR(t.q, t.r)) {
-          const n = byKey.get(keyOf(t.q + dq, t.r + dr));
+          const n = byKeyLocal.get(keyOf(t.q + dq, t.r + dr));
           if (n && !geoSet.has(keyOf(n.q, n.r))) {
             n.elevation = 1;
             n.hasMountainIcon = false;
@@ -448,11 +447,11 @@ export function drawLocationsAndRoads() {
       }
     }
 
-    // Desert / Bog footprint
+    // Desert / Bog
     if (lm && (lm.type === 'desert' || lm.type === 'bog')) {
       const target = lm.type === 'desert' ? 'sand' : 'swamp';
       for (const c of geoCells) {
-        const t = byKey.get(keyOf(c.q, c.r));
+        const t = byKeyLocal.get(keyOf(c.q, c.r));
         if (!t) continue;
         t.type = target;
         t.hasForest = t.hasRuin = t.hasCrashSite = t.hasVehicle = false;
@@ -460,7 +459,6 @@ export function drawLocationsAndRoads() {
       }
     }
 
-    // Landmark placement (center of footprint, never water)
     const centerAxial = centroidOf([...geoSet].map(k => {
       const [q, r] = k.split(',').map(Number);
       return { q, r };
@@ -510,7 +508,7 @@ export function drawLocationsAndRoads() {
     Object.defineProperty(map, '__geoDecorAdded', { value: true, enumerable: false });
   }
 
-  // ---- ALWAYS recompute & draw outlines from current state ----
+  // ---- Draw outlines each frame from current state
   {
     geoOutline.clear();
     const lm   = map.__geoLandmark;
@@ -519,8 +517,6 @@ export function drawLocationsAndRoads() {
 
     const highlightCells = computeHighlightCells(map, lm, base);
     geoOutline.lineStyle(4, col, 0.98);
-    geoOutline.lineJoin = Phaser.LINE_JOIN.ROUND;
-    geoOutline.lineCap  = Phaser.LINE_CAP.ROUND;
 
     for (const c of highlightCells) {
       const t = byKey.get(keyOf(c.q, c.r)); if (!t) continue;
