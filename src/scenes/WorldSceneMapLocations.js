@@ -295,6 +295,20 @@ function computeHighlightCells(map, lm, geoCells) {
   return out;
 }
 
+/* ------------------------- HEX INSPECT helper ------------------------- */
+function sendHexInspect(scene, header, bodyLines) {
+  const text = `[HEX INSPECT] ${header}\n` + (Array.isArray(bodyLines) ? bodyLines.join('\n') : '');
+  if (typeof scene.hexInspect === 'function') {
+    scene.hexInspect(text);
+  } else if (scene.ui && typeof scene.ui.showInspect === 'function') {
+    scene.ui.showInspect(text);
+  } else if (scene.events && typeof scene.events.emit === 'function') {
+    scene.events.emit('hex-inspect', text);
+  } else {
+    console.log(text);
+  }
+}
+
 /* ------------------------- rendering core ------------------------- */
 
 function effectiveElevationLocal(tile) {
@@ -319,7 +333,6 @@ export function drawLocationsAndRoads() {
   if (scene.roadsGraphics) scene.roadsGraphics.destroy();
   if (scene.locationsLayer) scene.locationsLayer.destroy();
   if (scene.geoOutlineGraphics) scene.geoOutlineGraphics.destroy();
-  if (scene.geoDebugMsg) { scene.geoDebugMsg.destroy(); scene.geoDebugMsg = null; } // remove old message
 
   const roads = scene.add.graphics({ x: 0, y: 0 }).setDepth(30);
   const layer = scene.add.container(0, 0).setDepth(40);
@@ -430,7 +443,7 @@ export function drawLocationsAndRoads() {
       }
     }
 
-    // Plateau: 6 tiles elevation 3 (we mark only footprint tiles as affected)
+    // Plateau: 6 tiles elevation 3 (only footprint tiles are "bound")
     if (lm && lm.type === 'plateau') {
       for (const c of baseCells) {
         const t = byKeyLocal.get(keyOf(c.q, c.r));
@@ -441,7 +454,7 @@ export function drawLocationsAndRoads() {
         t.hasForest = t.hasRuin = t.hasCrashSite = t.hasVehicle = false;
         noPOISet.add(keyOf(t.q, t.r));
       }
-      // Ring lowering to 1 is visual only; not included as "bound" tiles per your spec.
+      // Edge ring → elevation 1 is visual only, not bound.
     }
 
     // Desert / Bog
@@ -472,7 +485,7 @@ export function drawLocationsAndRoads() {
     Object.defineProperty(map, '__geoBuilt',      { value: true,      enumerable: false });
   }
 
-  // ---- Landmark emoji + label once (make the emoji clickable in debug mode)
+  // ---- Landmark emoji + label once (clickable → HEX INSPECT)
   if (!map.__geoDecorAdded && map.__geoLandmark && map.__geoCenterTile) {
     const lm = map.__geoLandmark;
     const ct = map.__geoCenterTile;
@@ -503,69 +516,20 @@ export function drawLocationsAndRoads() {
     }).setOrigin(0.5).setDepth(200);
     scene.locationsLayer.add(txt);
 
-    // DEBUG: click the icon to show details about bound tiles
-    const isDebug = !!(scene.debugGeoObjects || (typeof window !== 'undefined' && window.DEEPHEX_DEBUG_GEO));
-    if (isDebug) {
-      icon.setInteractive({ useHandCursor: true });
-      icon.on('pointerdown', () => {
-        const base = map.__geoCells || [];
-        const highlight = computeHighlightCells(map, lm, base);
-        const listed = highlight.map(c => {
-          const t = map.find(tt => tt.q === c.q && tt.r === c.r);
-          const lvl = (t && typeof t.elevation === 'number') ? t.elevation : 0;
-          const tp  = t ? t.type : '?';
-          return `(${c.q},${c.r}) — ${tp}, lvl ${lvl}`;
-        });
-
-        const hdr = `${label} @ (${ct.q},${ct.r}) — bound tiles (${listed.length})`;
-        const body = listed.join('\n') || '(none)';
-
-        // Remove previous message if visible
-        if (scene.geoDebugMsg) { scene.geoDebugMsg.destroy(); scene.geoDebugMsg = null; }
-
-        // Build a message box at top center
-        const msgW = Math.max(440, this.cameras.main.width * 0.6);
-        const msgX = this.cameras.main.centerX;
-        const msgY = 40;
-
-        const container = scene.add.container(0, 0).setDepth(1000);
-        const bg = scene.add.graphics();
-        bg.fillStyle(0x000000, 0.65);
-        bg.fillRoundedRect(msgX - msgW/2, msgY, msgW, 160, 10);
-        bg.lineStyle(2, 0xffffff, 0.9);
-        bg.strokeRoundedRect(msgX - msgW/2, msgY, msgW, 160, 10);
-
-        const title = scene.add.text(msgX, msgY + 12, hdr, {
-          fontSize: '18px',
-          color: '#ffffff',
-          fontStyle: 'bold',
-          align: 'center',
-          wordWrap: { width: msgW - 20 }
-        }).setOrigin(0.5, 0);
-
-        const details = scene.add.text(msgX - msgW/2 + 10, msgY + 40, body, {
-          fontSize: '14px',
-          color: '#e0e0e0',
-          align: 'left',
-          wordWrap: { width: msgW - 20 }
-        }).setOrigin(0, 0);
-
-        container.add([bg, title, details]);
-
-        // Auto-hide after 5s or on click
-        container.setInteractive(
-          new Phaser.Geom.Rectangle(msgX - msgW/2, msgY, msgW, 160),
-          Phaser.Geom.Rectangle.Contains
-        );
-        container.on('pointerdown', () => { container.destroy(); scene.geoDebugMsg = null; });
-
-        scene.time.delayedCall(5000, () => {
-          if (container && container.active) { container.destroy(); scene.geoDebugMsg = null; }
-        });
-
-        scene.geoDebugMsg = container;
+    // Click to send [HEX INSPECT] message with bound tiles list
+    icon.setInteractive({ useHandCursor: true });
+    icon.on('pointerdown', () => {
+      const base = map.__geoCells || [];
+      const highlight = computeHighlightCells(map, lm, base);
+      const listed = highlight.map(c => {
+        const t = map.find(tt => tt.q === c.q && tt.r === c.r);
+        const lvl = (t && typeof t.elevation === 'number') ? t.elevation : 0;
+        const tp  = t ? t.type : '?';
+        return `(${c.q},${c.r}) — ${tp}, lvl ${lvl}`;
       });
-    }
+      const header = `${label} @ (${ct.q},${ct.r}) — bound tiles: ${listed.length}`;
+      sendHexInspect(scene, header, listed);
+    });
 
     Object.defineProperty(map, '__geoDecorAdded', { value: true, enumerable: false });
   }
