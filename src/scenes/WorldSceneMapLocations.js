@@ -298,11 +298,7 @@ function computeHighlightCells(map, lm, geoCells) {
 /* ------------------------- HEX INSPECT helper ------------------------- */
 function sendHexInspect(scene, header, bodyLines) {
   const text = `[HEX INSPECT] ${header}\n` + (Array.isArray(bodyLines) ? bodyLines.join('\n') : '');
-  if (typeof scene.hexInspect === 'function') {
-    scene.hexInspect(text);
-  } else if (scene.ui && typeof scene.ui.showInspect === 'function') {
-    scene.ui.showInspect(text);
-  } else if (scene.events && typeof scene.events.emit === 'function') {
+  if (scene && scene.events && typeof scene.events.emit === 'function') {
     scene.events.emit('hex-inspect', text);
   } else {
     console.log(text);
@@ -339,8 +335,6 @@ export function drawLocationsAndRoads() {
 
   // High depth so outlines sit above tiles/roads/icons
   const geoOutline = scene.add.graphics({ x: 0, y: 0 }).setDepth(120);
-  geoOutline.clear();
-  geoOutline.lineStyle(4, 0xffffff, 1); // temp; real color set below
 
   scene.roadsGraphics = roads;
   scene.locationsLayer = layer;
@@ -400,7 +394,7 @@ export function drawLocationsAndRoads() {
     const byKeyLocal = new Map(map.map(t => [keyOf(t.q, t.r), t]));
 
     // Tiles actually affected by the geo object (used to suppress POIs)
-    const noPOISet = new Set();
+    const noPOISet = new Set(baseCells.map(c => keyOf(c.q, c.r)));
 
     // Volcano: ensure level-4 mountain center & neighbors -> ash
     if (lm && lm.type === 'volcano') {
