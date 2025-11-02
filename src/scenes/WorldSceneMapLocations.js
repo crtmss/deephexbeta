@@ -246,9 +246,10 @@ function centroidOf(cells) {
   const sy = cells.reduce((s, c) => s + c.r, 0);
   return { q: sx / cells.length, r: sy / cells.length };
 }
-function closestTileTo(map, target) {
+function closestTileTo(map, target, predicate = () => true) {
   let best = null, bd = Infinity;
   for (const t of map) {
+    if (!predicate(t)) continue;
     const d = (t.q - target.q) * (t.q - target.q) + (t.r - target.r) * (t.r - target.r);
     if (d < bd) { bd = d; best = t; }
   }
@@ -327,22 +328,42 @@ export function drawLocationsAndRoads() {
   };
 
   const biomeName = resolveBiome(scene, map);
-
-  // ---- Landmark (geo object) drawing and enforcement
   const meta = scene?.hexMap?.worldMeta || map.__worldMeta || {};
-  if (!map.__geoDrawn) {
+
+  // ----- Build/Mutate geo object ONCE -----
+  if (!map.__geoBuilt) {
     let lm = meta.geoLandmark; // { q, r, emoji, type, label }
     if (!lm) {
       const any = map.find(t => t.type !== 'water') || map[0];
       lm = any ? { q:any.q, r:any.r, emoji:'🌄', type:'plateau', label:'Plateau' } : null;
     }
-    let geoCells   = buildCellsIfMissing({ geoLandmark: lm, geoCells: meta.geoCells }, map, this.mapWidth, this.mapHeight);
-    const highlightCells = []; // <-- only tiles we really changed and want to outline
 
-    // Volcano: convert all neighbors to ash, include ONLY those neighbors in highlight
+    let geoCells = buildCellsIfMissing({ geoLandmark: lm, geoCells: meta.geoCells }, map, this.mapWidth, this.mapHeight);
+    const highlightCells = [];
+
+    // Volcano: ensure center is a level-4 mountain
     if (lm && lm.type === 'volcano') {
-      const center = map.find(t => t.q === lm.q && t.r === lm.r);
+      let center = map.find(t => t.q === lm.q && t.r === lm.r);
+      const isPeak = (t) => t && (t.type === 'mountain' || t.hasMountainIcon || t.elevation === 4);
+      if (!isPeak(center)) {
+        const target = closestTileTo(
+          map,
+          center || { q: (this.mapWidth||25)/2, r:(this.mapHeight||25)/2 },
+          t => t.type === 'mountain' || t.elevation === 4
+        );
+        center = target || center;
+      }
+      if (!center || !(center.type === 'mountain' || center.elevation === 4)) {
+        // Promote to a peak if still not a mountain
+        if (center) {
+          center.type = 'mountain';
+          center.elevation = 4;
+          center.hasMountainIcon = true;
+        }
+      }
       if (center) {
+        lm.q = center.q; lm.r = center.r;
+        // Neighbors -> ash (outline only neighbors we changed)
         for (const [dq, dr] of neighborsOddR(center.q, center.r)) {
           const nq = center.q + dq, nr = center.r + dr;
           const n = byKey.get(keyOf(nq, nr));
@@ -350,18 +371,18 @@ export function drawLocationsAndRoads() {
           if (n.type !== 'water' && n.type !== 'mountain') {
             if (n.type !== 'volcano_ash') {
               n.type = 'volcano_ash';
-              highlightCells.push({ q:n.q, r:n.r }); // outline only changed neighbors
+              highlightCells.push({ q:n.q, r:n.r });
             }
           }
           n.hasForest = n.hasRuin = n.hasCrashSite = n.hasVehicle = false;
           n.hasMountainIcon = false;
         }
-        // prevent mountain icon under the volcano emoji
+        // The vent should not render a mountain icon below 🌋
         center.hasMountainIcon = false;
       }
     }
 
-    // Glacier: convert water/land we grabbed to ice; outline only the tiles we changed to ice
+    // Glacier: convert footprint (including water) to ice and outline changed tiles
     if (lm && lm.type === 'glacier') {
       for (const cell of geoCells) {
         const t = byKey.get(keyOf(cell.q, cell.r));
@@ -373,16 +394,17 @@ export function drawLocationsAndRoads() {
       }
     }
 
-    // Plateau: set those 6 tiles to elevation=3 (outline only those)
+    // Plateau: 6 tiles elevation 3 (highlight only those)
     if (lm && lm.type === 'plateau') {
       for (const cell of geoCells) {
         const t = byKey.get(keyOf(cell.q, cell.r));
         if (!t) continue;
         t.type = 'grassland';
         t.elevation = 3;
+        t.hasMountainIcon = false;
         highlightCells.push({ q:t.q, r:t.r });
       }
-      // Set surrounding ring to elevation=1 (not highlighted)
+      // ring to level 1
       for (const cell of geoCells) {
         const t = byKey.get(keyOf(cell.q, cell.r));
         if (!t) continue;
@@ -390,12 +412,13 @@ export function drawLocationsAndRoads() {
           const n = byKey.get(keyOf(t.q + dq, t.r + dr));
           if (n && !geoCells.some(c => c.q === n.q && c.r === n.r)) {
             n.elevation = 1;
+            n.hasMountainIcon = false;
           }
         }
       }
     }
 
-    // Desert/Bog: paint footprint to sand/swamp; outline only changed cells
+    // Desert / Bog footprint
     if (lm && (lm.type === 'desert' || lm.type === 'bog')) {
       const target = lm.type === 'desert' ? 'sand' : 'swamp';
       for (const cell of geoCells) {
@@ -408,9 +431,8 @@ export function drawLocationsAndRoads() {
       }
     }
 
-    // Build set of all geo tiles (for suppressing POIs)
+    // Suppress POIs on the footprint tiles (and prevent peak icon there)
     const geoSet = new Set();
-    // All geoCells are part of the object (used for emoji placement & POI suppression)
     for (const c of geoCells) {
       const t = byKey.get(keyOf(c.q, c.r));
       if (!t) continue;
@@ -419,26 +441,58 @@ export function drawLocationsAndRoads() {
       geoSet.add(keyOf(c.q, c.r));
     }
 
-    // Center placement: icon + label nearest to centroid OF THE FOOTPRINT
+    // Landmark placement (center of footprint, never water)
     const centerAxial = centroidOf(geoCells);
-    const centerTile  = centerAxial ? closestTileTo(map, centerAxial) : map.find(t => t.q === lm.q && t.r === lm.r);
-    if (centerTile) {
-      const p = this.hexToPixel(centerTile.q, centerTile.r, size);
-      const px = p.x + offsetX;
-      const py = p.y + offsetY - LIFT * effectiveElevationLocal(centerTile);
-      addEmoji(px, py, lm.emoji || '⭐', Math.max(16, size * 0.95), 47);
+    const centerTile = centerAxial
+      ? closestTileTo(map, centerAxial, tt => tt.type !== 'water')
+      : map.find(t => t.q === lm.q && t.r === lm.r);
+    Object.defineProperty(map, '__geoCenterTile', { value: centerTile || null, enumerable: false });
 
-      const label = lm.label || (lm.type ? lm.type[0].toUpperCase() + lm.type.slice(1) : 'Landmark');
-      const txt = scene.add.text(px, py + size * 0.9, label, {
-        fontSize: `${Math.max(12, size * 0.55)}px`,
-        color: '#ffffff',
-        backgroundColor: 'rgba(0,0,0,0.35)',
-        padding: { left: 4, right: 4, top: 2, bottom: 2 }
-      }).setOrigin(0.5).setDepth(47);
-      layer.add(txt);
-    }
+    // Stash meta so subsequent draws can re-outline even after we clear graphics
+    Object.defineProperty(map, '__geoLandmark', { value: lm, enumerable: false });
+    Object.defineProperty(map, '__geoCells', { value: geoCells, enumerable: false });
+    Object.defineProperty(map, '__geoCellsSet', { value: geoSet, enumerable: false });
+    Object.defineProperty(map, '__geoHighlightCells', { value: highlightCells, enumerable: false });
+    Object.defineProperty(map, '__geoBuilt', { value: true, enumerable: false });
+  }
 
-    // Draw outline ONLY around highlightCells (the tiles actually created/changed)
+  // ---- Draw landmark emoji + label once (but harmless if duplicated) ----
+  if (!map.__geoDecorAdded && map.__geoLandmark && map.__geoCenterTile) {
+    const lm = map.__geoLandmark;
+    const ct = map.__geoCenterTile;
+    const p = this.hexToPixel(ct.q, ct.r, size);
+    const px = p.x + offsetX;
+    const py = p.y + offsetY - LIFT * effectiveElevationLocal(ct);
+    const emoji = lm.emoji || (
+      lm.type === 'volcano' ? '🌋' :
+      lm.type === 'glacier' ? '❄️' :
+      lm.type === 'desert'  ? '🌵' :
+      lm.type === 'bog'     ? '🌾' :
+      '🌄'
+    );
+    addEmoji(px, py, emoji, Math.max(16, size * 0.95), 47);
+
+    const label = lm.label || (
+      lm.type === 'volcano' ? 'Volcano' :
+      lm.type === 'glacier' ? 'Glacier' :
+      lm.type === 'desert'  ? 'Dune Field' :
+      lm.type === 'bog'     ? 'Bog' :
+      'Plateau'
+    );
+    const txt = scene.add.text(px, py + size * 0.9, label, {
+      fontSize: `${Math.max(12, size * 0.55)}px`,
+      color: '#ffffff',
+      backgroundColor: 'rgba(0,0,0,0.35)',
+      padding: { left: 4, right: 4, top: 2, bottom: 2 }
+    }).setOrigin(0.5).setDepth(47);
+    scene.locationsLayer.add(txt);
+
+    Object.defineProperty(map, '__geoDecorAdded', { value: true, enumerable: false });
+  }
+
+  // ---- ALWAYS draw outlines from stored highlight cells ----
+  {
+    const highlightCells = map.__geoHighlightCells || [];
     const col = outlineColorFor(biomeName);
     geoOutline.lineStyle(4, col, 0.95);
     for (const c of highlightCells) {
@@ -457,12 +511,6 @@ export function drawLocationsAndRoads() {
       geoOutline.closePath();
       geoOutline.strokePath();
     }
-
-    Object.defineProperty(map, '__geoLandmark', { value: lm, enumerable: false });
-    Object.defineProperty(map, '__geoCells', { value: geoCells, enumerable: false });
-    Object.defineProperty(map, '__geoCellsSet', { value: geoSet, enumerable: false });
-    Object.defineProperty(map, '__geoHighlightCells', { value: highlightCells, enumerable: false });
-    Object.defineProperty(map, '__geoDrawn', { value: true, enumerable: false });
   }
 
   const geoCellsSet = map.__geoCellsSet;
