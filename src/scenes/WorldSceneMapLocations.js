@@ -319,18 +319,23 @@ export function drawLocationsAndRoads() {
   if (scene.roadsGraphics) scene.roadsGraphics.destroy();
   if (scene.locationsLayer) scene.locationsLayer.destroy();
   if (scene.geoOutlineGraphics) scene.geoOutlineGraphics.destroy();
+  if (scene.geoDebugLayer) scene.geoDebugLayer.destroy(); // DEBUG 'X' layer
 
   const roads = scene.add.graphics({ x: 0, y: 0 }).setDepth(30);
   const layer = scene.add.container(0, 0).setDepth(40);
 
-  // High depth so outlines sit above tiles/roads/icons
+  // High depth so outlines & debug sit above tiles/roads/icons
   const geoOutline = scene.add.graphics({ x: 0, y: 0 }).setDepth(120);
   geoOutline.clear();
   geoOutline.lineStyle(4, 0xffffff, 1); // temp; real color set below
 
+  // Debug 'X' layer (above outline so it's visible no matter the color)
+  const debugLayer = scene.add.container(0, 0).setDepth(130);
+
   scene.roadsGraphics = roads;
   scene.locationsLayer = layer;
   scene.geoOutlineGraphics = geoOutline;
+  scene.geoDebugLayer = debugLayer;
 
   const byKey = new Map(map.map(t => [keyOf(t.q, t.r), t]));
 
@@ -381,12 +386,11 @@ export function drawLocationsAndRoads() {
       lm = any ? { q:any.q, r:any.r, emoji:'🌄', type:'plateau', label:'Plateau' } : null;
     }
 
-    // Start with base footprint (9 or 6 cells)
+    // Base footprint (9 or 6 cells)
     const baseCells = buildCellsIfMissing({ geoLandmark: lm, geoCells: meta.geoCells }, map, this.mapWidth, this.mapHeight);
     const byKeyLocal = new Map(map.map(t => [keyOf(t.q, t.r), t]));
-    const baseSet = new Set(baseCells.map(c => keyOf(c.q, c.r)));
 
-    // Set that will suppress POIs (actual affected tiles)
+    // Tiles actually affected by the geo object (used to suppress POIs + debug X)
     const noPOISet = new Set();
 
     // Volcano: ensure level-4 mountain center & neighbors -> ash
@@ -430,7 +434,7 @@ export function drawLocationsAndRoads() {
       }
     }
 
-    // Plateau: 6 tiles elevation 3; (ring lowering left out of footprint)
+    // Plateau: 6 tiles elevation 3 (we mark only footprint tiles as affected)
     if (lm && lm.type === 'plateau') {
       for (const c of baseCells) {
         const t = byKeyLocal.get(keyOf(c.q, c.r));
@@ -464,11 +468,11 @@ export function drawLocationsAndRoads() {
       ? closestTileTo(map, centerAxial, tt => tt.type !== 'water')
       : map.find(t => t.q === lm.q && t.r === lm.r);
 
-    Object.defineProperty(map, '__geoLandmark',   { value: lm,           enumerable: false });
-    Object.defineProperty(map, '__geoCells',      { value: baseCells,    enumerable: false }); // keep original footprint
-    Object.defineProperty(map, '__geoNoPOISet',   { value: noPOISet,     enumerable: false }); // tiles to suppress icons
-    Object.defineProperty(map, '__geoCenterTile', { value: centerTile||null, enumerable: false });
-    Object.defineProperty(map, '__geoBuilt',      { value: true,         enumerable: false });
+    Object.defineProperty(map, '__geoLandmark',   { value: lm,        enumerable: false });
+    Object.defineProperty(map, '__geoCells',      { value: baseCells, enumerable: false });
+    Object.defineProperty(map, '__geoNoPOISet',   { value: noPOISet,  enumerable: false }); // Affected tiles
+    Object.defineProperty(map, '__geoCenterTile', { value: centerTile || null, enumerable: false });
+    Object.defineProperty(map, '__geoBuilt',      { value: true,      enumerable: false });
   }
 
   // ---- Landmark emoji + label once
@@ -530,6 +534,27 @@ export function drawLocationsAndRoads() {
       for (let i = 1; i < 6; i++) geoOutline.lineTo(pts[i].x, pts[i].y);
       geoOutline.closePath();
       geoOutline.strokePath();
+    }
+  }
+
+  // ---- DEBUG: place a big "X" on every affected hex (geo object changed tiles)
+  {
+    const noPOISet = map.__geoNoPOISet || new Set();
+    for (const key of noPOISet) {
+      const [q, r] = key.split(',').map(Number);
+      const t = byKey.get(key);
+      if (!t) continue;
+      const c = scene.hexToPixel(q, r, size);
+      const cx = c.x + offsetX;
+      const cy = c.y + offsetY - LIFT * effectiveElevationLocal(t);
+      const debugText = scene.add.text(cx, cy, 'X', {
+        fontSize: `${Math.max(12, size)}px`,
+        fontStyle: 'bold',
+        color: '#fffb',
+        stroke: '#000',
+        strokeThickness: 4
+      }).setOrigin(0.5).setDepth(131);
+      scene.geoDebugLayer.add(debugText);
     }
   }
 
