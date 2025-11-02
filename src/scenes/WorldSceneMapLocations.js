@@ -301,7 +301,8 @@ export function drawLocationsAndRoads() {
   // ---- Landmark (geo object) drawing — explicit meta or heuristic fallback
   const meta = scene?.hexMap?.worldMeta || map.__worldMeta || {};
   if (!map.__geoDrawn) {
-    let lm = meta.geoLandmark; // { q, r, emoji } if provided by generator
+    let lm = meta.geoLandmark; // { q, r, emoji, type, label } if provided by generator
+
     if (!lm) {
       // Fallback: derive one icon position from current biome
       const tiles = map.filter(t => t.type !== 'water');
@@ -324,31 +325,49 @@ export function drawLocationsAndRoads() {
       const b = (biomeName || '').toLowerCase();
       if (b.includes('icy')) {
         const t = pickClosest(tt => tt.type === 'ice' || tt.type === 'snow');
-        if (t) lm = { q: t.q, r: t.r, emoji: '❄️' };
+        if (t) lm = { q: t.q, r: t.r, emoji: '❄️', type: 'glacier', label: 'Glacier' };
       } else if (b.includes('volcan')) {
         const t = pickClosest(tt => tt.type === 'mountain' || (typeof tt.elevation === 'number' && tt.elevation === 4));
-        if (t) lm = { q: t.q, r: t.r, emoji: '🌋' };
+        if (t) lm = { q: t.q, r: t.r, emoji: '🌋', type: 'volcano', label: 'Volcano' };
       } else if (b.includes('desert')) {
         const t = pickClosest(tt => tt.type === 'sand');
-        if (t) lm = { q: t.q, r: t.r, emoji: '🌵' };
+        if (t) lm = { q: t.q, r: t.r, emoji: '🌵', type: 'desert', label: 'Desert' };
       } else if (b.includes('swamp')) {
         const t = pickClosest(tt => tt.type === 'swamp');
-        if (t) lm = { q: t.q, r: t.r, emoji: '🌾' };
+        if (t) lm = { q: t.q, r: t.r, emoji: '🌾', type: 'bog', label: 'Bog' };
       } else {
         // temperate
         const t = pickClosest(tt => tt.type !== 'water');
-        if (t) lm = { q: t.q, r: t.r, emoji: '🌄' };
+        if (t) lm = { q: t.q, r: t.r, emoji: '🌄', type: 'plateau', label: 'Plateau' };
       }
     }
 
     if (lm) {
+      // Draw emoji
+      const tile = map.find(tt => tt.q === lm.q && tt.r === lm.r);
       const p = this.hexToPixel(lm.q, lm.r, size);
       const px = p.x + offsetX;
-      const py = p.y + offsetY - LIFT * effectiveElevationLocal(map.find(t => t.q === lm.q && t.r === lm.r));
+      const py = p.y + offsetY - LIFT * effectiveElevationLocal(tile);
       addEmoji(px, py, lm.emoji, Math.max(16, size * 0.95), 47);
+
+      // Draw label under it (simple text label)
+      const label = lm.label || (lm.type ? lm.type[0].toUpperCase() + lm.type.slice(1) : 'Landmark');
+      const txt = scene.add.text(px, py + size * 0.9, label, {
+        fontSize: `${Math.max(12, size * 0.55)}px`,
+        color: '#ffffff',
+        backgroundColor: 'rgba(0,0,0,0.35)',
+        padding: { left: 4, right: 4, top: 2, bottom: 2 }
+      }).setOrigin(0.5).setDepth(47);
+      layer.add(txt);
+
+      // Store for volcano suppression
+      Object.defineProperty(map, '__geoLandmark', { value: lm, enumerable: false });
     }
     Object.defineProperty(map, '__geoDrawn', { value: true, enumerable: false });
   }
+
+  const activeLM = map.__geoLandmark;
+  const volcanoKey = (activeLM && (activeLM.type === 'volcano')) ? keyOf(activeLM.q, activeLM.r) : null;
 
   // ---- Per-tile POIs
   for (const t of map) {
@@ -364,10 +383,13 @@ export function drawLocationsAndRoads() {
       if (elev === 4) t.hasMountainIcon = true;
     }
 
-    // Peaks first
+    // Peaks first — but NEVER draw on the volcano landmark tile
     if (t.hasMountainIcon) {
-      addEmoji(cx, cy, '⛰️', size * 0.9, 46);
-      continue; // skip other POIs on peaks
+      if (!volcanoKey || keyOf(t.q, t.r) !== volcanoKey) {
+        addEmoji(cx, cy, '⛰️', size * 0.9, 46);
+      }
+      // Skip other POIs on peaks
+      continue;
     }
 
     if (t.hasForest) {
