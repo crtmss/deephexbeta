@@ -319,23 +319,19 @@ export function drawLocationsAndRoads() {
   if (scene.roadsGraphics) scene.roadsGraphics.destroy();
   if (scene.locationsLayer) scene.locationsLayer.destroy();
   if (scene.geoOutlineGraphics) scene.geoOutlineGraphics.destroy();
-  if (scene.geoDebugLayer) scene.geoDebugLayer.destroy(); // DEBUG 'X' layer
+  if (scene.geoDebugMsg) { scene.geoDebugMsg.destroy(); scene.geoDebugMsg = null; } // remove old message
 
   const roads = scene.add.graphics({ x: 0, y: 0 }).setDepth(30);
   const layer = scene.add.container(0, 0).setDepth(40);
 
-  // High depth so outlines & debug sit above tiles/roads/icons
+  // High depth so outlines sit above tiles/roads/icons
   const geoOutline = scene.add.graphics({ x: 0, y: 0 }).setDepth(120);
   geoOutline.clear();
   geoOutline.lineStyle(4, 0xffffff, 1); // temp; real color set below
 
-  // Debug 'X' layer (above outline so it's visible no matter the color)
-  const debugLayer = scene.add.container(0, 0).setDepth(130);
-
   scene.roadsGraphics = roads;
   scene.locationsLayer = layer;
   scene.geoOutlineGraphics = geoOutline;
-  scene.geoDebugLayer = debugLayer;
 
   const byKey = new Map(map.map(t => [keyOf(t.q, t.r), t]));
 
@@ -390,7 +386,7 @@ export function drawLocationsAndRoads() {
     const baseCells = buildCellsIfMissing({ geoLandmark: lm, geoCells: meta.geoCells }, map, this.mapWidth, this.mapHeight);
     const byKeyLocal = new Map(map.map(t => [keyOf(t.q, t.r), t]));
 
-    // Tiles actually affected by the geo object (used to suppress POIs + debug X)
+    // Tiles actually affected by the geo object (used to suppress POIs)
     const noPOISet = new Set();
 
     // Volcano: ensure level-4 mountain center & neighbors -> ash
@@ -445,6 +441,7 @@ export function drawLocationsAndRoads() {
         t.hasForest = t.hasRuin = t.hasCrashSite = t.hasVehicle = false;
         noPOISet.add(keyOf(t.q, t.r));
       }
+      // Ring lowering to 1 is visual only; not included as "bound" tiles per your spec.
     }
 
     // Desert / Bog
@@ -469,13 +466,13 @@ export function drawLocationsAndRoads() {
       : map.find(t => t.q === lm.q && t.r === lm.r);
 
     Object.defineProperty(map, '__geoLandmark',   { value: lm,        enumerable: false });
-    Object.defineProperty(map, '__geoCells',      { value: baseCells, enumerable: false });
-    Object.defineProperty(map, '__geoNoPOISet',   { value: noPOISet,  enumerable: false }); // Affected tiles
+    Object.defineProperty(map, '__geoCells',      { value: baseCells, enumerable: false }); // footprint cells
+    Object.defineProperty(map, '__geoNoPOISet',   { value: noPOISet,  enumerable: false }); // affected tiles
     Object.defineProperty(map, '__geoCenterTile', { value: centerTile || null, enumerable: false });
     Object.defineProperty(map, '__geoBuilt',      { value: true,      enumerable: false });
   }
 
-  // ---- Landmark emoji + label once
+  // ---- Landmark emoji + label once (make the emoji clickable in debug mode)
   if (!map.__geoDecorAdded && map.__geoLandmark && map.__geoCenterTile) {
     const lm = map.__geoLandmark;
     const ct = map.__geoCenterTile;
@@ -497,7 +494,7 @@ export function drawLocationsAndRoads() {
       'Plateau'
     );
 
-    addEmoji(px, py, emoji, Math.max(16, size * 0.95), 200);
+    const icon = addEmoji(px, py, emoji, Math.max(16, size * 0.95), 200);
     const txt = scene.add.text(px, py + size * 0.9, label, {
       fontSize: `${Math.max(12, size * 0.55)}px`,
       color: '#ffffff',
@@ -506,17 +503,81 @@ export function drawLocationsAndRoads() {
     }).setOrigin(0.5).setDepth(200);
     scene.locationsLayer.add(txt);
 
+    // DEBUG: click the icon to show details about bound tiles
+    const isDebug = !!(scene.debugGeoObjects || (typeof window !== 'undefined' && window.DEEPHEX_DEBUG_GEO));
+    if (isDebug) {
+      icon.setInteractive({ useHandCursor: true });
+      icon.on('pointerdown', () => {
+        const base = map.__geoCells || [];
+        const highlight = computeHighlightCells(map, lm, base);
+        const listed = highlight.map(c => {
+          const t = map.find(tt => tt.q === c.q && tt.r === c.r);
+          const lvl = (t && typeof t.elevation === 'number') ? t.elevation : 0;
+          const tp  = t ? t.type : '?';
+          return `(${c.q},${c.r}) — ${tp}, lvl ${lvl}`;
+        });
+
+        const hdr = `${label} @ (${ct.q},${ct.r}) — bound tiles (${listed.length})`;
+        const body = listed.join('\n') || '(none)';
+
+        // Remove previous message if visible
+        if (scene.geoDebugMsg) { scene.geoDebugMsg.destroy(); scene.geoDebugMsg = null; }
+
+        // Build a message box at top center
+        const msgW = Math.max(440, this.cameras.main.width * 0.6);
+        const msgX = this.cameras.main.centerX;
+        const msgY = 40;
+
+        const container = scene.add.container(0, 0).setDepth(1000);
+        const bg = scene.add.graphics();
+        bg.fillStyle(0x000000, 0.65);
+        bg.fillRoundedRect(msgX - msgW/2, msgY, msgW, 160, 10);
+        bg.lineStyle(2, 0xffffff, 0.9);
+        bg.strokeRoundedRect(msgX - msgW/2, msgY, msgW, 160, 10);
+
+        const title = scene.add.text(msgX, msgY + 12, hdr, {
+          fontSize: '18px',
+          color: '#ffffff',
+          fontStyle: 'bold',
+          align: 'center',
+          wordWrap: { width: msgW - 20 }
+        }).setOrigin(0.5, 0);
+
+        const details = scene.add.text(msgX - msgW/2 + 10, msgY + 40, body, {
+          fontSize: '14px',
+          color: '#e0e0e0',
+          align: 'left',
+          wordWrap: { width: msgW - 20 }
+        }).setOrigin(0, 0);
+
+        container.add([bg, title, details]);
+
+        // Auto-hide after 5s or on click
+        container.setInteractive(
+          new Phaser.Geom.Rectangle(msgX - msgW/2, msgY, msgW, 160),
+          Phaser.Geom.Rectangle.Contains
+        );
+        container.on('pointerdown', () => { container.destroy(); scene.geoDebugMsg = null; });
+
+        scene.time.delayedCall(5000, () => {
+          if (container && container.active) { container.destroy(); scene.geoDebugMsg = null; }
+        });
+
+        scene.geoDebugMsg = container;
+      });
+    }
+
     Object.defineProperty(map, '__geoDecorAdded', { value: true, enumerable: false });
   }
 
   // ---- Draw outlines each frame from current state
   {
-    geoOutline.clear();
     const lm   = map.__geoLandmark;
     const base = map.__geoCells || [];
     const col  = outlineColorFor(biomeName);
 
     const highlightCells = computeHighlightCells(map, lm, base);
+    geoOutline.clear();
     geoOutline.lineStyle(4, col, 0.98);
 
     for (const c of highlightCells) {
@@ -534,27 +595,6 @@ export function drawLocationsAndRoads() {
       for (let i = 1; i < 6; i++) geoOutline.lineTo(pts[i].x, pts[i].y);
       geoOutline.closePath();
       geoOutline.strokePath();
-    }
-  }
-
-  // ---- DEBUG: place a big "X" on every affected hex (geo object changed tiles)
-  {
-    const noPOISet = map.__geoNoPOISet || new Set();
-    for (const key of noPOISet) {
-      const [q, r] = key.split(',').map(Number);
-      const t = byKey.get(key);
-      if (!t) continue;
-      const c = scene.hexToPixel(q, r, size);
-      const cx = c.x + offsetX;
-      const cy = c.y + offsetY - LIFT * effectiveElevationLocal(t);
-      const debugText = scene.add.text(cx, cy, 'X', {
-        fontSize: `${Math.max(12, size)}px`,
-        fontStyle: 'bold',
-        color: '#fffb',
-        stroke: '#000',
-        strokeThickness: 4
-      }).setOrigin(0.5).setDepth(131);
-      scene.geoDebugLayer.add(debugText);
     }
   }
 
