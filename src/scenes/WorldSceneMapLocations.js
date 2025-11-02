@@ -322,7 +322,13 @@ export function drawLocationsAndRoads() {
 
   const roads = scene.add.graphics({ x: 0, y: 0 }).setDepth(30);
   const layer = scene.add.container(0, 0).setDepth(40);
-  const geoOutline = scene.add.graphics({ x: 0, y: 0 }).setDepth(39);
+
+  // Put outlines well ABOVE tiles/roads/icons so they’re always visible
+  const geoOutline = scene.add.graphics({ x: 0, y: 0 }).setDepth(120);
+  geoOutline.clear();
+  geoOutline.setLineStyle(4, 0xffffff, 1); // temp; real color set per biome later
+  geoOutline.lineJoin = Phaser.LINE_JOIN.ROUND;
+  geoOutline.lineCap = Phaser.LINE_CAP.ROUND;
 
   scene.roadsGraphics = roads;
   scene.locationsLayer = layer;
@@ -334,7 +340,7 @@ export function drawLocationsAndRoads() {
   const offsetY = this.mapOffsetY || 0;
   const LIFT    = this?.LIFT_PER_LVL ?? 4;
 
-  // ---- Roads: draw ONLY explicit edges
+  // ---- Roads
   for (const t of map) {
     if (!t.roadLinks || !t.roadLinks.size) continue;
     const c1 = scene.hexToPixel(t.q, t.r, size);
@@ -378,6 +384,7 @@ export function drawLocationsAndRoads() {
     }
 
     let geoCells = buildCellsIfMissing({ geoLandmark: lm, geoCells: meta.geoCells }, map, this.mapWidth, this.mapHeight);
+    const geoSet = new Set(geoCells.map(c => keyOf(c.q, c.r)));
 
     // Volcano: ensure center is a level-4 mountain & neighbors -> ash
     if (lm && lm.type === 'volcano') {
@@ -391,24 +398,19 @@ export function drawLocationsAndRoads() {
         );
         center = target || center;
       }
-      if (!center || !(center.type === 'mountain' || center.elevation === 4)) {
-        if (center) {
-          center.type = 'mountain';
-          center.elevation = 4;
-          center.hasMountainIcon = true;
-        }
-      }
       if (center) {
+        center.type = 'mountain';
+        center.elevation = 4;
+        center.hasMountainIcon = false; // suppress mountain icon, show 🌋 instead
         lm.q = center.q; lm.r = center.r;
-        const nbs = neighborsOddR(center.q, center.r);
-        for (const [dq, dr] of nbs) {
+        for (const [dq, dr] of neighborsOddR(center.q, center.r)) {
           const n = byKey.get(keyOf(center.q + dq, center.r + dr));
           if (!n) continue;
           if (n.type !== 'water' && n.type !== 'mountain') n.type = 'volcano_ash';
           n.hasForest = n.hasRuin = n.hasCrashSite = n.hasVehicle = false;
           n.hasMountainIcon = false;
+          geoSet.add(keyOf(n.q, n.r)); // neighbors belong to object halo
         }
-        center.hasMountainIcon = false; // show only 🌋
       }
     }
 
@@ -438,7 +440,7 @@ export function drawLocationsAndRoads() {
         if (!t) continue;
         for (const [dq, dr] of neighborsOddR(t.q, t.r)) {
           const n = byKey.get(keyOf(t.q + dq, t.r + dr));
-          if (n && !geoCells.some(g => g.q === n.q && g.r === n.r)) {
+          if (n && !geoSet.has(keyOf(n.q, n.r))) {
             n.elevation = 1;
             n.hasMountainIcon = false;
           }
@@ -458,24 +460,23 @@ export function drawLocationsAndRoads() {
       }
     }
 
-    // Suppress POIs on footprint
-    const geoSet = new Set();
-    for (const c of geoCells) geoSet.add(keyOf(c.q, c.r));
-
     // Landmark placement (center of footprint, never water)
-    const centerAxial = centroidOf(geoCells);
+    const centerAxial = centroidOf([...geoSet].map(k => {
+      const [q, r] = k.split(',').map(Number);
+      return { q, r };
+    }));
     const centerTile = centerAxial
       ? closestTileTo(map, centerAxial, tt => tt.type !== 'water')
       : map.find(t => t.q === lm.q && t.r === lm.r);
 
-    Object.defineProperty(map, '__geoLandmark', { value: lm, enumerable: false });
-    Object.defineProperty(map, '__geoCells', { value: geoCells, enumerable: false });
-    Object.defineProperty(map, '__geoCellsSet', { value: geoSet, enumerable: false });
+    Object.defineProperty(map, '__geoLandmark',   { value: lm,        enumerable: false });
+    Object.defineProperty(map, '__geoCells',      { value: [...geoSet].map(k => { const [q,r]=k.split(',').map(Number); return {q,r}; }), enumerable: false });
+    Object.defineProperty(map, '__geoCellsSet',   { value: geoSet,    enumerable: false });
     Object.defineProperty(map, '__geoCenterTile', { value: centerTile || null, enumerable: false });
-    Object.defineProperty(map, '__geoBuilt', { value: true, enumerable: false });
+    Object.defineProperty(map, '__geoBuilt',      { value: true,      enumerable: false });
   }
 
-  // ---- Draw landmark emoji + label once
+  // ---- Landmark emoji + label once
   if (!map.__geoDecorAdded && map.__geoLandmark && map.__geoCenterTile) {
     const lm = map.__geoLandmark;
     const ct = map.__geoCenterTile;
@@ -497,13 +498,13 @@ export function drawLocationsAndRoads() {
       'Plateau'
     );
 
-    addEmoji(px, py, emoji, Math.max(16, size * 0.95), 47);
+    addEmoji(px, py, emoji, Math.max(16, size * 0.95), 200);
     const txt = scene.add.text(px, py + size * 0.9, label, {
       fontSize: `${Math.max(12, size * 0.55)}px`,
       color: '#ffffff',
       backgroundColor: 'rgba(0,0,0,0.35)',
       padding: { left: 4, right: 4, top: 2, bottom: 2 }
-    }).setOrigin(0.5).setDepth(47);
+    }).setOrigin(0.5).setDepth(200);
     scene.locationsLayer.add(txt);
 
     Object.defineProperty(map, '__geoDecorAdded', { value: true, enumerable: false });
@@ -511,12 +512,15 @@ export function drawLocationsAndRoads() {
 
   // ---- ALWAYS recompute & draw outlines from current state ----
   {
+    geoOutline.clear();
     const lm   = map.__geoLandmark;
     const base = map.__geoCells || [];
     const col  = outlineColorFor(biomeName);
 
     const highlightCells = computeHighlightCells(map, lm, base);
-    geoOutline.lineStyle(4, col, 0.95);
+    geoOutline.lineStyle(4, col, 0.98);
+    geoOutline.lineJoin = Phaser.LINE_JOIN.ROUND;
+    geoOutline.lineCap  = Phaser.LINE_CAP.ROUND;
 
     for (const c of highlightCells) {
       const t = byKey.get(keyOf(c.q, c.r)); if (!t) continue;
@@ -552,7 +556,7 @@ export function drawLocationsAndRoads() {
       if (elev === 4) t.hasMountainIcon = true;
     }
     if (t.hasMountainIcon) {
-      addEmoji(cx, cy, '⛰️', size * 0.9, 46);
+      addEmoji(cx, cy, '⛰️', size * 0.9, 110);
       continue;
     }
 
@@ -568,7 +572,7 @@ export function drawLocationsAndRoads() {
         const posY = cy + Math.sin(ang) * rad;
         if (placed.some(p => Phaser.Math.Distance.Between(posX, posY, p.x, p.y) < size * 0.3)) continue;
         const fontPx = size * (0.45 + Phaser.Math.FloatBetween(-0.05, 0.05));
-        const tree = addEmoji(posX, posY, treeGlyph, fontPx, 43);
+        const tree = addEmoji(posX, posY, treeGlyph, fontPx, 105);
         scene.tweens.add({
           targets: tree,
           angle: { from: -1.5, to: 1.5 },
@@ -582,9 +586,9 @@ export function drawLocationsAndRoads() {
       }
     }
 
-    if (t.hasRuin)      addEmoji(cx, cy, '🏚️', size * 0.8, 44);
-    if (t.hasCrashSite) addEmoji(cx, cy, '🚀', size * 0.8, 44);
-    if (t.hasVehicle)   addEmoji(cx, cy, '🚙', size * 0.8, 44);
+    if (t.hasRuin)      addEmoji(cx, cy, '🏚️', size * 0.8, 106);
+    if (t.hasCrashSite) addEmoji(cx, cy, '🚀', size * 0.8, 106);
+    if (t.hasVehicle)   addEmoji(cx, cy, '🚙', size * 0.8, 106);
   }
 }
 
