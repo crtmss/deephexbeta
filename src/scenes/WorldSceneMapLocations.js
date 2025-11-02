@@ -44,7 +44,7 @@ function resolveBiome(scene, mapData) {
          'Temperate Biome';
 }
 function treeEmojiFor(biome, tileType) {
-  // Tile overrides first (keeps visuals coherent if biomes mix):
+  // Tile overrides first:
   if (tileType === 'volcano_ash') return '🌴';
   if (tileType === 'sand')        return '🌴';
   if (tileType === 'swamp')       return '🌳';
@@ -301,56 +301,65 @@ export function drawLocationsAndRoads() {
   // ---- Landmark (geo object) drawing — explicit meta or heuristic fallback
   const meta = scene?.hexMap?.worldMeta || map.__worldMeta || {};
   if (!map.__geoDrawn) {
-    let lm = meta.geoLandmark; // { q, r, emoji, type, label } if provided by generator
+    let lm = meta.geoLandmark; // { q, r, emoji, type, label }
+    let geoCells = Array.isArray(meta.geoCells) ? meta.geoCells.slice() : null; // [{q,r}...]
 
+    // Fallback landmark if missing
     if (!lm) {
-      // Fallback: derive one icon position from current biome
       const tiles = map.filter(t => t.type !== 'water');
-      const center = {
-        q: (this.mapWidth ?? 25) / 2,
-        r: (this.mapHeight ?? 25) / 2
-      };
-      const dist = (t) => (t.q - center.q) * (t.q - center.q) + (t.r - center.r) * (t.r - center.r);
-
-      const pickClosest = (predicate) => {
-        let best = null, bestD = Infinity;
-        for (const t of tiles) {
-          if (!predicate(t)) continue;
-          const d = dist(t);
-          if (d < bestD) { best = t; bestD = d; }
+      const center = { q: (this.mapWidth ?? 25) / 2, r: (this.mapHeight ?? 25) / 2 };
+      const dist2 = (t) => (t.q - center.q) ** 2 + (t.r - center.r) ** 2;
+      const pick = (pred) => {
+        let best = null, bd = Infinity;
+        for (const t of tiles) if (pred(t)) {
+          const d = dist2(t); if (d < bd) { best = t; bd = d; }
         }
         return best;
       };
-
       const b = (biomeName || '').toLowerCase();
-      if (b.includes('icy')) {
-        const t = pickClosest(tt => tt.type === 'ice' || tt.type === 'snow');
-        if (t) lm = { q: t.q, r: t.r, emoji: '❄️', type: 'glacier', label: 'Glacier' };
-      } else if (b.includes('volcan')) {
-        const t = pickClosest(tt => tt.type === 'mountain' || (typeof tt.elevation === 'number' && tt.elevation === 4));
-        if (t) lm = { q: t.q, r: t.r, emoji: '🌋', type: 'volcano', label: 'Volcano' };
-      } else if (b.includes('desert')) {
-        const t = pickClosest(tt => tt.type === 'sand');
-        if (t) lm = { q: t.q, r: t.r, emoji: '🌵', type: 'desert', label: 'Desert' };
-      } else if (b.includes('swamp')) {
-        const t = pickClosest(tt => tt.type === 'swamp');
-        if (t) lm = { q: t.q, r: t.r, emoji: '🌾', type: 'bog', label: 'Bog' };
-      } else {
-        // temperate
-        const t = pickClosest(tt => tt.type !== 'water');
-        if (t) lm = { q: t.q, r: t.r, emoji: '🌄', type: 'plateau', label: 'Plateau' };
-      }
+      if (b.includes('icy'))      { const t = pick(tt => tt.type === 'ice' || tt.type === 'snow'); if (t) lm = { q:t.q, r:t.r, emoji:'❄️', type:'glacier', label:'Glacier' }; }
+      else if (b.includes('volcan')) { const t = pick(tt => tt.type === 'mountain' || tt.elevation === 4); if (t) lm = { q:t.q, r:t.r, emoji:'🌋', type:'volcano', label:'Volcano' }; }
+      else if (b.includes('desert'))  { const t = pick(tt => tt.type === 'sand'); if (t) lm = { q:t.q, r:t.r, emoji:'🌵', type:'desert', label:'Desert' }; }
+      else if (b.includes('swamp'))   { const t = pick(tt => tt.type === 'swamp'); if (t) lm = { q:t.q, r:t.r, emoji:'🌾', type:'bog', label:'Bog' }; }
+      else                            { const t = pick(tt => tt.type !== 'water'); if (t) lm = { q:t.q, r:t.r, emoji:'🌄', type:'plateau', label:'Plateau' }; }
     }
 
+    // If glacier: convert any water within geo-cells to ice (so glaciers can be coastal/over water).
+    // Also: clear ALL icons/forests/POIs on every geo-cell (for all object types).
     if (lm) {
-      // Draw emoji
+      // Build a Set for quick membership if we have multiple cells
+      let cellSet = null;
+      if (!geoCells || !geoCells.length) {
+        geoCells = [{ q: lm.q, r: lm.r }]; // at least the landmark tile
+      }
+      cellSet = new Set(geoCells.map(c => keyOf(c.q, c.r)));
+
+      for (const cell of geoCells) {
+        const t = map.find(tt => tt.q === cell.q && tt.r === cell.r);
+        if (!t) continue;
+
+        // Glacier: turn water → ice
+        if (lm.type === 'glacier' && t.type === 'water') {
+          t.type = 'ice';
+          // keep its elevation; movement cost not strictly required for rendering
+        }
+
+        // Remove ALL icons/flags on geo tiles
+        t.hasForest = false;
+        t.hasRuin = false;
+        t.hasCrashSite = false;
+        t.hasVehicle = false;
+        t.hasMountainIcon = false; // prevents ⛰️ on volcano/plateau/etc
+      }
+
+      // Draw emoji at landmark center
       const tile = map.find(tt => tt.q === lm.q && tt.r === lm.r);
       const p = this.hexToPixel(lm.q, lm.r, size);
       const px = p.x + offsetX;
       const py = p.y + offsetY - LIFT * effectiveElevationLocal(tile);
       addEmoji(px, py, lm.emoji, Math.max(16, size * 0.95), 47);
 
-      // Draw label under it (simple text label)
+      // Label
       const label = lm.label || (lm.type ? lm.type[0].toUpperCase() + lm.type.slice(1) : 'Landmark');
       const txt = scene.add.text(px, py + size * 0.9, label, {
         fontSize: `${Math.max(12, size * 0.55)}px`,
@@ -360,14 +369,16 @@ export function drawLocationsAndRoads() {
       }).setOrigin(0.5).setDepth(47);
       layer.add(txt);
 
-      // Store for volcano suppression
+      // Store for per-tile suppression
       Object.defineProperty(map, '__geoLandmark', { value: lm, enumerable: false });
+      Object.defineProperty(map, '__geoCellsSet', { value: cellSet, enumerable: false });
     }
+
     Object.defineProperty(map, '__geoDrawn', { value: true, enumerable: false });
   }
 
   const activeLM = map.__geoLandmark;
-  const volcanoKey = (activeLM && (activeLM.type === 'volcano')) ? keyOf(activeLM.q, activeLM.r) : null;
+  const geoCellsSet = map.__geoCellsSet; // Set of keys or null
 
   // ---- Per-tile POIs
   for (const t of map) {
@@ -377,19 +388,21 @@ export function drawLocationsAndRoads() {
     const cx = c.x + offsetX;
     const cy = c.y + offsetY - LIFT * effectiveElevationLocal(t);
 
+    // If tile is part of the geo-object, skip ALL POIs (already cleared, but skip drawing too)
+    if (geoCellsSet && geoCellsSet.has(keyOf(t.q, t.r))) {
+      continue;
+    }
+
     // Fallback: ensure peaks show even if placement pass didn't set the flag
     if (!t.hasMountainIcon) {
       const elev = typeof t.elevation === 'number' ? t.elevation : 0;
       if (elev === 4) t.hasMountainIcon = true;
     }
 
-    // Peaks first — but NEVER draw on the volcano landmark tile
+    // Peaks first (volcano/mountain overlap prevented by geoCellsSet above)
     if (t.hasMountainIcon) {
-      if (!volcanoKey || keyOf(t.q, t.r) !== volcanoKey) {
-        addEmoji(cx, cy, '⛰️', size * 0.9, 46);
-      }
-      // Skip other POIs on peaks
-      continue;
+      addEmoji(cx, cy, '⛰️', size * 0.9, 46);
+      continue; // skip other POIs on peaks
     }
 
     if (t.hasForest) {
