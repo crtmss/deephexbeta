@@ -85,7 +85,7 @@ function placeLocations(mapData, width, height, rnd) {
     // Crash Sites
     if (!t.hasCrashSite && chance(rnd, 0.006)) t.hasCrashSite = true;
 
-    // Vehicles (keep your surface filters) — include 'sand' explicitly
+    // Vehicles — include 'sand' explicitly
     if (!t.hasVehicle &&
         (t.type === 'plains' || t.type === 'desert' || t.type === 'sand' || t.type === 'grassland' || t.type === '') &&
         chance(rnd, 0.008)) {
@@ -298,6 +298,59 @@ export function drawLocationsAndRoads() {
   // Resolve biome once for tree selection
   const biomeName = resolveBiome(scene, map);
 
+  // ---- Landmark (geo object) drawing — explicit meta or heuristic fallback
+  const meta = scene?.hexMap?.worldMeta || map.__worldMeta || {};
+  if (!map.__geoDrawn) {
+    let lm = meta.geoLandmark; // { q, r, emoji } if provided by generator
+    if (!lm) {
+      // Fallback: derive one icon position from current biome
+      const tiles = map.filter(t => t.type !== 'water');
+      const center = {
+        q: (this.mapWidth ?? 25) / 2,
+        r: (this.mapHeight ?? 25) / 2
+      };
+      const dist = (t) => (t.q - center.q) * (t.q - center.q) + (t.r - center.r) * (t.r - center.r);
+
+      const pickClosest = (predicate) => {
+        let best = null, bestD = Infinity;
+        for (const t of tiles) {
+          if (!predicate(t)) continue;
+          const d = dist(t);
+          if (d < bestD) { best = t; bestD = d; }
+        }
+        return best;
+      };
+
+      const b = (biomeName || '').toLowerCase();
+      if (b.includes('icy')) {
+        const t = pickClosest(tt => tt.type === 'ice' || tt.type === 'snow');
+        if (t) lm = { q: t.q, r: t.r, emoji: '❄️' };
+      } else if (b.includes('volcan')) {
+        const t = pickClosest(tt => tt.type === 'mountain' || (typeof tt.elevation === 'number' && tt.elevation === 4));
+        if (t) lm = { q: t.q, r: t.r, emoji: '🌋' };
+      } else if (b.includes('desert')) {
+        const t = pickClosest(tt => tt.type === 'sand');
+        if (t) lm = { q: t.q, r: t.r, emoji: '🌵' };
+      } else if (b.includes('swamp')) {
+        const t = pickClosest(tt => tt.type === 'swamp');
+        if (t) lm = { q: t.q, r: t.r, emoji: '🌾' };
+      } else {
+        // temperate
+        const t = pickClosest(tt => tt.type !== 'water');
+        if (t) lm = { q: t.q, r: t.r, emoji: '🌄' };
+      }
+    }
+
+    if (lm) {
+      const p = this.hexToPixel(lm.q, lm.r, size);
+      const px = p.x + offsetX;
+      const py = p.y + offsetY - LIFT * effectiveElevationLocal(map.find(t => t.q === lm.q && t.r === lm.r));
+      addEmoji(px, py, lm.emoji, Math.max(16, size * 0.95), 47);
+    }
+    Object.defineProperty(map, '__geoDrawn', { value: true, enumerable: false });
+  }
+
+  // ---- Per-tile POIs
   for (const t of map) {
     if (t.type === 'water') continue;
 
@@ -305,16 +358,16 @@ export function drawLocationsAndRoads() {
     const cx = c.x + offsetX;
     const cy = c.y + offsetY - LIFT * effectiveElevationLocal(t);
 
-    // --- Fallback: ensure peaks show even if placement pass didn't set the flag ---
+    // Fallback: ensure peaks show even if placement pass didn't set the flag
     if (!t.hasMountainIcon) {
       const elev = typeof t.elevation === 'number' ? t.elevation : 0;
       if (elev === 4) t.hasMountainIcon = true;
     }
 
-    // --- Peaks first: show only the mountain icon on level-4 tiles ---
+    // Peaks first
     if (t.hasMountainIcon) {
       addEmoji(cx, cy, '⛰️', size * 0.9, 46);
-      continue; // Do not place other POIs on peaks
+      continue; // skip other POIs on peaks
     }
 
     if (t.hasForest) {
@@ -346,8 +399,6 @@ export function drawLocationsAndRoads() {
     if (t.hasRuin)        addEmoji(cx, cy, '🏚️', size * 0.8, 44);
     if (t.hasCrashSite)   addEmoji(cx, cy, '🚀', size * 0.8, 44);
     if (t.hasVehicle)     addEmoji(cx, cy, '🚙', size * 0.8, 44);
-
-    // No extra mountain icons here unless it's a level-4 peak (handled above).
   }
 }
 
