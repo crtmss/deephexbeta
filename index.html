@@ -25,19 +25,19 @@
       }
 
       /* Canvas and DOM overlay must fully overlap the same rect */
-      #game-container canvas,
-      #game-container .dom-container {
+      #game-container > canvas,
+      #game-container > .dom-container {
         position: absolute;
         inset: 0;                 /* top/right/bottom/left = 0 */
         display: block;
       }
 
       /* Ensure DOM overlay renders above the canvas and receives input */
-      #game-container canvas { z-index: 0; }
-      #game-container .dom-container { z-index: 10; pointer-events: auto; }
+      #game-container > canvas { z-index: 0; }
+      #game-container > .dom-container { z-index: 10; pointer-events: auto; }
 
       /* Keep scaling crisp */
-      canvas { image-rendering: pixelated; }
+      #game-container > canvas { image-rendering: pixelated; }
 
       /* Optional: hide scrollbars just in case */
       ::-webkit-scrollbar { display: none; }
@@ -69,7 +69,7 @@
           width: DESIGN_WIDTH,
           height: DESIGN_HEIGHT
         },
-        resolution: window.devicePixelRatio || 1, // Crisp on retina/high-DPI
+        resolution: window.devicePixelRatio || 1, // Crisp on high-DPI
         render: {
           antialias: true,
           roundPixels: true,
