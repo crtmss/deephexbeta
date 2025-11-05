@@ -17,25 +17,27 @@
 
       /* Phaser container fills the screen and acts as positioning context */
       #game-container {
-        position: relative;   /* IMPORTANT: allows absolute overlay of canvas & DOM */
+        position: relative;       /* positioning context for children */
         width: 100%;
         height: 100%;
         background: #000;
         -webkit-tap-highlight-color: transparent;
       }
 
-      /* Ensure canvas and DOM overlay occupy the exact same area */
+      /* Canvas and DOM overlay must fully overlap the same rect */
       #game-container canvas,
       #game-container .dom-container {
         position: absolute;
-        inset: 0;             /* top/right/bottom/left = 0 */
+        inset: 0;                 /* top/right/bottom/left = 0 */
         display: block;
       }
 
+      /* Ensure DOM overlay renders above the canvas and receives input */
+      #game-container canvas { z-index: 0; }
+      #game-container .dom-container { z-index: 10; pointer-events: auto; }
+
       /* Keep scaling crisp */
-      canvas {
-        image-rendering: pixelated;
-      }
+      canvas { image-rendering: pixelated; }
 
       /* Optional: hide scrollbars just in case */
       ::-webkit-scrollbar { display: none; }
