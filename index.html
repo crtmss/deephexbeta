@@ -15,26 +15,30 @@
         background: #000;
       }
 
-      /* Phaser container fills the screen */
+      /* Phaser container fills the screen and acts as positioning context */
       #game-container {
+        position: relative;   /* IMPORTANT: allows absolute overlay of canvas & DOM */
         width: 100%;
         height: 100%;
-        display: flex;
-        align-items: center;
-        justify-content: center;
         background: #000;
+        -webkit-tap-highlight-color: transparent;
       }
 
-      /* Ensure canvas scales properly and stays crisp */
-      canvas {
+      /* Ensure canvas and DOM overlay occupy the exact same area */
+      #game-container canvas,
+      #game-container .dom-container {
+        position: absolute;
+        inset: 0;             /* top/right/bottom/left = 0 */
         display: block;
+      }
+
+      /* Keep scaling crisp */
+      canvas {
         image-rendering: pixelated;
       }
 
       /* Optional: hide scrollbars just in case */
-      ::-webkit-scrollbar {
-        display: none;
-      }
+      ::-webkit-scrollbar { display: none; }
     </style>
   </head>
 
@@ -58,8 +62,8 @@
         parent: "game-container",
         scene: [LobbyScene, WorldScene, CombatScene],
         scale: {
-          mode: Phaser.Scale.FIT,              // Fit canvas to any window
-          autoCenter: Phaser.Scale.CENTER_BOTH, // Center horizontally + vertically
+          mode: Phaser.Scale.FIT,                // Fit canvas to any window
+          autoCenter: Phaser.Scale.CENTER_BOTH,  // Center horizontally + vertically
           width: DESIGN_WIDTH,
           height: DESIGN_HEIGHT
         },
@@ -69,14 +73,13 @@
           roundPixels: true,
           pixelArt: false
         },
-        dom: { createContainer: true }
+        dom: { createContainer: true }           // Create Phaser DOM overlay
       };
 
-      new Phaser.Game(config);
+      const game = new Phaser.Game(config);
 
-      // Optional: Adjust on window resize if needed
+      // Optional: nudge Scale Manager after resizes (helps some browsers)
       window.addEventListener("resize", () => {
-        const game = Phaser.GAMES[0];
         if (game && game.scale) game.scale.refresh();
       });
     </script>
