@@ -95,9 +95,7 @@ export default class LobbyScene extends Phaser.Scene {
   constructor() { super('LobbyScene'); }
 
   async create() {
-    // All positions below are in DESIGN SPACE (1600x1000).
-    // Phaser's Scale.FIT + DOM overlay CSS ensure identical layout on any resolution.
-
+    // Positions are in design space (1600x1000). DOM overlay now renders above canvas.
     this.add.text(500, 60, 'DeepHex Multiplayer Lobby', { fontSize: '28px', fill: '#ffffff' }).setScrollFactor(0);
 
     try {
@@ -109,17 +107,13 @@ export default class LobbyScene extends Phaser.Scene {
     // Inputs
     this.add.text(460, 130, 'Your Name:', { fontSize: '18px', fill: '#ffffff' }).setScrollFactor(0);
     const nameInput = this.add.dom(640, 160, 'input')
-      .setOrigin(0.5)
-      .setDepth(1200)
-      .setScrollFactor(0);
+      .setOrigin(0.5).setDepth(1200).setScrollFactor(0);
     nameInput.node.placeholder = 'Your name';
     nameInput.node.maxLength = 16;
 
     this.add.text(400, 220, 'Map Seed (6 digits):', { fontSize: '18px', fill: '#ffffff' }).setScrollFactor(0);
     const codeInput = this.add.dom(640, 250, 'input')
-      .setOrigin(0.5)
-      .setDepth(1200)
-      .setScrollFactor(0);
+      .setOrigin(0.5).setDepth(1200).setScrollFactor(0);
     codeInput.node.placeholder = '000000';
     codeInput.node.maxLength = 6;
     codeInput.node.style.textAlign = 'center';
@@ -129,10 +123,7 @@ export default class LobbyScene extends Phaser.Scene {
     const randomBtn = this.add.dom(640, 290, 'button', {
       backgroundColor: '#555', color: '#fff', fontSize: '14px',
       padding: '8px 14px', border: '1px solid #888', borderRadius: '6px', cursor: 'pointer'
-    }, '🎲 Random Seed')
-      .setOrigin(0.5)
-      .setDepth(1250)
-      .setScrollFactor(0);
+    }, '🎲 Random Seed').setOrigin(0.5).setDepth(1250).setScrollFactor(0);
 
     // Preview title + canvas
     this.add.text(870, 130, 'Map Preview', { fontSize: '18px', fill: '#ffffff' }).setScrollFactor(0);
@@ -156,14 +147,10 @@ export default class LobbyScene extends Phaser.Scene {
     codeInput.node.value = firstSeed;
 
     const regenerateAndPreview = (seed) => {
-      // (1) generate map deterministically from seed
       this.currentHexMap = new HexMap(this.previewWidth, this.previewHeight, seed);
       this.currentTiles  = this.currentHexMap.getMap();
-
-      // (2) draw preview from these exact tiles
       this.drawPreviewFromTiles(this.currentTiles);
 
-      // (3) labels: prefer worldMeta (exact match), else fallback classifiers
       const meta = this.currentHexMap.worldMeta || this.currentTiles.__worldMeta || null;
       const geography = meta?.geography || classifyGeographyFromTiles(this.currentTiles, this.previewWidth, this.previewHeight);
       const biome     = meta?.biome      || classifyBiomeFromTiles(this.currentTiles);
