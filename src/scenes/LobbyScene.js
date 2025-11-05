@@ -95,7 +95,10 @@ export default class LobbyScene extends Phaser.Scene {
   constructor() { super('LobbyScene'); }
 
   async create() {
-    this.add.text(500, 60, 'DeepHex Multiplayer Lobby', { fontSize: '28px', fill: '#ffffff' });
+    // All positions below are in DESIGN SPACE (1600x1000).
+    // Phaser's Scale.FIT + DOM overlay CSS ensure identical layout on any resolution.
+
+    this.add.text(500, 60, 'DeepHex Multiplayer Lobby', { fontSize: '28px', fill: '#ffffff' }).setScrollFactor(0);
 
     try {
       const { error: pingError } = await supabase.from('lobbies').select('id').limit(1);
@@ -104,34 +107,45 @@ export default class LobbyScene extends Phaser.Scene {
     } catch (err) { console.error('[Supabase EXCEPTION] Connection check failed:', err.message); }
 
     // Inputs
-    this.add.text(460, 130, 'Your Name:', { fontSize: '18px', fill: '#ffffff' });
-    const nameInput = this.add.dom(640, 160, 'input'); nameInput.setOrigin(0.5); nameInput.setDepth(1200);
-    nameInput.node.placeholder = 'Your name'; nameInput.node.maxLength = 16;
+    this.add.text(460, 130, 'Your Name:', { fontSize: '18px', fill: '#ffffff' }).setScrollFactor(0);
+    const nameInput = this.add.dom(640, 160, 'input')
+      .setOrigin(0.5)
+      .setDepth(1200)
+      .setScrollFactor(0);
+    nameInput.node.placeholder = 'Your name';
+    nameInput.node.maxLength = 16;
 
-    this.add.text(400, 220, 'Map Seed (6 digits):', { fontSize: '18px', fill: '#ffffff' });
-    const codeInput = this.add.dom(640, 250, 'input'); codeInput.setOrigin(0.5); codeInput.setDepth(1200);
-    codeInput.node.placeholder = '000000'; codeInput.node.maxLength = 6;
-    codeInput.node.style.textAlign = 'center'; codeInput.node.style.width = '110px';
+    this.add.text(400, 220, 'Map Seed (6 digits):', { fontSize: '18px', fill: '#ffffff' }).setScrollFactor(0);
+    const codeInput = this.add.dom(640, 250, 'input')
+      .setOrigin(0.5)
+      .setDepth(1200)
+      .setScrollFactor(0);
+    codeInput.node.placeholder = '000000';
+    codeInput.node.maxLength = 6;
+    codeInput.node.style.textAlign = 'center';
+    codeInput.node.style.width = '110px';
 
     // 🎲 Random Seed
     const randomBtn = this.add.dom(640, 290, 'button', {
       backgroundColor: '#555', color: '#fff', fontSize: '14px',
       padding: '8px 14px', border: '1px solid #888', borderRadius: '6px', cursor: 'pointer'
-    }, '🎲 Random Seed');
-    randomBtn.setOrigin(0.5); randomBtn.setDepth(1250); randomBtn.setScrollFactor(0);
+    }, '🎲 Random Seed')
+      .setOrigin(0.5)
+      .setDepth(1250)
+      .setScrollFactor(0);
 
     // Preview title + canvas
-    this.add.text(870, 130, 'Map Preview', { fontSize: '18px', fill: '#ffffff' });
+    this.add.text(870, 130, 'Map Preview', { fontSize: '18px', fill: '#ffffff' }).setScrollFactor(0);
     this.previewSize = 80;
     this.previewWidth  = 25;
     this.previewHeight = 25;
-    this.previewContainer = this.add.container(900, 200);
+    this.previewContainer = this.add.container(900, 200).setScrollFactor(0);
     this.previewGraphics = this.add.graphics();
     this.previewContainer.add(this.previewGraphics);
 
     // Labels (from generated map meta, with fallback)
-    this.geographyText = this.add.text(820, 380, '', { fontSize: '18px', fill: '#aadfff' });
-    this.biomeText     = this.add.text(820, 410, '', { fontSize: '18px', fill: '#aadfff' });
+    this.geographyText = this.add.text(820, 380, '', { fontSize: '18px', fill: '#aadfff' }).setScrollFactor(0);
+    this.biomeText     = this.add.text(820, 410, '', { fontSize: '18px', fill: '#aadfff' }).setScrollFactor(0);
 
     // Keep last generated map/tiles
     this.currentHexMap = null;
@@ -184,12 +198,12 @@ export default class LobbyScene extends Phaser.Scene {
     const hostBtn = this.add.dom(540, 330, 'button', {
       backgroundColor: '#006400', color: '#fff', fontSize: '18px',
       padding: '10px 20px', border: 'none', borderRadius: '6px', cursor: 'pointer'
-    }, 'Host Game').setDepth(1200);
+    }, 'Host Game').setDepth(1200).setScrollFactor(0);
 
     const joinBtn = this.add.dom(720, 330, 'button', {
       backgroundColor: '#1E90FF', color: '#fff', fontSize: '18px',
       padding: '10px 20px', border: 'none', borderRadius: '6px', cursor: 'pointer'
-    }, 'Join Game').setDepth(1200);
+    }, 'Join Game').setDepth(1200).setScrollFactor(0);
 
     hostBtn.addListener('click');
     hostBtn.on('click', async () => {
