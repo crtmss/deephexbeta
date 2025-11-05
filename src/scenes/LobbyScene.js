@@ -95,7 +95,16 @@ export default class LobbyScene extends Phaser.Scene {
   constructor() { super('LobbyScene'); }
 
   async create() {
-    // Positions are in design space (1600x1000). DOM overlay now renders above canvas.
+    // Force the DOM overlay to be interactable and above the canvas (runtime guard)
+    if (this.game && this.game.domContainer) {
+      const dc = this.game.domContainer;
+      dc.style.position = 'absolute';
+      dc.style.left = '0'; dc.style.top = '0'; dc.style.right = '0'; dc.style.bottom = '0';
+      dc.style.zIndex = '10';
+      dc.style.pointerEvents = 'auto';
+    }
+
+    // All positions are in design space (1600x1000)
     this.add.text(500, 60, 'DeepHex Multiplayer Lobby', { fontSize: '28px', fill: '#ffffff' }).setScrollFactor(0);
 
     try {
@@ -110,14 +119,25 @@ export default class LobbyScene extends Phaser.Scene {
       .setOrigin(0.5).setDepth(1200).setScrollFactor(0);
     nameInput.node.placeholder = 'Your name';
     nameInput.node.maxLength = 16;
+    // Make sure it’s visible on all platforms
+    Object.assign(nameInput.node.style, {
+      width: '260px', height: '36px', fontSize: '18px',
+      padding: '4px 10px', borderRadius: '8px',
+      border: '1px solid #88a', background: '#0b0f1a',
+      color: '#e7f1ff', outline: 'none'
+    });
 
     this.add.text(400, 220, 'Map Seed (6 digits):', { fontSize: '18px', fill: '#ffffff' }).setScrollFactor(0);
     const codeInput = this.add.dom(640, 250, 'input')
       .setOrigin(0.5).setDepth(1200).setScrollFactor(0);
     codeInput.node.placeholder = '000000';
     codeInput.node.maxLength = 6;
-    codeInput.node.style.textAlign = 'center';
-    codeInput.node.style.width = '110px';
+    Object.assign(codeInput.node.style, {
+      width: '110px', height: '36px', fontSize: '18px',
+      textAlign: 'center', padding: '4px 10px', borderRadius: '8px',
+      border: '1px solid #88a', background: '#0b0f1a',
+      color: '#e7f1ff', outline: 'none'
+    });
 
     // 🎲 Random Seed
     const randomBtn = this.add.dom(640, 290, 'button', {
@@ -147,10 +167,14 @@ export default class LobbyScene extends Phaser.Scene {
     codeInput.node.value = firstSeed;
 
     const regenerateAndPreview = (seed) => {
+      // (1) generate map deterministically from seed
       this.currentHexMap = new HexMap(this.previewWidth, this.previewHeight, seed);
       this.currentTiles  = this.currentHexMap.getMap();
+
+      // (2) draw preview from these exact tiles
       this.drawPreviewFromTiles(this.currentTiles);
 
+      // (3) labels: prefer worldMeta (exact match), else fallback classifiers
       const meta = this.currentHexMap.worldMeta || this.currentTiles.__worldMeta || null;
       const geography = meta?.geography || classifyGeographyFromTiles(this.currentTiles, this.previewWidth, this.previewHeight);
       const biome     = meta?.biome      || classifyBiomeFromTiles(this.currentTiles);
