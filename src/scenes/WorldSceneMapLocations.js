@@ -210,8 +210,42 @@ function buildCellsIfMissing(meta, map, width, height) {
   if (Array.isArray(meta.geoCells) && meta.geoCells.length) return meta.geoCells.slice();
 
   const type = meta.geoLandmark?.type || '';
-  const center = meta.geoLandmark ? map.find(t => t.q === meta.geoLandmark.q && t.r === meta.geoLandmark.r) : null;
-  if (!center) return [];
+  let center = null;
+
+  // If q/r missing, pick a sensible center candidate by type
+  if (Number.isInteger(meta.geoLandmark?.q) && Number.isInteger(meta.geoLandmark?.r)) {
+    center = map.find(t => t.q === meta.geoLandmark.q && t.r === meta.geoLandmark.r);
+  }
+  if (!center) {
+    const land = map.filter(t => t.type !== 'water');
+    const cx = land.reduce((s, t) => s + t.q, 0) / Math.max(1, land.length);
+    const cy = land.reduce((s, t) => s + t.r, 0) / Math.max(1, land.length);
+    const prefer = (pred) => {
+      let best = null, bd = Infinity;
+      for (const t of map) {
+        if (!pred(t)) continue;
+        const d = (t.q - cx) * (t.q - cx) + (t.r - cy) * (t.r - cy);
+        if (d < bd) { bd = d; best = t; }
+      }
+      return best;
+    };
+
+    if (type === 'volcano') {
+      center = prefer(t => t.type === 'mountain' || t.elevation === 4) || prefer(t => t.type !== 'water');
+    } else if (type === 'glacier') {
+      // glacier can include water; prefer coastal/inner-water areas
+      center = prefer(t => t.type !== 'mountain');
+    } else if (type === 'desert') {
+      center = prefer(t => t.type !== 'water');
+    } else if (type === 'bog') {
+      center = prefer(t => t.type !== 'mountain');
+    } else {
+      center = prefer(t => t.type !== 'water');
+    }
+    if (!center) return [];
+    meta.geoLandmark.q = center.q; // persist resolved center back to meta
+    meta.geoLandmark.r = center.r;
+  }
 
   const byKey = new Map(map.map(t => [keyOf(t.q, t.r), t]));
   const want = (type === 'plateau') ? 6 : 9;
@@ -381,12 +415,28 @@ export function drawLocationsAndRoads() {
   const biomeName = resolveBiome(scene, map);
   const meta = scene?.hexMap?.worldMeta || map.__worldMeta || {};
 
+  // ----- Ensure geo-landmark exists and has a center/type -----
+  function landmarkFromBiome(biome) {
+    const b = (biome || '').toLowerCase();
+    if (b.includes('icy'))     return { type: 'glacier', emoji: '❄️', label: 'Glacier' };
+    if (b.includes('volcan'))  return { type: 'volcano', emoji: '🌋', label: 'Volcano' };
+    if (b.includes('desert'))  return { type: 'desert',  emoji: '🌵', label: 'Dune Field' };
+    if (b.includes('swamp'))   return { type: 'bog',     emoji: '🌾', label: 'Bog' };
+    return { type: 'plateau',   emoji: '🌄', label: 'Plateau' };
+  }
+
   // ----- Build/Mutate geo object ONCE -----
   if (!map.__geoBuilt) {
     let lm = meta.geoLandmark;
-    if (!lm) {
-      const any = map.find(t => t.type !== 'water') || map[0];
-      lm = any ? { q:any.q, r:any.r, emoji:'🌄', type:'plateau', label:'Plateau' } : null;
+    if (!lm || !lm.type) lm = { ...landmarkFromBiome(biomeName) };
+
+    // Resolve center if q/r missing
+    if (!Number.isInteger(lm.q) || !Number.isInteger(lm.r)) {
+      const proxyMeta = { geoLandmark: { ...lm } };
+      // buildCellsIfMissing resolves & writes q/r into proxyMeta.geoLandmark
+      const tmp = buildCellsIfMissing(proxyMeta, map, this.mapWidth, this.mapHeight);
+      lm.q = proxyMeta.geoLandmark.q;
+      lm.r = proxyMeta.geoLandmark.r;
     }
 
     // Base footprint (9 or 6 cells)
@@ -394,12 +444,12 @@ export function drawLocationsAndRoads() {
     const byKeyLocal = new Map(map.map(t => [keyOf(t.q, t.r), t]));
 
     // Tiles actually affected by the geo object (used to suppress POIs)
-    const noPOISet = new Set(baseCells.map(c => keyOf(c.q, c.r)));
+    const noPOISet = new Set();
 
     // Volcano: ensure level-4 mountain center & neighbors -> ash
     if (lm && lm.type === 'volcano') {
       let center = map.find(t => t.q === lm.q && t.r === lm.r);
-      const isPeak = (t) => t && (t.type === 'mountain' || t.hasMountainIcon || t.elevation === 4);
+      const isPeak = (t) => t && (t.type === 'mountain' || t.elevation === 4);
       if (!isPeak(center)) {
         const target = closestTileTo(
           map,
@@ -448,7 +498,6 @@ export function drawLocationsAndRoads() {
         t.hasForest = t.hasRuin = t.hasCrashSite = t.hasVehicle = false;
         noPOISet.add(keyOf(t.q, t.r));
       }
-      // Edge ring → elevation 1 is visual only, not bound.
     }
 
     // Desert / Bog
