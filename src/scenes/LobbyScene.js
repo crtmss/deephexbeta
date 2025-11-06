@@ -50,6 +50,8 @@ function classifyGeographyFromTiles(tiles, width, height) {
     }
   }
   if (comps >= 2) return 'Multiple Islands';
+
+  // inner-water heuristic for lagoon/lake
   const innerQ0 = Math.floor(width * 0.2),  innerQ1 = Math.ceil(width * 0.8);
   const innerR0 = Math.floor(height * 0.2), innerR1 = Math.ceil(height * 0.8);
   let innerWater = 0, innerTot = 0;
@@ -59,6 +61,8 @@ function classifyGeographyFromTiles(tiles, width, height) {
   }
   const innerRatio = innerTot ? innerWater / innerTot : 0;
   if (innerRatio >= 0.12) return innerRatio >= 0.18 ? 'Big Lagoon' : 'Central Lake';
+
+  // riveriness
   let riverEdges = 0; let landCount = 0;
   for (const t of tiles) {
     if (t.type === 'water') continue;
@@ -69,16 +73,19 @@ function classifyGeographyFromTiles(tiles, width, height) {
     }
   }
   if ((riverEdges / Math.max(1, landCount)) >= 1.2) return 'Scattered Terrain';
+
+  // diagonal check (simple PCA)
   const land = tiles.filter(t => t.type !== 'water');
   const cx = land.reduce((s, t) => s + t.q, 0) / Math.max(1, land.length);
   const cy = land.reduce((s, t) => s + t.r, 0) / Math.max(1, land.length);
   let Sxx=0,Syy=0,Sxy=0;
   for (const t of land) { const dx=t.q-cx, dy=t.r-cy; Sxx+=dx*dx; Syy+=dy*dy; Sxy+=dx*dy; }
-  const tr=Sxx+Syy, det=Sxx*SYY-Sxy*Sxy, disc=Math.max(0,tr*tr-4*det);
+  const tr=Sxx+Syy, det=Sxx*Syy-Sxy*Sxy, disc=Math.max(0,tr*tr-4*det);
   const lambda1=(tr+Math.sqrt(disc))/2, lambda2=(tr-Math.sqrt(disc))/2;
   const ratio = lambda2>0 ? lambda1/lambda2 : 99;
   const angle = Math.abs(0.5 * Math.atan2(2*Sxy, Sxx-Syy) * 180/Math.PI);
   if (ratio>=1.6 && angle>=20 && angle<=70) return 'Diagonal Island';
+
   return 'Small Bays';
 }
 
@@ -88,11 +95,12 @@ export default class LobbyScene extends Phaser.Scene {
   constructor() { super('LobbyScene'); }
 
   async create() {
-    // The DOM overlay itself ignores events; individual elements will accept them.
+    // DOM overlay ignores events except on controls; map stays hover/clickable
     if (this.game && this.game.domContainer) {
       const dc = this.game.domContainer;
-      dc.style.pointerEvents = 'none';   // let canvas receive hover/clicks
+      dc.style.pointerEvents = 'none';
       dc.style.zIndex = '10';
+      dc.style.background = 'transparent';
     }
 
     // Title
@@ -104,14 +112,14 @@ export default class LobbyScene extends Phaser.Scene {
       else console.log('[Supabase OK] Connection active.');
     } catch (err) { console.error('[Supabase EXCEPTION] Connection check failed:', err.message); }
 
-    // Labels + Inputs (inputs re-enable pointer events on themselves)
+    // Labels + Inputs
     this.add.text(460, 130, 'Your Name:', { fontSize: '18px', fill: '#ffffff' }).setScrollFactor(0);
     const nameInput = this.add.dom(640, 160, 'input')
       .setOrigin(0.5).setDepth(1200).setScrollFactor(0);
     nameInput.node.placeholder = 'Your name';
     nameInput.node.maxLength = 16;
     Object.assign(nameInput.node.style, {
-      pointerEvents: 'auto',            // <<— allow interaction
+      pointerEvents: 'auto',
       width: '260px', height: '36px', fontSize: '18px',
       padding: '4px 10px', borderRadius: '8px',
       border: '1px solid #88a', background: '#0b0f1a',
@@ -124,7 +132,7 @@ export default class LobbyScene extends Phaser.Scene {
     codeInput.node.placeholder = '000000';
     codeInput.node.maxLength = 6;
     Object.assign(codeInput.node.style, {
-      pointerEvents: 'auto',            // <<—
+      pointerEvents: 'auto',
       width: '110px', height: '36px', fontSize: '18px',
       textAlign: 'center', padding: '4px 10px', borderRadius: '8px',
       border: '1px solid #88a', background: '#0b0f1a',
@@ -135,7 +143,7 @@ export default class LobbyScene extends Phaser.Scene {
     const randomBtn = this.add.dom(640, 290, 'button', {
       backgroundColor: '#555', color: '#fff', fontSize: '14px',
       padding: '8px 14px', border: '1px solid #888', borderRadius: '6px', cursor: 'pointer',
-      pointerEvents: 'auto'             // <<—
+      pointerEvents: 'auto'
     }, '🎲 Random Seed').setOrigin(0.5).setDepth(1250).setScrollFactor(0);
 
     // Preview
@@ -227,14 +235,18 @@ export default class LobbyScene extends Phaser.Scene {
     });
   }
 
+  // --- draw preview strictly from an already-generated tiles array ---
   drawPreviewFromTiles(tiles) {
     this.previewGraphics.clear();
     const size = 6;
+
     const hexToPixel = (q, r, s) => {
       const x = s * Math.sqrt(3) * (q + 0.5 * (r & 1));
       const y = s * 1.5 * r;
       return { x, y };
     };
+
+    // Center the preview content
     const gridW = size * Math.sqrt(3) * (this.previewWidth + 0.5);
     const gridH = size * 1.5 * (this.previewHeight + 0.5);
     const offsetX = -gridW * 0.45;
@@ -256,7 +268,7 @@ export default class LobbyScene extends Phaser.Scene {
     g.fillStyle(color, 1);
     g.beginPath();
     g.moveTo(corners[0].x, corners[0].y);
-    for (let i = 1; i < 6; i++) g.lineTo(corners[i].x);
+    for (let i = 1; i < 6; i++) g.lineTo(corners[i].x, corners[i].y); // <-- FIXED: include y
     g.closePath();
     g.fillPath();
   }
