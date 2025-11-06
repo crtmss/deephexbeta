@@ -31,7 +31,7 @@
 
       /* Layer order */
       #game-container > canvas { z-index: 0; image-rendering: pixelated; }
-      #game-container > .dom-container { z-index: 10; }
+      #game-container > .dom-container { z-index: 10; background: transparent !important; }
 
       /* IMPORTANT: let canvas get mouse events except where DOM controls exist */
       #game-container > .dom-container { pointer-events: none; }
