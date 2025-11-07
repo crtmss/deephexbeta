@@ -148,6 +148,9 @@ export default class WorldScene extends Phaser.Scene {
     // cleanup on shutdown
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       this.events.off('hex-inspect');
+      }
+    );
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       this.events.off('hex-inspect-extra');
     });
 
@@ -209,12 +212,13 @@ export default class WorldScene extends Phaser.Scene {
       this.selectedHex = rounded;
       this.debugHex(rounded.q, rounded.r); // enhanced debug
 
-if (this.selectedUnit) {
-  if (this.selectedUnit.q === rounded.q && this.selectedUnit.r === rounded.r) {
-    this.selectedUnit = null;
-    this.hideUnitPanel();             // NEW
-    return;
-  }
+      if (this.selectedUnit) {
+        // Deselect if clicking the same hex
+        if (this.selectedUnit.q === rounded.q && this.selectedUnit.r === rounded.r) {
+          this.selectedUnit = null;
+          this.hideUnitPanel?.();             // hide panel on deselect
+          return;
+        }
 
         const isBlocked = tile => !tile || tile.type === 'water' || tile.type === 'mountain';
         const fullPath = findPath(this.selectedUnit, rounded, this.mapData, isBlocked);
@@ -242,14 +246,14 @@ if (this.selectedUnit) {
         } else {
           console.log("Path not found or blocked.");
         }
-} else {
-  if (playerHere) {
-    this.selectedUnit = playerHere;
-    this.selectedUnit.movementPoints = 10;
-    this.showUnitPanel(this.selectedUnit);   // NEW
-    console.log(`[SELECTED] Unit at (${playerHere.q}, ${playerHere.r})`);
-  }
-}
+      } else {
+        if (playerHere) {
+          this.selectedUnit = playerHere;
+          this.selectedUnit.movementPoints = 10;
+          this.showUnitPanel?.(this.selectedUnit);   // show the 4-button panel
+          console.log(`[SELECTED] Unit at (${playerHere.q}, ${playerHere.r})`);
+        }
+      }
     });
 
     // 🧭 Pointer Move: Draw Path Preview
@@ -446,6 +450,7 @@ if (this.selectedUnit) {
   endTurn() {
     if (this.playerName !== this.lobbyState.currentTurn) return;
     this.selectedUnit = null;
+    this.hideUnitPanel?.();  // hide the panel when the turn ends
     if (this.selectedHexGraphic) {
       this.selectedHexGraphic.destroy();
       this.selectedHexGraphic = null;
