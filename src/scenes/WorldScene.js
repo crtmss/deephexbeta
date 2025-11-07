@@ -1,14 +1,11 @@
-why did you remove more than 100 lines of code? what functions did you remove?
-
-this is the actual version:
-
 // deephexbeta/src/scenes/WorldScene.js
 import HexMap from '../engine/HexMap.js';
 import { findPath } from '../engine/AStar.js';
 import { setupCameraControls, setupTurnUI } from './WorldSceneUI.js';
 import { spawnUnitsAndEnemies, subscribeToGameUpdates } from './WorldSceneUnits.js';
 import {
-  drawHexMap, hexToPixel, pixelToHex, roundHex, drawHex, getColorForTerrain, isoOffset, LIFT_PER_LVL
+  drawHexMap, hexToPixel, pixelToHex, roundHex, drawHex,
+  getColorForTerrain, isoOffset, LIFT_PER_LVL
 } from './WorldSceneMap.js';
 
 /* =========================
@@ -194,29 +191,22 @@ export default class WorldScene extends Phaser.Scene {
   }
 
   addWorldMetaBadge(geography, biome) {
-    // Container at top center, fixed to screen
     const cam = this.cameras.main;
     const cx = cam.width / 2;
-
     const container = this.add.container(cx, 18).setScrollFactor(0).setDepth(2000);
     const text1 = this.add.text(0, 0, `🌍 Geography: ${geography}`, {
-      fontSize: '16px',
-      color: '#e8f6ff'
-    }).setOrigin(0.5, 0.5).setDepth(2001);
-
+      fontSize: '16px', color: '#e8f6ff'
+    }).setOrigin(0.5).setDepth(2001);
     const text2 = this.add.text(0, 20, `🌿 Biome: ${biome}`, {
-      fontSize: '16px',
-      color: '#e8f6ff'
-    }).setOrigin(0.5, 0.5).setDepth(2001);
+      fontSize: '16px', color: '#e8f6ff'
+    }).setOrigin(0.5).setDepth(2001);
 
-    // background pill
     const w = Math.max(text1.width, text2.width) + 20;
     const h = 44;
     const bg = this.add.rectangle(0, 10, w, h, 0x133046, 0.8)
       .setStrokeStyle(1, 0x3da9fc, 0.9)
       .setDepth(2000)
-      .setOrigin(0.5, 0.5);
-
+      .setOrigin(0.5);
     container.add([bg, text1, text2]);
   }
 
@@ -231,7 +221,6 @@ export default class WorldScene extends Phaser.Scene {
     this.movingPath = path || [];
     if (!path || path.length === 0) return;
 
-    // small circles on each step
     for (const step of path) {
       const { x, y } = this.axialToWorld(step.q, step.r);
       this.previewGraphics.fillStyle(0xffffff, 0.8);
@@ -275,20 +264,17 @@ export default class WorldScene extends Phaser.Scene {
 
   checkCombat() {
     if (!this.players || !this.enemies) return;
-    // very simple adjacency check vs enemies
     const u = this.players.find(p => p.playerName === this.playerName);
     if (!u) return;
 
     this.enemies.forEach(enemy => {
       if (Math.abs(enemy.q - u.q) <= 1 && Math.abs(enemy.r - u.r) <= 1) {
         // placeholder combat hook
-        // console.log('Combat triggered!');
       }
     });
   }
 
   async syncPlayerMove(unit) {
-    // persists my unit position to supabase
     const { supabase } = await import('../net/SupabaseClient.js');
     const state = this.lobbyState || {};
     state.units = state.units || {};
@@ -300,18 +286,14 @@ export default class WorldScene extends Phaser.Scene {
   }
 
   endTurn() {
-    // hand off turn in a round-robin fashion
     const names = Object.keys(this.lobbyState?.units || {});
     const idx = names.indexOf(this.playerName);
     const next = names[(idx + 1) % names.length] || this.playerName;
     this.lobbyState.currentTurn = next;
   }
 
-  /* =========================
-     Enemy roaming demo (optional)
-     ========================= */
   roamEnemies() {
-    if (!this.isHost) return; // only host moves them
+    if (!this.isHost) return;
     if (!this.enemies || this.enemies.length === 0) return;
 
     const dirs = [
