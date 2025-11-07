@@ -114,7 +114,7 @@ function createUnitActionPanel(scene) {
   const pad = 8;
   const startX = 12;
   const startY = 12;
-  const labels = ['A', 'B', 'C', 'D']; // placeholder
+  const labels = ['Shipyard', 'B', 'C', 'D']; // placeholder
 
   const btns = [];
   for (let r = 0; r < 2; r++) {
