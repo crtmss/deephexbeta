@@ -3,6 +3,7 @@ import HexMap from '../engine/HexMap.js';
 import { findPath } from '../engine/AStar.js';
 import { setupCameraControls, setupTurnUI } from './WorldSceneUI.js';
 import { spawnUnitsAndEnemies, subscribeToGameUpdates } from './WorldSceneUnits.js';
+import { startDocksPlacement, cancelPlacement, placeDocks } from './WorldSceneBuildings.js';
 import {
   drawHexMap, hexToPixel, pixelToHex, roundHex, drawHex, getColorForTerrain, isoOffset, LIFT_PER_LVL
 } from './WorldSceneMap.js';
