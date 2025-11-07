@@ -28,8 +28,8 @@ const UI = {
 /* ---------- Building registry ---------- */
 export const BUILDINGS = {
   docks: {
-    key: 'Shipyard',
-    name: 'Shipyard',
+    key: 'Docks',
+    name: 'Docks',
     emoji: '⚓',    // :ship:
     // validation: water tile, within radius 1 of selected mobile_base
     validateTile(scene, q, r) {
