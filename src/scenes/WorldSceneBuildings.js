@@ -29,8 +29,8 @@ const UI = {
 export const BUILDINGS = {
   docks: {
     key: 'docks',
-    name: 'Docks',
-    emoji: '🚢',    // :ship:
+    name: 'Shipyard',
+    emoji: '⚓',    // :ship:
     // validation: water tile, within radius 1 of selected mobile_base
     validateTile(scene, q, r) {
       const tile = _tileAt(scene, q, r);
@@ -42,7 +42,7 @@ export const BUILDINGS = {
   },
 
   // Placeholders for future buildings (extend later):
-  // shipyard: { key: 'shipyard', name: 'Shipyard', emoji: '⚓', validateTile: (...) => true },
+  // shipyard: { key: 'shipyard', name: 'Ship', emoji: '🚢', validateTile: (...) => true },
   // bridge:   { key: 'bridge',   name: 'Bridge',   emoji: '🌉', validateTile: (...) => true },
 };
 
