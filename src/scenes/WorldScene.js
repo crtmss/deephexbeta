@@ -4,7 +4,7 @@ import { findPath } from '../engine/AStar.js';
 import { setupCameraControls, setupTurnUI } from './WorldSceneUI.js';
 import { spawnUnitsAndEnemies, subscribeToGameUpdates } from './WorldSceneUnits.js';
 import {
-  drawHexMap, hexToPixel, pixelToHex, roundHex, drawHex, getColorForTerrain, isoOffset
+  drawHexMap, hexToPixel, pixelToHex, roundHex, drawHex, getColorForTerrain, isoOffset, LIFT_PER_LVL
 } from './WorldSceneMap.js';
 
 /* =========================
@@ -118,6 +118,19 @@ export default class WorldScene extends Phaser.Scene {
     this.getColorForTerrain = getColorForTerrain.bind(this);
     this.isoOffset = isoOffset.bind(this);
 
+    // === isometry-aware axial -> world position (includes map offsets + elevation lift)
+    this.axialToWorld = (q, r) => {
+      const tile = this.mapData?.find(t => t.q === q && t.r === r);
+      const elev = (tile && tile.type !== 'water')
+        ? Math.max(0, (typeof tile?.elevation === 'number' ? tile.elevation : 0) - 1)
+        : 0;
+      const p = this.hexToPixel(q, r, this.hexSize);
+      return {
+        x: p.x + (this.mapOffsetX || 0),
+        y: p.y + (this.mapOffsetY || 0) - (LIFT_PER_LVL * elev),
+      };
+    };
+
     this.tileMap = {};
     this.selectedUnit = null;
     this.selectedHex = null;
@@ -172,7 +185,7 @@ export default class WorldScene extends Phaser.Scene {
         if (!unitData) return;
 
         const { q, r } = unitData;
-        const { x, y } = this.hexToPixel(q, r, this.hexSize);
+        const { x, y } = this.axialToWorld(q, r);
         const unit = this.players.find(p => p.name === this.playerName);
         if (unit) {
           unit.setPosition(x, y);
@@ -258,7 +271,7 @@ export default class WorldScene extends Phaser.Scene {
           const tile = this.mapData.find(h => h.q === step.q && h.r === step.r);
           const moveCost = tile?.movementCost || 1;
 
-          const { x, y } = this.hexToPixel(step.q, step.r, this.hexSize);
+          const { x, y } = this.axialToWorld(step.q, step.r);
           const isStart = i === 0;
 
           if (!isStart) costSum += moveCost;
@@ -345,7 +358,7 @@ export default class WorldScene extends Phaser.Scene {
   // --- CLICK DEBUG: neighbor levels per YOUR side numbering using odd-r axial deltas ---
   debugHex(q, r) {
     // Local outline
-    const center = this.hexToPixel(q, r, this.hexSize);
+    const center = this.axialToWorld(q, r);
     this.debugGraphics.clear();
     this.debugGraphics.lineStyle(2, 0xff00ff, 1);
     this.drawHex(this.debugGraphics, center.x, center.y, this.hexSize);
@@ -402,7 +415,7 @@ export default class WorldScene extends Phaser.Scene {
 
     const unit = this.selectedUnit;
     const step = this.movingPath.shift();
-    const { x, y } = this.hexToPixel(step.q, step.r, this.hexSize);
+    const { x, y } = this.axialToWorld(step.q, step.r);
 
     this.tweens.add({
       targets: unit,
@@ -454,7 +467,7 @@ export default class WorldScene extends Phaser.Scene {
         const nq = enemy.q + d.dq, nr = enemy.r + d.dr;
         const tile = this.mapData.find(h => h.q === nq && h.r === nr);
         if (tile && !['water', 'mountain'].includes(tile.type)) {
-          const { x, y } = this.hexToPixel(nq, nr, this.hexSize);
+          const { x, y } = this.axialToWorld(nq, nr);
           enemy.setPosition(x, y);
           enemy.q = nq;
           enemy.r = nr;
