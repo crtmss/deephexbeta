@@ -209,11 +209,12 @@ export default class WorldScene extends Phaser.Scene {
       this.selectedHex = rounded;
       this.debugHex(rounded.q, rounded.r); // enhanced debug
 
-      if (this.selectedUnit) {
-        if (this.selectedUnit.q === rounded.q && this.selectedUnit.r === rounded.r) {
-          this.selectedUnit = null;
-          return;
-        }
+if (this.selectedUnit) {
+  if (this.selectedUnit.q === rounded.q && this.selectedUnit.r === rounded.r) {
+    this.selectedUnit = null;
+    this.hideUnitPanel();             // NEW
+    return;
+  }
 
         const isBlocked = tile => !tile || tile.type === 'water' || tile.type === 'mountain';
         const fullPath = findPath(this.selectedUnit, rounded, this.mapData, isBlocked);
@@ -241,13 +242,14 @@ export default class WorldScene extends Phaser.Scene {
         } else {
           console.log("Path not found or blocked.");
         }
-      } else {
-        if (playerHere) {
-          this.selectedUnit = playerHere;
-          this.selectedUnit.movementPoints = 10;
-          console.log(`[SELECTED] Unit at (${playerHere.q}, ${playerHere.r})`);
-        }
-      }
+} else {
+  if (playerHere) {
+    this.selectedUnit = playerHere;
+    this.selectedUnit.movementPoints = 10;
+    this.showUnitPanel(this.selectedUnit);   // NEW
+    console.log(`[SELECTED] Unit at (${playerHere.q}, ${playerHere.r})`);
+  }
+}
     });
 
     // 🧭 Pointer Move: Draw Path Preview
