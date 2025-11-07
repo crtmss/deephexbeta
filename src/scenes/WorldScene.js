@@ -149,8 +149,7 @@ export default class WorldScene extends Phaser.Scene {
     // cleanup on shutdown
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       this.events.off('hex-inspect');
-      }
-    );
+    });
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       this.events.off('hex-inspect-extra');
     });
@@ -169,6 +168,10 @@ export default class WorldScene extends Phaser.Scene {
     subscribeToGameUpdates.call(this);
     setupCameraControls(this);
     setupTurnUI(this);
+
+    // Expose Docks placement to the UI and allow ESC to cancel
+    this.startDocksPlacement = () => startDocksPlacement.call(this);
+    this.input.keyboard?.on('keydown-ESC', () => cancelPlacement.call(this));
 
     // 🌀 Refresh Button (Unit sync)
     if (this.refreshButton) {
@@ -200,13 +203,26 @@ export default class WorldScene extends Phaser.Scene {
       });
     }
 
-    // 🖱️ Pointer Click: Move or Select
+    // 🖱️ Pointer Click: Move or Select (with building placement handling)
     this.input.on("pointerdown", pointer => {
       if (pointer.rightButtonDown()) return;
 
       const { worldX, worldY } = pointer;
       const approx = this.pixelToHex(worldX - (this.mapOffsetX || 0), worldY - (this.mapOffsetY || 0), this.hexSize);
       const rounded = this.roundHex(approx.q, approx.r);
+
+      /* ---------- Handle building placement first ---------- */
+      if (this.placing?.type === 'docks') {
+        const key = `${rounded.q},${rounded.r}`;
+        if (this.placing.valid?.has(key)) {
+          placeDocks.call(this, rounded.q, rounded.r); // auto-clears placement & highlight
+        } else {
+          cancelPlacement.call(this);                   // click outside → cancel
+        }
+        return; // don’t fall through to unit select/move
+      }
+      /* ----------------------------------------------------- */
+
       const tile = this.mapData.find(h => h.q === rounded.q && h.r === rounded.r);
       const playerHere = this.players.find(p => p.q === rounded.q && p.r === rounded.r);
 
@@ -221,21 +237,17 @@ export default class WorldScene extends Phaser.Scene {
           return;
         }
 
-        const isBlocked = tile => !tile || tile.type === 'water' || tile.type === 'mountain';
+        const isBlocked = t => !t || t.type === 'water' || t.type === 'mountain';
         const fullPath = findPath(this.selectedUnit, rounded, this.mapData, isBlocked);
         if (fullPath && fullPath.length > 1) {
           const movePoints = this.selectedUnit.movementPoints || 10;
           let totalCost = 0;
           const trimmedPath = [fullPath[0]];
           for (let i = 1; i < fullPath.length; i++) {
-            const tile = this.mapData.find(h => h.q === fullPath[i].q && h.r === fullPath[i].r);
-            const cost = tile?.movementCost || 1;
+            const stepTile = this.mapData.find(h => h.q === fullPath[i].q && h.r === fullPath[i].r);
+            const cost = stepTile?.movementCost || 1;
             totalCost += cost;
-            if (totalCost <= movePoints) {
-              trimmedPath.push(fullPath[i]);
-            } else {
-              break;
-            }
+            if (totalCost <= movePoints) trimmedPath.push(fullPath[i]); else break;
           }
 
           if (trimmedPath.length > 1) {
@@ -248,11 +260,16 @@ export default class WorldScene extends Phaser.Scene {
           console.log("Path not found or blocked.");
         }
       } else {
+        // Nothing selected yet: click selects a unit
         if (playerHere) {
           this.selectedUnit = playerHere;
           this.selectedUnit.movementPoints = 10;
           this.showUnitPanel?.(this.selectedUnit);   // show the 4-button panel
           console.log(`[SELECTED] Unit at (${playerHere.q}, ${playerHere.r})`);
+        } else {
+          // Clicked empty terrain → ensure the panel is hidden
+          this.selectedUnit = null;
+          this.hideUnitPanel?.();
         }
       }
     });
@@ -265,7 +282,7 @@ export default class WorldScene extends Phaser.Scene {
       const approx = this.pixelToHex(worldX - (this.mapOffsetX || 0), worldY - (this.mapOffsetY || 0), this.hexSize);
       const rounded = this.roundHex(approx.q, approx.r);
 
-      const isBlocked = tile => !tile || tile.type === 'water' || tile.type === 'mountain';
+      const isBlocked = t => !t || t.type === 'water' || t.type === 'mountain';
       const path = findPath(this.selectedUnit, rounded, this.mapData, isBlocked);
 
       this.clearPathPreview();
@@ -275,8 +292,8 @@ export default class WorldScene extends Phaser.Scene {
 
         for (let i = 0; i < path.length; i++) {
           const step = path[i];
-          const tile = this.mapData.find(h => h.q === step.q && h.r === step.r);
-          const moveCost = tile?.movementCost || 1;
+          const stepTile = this.mapData.find(h => h.q === step.q && h.r === step.r);
+          const moveCost = stepTile?.movementCost || 1;
 
           const { x, y } = this.axialToWorld(step.q, step.r);
           const isStart = i === 0;
