@@ -7,7 +7,7 @@
      1) Direct ring-1 water around selected unit.
      2) Coastal water adjacent to any ring-1 land tile.
      3) Nearest water within radius 3 (fallback).
-   Renders at high depth so it’s always visible.
+   Always prints a console message with building type and hex placed.
    ======================================================================= */
 
 const COLORS = {
@@ -20,8 +20,7 @@ const UI = {
   labelFontSize: 16,
   boxRadius: 8,
   boxStrokeAlpha: 0.9,
-  // Draw above most things (meta badge uses ~2000 in your scene)
-  zBuilding: 2100,
+  zBuilding: 2100, // over terrain/roads
 };
 
 export const BUILDINGS = {
@@ -32,10 +31,8 @@ export const BUILDINGS = {
     validateTile(scene, q, r) {
       const t = _tileAt(scene, q, r);
       if (!t || t.type !== 'water') return false;
-      // Must have a selected unit to anchor placement
       const u = scene.selectedUnit;
       if (!u || typeof u.q !== 'number' || typeof u.r !== 'number') return false;
-      // No duplicate building on that exact hex
       if (Array.isArray(scene.buildings) && scene.buildings.some(b => b.q === q && b.r === r)) return false;
       return true;
     },
@@ -50,7 +47,7 @@ export function startDocksPlacement() {
   const scene = /** @type {Phaser.Scene & any} */ (this);
   const u = scene.selectedUnit;
   if (!u) {
-    console.warn('[Docks] No unit selected.');
+    console.warn('[BUILD] Docks: no unit selected.');
     return;
   }
 
@@ -61,7 +58,7 @@ export function startDocksPlacement() {
 
   if (ring1Water.length > 0) {
     const pick = _getRandom(ring1Water, scene);
-    _placeBuilding(scene, BUILDINGS.docks, pick.q, pick.r, '[Docks] ring-1 water');
+    _placeBuilding(scene, BUILDINGS.docks, pick.q, pick.r, 'ring-1 water');
     return;
   }
 
@@ -69,14 +66,14 @@ export function startDocksPlacement() {
   const coastal = _computeCoastalWater(scene, u.q, u.r);
   if (coastal.length > 0) {
     const pick = _getRandom(coastal, scene);
-    _placeBuilding(scene, BUILDINGS.docks, pick.q, pick.r, '[Docks] coastal water');
+    _placeBuilding(scene, BUILDINGS.docks, pick.q, pick.r, 'coastal water');
     return;
   }
 
   // 3) Fallback: nearest water within radius 3
   const nearest = _nearestWaterWithin(scene, u.q, u.r, 3);
   if (nearest) {
-    _placeBuilding(scene, BUILDINGS.docks, nearest.q, nearest.r, '[Docks] fallback radius≤3');
+    _placeBuilding(scene, BUILDINGS.docks, nearest.q, nearest.r, 'fallback radius≤3');
     return;
   }
 
@@ -87,14 +84,14 @@ export function startDocksPlacement() {
       return `(${q},${r}:${t ? t.type : 'off'})`;
     })
     .join(' ');
-  console.warn('[Docks] No water found nearby. Adjacent ring:', ringReport);
+  console.warn('[BUILD] Docks: no nearby water. Adjacent ring:', ringReport);
 }
 
 export function cancelPlacement() {} // no-op (kept for compatibility)
 
 export function placeDocks(q, r) {
   const scene = /** @type {Phaser.Scene & any} */ (this);
-  _placeBuilding(scene, BUILDINGS.docks, q, r, '[Docks] direct place');
+  _placeBuilding(scene, BUILDINGS.docks, q, r, 'direct place');
 }
 
 /* =========================
@@ -103,12 +100,11 @@ export function placeDocks(q, r) {
 
 function _placeBuilding(scene, buildingDef, q, r, reason = '') {
   if (!buildingDef.validateTile(scene, q, r)) {
-    console.warn(`[${buildingDef.name}] Invalid placement at (${q},${r}).`);
+    console.warn(`[BUILD] ${buildingDef.name}: invalid placement at (${q},${r}).`);
     return;
   }
 
   scene.buildings = scene.buildings || [];
-
   const pos = scene.axialToWorld(q, r);
   const container = scene.add.container(pos.x, pos.y).setDepth(UI.zBuilding);
 
@@ -138,14 +134,14 @@ function _placeBuilding(scene, buildingDef, q, r, reason = '') {
     containerId: container.id,
   });
 
-  console.log(`${reason} → [${buildingDef.name}] placed at (${q},${r}). depth=${UI.zBuilding}`);
+  // REQUIRED LOG:
+  console.log(`[BUILD] ${buildingDef.name} placed at (${q},${r}) ${reason ? `— ${reason}` : ''}`);
 }
 
 function _computeCoastalWater(scene, uq, ur) {
   const out = [];
   const seen = new Set();
 
-  // land-like neighbors (non-water) around unit
   const landNeighbors = _neighbors(uq, ur)
     .filter(({ q, r }) => {
       const t = _tileAt(scene, q, r);
@@ -165,12 +161,10 @@ function _computeCoastalWater(scene, uq, ur) {
       }
     }
   }
-
   return out;
 }
 
 function _nearestWaterWithin(scene, uq, ur, radius = 3) {
-  // simple ring scan up to radius
   for (let r = 1; r <= radius; r++) {
     const ring = _ring(uq, ur, r).filter(({ q, r }) => _isWater(scene, q, r));
     const valid = ring.filter(({ q, r }) => BUILDINGS.docks.validateTile(scene, q, r));
@@ -192,7 +186,6 @@ function _neighbors(q, r) {
   return AXIAL_DIRS.map(d => ({ q: q + d.dq, r: r + d.dr }));
 }
 function _ring(q, r, radius) {
-  // axial ring traversal
   if (radius <= 0) return [{ q, r }];
   const results = [];
   let cq = q + AXIAL_DIRS[4].dq * radius;
@@ -206,8 +199,6 @@ function _ring(q, r, radius) {
   }
   return results;
 }
-
-// axial distance (cube)
 function _axialDistance(q1, r1, q2, r2) {
   const x1 = q1, z1 = r1, y1 = -x1 - z1;
   const x2 = q2, z2 = r2, y2 = -x2 - z2;
