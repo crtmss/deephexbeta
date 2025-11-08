@@ -38,7 +38,7 @@ export const BUILDINGS = {
     emoji: '🚢', // :ship:
     validateTile(scene, q, r) {
       const t = _tileAt(scene, q, r);
-      if (!t || t.type !== 'water') return false;
+      if (!t || !_isWater(scene, q, r)) return false;
       const u = scene.selectedUnit; // anchor placement to a selected unit
       if (!u || typeof u.q !== 'number' || typeof u.r !== 'number') return false;
       // disallow duplicate at exact hex
@@ -133,7 +133,6 @@ export function applyShipRoutesOnEndTurn(scene) {
 
       // Already at target
       if (s.q === target.q && s.r === target.r) {
-        // console.log(`[SHIP] docks#${b.id} ship already at target ${target.q},${target.r}`);
         return;
       }
 
@@ -150,10 +149,20 @@ export function applyShipRoutesOnEndTurn(scene) {
         return;
       }
 
+      // NEW: draw + verbose log
+      _debugDrawWaterPath(scene, path);
+      console.log(
+        `[SHIP] docks#${b.id} water path len=${path.length}: `,
+        path.map(n => `(${n.q},${n.r})`).join('→')
+      );
+
       const stepsAvailable = Math.min(s.movePoints, path.length - 1);
       const nextHex = path[stepsAvailable];
 
-      console.log(`[SHIP] docks#${b.id} ship@${s.q},${s.r} → target ${target.q},${target.r} | pathLen=${path.length} | mp=${s.movePoints} | steps=${stepsAvailable} | new=${nextHex.q},${nextHex.r}`);
+      console.log(
+        `[SHIP] docks#${b.id} ship@${s.q},${s.r} → target ${target.q},${target.r} | ` +
+        `mp=${s.movePoints} | steps=${stepsAvailable} | new=${nextHex.q},${nextHex.r}`
+      );
 
       // Apply move
       s.q = nextHex.q;
@@ -174,7 +183,6 @@ export function applyShipRoutesOnEndTurn(scene) {
   });
 
   if (!movedAny) {
-    // useful when debugging "it didn't move"
     const dbg = (scene.ships || []).map(s => `ship(docks#${s.docksId})@${s.q},${s.r} mp=${s.movePoints}`).join(' | ');
     console.log(`[SHIP] No ships moved. Current ships: ${dbg}`);
   }
@@ -398,6 +406,7 @@ function _buildShip(scene, building) {
     type: 'ship',
     name: 'Ship',
     emoji: '🚢',
+    isNaval: true,        // <— mark as naval
     q: building.q,
     r: building.r,
     docksId: building.id,
@@ -548,11 +557,12 @@ function _tileAt(scene, q, r) {
 }
 function _isWater(scene, q, r) {
   const t = _tileAt(scene, q, r);
-  return !!t && t.type === 'water';
+  // tolerant to generator variants
+  return !!t && (t.type === 'water' || t.type === 'ocean' || t.type === 'sea');
 }
 function _isLand(scene, q, r) {
   const t = _tileAt(scene, q, r);
-  return !!t && t.type !== 'water';
+  return !!t && !_isWater(scene, q, r);
 }
 function _neighbors(q, r) {
   return AXIAL_DIRS.map(d => ({ q: q + d.dq, r: r + d.dr }));
@@ -649,6 +659,30 @@ function _waterPath(scene, fromQ, fromR, toQ, toR) {
     }
   }
   return null; // unreachable
+}
+
+/* ---------- Debug draw for ship water paths ---------- */
+function _debugDrawWaterPath(scene, path) {
+  try {
+    if (!path || path.length < 2) return;
+    if (scene._shipPathGfx) scene._shipPathGfx.destroy();
+    const g = scene.add.graphics().setDepth(2400);
+    scene._shipPathGfx = g;
+
+    g.lineStyle(2, 0x6fe3ff, 0.9);
+    let p0 = scene.axialToWorld(path[0].q, path[0].r);
+    for (let i = 1; i < path.length; i++) {
+      const p1 = scene.axialToWorld(path[i].q, path[i].r);
+      g.strokeLineShape(new Phaser.Geom.Line(p0.x, p0.y, p1.x, p1.y));
+      p0 = p1;
+    }
+
+    // auto-fade
+    scene.tweens.add({
+      targets: g, alpha: 0, duration: 900, delay: 600,
+      onComplete: () => g.destroy()
+    });
+  } catch {}
 }
 
 function _getRandom(arr, scene) {
