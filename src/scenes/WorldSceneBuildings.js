@@ -6,7 +6,7 @@
    - Click docks: shows 4-option menu (modal; locks hex inspect & clicks).
        Build a ship • Set route • Recall ships • Destroy
    - Set route: pick only reachable water hex (water-only BFS). Marks hex with "X".
-   - End turn: ships teleport to their docks' "X" route if present.
+   - End turn: ships MOVE along water path (8 MP/turn). MPs regen AFTER end turn.
    ======================================================================= */
 
 const COLORS = {
@@ -111,20 +111,49 @@ export function placeDocks(q, r) {
 
 /** Called from WorldScene.endTurn() */
 export function applyShipRoutesOnEndTurn(scene) {
-  // For each docks with a route, teleport its ships to the route hex
+  // MOVE ships along route using water-only pathfinding (8 MP / turn).
   const buildings = scene.buildings || [];
   const ships = scene.ships || [];
   if (ships.length === 0) return;
 
   buildings.forEach(b => {
     if (b.type !== 'docks' || !b.route) return;
-    const { q, r } = b.route;
+    const target = b.route;
+
     ships.forEach(s => {
       if (s.docksId !== b.id) return;
-      s.q = q; s.r = r;
-      const p = scene.axialToWorld(q, r);
+
+      // Initialize MPs if missing
+      if (typeof s.maxMovePoints !== 'number') s.maxMovePoints = 8;
+      if (typeof s.movePoints !== 'number') s.movePoints = s.maxMovePoints;
+
+      // Already at target
+      if (s.q === target.q && s.r === target.r) return;
+
+      // No MPs? skip movement this turn
+      if (s.movePoints <= 0) return;
+
+      const path = _waterPath(scene, s.q, s.r, target.q, target.r);
+      if (!path || path.length <= 1) return; // no route
+
+      // stepsAvailable = min(MP, distance)
+      const stepsAvailable = Math.min(s.movePoints, path.length - 1);
+
+      // Move to the step index 'stepsAvailable'
+      const nextHex = path[stepsAvailable];
+      s.q = nextHex.q;
+      s.r = nextHex.r;
+      s.movePoints -= stepsAvailable;
+
+      const p = scene.axialToWorld(s.q, s.r);
       s.obj.setPosition(p.x, p.y);
     });
+  });
+
+  // REGNERATE MPs AFTER END TURN (not on arrival)
+  (scene.ships || []).forEach(s => {
+    if (typeof s.maxMovePoints !== 'number') s.maxMovePoints = 8;
+    s.movePoints = s.maxMovePoints;
   });
 }
 
@@ -350,6 +379,8 @@ function _buildShip(scene, building) {
     r: building.r,
     docksId: building.id,
     obj: t,
+    maxMovePoints: 8,
+    movePoints: 8,
   };
   scene.ships.push(ship);
 
@@ -409,15 +440,7 @@ function _enterRoutePicker(scene, building) {
     // place/update "X" marker for this docks
     _setRouteMarker(scene, building, rounded.q, rounded.r);
 
-    // teleport all ships of this docks to the route hex immediately
-    (scene.ships || []).forEach(s => {
-      if (s.docksId !== building.id) return;
-      s.q = rounded.q; s.r = rounded.r;
-      const p = scene.axialToWorld(s.q, s.r);
-      s.obj.setPosition(p.x, p.y);
-    });
-
-    console.log(`[DOCKS] Route set for docks#${building.id} at (${rounded.q},${rounded.r}); ships teleported.`);
+    console.log(`[DOCKS] Route set for docks#${building.id} at (${rounded.q},${rounded.r}).`);
     overlay.destroy();
   };
 
@@ -467,6 +490,7 @@ function _recallShips(scene, building) {
     s.q = building.q; s.r = building.r;
     const p = scene.axialToWorld(s.q, s.r);
     s.obj.setPosition(p.x, p.y);
+    // Keep their remaining MPs (don’t refill on arrival)
   });
 
   console.log(`[DOCKS] Ships recalled to docks#${building.id} at (${building.q},${building.r}).`);
@@ -558,24 +582,49 @@ function _computeCoastalWater(scene, uq, ur) {
 /* ---------- water-only reachability (BFS) ---------- */
 function _reachableOnWater(scene, fromQ, fromR, toQ, toR) {
   if (fromQ === toQ && fromR === toR) return true;
+  return !!_waterPath(scene, fromQ, fromR, toQ, toR);
+}
+
+/* ---------- water-only shortest path (BFS) ---------- */
+function _waterPath(scene, fromQ, fromR, toQ, toR) {
+  // bounds & type checks
+  if (!_isWater(scene, toQ, toR)) return null;
+  if (!_isWater(scene, fromQ, fromR)) return null;
+
   const key = (q, r) => `${q},${r}`;
+  const cameFrom = new Map();
   const seen = new Set([key(fromQ, fromR)]);
   const qArr = [{ q: fromQ, r: fromR }];
 
   while (qArr.length) {
     const cur = qArr.shift();
-    const neigh = _neighbors(cur.q, cur.r);
-    for (const n of neigh) {
+    if (cur.q === toQ && cur.r === toR) {
+      // reconstruct path
+      const path = [];
+      let k = key(cur.q, cur.r);
+      let node = cur;
+      while (node) {
+        path.push({ q: node.q, r: node.r });
+        const prev = cameFrom.get(k);
+        if (!prev) break;
+        k = key(prev.q, prev.r);
+        node = prev;
+      }
+      path.reverse();
+      return path;
+    }
+
+    for (const n of _neighbors(cur.q, cur.r)) {
       if (n.q < 0 || n.r < 0 || n.q >= scene.mapWidth || n.r >= scene.mapHeight) continue;
       if (!_isWater(scene, n.q, n.r)) continue;
-      const k = key(n.q, n.r);
-      if (seen.has(k)) continue;
-      if (n.q === toQ && n.r === toR) return true;
-      seen.add(k);
+      const nk = key(n.q, n.r);
+      if (seen.has(nk)) continue;
+      seen.add(nk);
+      cameFrom.set(nk, cur);
       qArr.push(n);
     }
   }
-  return false;
+  return null; // unreachable
 }
 
 function _getRandom(arr, scene) {
