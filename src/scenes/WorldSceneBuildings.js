@@ -3,17 +3,15 @@
 /* =========================================================================
    All building logic lives here: constants, creation, and helpers.
    CURRENT: "docks" (emoji 🚢) — spawns on a random WATER hex within radius 1
-   of the selected mobile base when the Docks button is pressed.
+   of the SELECTED UNIT when the Docks button is pressed.
    ======================================================================= */
 
 /* ---------- Visual style (match game UI) ---------- */
 const COLORS = {
-  glow: 0x6fe3ff,
   plate: 0x0f2233,
   stroke: 0x3da9fc,
   labelText: '#e8f6ff',
 };
-
 const UI = {
   labelFontSize: 16,
   boxRadius: 8,
@@ -28,24 +26,17 @@ export const BUILDINGS = {
     name: 'Docks',
     emoji: '🚢', // :ship:
     validateTile(scene, q, r) {
-      // Must be water
+      // Must be a water tile
       const tile = _tileAt(scene, q, r);
       if (!tile || tile.type !== 'water') return false;
 
-      // Must be within radius 1 of the selected mobile base
-      const base = scene.selectedUnit;
-      if (!base) return false;
+      // Need a selected unit (we don't enforce a specific "mobile base" type here,
+      // to be compatible with your current unit objects)
+      const u = scene.selectedUnit;
+      if (!u || typeof u.q !== 'number' || typeof u.r !== 'number') return false;
 
-      // Try to robustly detect "mobile base" role in current project data
-      const isMobileBase =
-        base.type === 'mobile_base' ||
-        base.role === 'mobile_base' ||
-        base.isBase === true ||
-        /base/i.test(base.name || '');
-
-      if (!isMobileBase) return false;
-
-      return _axialDistance(base.q, base.r, q, r) === 1;
+      // Must be adjacent (radius 1) to the selected unit
+      return _axialDistance(u.q, u.r, q, r) === 1;
     },
   },
 };
@@ -55,35 +46,41 @@ export const BUILDINGS = {
    ========================= */
 
 /**
- * Pressing the UI "Docks" button calls this (bound as .call(scene)).
- * It finds all valid water neighbors (radius 1) around the selected base,
+ * Pressing the UI "Docks" button should call this (bound as .call(scene)).
+ * It finds all valid water neighbors (radius 1) around the SELECTED unit,
  * picks one at random, and places a 🚢 Docks building there.
  */
 export function startDocksPlacement() {
   const scene = /** @type {Phaser.Scene & any} */ (this);
+
   if (!scene.selectedUnit) {
     console.warn('[Docks] No unit selected.');
     return;
   }
 
-  // Compute valid tiles (radius 1, water, adjacent to base)
-  const valid = _computeValidTiles(scene, BUILDINGS.docks);
-  if (valid.length === 0) {
-    console.warn('[Docks] No valid water hex adjacent to the base.');
+  // Gather valid candidates
+  const candidates = _computeValidTiles(scene, BUILDINGS.docks);
+
+  if (candidates.length === 0) {
+    // Helpful debug so you can see what the neighbors look like
+    const u = scene.selectedUnit;
+    const neighborReport = AXIAL_DIRS.map(d => {
+      const q = u.q + d.dq, r = u.r + d.dr;
+      const t = _tileAt(scene, q, r);
+      return `(${q},${r}) -> ${t ? t.type : 'off-map'}`;
+    }).join(' | ');
+    console.warn('[Docks] No valid adjacent water hex found. Neighbors:', neighborReport);
     return;
   }
 
-  // Pick a random tile
-  const pick = _getRandom(valid, scene);
+  const pick = _getRandom(candidates, scene);
   _placeBuilding(scene, BUILDINGS.docks, pick.q, pick.r);
 }
 
-/** Provided for completeness; not used by the auto-place flow. */
-export function cancelPlacement() {
-  // No-op for auto-place version (kept to match imports).
-}
+/** No-op kept for compatibility with existing imports. */
+export function cancelPlacement() {}
 
-/** Provided for completeness; not used directly by UI (auto uses startDocksPlacement). */
+/** Optional direct placement (validates again). */
 export function placeDocks(q, r) {
   const scene = /** @type {Phaser.Scene & any} */ (this);
   _placeBuilding(scene, BUILDINGS.docks, q, r);
@@ -138,6 +135,8 @@ function _placeBuilding(scene, buildingDef, q, r) {
     q, r,
     containerId: container.id,
   });
+
+  console.log(`[${buildingDef.name}] placed at (${q},${r}).`);
 }
 
 /**
@@ -147,16 +146,15 @@ function _placeBuilding(scene, buildingDef, q, r) {
  */
 function _computeValidTiles(scene, buildingDef) {
   const out = [];
-  const base = scene.selectedUnit;
-  if (!base) return out;
+  const u = scene.selectedUnit;
+  if (!u || typeof u.q !== 'number' || typeof u.r !== 'number') return out;
 
   for (const dir of AXIAL_DIRS) {
-    const q = base.q + dir.dq;
-    const r = base.r + dir.dr;
+    const q = u.q + dir.dq;
+    const r = u.r + dir.dr;
 
-    // Ensure inside map
     const tile = _tileAt(scene, q, r);
-    if (!tile) continue;
+    if (!tile) continue; // off-map
 
     // No duplicate building on that tile
     const occupied = Array.isArray(scene.buildings)
