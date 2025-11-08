@@ -119,6 +119,14 @@ export default class WorldScene extends Phaser.Scene {
     this.getColorForTerrain = getColorForTerrain.bind(this);
     this.isoOffset = isoOffset.bind(this);
 
+    // Match camera background to water color
+    try {
+      const waterColor = this.getColorForTerrain('water');
+      if (waterColor != null) this.cameras.main.setBackgroundColor(waterColor);
+    } catch (_) {
+      // ignore if palette not ready
+    }
+
     // === isometry-aware axial -> world position (includes map offsets + elevation lift)
     this.axialToWorld = (q, r) => {
       const tile = this.mapData?.find(t => t.q === q && t.r === r);
@@ -140,7 +148,7 @@ export default class WorldScene extends Phaser.Scene {
     this.pathLabels = [];
     this.debugGraphics = this.add.graphics({ x: 0, y: 0 }).setDepth(100);
 
-    // === HEX INSPECT glue (so geo-object clicks can feed into it)
+    // === HEX INSPECT glue
     this.events.on('hex-inspect', (text) => this.hexInspect(text));
     this.events.on('hex-inspect-extra', ({ header, lines }) => {
       const payload = [`[HEX INSPECT] ${header}`, ...(lines || [])].join('\n');
@@ -169,7 +177,7 @@ export default class WorldScene extends Phaser.Scene {
     setupCameraControls(this);
     setupTurnUI(this);
 
-    // Expose Docks placement to the UI and allow ESC to cancel
+    // Expose Docks placement to the UI and allow ESC to cancel (no-op for auto version)
     this.startDocksPlacement = () => startDocksPlacement.call(this);
     this.input.keyboard?.on('keydown-ESC', () => cancelPlacement.call(this));
 
@@ -211,23 +219,28 @@ export default class WorldScene extends Phaser.Scene {
       const approx = this.pixelToHex(worldX - (this.mapOffsetX || 0), worldY - (this.mapOffsetY || 0), this.hexSize);
       const rounded = this.roundHex(approx.q, approx.r);
 
-      /* ---------- Handle building placement first ---------- */
+      // guard: ignore out-of-bounds for all actions
+      if (rounded.q < 0 || rounded.r < 0 || rounded.q >= this.mapWidth || rounded.r >= this.mapHeight) {
+        return;
+      }
+
+      /* ---------- Handle building placement first (auto for Docks) ---------- */
       if (this.placing?.type === 'docks') {
         const key = `${rounded.q},${rounded.r}`;
         if (this.placing.valid?.has(key)) {
-          placeDocks.call(this, rounded.q, rounded.r); // auto-clears placement & highlight
+          placeDocks.call(this, rounded.q, rounded.r); // auto-clears if you keep placement mode
         } else {
-          cancelPlacement.call(this);                   // click outside → cancel
+          cancelPlacement.call(this);
         }
-        return; // don’t fall through to unit select/move
+        return;
       }
-      /* ----------------------------------------------------- */
+      /* --------------------------------------------------------------------- */
 
       const tile = this.mapData.find(h => h.q === rounded.q && h.r === rounded.r);
       const playerHere = this.players.find(p => p.q === rounded.q && p.r === rounded.r);
 
       this.selectedHex = rounded;
-      this.debugHex(rounded.q, rounded.r); // enhanced debug
+      this.debugHex(rounded.q, rounded.r); // enhanced debug (bounds-safe)
 
       if (this.selectedUnit) {
         // Deselect if clicking the same hex
@@ -281,6 +294,12 @@ export default class WorldScene extends Phaser.Scene {
       const { worldX, worldY } = pointer;
       const approx = this.pixelToHex(worldX - (this.mapOffsetX || 0), worldY - (this.mapOffsetY || 0), this.hexSize);
       const rounded = this.roundHex(approx.q, approx.r);
+
+      // guard: ignore out-of-bounds previews
+      if (rounded.q < 0 || rounded.r < 0 || rounded.q >= this.mapWidth || rounded.r >= this.mapHeight) {
+        this.clearPathPreview();
+        return;
+      }
 
       const isBlocked = t => !t || t.type === 'water' || t.type === 'mountain';
       const path = findPath(this.selectedUnit, rounded, this.mapData, isBlocked);
@@ -379,9 +398,11 @@ export default class WorldScene extends Phaser.Scene {
     this.pathLabels = [];
   }
 
-  // --- CLICK DEBUG: neighbor levels per YOUR side numbering using odd-r axial deltas ---
+  // --- CLICK DEBUG: neighbor levels; bounds-safe and includes buildings ---
   debugHex(q, r) {
-    // Local outline
+    // ignore out-of-bounds requests
+    if (q < 0 || r < 0 || q >= this.mapWidth || r >= this.mapHeight) return;
+
     const center = this.axialToWorld(q, r);
     this.debugGraphics.clear();
     this.debugGraphics.lineStyle(2, 0xff00ff, 1);
@@ -398,6 +419,12 @@ export default class WorldScene extends Phaser.Scene {
     if (tile?.hasVehicle) objects.push("Vehicle");
     if (tile?.hasRoad) objects.push("Road");
 
+    // include buildings
+    const buildingsHere = (this.buildings || []).filter(b => b.q === q && b.r === r);
+    if (buildingsHere.length) {
+      buildingsHere.forEach(b => objects.push(`Building: ${b.name}`));
+    }
+
     console.log(`[HEX INSPECT] (${q}, ${r})`);
     console.log(`• Terrain: ${tile?.type}`);
     console.log(`• Level (elevation): ${tile?.elevation ?? 'N/A'}`);
@@ -405,8 +432,6 @@ export default class WorldScene extends Phaser.Scene {
     console.log(`• Enemy Units: ${enemiesHere.length}`);
     console.log(`• Objects: ${objects.join(", ") || "None"}`);
 
-    // --- odd-r axial deltas mapped to your sides (0..5) ---
-    // sides: 0=NE, 1=E, 2=SE, 3=SW, 4=W, 5=NW
     const isOdd = (r & 1) === 1;
 
     // even row deltas
@@ -424,6 +449,10 @@ export default class WorldScene extends Phaser.Scene {
     for (let side = 0; side < 6; side++) {
       const [dq, dr] = deltas[side];
       const nq = q + dq, nr = r + dr;
+      if (nq < 0 || nr < 0 || nq >= this.mapWidth || nr >= this.mapHeight) {
+        console.log(`Side ${side} - adjacent to hex level N/A (off map)`);
+        continue;
+        }
       const nTile = this.mapData.find(h => h.q === nq && h.r === nr);
       if (!nTile) {
         console.log(`Side ${side} - adjacent to hex level N/A (off map)`);
