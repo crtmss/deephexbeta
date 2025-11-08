@@ -180,11 +180,11 @@ function _placeDocks(scene, q, r, reason = '') {
     name: BUILDINGS.docks.name,
     emoji: BUILDINGS.docks.emoji,
     q, r,
-    containerId: container.id,
-    routeMarker: null,      // text container for "X"
-    menu: null,             // building menu container
-    overlay: null,          // modal overlay container
-    route: null,            // {q,r}
+    container,           // store the actual container object
+    routeMarker: null,   // text container for "X"
+    menu: null,          // building menu container
+    overlay: null,       // modal overlay container
+    route: null,         // {q,r}
   };
   scene.buildings.push(building);
 
@@ -474,8 +474,10 @@ function _recallShips(scene, building) {
 
 function _destroyBuilding(scene, building) {
   // remove visual container
-  const cont = scene.children.getByID?.(building.containerId);
-  if (cont) cont.destroy(true);
+  if (building.container) {
+    building.container.destroy(true);
+    building.container = null;
+  }
 
   // remove marker and menu if any
   if (building.routeMarker) {
@@ -500,6 +502,10 @@ function _tileAt(scene, q, r) {
 function _isWater(scene, q, r) {
   const t = _tileAt(scene, q, r);
   return !!t && t.type === 'water';
+}
+function _isLand(scene, q, r) {
+  const t = _tileAt(scene, q, r);
+  return !!t && t.type !== 'water';
 }
 function _neighbors(q, r) {
   return AXIAL_DIRS.map(d => ({ q: q + d.dq, r: r + d.dr }));
@@ -527,6 +533,28 @@ function _nearestWaterWithin(scene, uq, ur, radius = 3) {
   return null;
 }
 
+/** find “coastal” water hexes adjacent to land neighbors within radius 1 of (uq,ur) */
+function _computeCoastalWater(scene, uq, ur) {
+  const set = new Set();
+  const out = [];
+  const add = (q, r) => {
+    const k = `${q},${r}`;
+    if (!set.has(k)) { set.add(k); out.push({ q, r }); }
+  };
+  // check ring-1 around the unit; if that hex is land, push its water neighbors
+  const around = _neighbors(uq, ur);
+  for (const h of around) {
+    if (h.q < 0 || h.r < 0 || h.q >= scene.mapWidth || h.r >= scene.mapHeight) continue;
+    if (_isLand(scene, h.q, h.r)) {
+      for (const n of _neighbors(h.q, h.r)) {
+        if (n.q < 0 || n.r < 0 || n.q >= scene.mapWidth || n.r >= scene.mapHeight) continue;
+        if (_isWater(scene, n.q, n.r)) add(n.q, n.r);
+      }
+    }
+  }
+  return out;
+}
+
 /* ---------- water-only reachability (BFS) ---------- */
 function _reachableOnWater(scene, fromQ, fromR, toQ, toR) {
   if (fromQ === toQ && fromR === toR) return true;
@@ -550,12 +578,10 @@ function _reachableOnWater(scene, fromQ, fromR, toQ, toR) {
   return false;
 }
 
-/* =========================
-   (No default export) — named exports only
-   ========================= */
-export {
-  // re-exporting for clarity (already exported above)
-  startDocksPlacement,
-  cancelPlacement,
-  placeDocks,
-};
+function _getRandom(arr, scene) {
+  if (!arr || arr.length === 0) return null;
+  // prefer Phaser RNG if available
+  const rnd = scene?.rng || scene?.hexMap?.rng || Math.random;
+  const i = Math.floor(rnd() * arr.length);
+  return arr[i];
+}
