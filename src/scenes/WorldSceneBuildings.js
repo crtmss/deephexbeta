@@ -111,10 +111,14 @@ export function placeDocks(q, r) {
 
 /** Called from WorldScene.endTurn() */
 export function applyShipRoutesOnEndTurn(scene) {
-  // MOVE ships along route using water-only pathfinding (8 MP / turn).
   const buildings = scene.buildings || [];
   const ships = scene.ships || [];
-  if (ships.length === 0) return;
+  if (ships.length === 0) {
+    // nothing to do
+    return;
+  }
+
+  let movedAny = false;
 
   buildings.forEach(b => {
     if (b.type !== 'docks' || !b.route) return;
@@ -128,33 +132,52 @@ export function applyShipRoutesOnEndTurn(scene) {
       if (typeof s.movePoints !== 'number') s.movePoints = s.maxMovePoints;
 
       // Already at target
-      if (s.q === target.q && s.r === target.r) return;
+      if (s.q === target.q && s.r === target.r) {
+        // console.log(`[SHIP] docks#${b.id} ship already at target ${target.q},${target.r}`);
+        return;
+      }
 
       // No MPs? skip movement this turn
-      if (s.movePoints <= 0) return;
+      if (s.movePoints <= 0) {
+        console.log(`[SHIP] docks#${b.id} ship@${s.q},${s.r} has 0 MP — skip`);
+        return;
+      }
 
+      // Path from current ship pos to target (water-only)
       const path = _waterPath(scene, s.q, s.r, target.q, target.r);
-      if (!path || path.length <= 1) return; // no route
+      if (!path || path.length <= 1) {
+        console.warn(`[SHIP] docks#${b.id} ship@${s.q},${s.r} no water path to ${target.q},${target.r}`);
+        return;
+      }
 
-      // stepsAvailable = min(MP, distance)
       const stepsAvailable = Math.min(s.movePoints, path.length - 1);
-
-      // Move to the step index 'stepsAvailable'
       const nextHex = path[stepsAvailable];
+
+      console.log(`[SHIP] docks#${b.id} ship@${s.q},${s.r} → target ${target.q},${target.r} | pathLen=${path.length} | mp=${s.movePoints} | steps=${stepsAvailable} | new=${nextHex.q},${nextHex.r}`);
+
+      // Apply move
       s.q = nextHex.q;
       s.r = nextHex.r;
       s.movePoints -= stepsAvailable;
 
       const p = scene.axialToWorld(s.q, s.r);
       s.obj.setPosition(p.x, p.y);
+
+      movedAny = true;
     });
   });
 
-  // REGNERATE MPs AFTER END TURN (not on arrival)
+  // MPs regenerate AFTER the end-turn move resolution so next turn they can move again
   (scene.ships || []).forEach(s => {
     if (typeof s.maxMovePoints !== 'number') s.maxMovePoints = 8;
     s.movePoints = s.maxMovePoints;
   });
+
+  if (!movedAny) {
+    // useful when debugging "it didn't move"
+    const dbg = (scene.ships || []).map(s => `ship(docks#${s.docksId})@${s.q},${s.r} mp=${s.movePoints}`).join(' | ');
+    console.log(`[SHIP] No ships moved. Current ships: ${dbg}`);
+  }
 }
 
 /* =========================
@@ -581,6 +604,7 @@ function _computeCoastalWater(scene, uq, ur) {
 
 /* ---------- water-only reachability (BFS) ---------- */
 function _reachableOnWater(scene, fromQ, fromR, toQ, toR) {
+  if (!_isWater(scene, fromQ, fromR) || !_isWater(scene, toQ, toR)) return false;
   if (fromQ === toQ && fromR === toR) return true;
   return !!_waterPath(scene, fromQ, fromR, toQ, toR);
 }
