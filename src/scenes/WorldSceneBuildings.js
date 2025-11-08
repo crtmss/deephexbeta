@@ -1,12 +1,14 @@
 // deephexbeta/src/scenes/WorldSceneBuildings.js
 
 /* =========================================================================
-   Building logic and UI (modal menu).
-   - Docks (🚢): At most 2 docks on the map.
-   - Click docks: shows 4-option menu (modal; locks hex inspect & clicks).
-       Build a ship • Set route • Recall ships • Destroy
-   - Set route: pick only reachable water hex (water-only BFS). Marks hex with "X".
-   - End turn: ships MOVE along water path (8 MP/turn). MPs regen AFTER end turn.
+   Buildings & naval logic (modal UI)
+   - Docks (🚢): max 2 on map. Auto-placed near selected unit (ring-1/coastal/≤3 BFS).
+   - Click docks → modal with 4 options:
+       • Build a ship • Set route • Recall ships • Destroy
+   - Set route: pick a REACHABLE water hex (odd-r offset BFS). Marks it with an "X".
+   - End turn: ships MOVE along the water path up to 8 hexes. MPs regen AFTER moving.
+   - Ships are naval-only (isNaval: true) and ignore land pathfinder.
+   - Cyan line briefly renders the water path each end turn for debug.
    ======================================================================= */
 
 const COLORS = {
@@ -25,11 +27,6 @@ const UI = {
   zOverlay: 2290,      // modal overlay (below menu, above everything else)
   zMenu: 2300,         // building menu
 };
-
-const AXIAL_DIRS = [
-  { dq: +1, dr: 0 }, { dq: +1, dr: -1 }, { dq: 0, dr: -1 },
-  { dq: -1, dr: 0 }, { dq: -1, dr: +1 }, { dq: 0, dr: +1 },
-];
 
 export const BUILDINGS = {
   docks: {
@@ -52,7 +49,7 @@ export const BUILDINGS = {
    Public API (named exports)
    ========================= */
 
-/** Called from unit panel "Docks" button */
+/** Called from the unit action panel button "Docks" */
 export function startDocksPlacement() {
   const scene = /** @type {Phaser.Scene & any} */ (this);
   if (!scene.selectedUnit) {
@@ -69,7 +66,7 @@ export function startDocksPlacement() {
 
   const u = scene.selectedUnit;
 
-  // 1) Direct ring-1 water
+  // 1) Direct ring-1 water (offset neighbors)
   const ring1 = _neighbors(u.q, u.r)
     .filter(({ q, r }) => _isWater(scene, q, r))
     .filter(({ q, r }) => BUILDINGS.docks.validateTile(scene, q, r));
@@ -83,13 +80,14 @@ export function startDocksPlacement() {
   // 2) Coastal water: land neighbor's water
   const coastal = _computeCoastalWater(scene, u.q, u.r)
     .filter(({ q, r }) => BUILDINGS.docks.validateTile(scene, q, r));
+
   if (coastal.length) {
     const pick = _getRandom(coastal, scene);
     _placeDocks(scene, pick.q, pick.r, 'coastal water');
     return;
   }
 
-  // 3) Fallback: nearest water ≤ 3
+  // 3) Fallback: nearest water ≤ 3 using offset-BFS
   const nearest = _nearestWaterWithin(scene, u.q, u.r, 3);
   if (nearest && BUILDINGS.docks.validateTile(scene, nearest.q, nearest.r)) {
     _placeDocks(scene, nearest.q, nearest.r, 'fallback radius≤3');
@@ -142,14 +140,14 @@ export function applyShipRoutesOnEndTurn(scene) {
         return;
       }
 
-      // Path from current ship pos to target (water-only)
+      // Path from current ship pos to target (water-only, odd-r neighbors)
       const path = _waterPath(scene, s.q, s.r, target.q, target.r);
       if (!path || path.length <= 1) {
         console.warn(`[SHIP] docks#${b.id} ship@${s.q},${s.r} no water path to ${target.q},${target.r}`);
         return;
       }
 
-      // NEW: draw + verbose log
+      // Debug draw route + verbose log
       _debugDrawWaterPath(scene, path);
       console.log(
         `[SHIP] docks#${b.id} water path len=${path.length}: `,
@@ -240,8 +238,8 @@ function _placeDocks(scene, q, r, reason = '') {
     name: BUILDINGS.docks.name,
     emoji: BUILDINGS.docks.emoji,
     q, r,
-    container,           // store the actual container object
-    routeMarker: null,   // text container for "X"
+    container,           // visual container
+    routeMarker: null,   // container for "X"
     menu: null,          // building menu container
     overlay: null,       // modal overlay container
     route: null,         // {q,r}
@@ -406,7 +404,7 @@ function _buildShip(scene, building) {
     type: 'ship',
     name: 'Ship',
     emoji: '🚢',
-    isNaval: true,        // <— mark as naval
+    isNaval: true,        // mark as naval
     q: building.q,
     r: building.r,
     docksId: building.id,
@@ -549,7 +547,7 @@ function _destroyBuilding(scene, building) {
 }
 
 /* =========================
-   Finder / geometry helpers
+   Finder / geometry helpers (ODD-R OFFSET!)
    ========================= */
 
 function _tileAt(scene, q, r) {
@@ -564,28 +562,51 @@ function _isLand(scene, q, r) {
   const t = _tileAt(scene, q, r);
   return !!t && !_isWater(scene, q, r);
 }
+
+/* Offset (odd-r) neighbor deltas */
+function _offsetNeighbors(q, r) {
+  const isOdd = (r & 1) === 1;
+  // even row deltas
+  const evenNE = [0, -1], evenE = [+1, 0], evenSE = [0, +1];
+  const evenSW = [-1, +1], evenW = [-1, 0], evenNW = [-1, -1];
+  // odd row deltas
+  const oddNE = [+1, -1], oddE = [+1, 0], oddSE = [+1, +1];
+  const oddSW = [0, +1],  oddW = [-1, 0], oddNW = [0, -1];
+
+  const deltas = isOdd
+    ? [oddNE, oddE, oddSE, oddSW, oddW, oddNW]
+    : [evenNE, evenE, evenSE, evenSW, evenW, evenNW];
+
+  return deltas.map(([dq, dr]) => ({ q: q + dq, r: r + dr }));
+}
+
+/* Always use offset neighbors for “neighbors” */
 function _neighbors(q, r) {
-  return AXIAL_DIRS.map(d => ({ q: q + d.dq, r: r + d.dr }));
+  return _offsetNeighbors(q, r);
 }
-function _ring(q, r, radius) {
-  if (radius <= 0) return [{ q, r }];
-  const results = [];
-  let cq = q + AXIAL_DIRS[4].dq * radius;
-  let cr = r + AXIAL_DIRS[4].dr * radius;
-  for (let side = 0; side < 6; side++) {
-    for (let step = 0; step < radius; step++) {
-      results.push({ q: cq, r: cr });
-      cq += AXIAL_DIRS[side].dq;
-      cr += AXIAL_DIRS[side].dr;
+
+/* Nearest water within a small radius using BFS on offset neighbors */
+function _nearestWaterWithin(scene, uq, ur, maxRadius = 3) {
+  const key = (q, r) => `${q},${r}`;
+  const start = { q: uq, r: ur };
+  const seen = new Set([key(uq, ur)]);
+  const qArr = [{ ...start, dist: 0 }];
+
+  while (qArr.length) {
+    const cur = qArr.shift();
+    if (cur.dist > maxRadius) break;
+
+    if (_isWater(scene, cur.q, cur.r) && BUILDINGS.docks.validateTile(scene, cur.q, cur.r)) {
+      if (!(cur.q === uq && cur.r === ur)) return { q: cur.q, r: cur.r };
     }
-  }
-  return results;
-}
-function _nearestWaterWithin(scene, uq, ur, radius = 3) {
-  for (let rr = 1; rr <= radius; rr++) {
-    const ring = _ring(uq, ur, rr).filter(({ q, r }) => _isWater(scene, q, r));
-    const valid = ring.filter(({ q, r }) => BUILDINGS.docks.validateTile(scene, q, r));
-    if (valid.length > 0) return valid[0];
+
+    for (const n of _offsetNeighbors(cur.q, cur.r)) {
+      if (n.q < 0 || n.r < 0 || n.q >= scene.mapWidth || n.r >= scene.mapHeight) continue;
+      const k = key(n.q, n.r);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      qArr.push({ q: n.q, r: n.r, dist: cur.dist + 1 });
+    }
   }
   return null;
 }
@@ -599,11 +620,11 @@ function _computeCoastalWater(scene, uq, ur) {
     if (!set.has(k)) { set.add(k); out.push({ q, r }); }
   };
   // check ring-1 around the unit; if that hex is land, push its water neighbors
-  const around = _neighbors(uq, ur);
+  const around = _offsetNeighbors(uq, ur);
   for (const h of around) {
     if (h.q < 0 || h.r < 0 || h.q >= scene.mapWidth || h.r >= scene.mapHeight) continue;
     if (_isLand(scene, h.q, h.r)) {
-      for (const n of _neighbors(h.q, h.r)) {
+      for (const n of _offsetNeighbors(h.q, h.r)) {
         if (n.q < 0 || n.r < 0 || n.q >= scene.mapWidth || n.r >= scene.mapHeight) continue;
         if (_isWater(scene, n.q, n.r)) add(n.q, n.r);
       }
@@ -612,14 +633,14 @@ function _computeCoastalWater(scene, uq, ur) {
   return out;
 }
 
-/* ---------- water-only reachability (BFS) ---------- */
+/* ---------- water-only reachability (BFS on offset neighbors) ---------- */
 function _reachableOnWater(scene, fromQ, fromR, toQ, toR) {
   if (!_isWater(scene, fromQ, fromR) || !_isWater(scene, toQ, toR)) return false;
   if (fromQ === toQ && fromR === toR) return true;
   return !!_waterPath(scene, fromQ, fromR, toQ, toR);
 }
 
-/* ---------- water-only shortest path (BFS) ---------- */
+/* ---------- water-only shortest path (BFS on offset neighbors) ---------- */
 function _waterPath(scene, fromQ, fromR, toQ, toR) {
   // bounds & type checks
   if (!_isWater(scene, toQ, toR)) return null;
@@ -635,8 +656,7 @@ function _waterPath(scene, fromQ, fromR, toQ, toR) {
     if (cur.q === toQ && cur.r === toR) {
       // reconstruct path
       const path = [];
-      let k = key(cur.q, cur.r);
-      let node = cur;
+      let node = cur, k = key(cur.q, cur.r);
       while (node) {
         path.push({ q: node.q, r: node.r });
         const prev = cameFrom.get(k);
@@ -644,11 +664,10 @@ function _waterPath(scene, fromQ, fromR, toQ, toR) {
         k = key(prev.q, prev.r);
         node = prev;
       }
-      path.reverse();
-      return path;
+      return path.reverse();
     }
 
-    for (const n of _neighbors(cur.q, cur.r)) {
+    for (const n of _offsetNeighbors(cur.q, cur.r)) {
       if (n.q < 0 || n.r < 0 || n.q >= scene.mapWidth || n.r >= scene.mapHeight) continue;
       if (!_isWater(scene, n.q, n.r)) continue;
       const nk = key(n.q, n.r);
