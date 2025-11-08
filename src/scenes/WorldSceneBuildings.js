@@ -1,478 +1,545 @@
-// deephexbeta/src/scenes/WorldSceneBuildings.js
-
-/* =========================================================================
-   Centralized building logic and building UI.
-   - Docks (🚢): auto-placed from the unit panel button.
-   - Max 2 docks total.
-   - Click a docks to open its 4-option menu:
-       Build a ship, Set route, Recall ships, Destroy building
-   - Ships: simple unselectable emoji sprites tied to a docks by id.
-   - Set route: world overlay to pick a hex, mark with "X" box, teleport ships.
-   ======================================================================= */
-
-const COLORS = {
-  plate: 0x0f2233,
-  stroke: 0x3da9fc,
-  labelText: '#e8f6ff',
-  xMarkerPlate: 0x112633,
-  xMarkerStroke: 0x3da9fc,
-};
-
-const UI = {
-  labelFontSize: 16,
-  boxRadius: 8,
-  boxStrokeAlpha: 0.9,
-  zBuilding: 2100,     // above map / path previews / meta badge
-  zOverlay: 2200,      // overlay to capture route clicks
-  zMenu: 2300,         // building menu depth above everything
-};
-
-export const BUILDINGS = {
-  docks: {
-    key: 'docks',
-    name: 'Docks',
-    emoji: '🚢', // :ship:
-    validateTile(scene, q, r) {
-      const t = _tileAt(scene, q, r);
-      if (!t || t.type !== 'water') return false;
-      const u = scene.selectedUnit;
-      if (!u || typeof u.q !== 'number' || typeof u.r !== 'number') return false;
-      // disallow duplicate at exact hex
-      if (Array.isArray(scene.buildings) && scene.buildings.some(b => b.q === q && b.r === r)) return false;
-      return true;
-    },
-  },
-};
+// deephexbeta/src/scenes/WorldScene.js
+import HexMap from '../engine/HexMap.js';
+import { findPath } from '../engine/AStar.js';
+import { setupCameraControls, setupTurnUI } from './WorldSceneUI.js';
+import { spawnUnitsAndEnemies, subscribeToGameUpdates } from './WorldSceneUnits.js';
+import { startDocksPlacement, cancelPlacement, placeDocks, applyShipRoutesOnEndTurn } from './WorldSceneBuildings.js';
+import {
+  drawHexMap, hexToPixel, pixelToHex, roundHex, drawHex, getColorForTerrain, isoOffset, LIFT_PER_LVL
+} from './WorldSceneMap.js';
 
 /* =========================
-   Public API
+   Deterministic world summary
+   (mirrors the lobby so labels match)
    ========================= */
-
-/** Called from unit panel "Docks" button */
-export function startDocksPlacement() {
-  const scene = /** @type {Phaser.Scene & any} */ (this);
-  if (!scene.selectedUnit) {
-    console.warn('[BUILD] Docks: no unit selected.');
-    return;
+function __hashStr32(s) {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
   }
-
-  // Enforce at most 2 docks in the world
-  const count = (scene.buildings || []).filter(b => b.type === 'docks').length;
-  if (count >= 2) {
-    console.warn('[BUILD] Docks: limit reached (2). New docks will not spawn.');
-    return;
-  }
-
-  const u = scene.selectedUnit;
-
-  // 1) Direct ring-1 water
-  const ring1 = _neighbors(u.q, u.r)
-    .filter(({ q, r }) => _isWater(scene, q, r))
-    .filter(({ q, r }) => BUILDINGS.docks.validateTile(scene, q, r));
-
-  if (ring1.length) {
-    const pick = _getRandom(ring1, scene);
-    _placeDocks(scene, pick.q, pick.r, 'ring-1 water');
-    return;
-  }
-
-  // 2) Coastal water: land neighbor's water
-  const coastal = _computeCoastalWater(scene, u.q, u.r)
-    .filter(({ q, r }) => BUILDINGS.docks.validateTile(scene, q, r));
-  if (coastal.length) {
-    const pick = _getRandom(coastal, scene);
-    _placeDocks(scene, pick.q, pick.r, 'coastal water');
-    return;
-  }
-
-  // 3) Fallback: nearest water ≤ 3
-  const nearest = _nearestWaterWithin(scene, u.q, u.r, 3);
-  if (nearest && BUILDINGS.docks.validateTile(scene, nearest.q, nearest.r)) {
-    _placeDocks(scene, nearest.q, nearest.r, 'fallback radius≤3');
-    return;
-  }
-
-  console.warn('[BUILD] Docks: no nearby water found (ring-1/coastal/≤3).');
+  return h >>> 0;
 }
-
-export function cancelPlacement() {} // no-op (kept for compatibility)
-export function placeDocks(q, r) {
-  const scene = /** @type {Phaser.Scene & any} */ (this);
-  _placeDocks(scene, q, r, 'direct place');
-}
-
-/* =========================
-   Internal: Docks placement & UI
-   ========================= */
-
-function _placeDocks(scene, q, r, reason = '') {
-  // Limit check again here for safety
-  const docksCount = (scene.buildings || []).filter(b => b.type === 'docks').length;
-  if (docksCount >= 2) {
-    console.warn('[BUILD] Docks: limit reached (2). New docks will not spawn.');
-    return;
-  }
-  if (!BUILDINGS.docks.validateTile(scene, q, r)) {
-    console.warn(`[BUILD] Docks: invalid placement at (${q},${r}).`);
-    return;
-  }
-
-  scene.buildings = scene.buildings || [];
-  scene._buildingIdSeq = (scene._buildingIdSeq || 1) + 1;
-  const id = scene._buildingIdSeq;
-
-  const pos = scene.axialToWorld(q, r);
-  const container = scene.add.container(pos.x, pos.y).setDepth(UI.zBuilding);
-
-  // label
-  const label = scene.add.text(0, 0, `${BUILDINGS.docks.emoji}  ${BUILDINGS.docks.name}`, {
-    fontSize: `${UI.labelFontSize}px`,
-    color: COLORS.labelText,
-  }).setOrigin(0.5);
-
-  const pad = 6;
-  const w = Math.max(64, label.width + pad * 2);
-  const h = Math.max(26, label.height + pad * 2);
-
-  const box = scene.add.graphics();
-  box.fillStyle(COLORS.plate, 0.92);
-  box.fillRoundedRect(-w / 2, -h / 2, w, h, UI.boxRadius);
-  box.lineStyle(2, COLORS.stroke, UI.boxStrokeAlpha);
-  box.strokeRoundedRect(-w / 2, -h / 2, w, h, UI.boxRadius);
-
-  // hit zone to open building menu
-  const hit = scene.add.rectangle(0, 0, w, h, 0x000000, 0)
-    .setOrigin(0.5)
-    .setInteractive({ useHandCursor: true });
-
-  container.add([box, label, hit]);
-
-  const building = {
-    id,
-    type: BUILDINGS.docks.key,
-    name: BUILDINGS.docks.name,
-    emoji: BUILDINGS.docks.emoji,
-    q, r,
-    containerId: container.id,
-    routeMarker: null,      // text container for "X"
-    menu: null,             // building menu container
+function __xorshift32(seed) {
+  let x = (seed || 1) >>> 0;
+  return () => {
+    x ^= x << 13; x >>>= 0;
+    x ^= x >> 17; x >>>= 0;
+    x ^= x << 5;  x >>>= 0;
+    return (x >>> 0) / 4294967296;
   };
-  scene.buildings.push(building);
+}
+function getWorldSummaryForSeed(seed) {
+  const rng = __xorshift32(__hashStr32(String(seed ?? 'default')));
 
-  // open menu on click
-  hit.on('pointerdown', () => {
-    _toggleBuildingMenu(scene, building);
-  });
+  const geoRoll = rng();
+  const bioRoll = rng();
 
-  console.log(`[BUILD] Docks placed at (${q},${r}) — ${reason}`);
+  let geography;
+  if (geoRoll < 0.15) geography = 'Big Lagoon';
+  else if (geoRoll < 0.30) geography = 'Central Lake';
+  else if (geoRoll < 0.50) geography = 'Small Bays';
+  else if (geoRoll < 0.70) geography = 'Scattered Terrain';
+  else if (geoRoll < 0.85) geography = 'Diagonal Island';
+  else geography = 'Multiple Islands';
+
+  let biome;
+  if (bioRoll < 0.20) biome = 'Icy Biome';
+  else if (bioRoll < 0.40) biome = 'Volcanic Biome';
+  else if (bioRoll < 0.60) biome = 'Desert Biome';
+  else if (bioRoll < 0.80) biome = 'Temperate Biome';
+  else biome = 'Swamp Biome';
+
+  return { geography, biome };
 }
 
-/* ---------- Building menu (4 options) ---------- */
-function _toggleBuildingMenu(scene, building) {
-  // close any other open building menu
-  _closeAnyBuildingMenu(scene, building.id);
-
-  if (building.menu && building.menu.active) {
-    _closeBuildingMenu(scene, building);
-    return;
+export default class WorldScene extends Phaser.Scene {
+  constructor() {
+    super('WorldScene');
   }
 
-  const pos = scene.axialToWorld(building.q, building.r);
-  const menu = scene.add.container(pos.x, pos.y - 48).setDepth(UI.zMenu);
-  building.menu = menu;
+  preload() {}
 
-  const W = 172, H = 172;
-  const bg = scene.add.graphics();
-  bg.fillStyle(0x0f2233, 0.96);
-  bg.fillRoundedRect(-W/2, -H/2, W, H, 12);
-  bg.lineStyle(2, 0x3da9fc, 1);
-  bg.strokeRoundedRect(-W/2, -H/2, W, H, 12);
+  async create() {
+    this.hexSize = 24;
+    this.mapWidth = 25;
+    this.mapHeight = 25;
+    this.input.setDefaultCursor('grab');
+    this.isDragging = false;
+    this.isUnitMoving = false;
+    this.uiLock = null; // NEW: when truthy, disable map clicks/hex inspect
 
-  const bezel = scene.add.graphics();
-  bezel.lineStyle(1, 0x9be4ff, 0.25);
-  bezel.strokeRect(-W/2 + 16, -H/2 + 16, W - 32, H - 32);
-  bezel.strokeRect(-W/2 + 8,  -H/2 + 8,  W - 16, H - 16);
+    const pad = this.hexSize * 2;
+    const mapPixelWidth = this.hexSize * Math.sqrt(3) * (this.mapWidth + 0.5) + pad * 2;
+    const mapPixelHeight = this.hexSize * 1.5 * (this.mapHeight + 0.5) + pad * 2;
+    this.cameras.main.setBounds(0, 0, mapPixelWidth, mapPixelHeight);
+    this.cameras.main.setZoom(1.0);
 
-  // 2x2 grid
-  const btnSize = 70, pad = 8;
-  const startX = -W/2 + 12, startY = -H/2 + 12;
+    const { roomCode, playerName, isHost } = this.scene.settings.data;
+    const { getLobbyState } = await import('../net/LobbyManager.js');
+    const { data: lobbyData, error } = await getLobbyState(roomCode);
+    if (error || !lobbyData?.state?.seed) return;
 
-  const defs = [
-    { text: 'Build a ship', onClick: () => _buildShip(scene, building) },
-    { text: 'Set route',    onClick: () => _enterRoutePicker(scene, building) },
-    { text: 'Recall ships', onClick: () => _recallShips(scene, building) },
-    { text: 'Destroy',      onClick: () => _destroyBuilding(scene, building) },
-  ];
+    this.seed = lobbyData.state.seed;
+    this.lobbyState = lobbyData.state;
+    const { subscribeToGame } = await import('../net/SyncManager.js');
+    const { supabase } = await import('../net/SupabaseClient.js');
 
-  const drawButton = (x, y, label, onClick) => {
-    const g = scene.add.graphics();
-    g.fillStyle(0x173b52, 1);
-    g.fillRoundedRect(x, y, btnSize, btnSize, 8);
-    g.lineStyle(2, 0x6fe3ff, 0.7);
-    g.strokeRoundedRect(x, y, btnSize, btnSize, 8);
-    g.lineStyle(1, 0x6fe3ff, 0.15);
-    g.beginPath();
-    g.moveTo(x + btnSize/2, y + 6);
-    g.lineTo(x + btnSize/2, y + btnSize - 6);
-    g.moveTo(x + 6, y + btnSize/2);
-    g.lineTo(x + btnSize - 6, y + btnSize/2);
-    g.strokePath();
+    this.playerName = playerName;
+    this.roomCode = roomCode;
+    this.isHost = isHost;
+    this.supabase = supabase;
+    this.subscribeToGame = subscribeToGame;
 
-    const t = scene.add.text(x + btnSize/2, y + btnSize/2, label, {
-      fontSize: '14px',
-      color: '#e8f6ff',
-      align: 'center',
-      wordWrap: { width: btnSize - 10 }
-    }).setOrigin(0.5);
+    this.syncPlayerMove = async unit => {
+      const res = await this.supabase.from('lobbies').select('state').eq('room_code', this.roomCode).single();
+      if (!res.data) return;
+      const nextPlayer = this.getNextPlayer(res.data.state.players, this.playerName);
+      await this.supabase
+        .from('lobbies')
+        .update({
+          state: {
+            ...res.data.state,
+            units: { ...res.data.state.units, [this.playerName]: { q: unit.q, r: unit.r } },
+            currentTurn: nextPlayer
+          }
+        })
+        .eq('room_code', this.roomCode);
+    };
 
-    const hit = scene.add.rectangle(x, y, btnSize, btnSize, 0x000000, 0)
-      .setOrigin(0, 0)
-      .setInteractive({ useHandCursor: true });
+    this.getNextPlayer = (list, current) => {
+      const idx = list.indexOf(current);
+      return list[(idx + 1) % list.length];
+    };
 
-    hit.on('pointerover', () => {
-      g.clear();
-      g.fillStyle(0x1a4764, 1);
-      g.fillRoundedRect(x, y, btnSize, btnSize, 8);
-      g.lineStyle(2, 0x9be4ff, 1);
-      g.strokeRoundedRect(x, y, btnSize, btnSize, 8);
+    // bind geometry helpers to scene
+    this.hexToPixel = hexToPixel.bind(this);
+    this.pixelToHex = pixelToHex.bind(this);
+    this.roundHex = roundHex.bind(this);
+    this.drawHex = drawHex.bind(this);
+    this.getColorForTerrain = getColorForTerrain.bind(this);
+    this.isoOffset = isoOffset.bind(this);
+
+    // Match camera background to water color
+    try {
+      const waterColor = this.getColorForTerrain('water');
+      if (waterColor != null) this.cameras.main.setBackgroundColor(waterColor);
+    } catch (_) { /* ignore */ }
+
+    // === isometry-aware axial -> world position (includes map offsets + elevation lift)
+    this.axialToWorld = (q, r) => {
+      const tile = this.mapData?.find(t => t.q === q && t.r === r);
+      const elev = (tile && tile.type !== 'water')
+        ? Math.max(0, (typeof tile?.elevation === 'number' ? tile.elevation : 0) - 1)
+        : 0;
+      const p = this.hexToPixel(q, r, this.hexSize);
+      return {
+        x: p.x + (this.mapOffsetX || 0),
+        y: p.y + (this.mapOffsetY || 0) - (LIFT_PER_LVL * elev),
+      };
+    };
+
+    this.tileMap = {};
+    this.selectedUnit = null;
+    this.selectedHex = null;
+    this.movingPath = [];
+    this.pathGraphics = this.add.graphics({ x: 0, y: 0 }).setDepth(50);
+    this.pathLabels = [];
+    this.debugGraphics = this.add.graphics({ x: 0, y: 0 }).setDepth(100);
+
+    // === HEX INSPECT glue
+    this.events.on('hex-inspect', (text) => this.hexInspect(text));
+    this.events.on('hex-inspect-extra', ({ header, lines }) => {
+      const payload = [`[HEX INSPECT] ${header}`, ...(lines || [])].join('\n');
+      this.hexInspect(payload);
     });
-    hit.on('pointerout', () => {
-      g.clear();
-      g.fillStyle(0x173b52, 1);
-      g.fillRoundedRect(x, y, btnSize, btnSize, 8);
-      g.lineStyle(2, 0x6fe3ff, 0.7);
-      g.strokeRoundedRect(x, y, btnSize, btnSize, 8);
-      g.lineStyle(1, 0x6fe3ff, 0.15);
-      g.beginPath();
-      g.moveTo(x + btnSize/2, y + 6);
-      g.lineTo(x + btnSize/2, y + btnSize - 6);
-      g.moveTo(x + 6, y + btnSize/2);
-      g.lineTo(x + btnSize - 6, y + btnSize/2);
-      g.strokePath();
+    // cleanup on shutdown
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.events.off('hex-inspect');
+    });
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.events.off('hex-inspect-extra');
     });
 
-    hit.on('pointerdown', () => {
-      onClick?.();
-    });
+    this.hexMap = new HexMap(this.mapWidth, this.mapHeight, this.seed);
+    this.mapData = this.hexMap.getMap();
+    delete this.mapData.__locationsApplied;
+    drawHexMap.call(this);
 
-    menu.add([g, t, hit]);
-  };
+    // === Top-center world meta badge (Geography & Biome)
+    const { geography, biome } =
+      (this.hexMap.worldInfo ?? this.hexMap.worldMeta) || getWorldSummaryForSeed(this.seed);
+    this.addWorldMetaBadge(geography, biome);
 
-  for (let i = 0; i < defs.length; i++) {
-    const r = Math.floor(i / 2);
-    const c = i % 2;
-    const x = startX + c * (btnSize + pad);
-    const y = startY + r * (btnSize + pad);
-    drawButton(x, y, defs[i].text, defs[i].onClick);
-  }
+    await spawnUnitsAndEnemies.call(this);
+    subscribeToGameUpdates.call(this);
+    setupCameraControls(this);
+    setupTurnUI(this);
 
-  menu.add([bg, bezel]);
-  menu.sendToBack(bg);
-  menu.sendToBack(bezel);
-  menu.active = true;
-}
+    // Expose Docks placement to the UI and allow ESC to cancel (no-op for auto version)
+    this.startDocksPlacement = () => startDocksPlacement.call(this);
+    this.input.keyboard?.on('keydown-ESC', () => cancelPlacement.call(this));
 
-function _closeAnyBuildingMenu(scene, exceptId) {
-  (scene.buildings || []).forEach(b => {
-    if (b.menu && b.id !== exceptId) _closeBuildingMenu(scene, b);
-  });
-}
-function _closeBuildingMenu(scene, building) {
-  if (building.menu) {
-    building.menu.destroy(true);
-    building.menu = null;
-  }
-}
+    // 🌀 Refresh Button (Unit sync)
+    if (this.refreshButton) {
+      this.refreshButton.removeAllListeners('pointerdown');
+      this.refreshButton.on('pointerdown', async () => {
+        const { data: lobbyData, error } = await this.supabase
+          .from('lobbies')
+          .select('state')
+          .eq('room_code', this.roomCode)
+          .single();
 
-/* ---------- Ships ---------- */
-function _buildShip(scene, building) {
-  scene.ships = scene.ships || [];
-  const pos = scene.axialToWorld(building.q, building.r);
-  const t = scene.add.text(pos.x, pos.y, '🚢', {
-    fontSize: '20px',
-    color: '#ffffff'
-  }).setOrigin(0.5).setDepth(UI.zBuilding);
+        if (error || !lobbyData?.state?.units) {
+          console.error("Failed to refresh units:", error);
+          return;
+        }
 
-  const ship = {
-    type: 'ship',
-    name: 'Ship',
-    emoji: '🚢',
-    q: building.q,
-    r: building.r,
-    docksId: building.id,
-    obj: t,
-  };
-  scene.ships.push(ship);
+        const unitData = lobbyData.state.units[this.playerName];
+        if (!unitData) return;
 
-  console.log(`[DOCKS] Built Ship at (${ship.q},${ship.r}) for docks#${building.id}`);
-}
-
-function _enterRoutePicker(scene, building) {
-  // if no ships at all for this docks, do nothing
-  const ships = (scene.ships || []).filter(s => s.docksId === building.id);
-  if (ships.length === 0) {
-    console.log(`[DOCKS] Set route: no ships for docks#${building.id} — nothing to do`);
-    return;
-  }
-
-  // WORLD OVERLAY to capture next click without moving units
-  const cam = scene.cameras.main;
-  const overlay = scene.add.rectangle(
-    cam.worldView.x + cam.worldView.width / 2,
-    cam.worldView.y + cam.worldView.height / 2,
-    cam.worldView.width,
-    cam.worldView.height,
-    0x000000, 0.001 // almost transparent, but catches input
-  )
-    .setInteractive({ useHandCursor: true })
-    .setScrollFactor(0)
-    .setDepth(UI.zOverlay);
-
-  console.log('[DOCKS] Click a hex to set route…');
-
-  const once = (pointer) => {
-    // compute hex from world coords
-    const approx = scene.pixelToHex(pointer.worldX - (scene.mapOffsetX || 0),
-                                    pointer.worldY - (scene.mapOffsetY || 0),
-                                    scene.hexSize);
-    const rounded = scene.roundHex(approx.q, approx.r);
-
-    // bounds guard (use 25x25 map default)
-    if (rounded.q < 0 || rounded.r < 0 || rounded.q >= scene.mapWidth || rounded.r >= scene.mapHeight) {
-      console.warn('[DOCKS] Route pick out of bounds — cancelled');
-      overlay.destroy();
-      return;
+        const { q, r } = unitData;
+        const { x, y } = this.axialToWorld(q, r);
+        const unit = this.players.find(p => p.name === this.playerName);
+        if (unit) {
+          unit.setPosition(x, y);
+          unit.q = q;
+          unit.r = r;
+          console.log(`[REFRESH] Unit moved to synced position: (${q}, ${r})`);
+        }
+      });
     }
 
-    // place/update "X" marker for this docks
-    _setRouteMarker(scene, building, rounded.q, rounded.r);
+    // 🖱️ Pointer Click: Move or Select (respect uiLock)
+    this.input.on("pointerdown", pointer => {
+      if (pointer.rightButtonDown()) return;
 
-    // teleport all ships of this docks to the route hex
-    (scene.ships || []).forEach(s => {
-      if (s.docksId !== building.id) return;
-      s.q = rounded.q; s.r = rounded.r;
-      const p = scene.axialToWorld(s.q, s.r);
-      s.obj.setPosition(p.x, p.y);
+      // If a modal (building menu) is open, ignore map clicks entirely
+      if (this.uiLock) return;
+
+      const { worldX, worldY } = pointer;
+      const approx = this.pixelToHex(worldX - (this.mapOffsetX || 0), worldY - (this.mapOffsetY || 0), this.hexSize);
+      const rounded = this.roundHex(approx.q, approx.r);
+
+      // guard: ignore out-of-bounds for all actions
+      if (rounded.q < 0 || rounded.r < 0 || rounded.q >= this.mapWidth || rounded.r >= this.mapHeight) {
+        return;
+      }
+
+      /* ---------- Handle building placement first (auto for Docks) ---------- */
+      if (this.placing?.type === 'docks') {
+        const key = `${rounded.q},${rounded.r}`;
+        if (this.placing.valid?.has(key)) {
+          placeDocks.call(this, rounded.q, rounded.r);
+        } else {
+          cancelPlacement.call(this);
+        }
+        return;
+      }
+      /* --------------------------------------------------------------------- */
+
+      const tile = this.mapData.find(h => h.q === rounded.q && h.r === rounded.r);
+      const playerHere = this.players.find(p => p.q === rounded.q && p.r === rounded.r);
+
+      this.selectedHex = rounded;
+      this.debugHex(rounded.q, rounded.r); // enhanced debug (bounds-safe)
+
+      if (this.selectedUnit) {
+        // Deselect if clicking the same hex
+        if (this.selectedUnit.q === rounded.q && this.selectedUnit.r === rounded.r) {
+          this.selectedUnit = null;
+          this.hideUnitPanel?.();             // hide panel on deselect
+          return;
+        }
+
+        const isBlocked = t => !t || t.type === 'water' || t.type === 'mountain';
+        const fullPath = findPath(this.selectedUnit, rounded, this.mapData, isBlocked);
+        if (fullPath && fullPath.length > 1) {
+          const movePoints = this.selectedUnit.movementPoints || 10;
+          let totalCost = 0;
+          const trimmedPath = [fullPath[0]];
+          for (let i = 1; i < fullPath.length; i++) {
+            const stepTile = this.mapData.find(h => h.q === fullPath[i].q && h.r === fullPath[i].r);
+            const cost = stepTile?.movementCost || 1;
+            totalCost += cost;
+            if (totalCost <= movePoints) trimmedPath.push(fullPath[i]); else break;
+          }
+
+          if (trimmedPath.length > 1) {
+            this.movingPath = trimmedPath.slice(1);
+            this.isUnitMoving = true;
+            this.clearPathPreview();
+            this.startStepMovement();
+          }
+        } else {
+          console.log("Path not found or blocked.");
+        }
+      } else {
+        // Nothing selected yet: click selects a unit
+        if (playerHere) {
+          this.selectedUnit = playerHere;
+          this.selectedUnit.movementPoints = 10;
+          this.showUnitPanel?.(this.selectedUnit);   // show the 4-button panel
+          console.log(`[SELECTED] Unit at (${playerHere.q}, ${playerHere.r})`);
+        } else {
+          // Clicked empty terrain → ensure the panel is hidden
+          this.selectedUnit = null;
+          this.hideUnitPanel?.();
+        }
+      }
     });
 
-    console.log(`[DOCKS] Route set for docks#${building.id} at (${rounded.q},${rounded.r}); ships teleported.`);
-    overlay.destroy();
-  };
+    // 🧭 Pointer Move: Draw Path Preview (respect uiLock)
+    this.input.on("pointermove", pointer => {
+      if (this.uiLock) return; // ignore while modal open
+      if (!this.selectedUnit || this.isUnitMoving) return;
 
-  overlay.once('pointerdown', once);
-}
+      const { worldX, worldY } = pointer;
+      const approx = this.pixelToHex(worldX - (this.mapOffsetX || 0), worldY - (this.mapOffsetY || 0), this.hexSize);
+      const rounded = this.roundHex(approx.q, approx.r);
 
-function _setRouteMarker(scene, building, q, r) {
-  // remove prior marker
-  if (building.routeMarker) {
-    building.routeMarker.destroy(true);
-    building.routeMarker = null;
+      // guard: ignore out-of-bounds previews
+      if (rounded.q < 0 || rounded.r < 0 || rounded.q >= this.mapWidth || rounded.r >= this.mapHeight) {
+        this.clearPathPreview();
+        return;
+      }
+
+      const isBlocked = t => !t || t.type === 'water' || t.type === 'mountain';
+      const path = findPath(this.selectedUnit, rounded, this.mapData, isBlocked);
+
+      this.clearPathPreview();
+      if (path && path.length > 1) {
+        let costSum = 0;
+        const maxMove = this.selectedUnit.movementPoints || 10;
+
+        for (let i = 0; i < path.length; i++) {
+          const step = path[i];
+          const stepTile = this.mapData.find(h => h.q === step.q && h.r === step.r);
+          const moveCost = stepTile?.movementCost || 1;
+
+          const { x, y } = this.axialToWorld(step.q, step.r);
+          const isStart = i === 0;
+
+          if (!isStart) costSum += moveCost;
+
+          const fillColor = isStart ? 0xeeeeee : (costSum <= maxMove ? 0x00ff00 : 0xffffff);
+          const labelColor = costSum <= maxMove ? '#ffffff' : '#000000';
+          const bgColor = costSum <= maxMove ? 0x008800 : 0xffffff;
+
+          // Draw hex background
+          this.pathGraphics.lineStyle(1, 0x000000, 0.3);
+          this.pathGraphics.fillStyle(fillColor, 0.4);
+          this.pathGraphics.beginPath();
+          this.drawHex(this.pathGraphics, x, y, this.hexSize);
+          this.pathGraphics.closePath();
+          this.pathGraphics.fillPath();
+          this.pathGraphics.strokePath();
+
+          // Draw cost circle + text
+          if (!isStart) {
+            const circle = this.add.graphics();
+            circle.fillStyle(bgColor, 1);
+            circle.fillCircle(x, y, 9);
+            circle.setDepth(50);
+            this.pathLabels.push(circle);
+
+            const label = this.add.text(x, y, `${costSum}`, {
+              fontSize: '10px',
+              color: labelColor,
+              fontStyle: 'bold'
+            }).setOrigin(0.5).setDepth(51);
+            this.pathLabels.push(label);
+          }
+        }
+      }
+    });
   }
 
-  const pos = scene.axialToWorld(q, r);
-  const container = scene.add.container(pos.x, pos.y).setDepth(UI.zBuilding);
-
-  const t = scene.add.text(0, 0, 'X', {
-    fontSize: '18px',
-    color: '#ffffff',
-    fontStyle: 'bold',
-  }).setOrigin(0.5);
-
-  const pad = 4;
-  const w = Math.max(18, t.width + pad * 2);
-  const h = Math.max(18, t.height + pad * 2);
-
-  const box = scene.add.graphics();
-  box.fillStyle(COLORS.xMarkerPlate, 0.93);
-  box.fillRoundedRect(-w / 2, -h / 2, w, h, 6);
-  box.lineStyle(2, COLORS.xMarkerStroke, 0.9);
-  box.strokeRoundedRect(-w / 2, -h / 2, w, h, 6);
-
-  container.add([box, t]);
-
-  building.routeMarker = container;
-  building.route = { q, r };
-}
-
-function _recallShips(scene, building) {
-  const ships = (scene.ships || []).filter(s => s.docksId === building.id);
-  if (ships.length === 0) {
-    console.log(`[DOCKS] Recall: no ships for docks#${building.id} — nothing to do`);
-    return;
+  // Minimal inspector that the geo-object code can call.
+  // Feel free to replace with your in-game panel later.
+  hexInspect(text) {
+    if (!text || this.uiLock) return; // lock prevents console spam while menu open
+    const lines = String(text).split('\n');
+    const title = lines.shift() || '[HEX INSPECT]';
+    console.groupCollapsed(title);
+    lines.forEach(l => console.log(l));
+    console.groupEnd();
   }
 
-  ships.forEach(s => {
-    s.q = building.q; s.r = building.r;
-    const p = scene.axialToWorld(s.q, s.r);
-    s.obj.setPosition(p.x, p.y);
-  });
+  addWorldMetaBadge(geography, biome) {
+    // Container at top center, fixed to screen
+    const cam = this.cameras.main;
+    const cx = cam.width / 2;
 
-  console.log(`[DOCKS] Ships recalled to docks#${building.id} at (${building.q},${building.r}).`);
-}
+    const container = this.add.container(cx, 18).setScrollFactor(0).setDepth(2000);
+    const text1 = this.add.text(0, 0, `🌍 Geography: ${geography}`, {
+      fontSize: '16px',
+      color: '#e8f6ff'
+    }).setOrigin(0.5, 0.5).setDepth(2001);
 
-function _destroyBuilding(scene, building) {
-  // remove visual container
-  const cont = scene.children.getByID?.(building.containerId);
-  if (cont) cont.destroy(true);
+    const text2 = this.add.text(0, 20, `🌿 Biome: ${biome}`, {
+      fontSize: '16px',
+      color: '#e8f6ff'
+    }).setOrigin(0.5, 0.5).setDepth(2001);
 
-  // remove marker and menu if any
-  if (building.routeMarker) {
-    building.routeMarker.destroy(true);
-    building.routeMarker = null;
+    // background pill
+    const w = Math.max(text1.width, text2.width) + 24;
+    const h = 44;
+    const bg = this.add.graphics().setDepth(2000);
+    bg.fillStyle(0x000000, 0.35);
+    bg.fillRoundedRect(-w/2, -10, w, h, 10);
+    bg.lineStyle(1, 0xffffff, 0.15);
+    bg.strokeRoundedRect(-w/2, -10, w, h, 10);
+
+    container.add([bg, text1, text2]);
+    this.worldMetaBadge = container;
   }
-  _closeBuildingMenu(scene, building);
 
-  // remove from array
-  scene.buildings = (scene.buildings || []).filter(b => b !== building);
+  clearPathPreview() {
+    this.pathGraphics.clear();
+    this.pathLabels.forEach(label => label.destroy());
+    this.pathLabels = [];
+  }
 
-  console.log(`[BUILD] Docks at (${building.q},${building.r}) destroyed.`);
-}
+  // --- CLICK DEBUG: neighbor levels; bounds-safe and includes buildings ---
+  debugHex(q, r) {
+    // ignore while modal open
+    if (this.uiLock) return;
 
-/* =========================
-   Finder / geometry helpers
-   ========================= */
+    // ignore out-of-bounds requests
+    if (q < 0 || r < 0 || q >= this.mapWidth || r >= this.mapHeight) return;
 
-function _tileAt(scene, q, r) {
-  return scene.mapData?.find?.(t => t.q === q && t.r === r);
-}
-function _isWater(scene, q, r) {
-  const t = _tileAt(scene, q, r);
-  return !!t && t.type === 'water';
-}
-function _neighbors(q, r) {
-  return AXIAL_DIRS.map(d => ({ q: q + d.dq, r: r + d.dr }));
-}
-function _ring(q, r, radius) {
-  if (radius <= 0) return [{ q, r }];
-  const results = [];
-  let cq = q + AXIAL_DIRS[4].dq * radius;
-  let cr = r + AXIAL_DIRS[4].dr * radius;
-  for (let side = 0; side < 6; side++) {
-    for (let step = 0; step < radius; step++) {
-      results.push({ q: cq, r: cr });
-      cq += AXIAL_DIRS[side].dq;
-      cr += AXIAL_DIRS[side].dr;
+    const center = this.axialToWorld(q, r);
+    this.debugGraphics.clear();
+    this.debugGraphics.lineStyle(2, 0xff00ff, 1);
+    this.drawHex(this.debugGraphics, center.x, center.y, this.hexSize);
+
+    const tile = this.mapData.find(h => h.q === q && h.r === r);
+    const playerHere = this.players.find(p => p.q === q && p.r === r);
+    const enemiesHere = this.enemies.filter(e => e.q === q && e.r === r);
+
+    const objects = [];
+    if (tile?.hasForest) objects.push("Forest");
+    if (tile?.hasRuin) objects.push("Ruin");
+    if (tile?.hasCrashSite) objects.push("Crash Site");
+    if (tile?.hasVehicle) objects.push("Vehicle");
+    if (tile?.hasRoad) objects.push("Road");
+
+    // include buildings
+    const buildingsHere = (this.buildings || []).filter(b => b.q === q && b.r === r);
+    if (buildingsHere.length) {
+      buildingsHere.forEach(b => objects.push(`Building: ${b.name}`));
+    }
+
+    console.log(`[HEX INSPECT] (${q}, ${r})`);
+    console.log(`• Terrain: ${tile?.type}`);
+    console.log(`• Level (elevation): ${tile?.elevation ?? 'N/A'}`);
+    console.log(`• Player Unit: ${playerHere ? "Yes" : "No"}`);
+    console.log(`• Enemy Units: ${enemiesHere.length}`);
+    console.log(`• Objects: ${objects.join(", ") || "None"}`);
+
+    const isOdd = (r & 1) === 1;
+
+    // even row deltas
+    const evenNE = [0, -1], evenE = [+1, 0], evenSE = [0, +1];
+    const evenSW = [-1, +1], evenW = [-1, 0], evenNW = [-1, -1];
+
+    // odd row deltas
+    const oddNE = [+1, -1], oddE = [+1, 0], oddSE = [+1, +1];
+    const oddSW = [0, +1], oddW = [-1, 0], oddNW = [0, -1];
+
+    const deltas = isOdd
+      ? [oddNE, oddE, oddSE, oddSW, oddW, oddNW]
+      : [evenNE, evenE, evenSE, evenSW, evenW, evenNW];
+
+    for (let side = 0; side < 6; side++) {
+      const [dq, dr] = deltas[side];
+      const nq = q + dq, nr = r + dr;
+      if (nq < 0 || nr < 0 || nq >= this.mapWidth || nr >= this.mapHeight) {
+        console.log(`Side ${side} - adjacent to hex level N/A (off map)`);
+        continue;
+      }
+      const nTile = this.mapData.find(h => h.q === nq && h.r === nr);
+      if (!nTile) {
+        console.log(`Side ${side} - adjacent to hex level N/A (off map)`);
+      } else {
+        const lvl = (typeof nTile.elevation === 'number') ? nTile.elevation : 'N/A';
+        console.log(`Side ${side} - adjacent to hex level ${lvl} (terrain ${nTile.type})`);
+      }
     }
   }
-  return results;
-}
-function _nearestWaterWithin(scene, uq, ur, radius = 3) {
-  for (let rr = 1; rr <= radius; rr++) {
-    const ring = _ring(uq, ur, rr).filter(({ q, r }) => _isWater(scene, q, r));
-    const valid = ring.filter(({ q, r }) => BUILDINGS.docks.validateTile(scene, q, r));
-    if (valid.length > 0) return valid[0];
-  }
-  return null;
-}
 
-const AXIAL_DIRS = [
-  { dq: +1, dr: 0 }, { dq: +1, dr: -1 }, { dq: 0, dr: -1 },
-  { dq: -1, dr: 0 }, { dq: -1, dr: +1 }, { dq: 0, dr: +1 },
-];
+  startStepMovement() {
+    if (!this.selectedUnit || !this.movingPath || this.movingPath.length === 0) return;
 
-function _getRandom(arr, scene) {
-  if (scene?.game?.renderer && Phaser?.Utils?.Array?.GetRandom) {
-    return Phaser.Utils.Array.GetRandom(arr);
+    const unit = this.selectedUnit;
+    const step = this.movingPath.shift();
+    const { x, y } = this.axialToWorld(step.q, step.r);
+
+    this.tweens.add({
+      targets: unit,
+      x, y,
+      duration: 200,
+      onComplete: () => {
+        unit.q = step.q;
+        unit.r = step.r;
+        this.clearPathPreview();
+
+        if (this.movingPath.length > 0) {
+          this.startStepMovement();
+        } else {
+          this.syncPlayerMove(unit);
+          this.isUnitMoving = false;
+          this.checkCombat();
+        }
+      }
+    });
   }
-  return arr[Math.floor(Math.random() * arr.length)];
+
+  checkCombat() {
+    console.log("[Combat] not implemented yet.");
+  }
+
+  endTurn() {
+    if (this.playerName !== this.lobbyState.currentTurn) return;
+
+    // NEW: apply ship routes (teleport ships to their 'X' route)
+    applyShipRoutesOnEndTurn(this);
+
+    this.selectedUnit = null;
+    this.hideUnitPanel?.();  // hide the panel when the turn ends
+    if (this.selectedHexGraphic) {
+      this.selectedHexGraphic.destroy();
+      this.selectedHexGraphic = null;
+    }
+    if (this.turnText) {
+      this.turnText.setText("Player Turn: ...");
+    }
+    if (this.isHost) this.moveEnemies();
+  }
+
+  moveEnemies() {
+    const dirs = [
+      { dq: +1, dr: 0 }, { dq: -1, dr: 0 },
+      { dq: 0, dr: +1 }, { dq: 0, dr: -1 },
+      { dq: +1, dr: -1 }, { dq: -1, dr: +1 }
+    ];
+
+    this.enemies.forEach(enemy => {
+      Phaser.Utils.Array.Shuffle(dirs);
+      for (const d of dirs) {
+        const nq = enemy.q + d.dq, nr = enemy.r + d.dr;
+        const tile = this.mapData.find(h => h.q === nq && h.r === nr);
+        if (tile && !['water', 'mountain'].includes(tile.type)) {
+          const { x, y } = this.axialToWorld(nq, nr);
+          enemy.setPosition(x, y);
+          enemy.q = nq;
+          enemy.r = nr;
+          break;
+        }
+      }
+    });
+
+    this.syncEnemies();
+  }
 }
