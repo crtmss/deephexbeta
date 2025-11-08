@@ -1,9 +1,9 @@
 // deephexbeta/src/scenes/WorldSceneBuildings.js
 
 /* =========================================================================
-   All building logic lives here: constants, placement, drawing, creation.
-   Current building implemented: "docks" (emoji 🚢) — water only, radius 1
-   from the selected mobile base.
+   All building logic lives here: constants, creation, and helpers.
+   CURRENT: "docks" (emoji 🚢) — spawns on a random WATER hex within radius 1
+   of the selected mobile base when the Docks button is pressed.
    ======================================================================= */
 
 /* ---------- Visual style (match game UI) ---------- */
@@ -11,149 +11,100 @@ const COLORS = {
   glow: 0x6fe3ff,
   plate: 0x0f2233,
   stroke: 0x3da9fc,
-  hexFill: 0x6fe3ff,
   labelText: '#e8f6ff',
 };
 
 const UI = {
-  hexAlpha: 0.10,
-  hexStrokeAlpha: 0.85,
   labelFontSize: 16,
   boxRadius: 8,
   boxStrokeAlpha: 0.9,
-  zHighlight: 1200,
   zBuilding: 900,
 };
 
-/* ---------- Building registry ---------- */
+/* ---------- Building registry (extend here later) ---------- */
 export const BUILDINGS = {
   docks: {
-    key: 'Docks',
+    key: 'docks',
     name: 'Docks',
-    emoji: '⚓',    // :ship:
-    // validation: water tile, within radius 1 of selected mobile_base
+    emoji: '🚢', // :ship:
     validateTile(scene, q, r) {
+      // Must be water
       const tile = _tileAt(scene, q, r);
       if (!tile || tile.type !== 'water') return false;
+
+      // Must be within radius 1 of the selected mobile base
       const base = scene.selectedUnit;
-      if (!base || base.type !== 'mobile_base') return false;
+      if (!base) return false;
+
+      // Try to robustly detect "mobile base" role in current project data
+      const isMobileBase =
+        base.type === 'mobile_base' ||
+        base.role === 'mobile_base' ||
+        base.isBase === true ||
+        /base/i.test(base.name || '');
+
+      if (!isMobileBase) return false;
+
       return _axialDistance(base.q, base.r, q, r) === 1;
     },
   },
-
-  // Placeholders for future buildings (extend later):
-  // shipyard: { key: 'shipyard', name: 'Ship', emoji: '🚢', validateTile: (...) => true },
-  // bridge:   { key: 'bridge',   name: 'Bridge',   emoji: '🌉', validateTile: (...) => true },
 };
 
-/* ---------- Public API ---------- */
+/* =========================
+   Public API
+   ========================= */
 
-/** Start placement mode for Docks. Called as startDocksPlacement.call(scene) */
+/**
+ * Pressing the UI "Docks" button calls this (bound as .call(scene)).
+ * It finds all valid water neighbors (radius 1) around the selected base,
+ * picks one at random, and places a 🚢 Docks building there.
+ */
 export function startDocksPlacement() {
   const scene = /** @type {Phaser.Scene & any} */ (this);
-  if (!scene.selectedUnit) return;
-  if (scene.selectedUnit.type !== 'mobile_base') return; // restrict to mobile base for now
+  if (!scene.selectedUnit) {
+    console.warn('[Docks] No unit selected.');
+    return;
+  }
 
-  _enterPlacement(scene, BUILDINGS.docks);
+  // Compute valid tiles (radius 1, water, adjacent to base)
+  const valid = _computeValidTiles(scene, BUILDINGS.docks);
+  if (valid.length === 0) {
+    console.warn('[Docks] No valid water hex adjacent to the base.');
+    return;
+  }
+
+  // Pick a random tile
+  const pick = _getRandom(valid, scene);
+  _placeBuilding(scene, BUILDINGS.docks, pick.q, pick.r);
 }
 
-/** Cancel any ongoing placement, clearing highlights. */
+/** Provided for completeness; not used by the auto-place flow. */
 export function cancelPlacement() {
-  const scene = /** @type {Phaser.Scene & any} */ (this);
-  _clearHighlight(scene);
-  scene.placing = null;
+  // No-op for auto-place version (kept to match imports).
 }
 
-/** Place Docks at q,r (only if valid). Called via placeDocks.call(scene, q, r) */
+/** Provided for completeness; not used directly by UI (auto uses startDocksPlacement). */
 export function placeDocks(q, r) {
   const scene = /** @type {Phaser.Scene & any} */ (this);
   _placeBuilding(scene, BUILDINGS.docks, q, r);
 }
 
-/* ---------- Internal helpers ---------- */
+/* =========================
+   Internal helpers
+   ========================= */
 
-function _enterPlacement(scene, buildingDef) {
-  // Compute valid set for preview/highlight
-  const valid = _computeValidTiles(scene, buildingDef);
-  if (valid.size === 0) {
-    // nothing placeable; you can show a small toast here if you want
+function _placeBuilding(scene, buildingDef, q, r) {
+  // Validate before placing to keep it robust
+  if (!buildingDef.validateTile(scene, q, r)) {
+    console.warn(`[${buildingDef.name}] Invalid placement at (${q},${r}).`);
     return;
   }
 
-  // Draw highlight
-  _drawHighlight(scene, valid);
-
-  // Hide actions panel while placing (optional)
-  scene.hideUnitPanel?.();
-
-  // Set placement mode
-  scene.placing = {
-    type: buildingDef.key,
-    def: buildingDef,
-    valid, // Set<string> of "q,r"
-  };
-}
-
-function _computeValidTiles(scene, buildingDef) {
-  const valid = new Set();
-
-  // We only need radius 1 around the selected mobile base (for docks)
-  const base = scene.selectedUnit;
-  if (!base) return valid;
-
-  for (const dir of AXIAL_DIRS) {
-    const q = base.q + dir.dq;
-    const r = base.r + dir.dr;
-    if (buildingDef.validateTile(scene, q, r)) {
-      valid.add(keyOf(q, r));
-    }
-  }
-
-  // also ensure no existing building already on that tile
-  if (Array.isArray(scene.buildings)) {
-    [...valid].forEach(k => {
-      const [qStr, rStr] = k.split(',');
-      const q = +qStr, r = +rStr;
-      const already = scene.buildings.some(b => b.q === q && b.r === r);
-      if (already) valid.delete(k);
-    });
-  }
-
-  return valid;
-}
-
-function _drawHighlight(scene, valid) {
-  _clearHighlight(scene);
-  const g = scene.add.graphics().setDepth(UI.zHighlight);
-  g.lineStyle(3, COLORS.glow, UI.hexStrokeAlpha);
-  g.fillStyle(COLORS.hexFill, UI.hexAlpha);
-
-  valid.forEach(k => {
-    const [qStr, rStr] = k.split(',');
-    const q = +qStr, r = +rStr;
-    const { x, y } = scene.axialToWorld(q, r);
-    g.beginPath();
-    scene.drawHex(g, x, y, scene.hexSize);
-    g.closePath();
-    g.strokePath();
-    g.fillPath();
-  });
-
-  scene.buildHighlight = g;
-}
-
-function _clearHighlight(scene) {
-  if (scene.buildHighlight) {
-    scene.buildHighlight.destroy();
-    scene.buildHighlight = null;
-  }
-}
-
-function _placeBuilding(scene, buildingDef, q, r) {
-  // Validate before placing
-  if (!buildingDef.validateTile(scene, q, r)) {
-    // invalid click during placement => just cancel
-    cancelPlacement.call(scene);
+  // Prevent duplicate building on same hex
+  scene.buildings = scene.buildings || [];
+  const already = scene.buildings.some(b => b.q === q && b.r === r);
+  if (already) {
+    console.warn(`[${buildingDef.name}] A building already exists at (${q},${r}).`);
     return;
   }
 
@@ -161,7 +112,7 @@ function _placeBuilding(scene, buildingDef, q, r) {
   const pos = scene.axialToWorld(q, r);
   const container = scene.add.container(pos.x, pos.y).setDepth(UI.zBuilding);
 
-  // Label first so we can measure
+  // Label first so we can size the textbox
   const label = scene.add.text(0, 0, `${buildingDef.emoji}  ${buildingDef.name}`, {
     fontSize: `${UI.labelFontSize}px`,
     color: COLORS.labelText,
@@ -177,39 +128,74 @@ function _placeBuilding(scene, buildingDef, q, r) {
   box.lineStyle(2, COLORS.stroke, UI.boxStrokeAlpha);
   box.strokeRoundedRect(-w / 2, -h / 2, w, h, UI.boxRadius);
 
-  // Order: box behind, label over
   container.add([box, label]);
 
-  // Persist in scene state (lightweight local list for now)
-  scene.buildings = scene.buildings || [];
+  // Persist in scene state
   scene.buildings.push({
     type: buildingDef.key,
-    q, r,
-    containerId: container.id,
     name: buildingDef.name,
     emoji: buildingDef.emoji,
+    q, r,
+    containerId: container.id,
   });
-
-  // Clean up placement visuals and mode
-  cancelPlacement.call(scene);
 }
 
-/* ---------- Utility ---------- */
+/**
+ * Compute all valid tiles for a building around the selected unit.
+ * For Docks: radius-1 neighbors that are water and pass validation.
+ * Returns an array of {q, r}.
+ */
+function _computeValidTiles(scene, buildingDef) {
+  const out = [];
+  const base = scene.selectedUnit;
+  if (!base) return out;
+
+  for (const dir of AXIAL_DIRS) {
+    const q = base.q + dir.dq;
+    const r = base.r + dir.dr;
+
+    // Ensure inside map
+    const tile = _tileAt(scene, q, r);
+    if (!tile) continue;
+
+    // No duplicate building on that tile
+    const occupied = Array.isArray(scene.buildings)
+      ? scene.buildings.some(b => b.q === q && b.r === r)
+      : false;
+    if (occupied) continue;
+
+    if (buildingDef.validateTile(scene, q, r)) {
+      out.push({ q, r });
+    }
+  }
+
+  return out;
+}
+
+function _tileAt(scene, q, r) {
+  return scene.mapData?.find?.(t => t.q === q && t.r === r);
+}
+
+// axial distance (cube) in hex grids
+function _axialDistance(q1, r1, q2, r2) {
+  const x1 = q1, z1 = r1, y1 = -x1 - z1;
+  const x2 = q2, z2 = r2, y2 = -x2 - z2;
+  return Math.max(
+    Math.abs(x1 - x2),
+    Math.abs(y1 - y2),
+    Math.abs(z1 - z2)
+  );
+}
 
 const AXIAL_DIRS = [
   { dq: +1, dr: 0 }, { dq: +1, dr: -1 }, { dq: 0, dr: -1 },
   { dq: -1, dr: 0 }, { dq: -1, dr: +1 }, { dq: 0, dr: +1 },
 ];
 
-function keyOf(q, r) { return `${q},${r}`; }
-
-function _tileAt(scene, q, r) {
-  return scene.mapData?.find?.(t => t.q === q && t.r === r);
-}
-
-// axial distance in hex grids
-function _axialDistance(q1, r1, q2, r2) {
-  const x1 = q1, z1 = r1, y1 = -x1 - z1;
-  const x2 = q2, z2 = r2, y2 = -x2 - z2;
-  return Math.max(Math.abs(x1 - x2), Math.abs(y1 - y2), Math.abs(z1 - z2));
+function _getRandom(arr, scene) {
+  if (scene?.game?.renderer && Phaser?.Utils?.Array?.GetRandom) {
+    return Phaser.Utils.Array.GetRandom(arr);
+  }
+  const i = Math.floor(Math.random() * arr.length);
+  return arr[i];
 }
