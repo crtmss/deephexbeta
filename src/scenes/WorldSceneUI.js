@@ -2,6 +2,15 @@
 
 import { refreshUnits } from './WorldSceneActions.js';
 
+/* ---------------- safe click sfx (prevents missing-audio crash) ---------------- */
+const CLICK_SFX_KEY = 'ui-click';
+function tryPlayClick(scene) {
+  const cache = scene.cache?.audio;
+  if (cache?.exists?.(CLICK_SFX_KEY)) {
+    scene.sound.play(CLICK_SFX_KEY, { volume: 0.3 });
+  }
+}
+
 /* ---------------- Camera controls (unchanged) ---------------- */
 export function setupCameraControls(scene) {
   scene.input.setDefaultCursor('grab');
@@ -114,22 +123,78 @@ function createUnitActionPanel(scene) {
   const pad = 8;
   const startX = 12;
   const startY = 12;
-  const labels = ['Docks', 'B', 'C', 'D']; // placeholder
+
+  const buttons = [
+    { label: 'Docks', onClick: () => {
+        tryPlayClick(scene);
+        console.log('[UI] Docks clicked — attempting to auto-place');
+        scene.startDocksPlacement?.();
+      }
+    },
+    { label: 'B', onClick: () => {
+        tryPlayClick(scene);
+        console.log('[UI] Button B (placeholder)');
+      }
+    },
+    { label: 'C', onClick: () => {
+        tryPlayClick(scene);
+        console.log('[UI] Button C (placeholder)');
+      }
+    },
+    { label: 'D', onClick: () => {
+        tryPlayClick(scene);
+        console.log('[UI] Button D (placeholder)');
+      }
+    },
+  ];
 
   const btns = [];
-  for (let r = 0; r < 2; r++) {
-    for (let c = 0; c < 2; c++) {
-      const x = startX + c * (btnSize + pad);
-      const y = startY + r * (btnSize + pad);
+  for (let i = 0; i < 4; i++) {
+    const r = Math.floor(i / 2);
+    const c = i % 2;
+    const x = startX + c * (btnSize + pad);
+    const y = startY + r * (btnSize + pad);
+    const def = buttons[i];
 
-      const g = scene.add.graphics();
-      // button body
+    const g = scene.add.graphics();
+    // button body
+    g.fillStyle(0x173b52, 1);
+    g.fillRoundedRect(x, y, btnSize, btnSize, 8);
+    // subtle border glow
+    g.lineStyle(2, 0x6fe3ff, 0.7);
+    g.strokeRoundedRect(x, y, btnSize, btnSize, 8);
+    // crosshair lines
+    g.lineStyle(1, 0x6fe3ff, 0.15);
+    g.beginPath();
+    g.moveTo(x + btnSize/2, y + 6);
+    g.lineTo(x + btnSize/2, y + btnSize - 6);
+    g.moveTo(x + 6, y + btnSize/2);
+    g.lineTo(x + btnSize - 6, y + btnSize/2);
+    g.strokePath();
+
+    const label = scene.add.text(x + btnSize/2, y + btnSize/2, def.label, {
+      fontSize: '18px',
+      color: '#e8f6ff'
+    }).setOrigin(0.5).setDepth(1);
+
+    // hit-area for clicks / hover
+    const hit = scene.add.rectangle(x, y, btnSize, btnSize, 0x000000, 0)
+      .setOrigin(0,0)
+      .setInteractive({ useHandCursor: true });
+
+    hit.on('pointerover', () => {
+      g.clear();
+      g.fillStyle(0x1a4764, 1);
+      g.fillRoundedRect(x, y, btnSize, btnSize, 8);
+      g.lineStyle(2, 0x9be4ff, 1);
+      g.strokeRoundedRect(x, y, btnSize, btnSize, 8);
+    });
+    hit.on('pointerout', () => {
+      g.clear();
       g.fillStyle(0x173b52, 1);
       g.fillRoundedRect(x, y, btnSize, btnSize, 8);
-      // subtle border glow
       g.lineStyle(2, 0x6fe3ff, 0.7);
       g.strokeRoundedRect(x, y, btnSize, btnSize, 8);
-      // crosshair lines
       g.lineStyle(1, 0x6fe3ff, 0.15);
       g.beginPath();
       g.moveTo(x + btnSize/2, y + 6);
@@ -137,47 +202,12 @@ function createUnitActionPanel(scene) {
       g.moveTo(x + 6, y + btnSize/2);
       g.lineTo(x + btnSize - 6, y + btnSize/2);
       g.strokePath();
+    });
 
-      const label = scene.add.text(x + btnSize/2, y + btnSize/2, labels[r*2 + c], {
-        fontSize: '18px',
-        color: '#e8f6ff'
-      }).setOrigin(0.5).setDepth(1);
+    hit.on('pointerdown', def.onClick);
 
-      // hit-area for clicks / hover
-      const hit = scene.add.rectangle(x, y, btnSize, btnSize, 0x000000, 0)
-        .setOrigin(0,0)
-        .setInteractive({ useHandCursor: true });
-
-      hit.on('pointerover', () => {
-        g.clear();
-        g.fillStyle(0x1a4764, 1);
-        g.fillRoundedRect(x, y, btnSize, btnSize, 8);
-        g.lineStyle(2, 0x9be4ff, 1);
-        g.strokeRoundedRect(x, y, btnSize, btnSize, 8);
-      });
-      hit.on('pointerout', () => {
-        g.clear();
-        g.fillStyle(0x173b52, 1);
-        g.fillRoundedRect(x, y, btnSize, btnSize, 8);
-        g.lineStyle(2, 0x6fe3ff, 0.7);
-        g.strokeRoundedRect(x, y, btnSize, btnSize, 8);
-        g.lineStyle(1, 0x6fe3ff, 0.15);
-        g.beginPath();
-        g.moveTo(x + btnSize/2, y + 6);
-        g.lineTo(x + btnSize/2, y + btnSize - 6);
-        g.moveTo(x + 6, y + btnSize/2);
-        g.lineTo(x + btnSize - 6, y + btnSize/2);
-        g.strokePath();
-      });
-
-      // placeholder click handlers (no-op for now)
-      hit.on('pointerdown', () => {
-        scene.sound?.play?.('ui-click', { volume: 0.3 });
-      });
-
-      btns.push({ g, hit, label });
-      panel.add([g, label, hit]);
-    }
+    btns.push({ g, hit, label });
+    panel.add([g, label, hit]);
   }
 
   panel.add([bg, bezel]);
