@@ -558,5 +558,4 @@ export {
   startDocksPlacement,
   cancelPlacement,
   placeDocks,
-  applyShipRoutesOnEndTurn
 };
