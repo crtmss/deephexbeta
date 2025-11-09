@@ -1,21 +1,17 @@
 // deephexbeta/src/scenes/WorldSceneBuildings.js
 
 /* =========================================================================
-   Buildings & Support Units (Docks + Ships + Haulers)
+   Buildings, Ships, Haulers + Resources
    -------------------------------------------------------------------------
-   - Docks: dual-hex building (water + adjacent land)
-       * Water side hosts ships, land side is used by haulers.
-       * Storage up to 10 🍖 (food). Displayed next to land tile.
-   - Ship (🚢): water-only, 8 MP/turn; modes:
-       * toTarget → harvesting (2 turns on fish, +1 🍖 per turn, max cargo 2)
-         → returning → deposit → loop. MPs regen each End Turn.
-   - Hauler (🚚): land-only, 8 MP/turn; modes:
-       * toDocks → pickup (≤5) → returningToBase → deposit → loop.
-       * **Mobile Base target is resolved dynamically each turn** (not spawn pos).
-   - UI:
-       * Building menu (Build a ship, Set route, Recall ships, Destroy)
-       * Route picker only allows reachable water hexes. Adds an “X” marker.
-       * While building menu is open, scene.uiLock = 'buildingMenu'
+   - Resource system (scene.playerResources): { food, scrap, money, influence }
+     * Initialized on first use to { 20, 20, 100, 0 } if missing
+     * scene.updateResourceUI() is called after changes, if available
+   - Costs:
+     * Docks: 🛠 20 + 💰 50
+     * Ship:  🍖 10
+     * Hauler:🍖 10
+   - Hauler deliveries add FOOD to playerResources (and update bar)
+   - Docks store up to 10 🍖; hauler picks up ≤5 from docks storage
    ======================================================================= */
 
 const COLORS = {
@@ -43,38 +39,29 @@ const DOCKS_STORAGE_CAP = 10;
 const SHIP_CARGO_CAP = 2;
 const HAULER_CARGO_CAP = 5;
 
-export const BUILDINGS = {
-  docks: {
-    key: 'docks',
-    name: 'Docks',
-    emojiWater: '🚢',
-    emojiLand: '⚓',
-    validateTile(scene, q, r) {
-      const t = _tileAt(scene, q, r);
-      if (!t || !_isWater(scene, q, r)) return false;
-      const landAdj = _offsetNeighbors(q, r).some(h => _isLand(scene, h.q, h.r));
-      if (!landAdj) return false;
-      if ((scene.buildings || []).some(b => b.type === 'docks' && b.q === q && b.r === r)) return false;
-      return true;
-    },
-  },
-};
-
 /* =========================
-   PUBLIC API (exports)
+   PUBLIC API
    ========================= */
-
 export function startDocksPlacement() {
   const scene = /** @type {Phaser.Scene & any} */ (this);
-  if (!scene.selectedUnit) {
-    console.warn('[BUILD] Docks: no unit selected.');
+  _ensureResourceInit(scene);
+
+  // resource cost check
+  if (!_canAfford(scene, { scrap: 20, money: 50 })) {
+    console.warn('[BUILD] Not enough resources for Docks (need 🛠20 + 💰50).');
     return;
   }
+
   const count = (scene.buildings || []).filter(b => b.type === 'docks').length;
   if (count >= 2) {
     console.warn('[BUILD] Docks: limit reached (2). New docks will not spawn.');
     return;
   }
+  if (!scene.selectedUnit) {
+    console.warn('[BUILD] Docks: no unit selected.');
+    return;
+  }
+
   const u = scene.selectedUnit;
 
   // Prefer ring-1 water around the unit
@@ -82,42 +69,53 @@ export function startDocksPlacement() {
     .filter(({ q, r }) => _isWater(scene, q, r))
     .filter(({ q, r }) => BUILDINGS.docks.validateTile(scene, q, r));
 
-  if (ring1.length) {
-    const pick = _getRandom(ring1, scene);
-    _placeDocks(scene, pick.q, pick.r, 'ring-1 water');
-    return;
-  }
+  let pick = null;
+  if (ring1.length) pick = _getRandom(ring1, scene);
 
   // Else coastal water near the unit
-  const coastal = _computeCoastalWater(scene, u.q, u.r)
-    .filter(({ q, r }) => BUILDINGS.docks.validateTile(scene, q, r));
-
-  if (coastal.length) {
-    const pick = _getRandom(coastal, scene);
-    _placeDocks(scene, pick.q, pick.r, 'coastal water');
-    return;
+  if (!pick) {
+    const coastal = _computeCoastalWater(scene, u.q, u.r)
+      .filter(({ q, r }) => BUILDINGS.docks.validateTile(scene, q, r));
+    if (coastal.length) pick = _getRandom(coastal, scene);
   }
 
   // Else nearest within radius 3
-  const nearest = _nearestWaterWithin(scene, u.q, u.r, 3);
-  if (nearest && BUILDINGS.docks.validateTile(scene, nearest.q, nearest.r)) {
-    _placeDocks(scene, nearest.q, nearest.r, 'fallback radius≤3');
+  if (!pick) {
+    const nearest = _nearestWaterWithin(scene, u.q, u.r, 3);
+    if (nearest && BUILDINGS.docks.validateTile(scene, nearest.q, nearest.r)) pick = nearest;
+  }
+
+  if (!pick) {
+    console.warn('[BUILD] Docks: no nearby valid water found.');
     return;
   }
 
-  console.warn('[BUILD] Docks: no nearby water with adjacent land found.');
+  // spend resources, then place
+  if (!_spend(scene, { scrap: 20, money: 50 })) {
+    console.warn('[BUILD] Failed to spend resources for Docks.');
+    return;
+  }
+  _placeDocks(scene, pick.q, pick.r, 'spawned from mobile base');
 }
 
-export function cancelPlacement() {
-  // placeholder for future modal flows
-}
+export function cancelPlacement() {/* reserved for future */}
 
 export function placeDocks(q, r) {
   const scene = /** @type {Phaser.Scene & any} */ (this);
+  _ensureResourceInit(scene);
+
+  if (!_canAfford(scene, { scrap: 20, money: 50 })) {
+    console.warn('[BUILD] Not enough resources for Docks (need 🛠20 + 💰50).');
+    return;
+  }
+  if (!_spend(scene, { scrap: 20, money: 50 })) return;
+
   _placeDocks(scene, q, r, 'direct place');
 }
 
 export function applyShipRoutesOnEndTurn(scene) {
+  _ensureResourceInit(scene);
+
   const buildings = scene.buildings || [];
   const ships = scene.ships || [];
   if (ships.length === 0) return;
@@ -216,6 +214,14 @@ export function applyShipRoutesOnEndTurn(scene) {
 
 export function buildHaulerAtSelectedUnit() {
   const scene = /** @type {Phaser.Scene & any} */ (this);
+  _ensureResourceInit(scene);
+
+  // cost: 10 food
+  if (!_spend(scene, { food: 10 })) {
+    console.warn('[HAULER] Not enough 🍖 (need 10).');
+    return;
+  }
+
   const u = scene.selectedUnit;
   if (!u) { console.warn('[HAULER] No selected unit (mobile base) to build from.'); return; }
 
@@ -239,7 +245,6 @@ export function buildHaulerAtSelectedUnit() {
     cargoFood: 0,
     cargoObj: null,
     mode: 'idle',             // 'idle' | 'toDocks' | 'returningToBase'
-    // Live reference to Mobile Base (so it follows base, not spawn tile)
     baseRef: u,
     baseQ: u.q,
     baseR: u.r,
@@ -265,9 +270,9 @@ export function buildHaulerAtSelectedUnit() {
 
 export function enterHaulerRoutePicker() {
   const scene = /** @type {Phaser.Scene & any} */ (this);
-
-  let targetHauler = null;
   const sel = scene.selectedUnit;
+  let targetHauler = null;
+
   if (sel && sel.type === 'hauler') targetHauler = sel;
   else targetHauler = (scene.haulers || [])[0] || null;
 
@@ -325,10 +330,10 @@ export function enterHaulerRoutePicker() {
 }
 
 export function applyHaulerBehaviorOnEndTurn(scene) {
+  _ensureResourceInit(scene);
+
   const haulers = scene.haulers || [];
   if (haulers.length === 0) return;
-
-  if (typeof scene.mobileBaseStorageFood !== 'number') scene.mobileBaseStorageFood = 0;
 
   let movedAny = false;
 
@@ -374,7 +379,8 @@ export function applyHaulerBehaviorOnEndTurn(scene) {
         h.mode = 'returningToBase';
       } else if (h.mode === 'returningToBase') {
         if (h.cargoFood > 0) {
-          scene.mobileBaseStorageFood += h.cargoFood;
+          // DEPOSIT to player's resource pool
+          _gain(scene, { food: h.cargoFood });
           h.cargoFood = 0;
           _updateCargoLabel(scene, h);
         }
@@ -390,7 +396,6 @@ export function applyHaulerBehaviorOnEndTurn(scene) {
     const path = _landPath(scene, h.q, h.r, targetQ, targetR);
     if (!path || path.length <= 1) continue;
 
-    // NEW: cyan trace for hauler land path (mirrors ships)
     _debugDrawLandPath(scene, path);
 
     const steps = Math.min(h.movePoints, path.length - 1);
@@ -413,9 +418,28 @@ export function applyHaulerBehaviorOnEndTurn(scene) {
 }
 
 /* =========================
+   Buildings registry
+   ========================= */
+export const BUILDINGS = {
+  docks: {
+    key: 'docks',
+    name: 'Docks',
+    emojiWater: '🚢',
+    emojiLand: '⚓',
+    validateTile(scene, q, r) {
+      const t = _tileAt(scene, q, r);
+      if (!t || !_isWater(scene, q, r)) return false;
+      const landAdj = _offsetNeighbors(q, r).some(h => _isLand(scene, h.q, h.r));
+      if (!landAdj) return false;
+      if ((scene.buildings || []).some(b => b.type === 'docks' && b.q === q && b.r === r)) return false;
+      return true;
+    },
+  },
+};
+
+/* =========================
    Docks placement & menu (dual-hex)
    ========================= */
-
 function _placeDocks(scene, q, r, reason = '') {
   const docksCount = (scene.buildings || []).filter(b => b.type === 'docks').length;
   if (docksCount >= 2) {
@@ -604,6 +628,12 @@ function _openBuildingMenu(scene, building) {
     menu.add([g, t, hit]);
   };
 
+  const defs = [
+    { text: 'Build a ship', onClick: () => _buildShip(scene, building) },
+    { text: 'Set route',    onClick: () => _enterRoutePicker(scene, building) },
+    { text: 'Recall ships', onClick: () => _recallShips(scene, building) },
+    { text: 'Destroy',      onClick: () => _destroyBuilding(scene, building) },
+  ];
   for (let i = 0; i < defs.length; i++) {
     const r = Math.floor(i / 2);
     const c = i % 2;
@@ -631,8 +661,14 @@ function _closeBuildingMenu(scene, building) {
 /* =========================
    Ships
    ========================= */
-
 function _buildShip(scene, building) {
+  _ensureResourceInit(scene);
+  // cost: 10 food
+  if (!_spend(scene, { food: 10 })) {
+    console.warn('[SHIP] Not enough 🍖 (need 10).');
+    return;
+  }
+
   scene.ships = scene.ships || [];
   const pos = scene.axialToWorld(building.q, building.r);
   const t = scene.add.text(pos.x, pos.y, '🚢', {
@@ -654,7 +690,7 @@ function _buildShip(scene, building) {
     cargoObj: null,
     mode: 'toTarget',           // 'toTarget' | 'harvesting' | 'returning'
     harvestTurnsRemaining: 0,
-    harvestAt: null,            // memorizes harvest point for route changes
+    harvestAt: null,
   };
   scene.ships.push(ship);
 
@@ -662,6 +698,9 @@ function _buildShip(scene, building) {
   _repositionCargoLabel(scene, ship);
 }
 
+/* =========================
+   Route picker / recall
+   ========================= */
 function _enterRoutePicker(scene, building) {
   const ships = (scene.ships || []).filter(s => s.docksId === building.id);
   if (ships.length === 0) { console.log(`[DOCKS] Set route: no ships for docks#${building.id}`); return; }
@@ -767,6 +806,32 @@ function _updateDocksStoreLabel(scene, docks) {
 /* =========================
    Helpers
    ========================= */
+function _ensureResourceInit(scene) {
+  if (!scene.playerResources) {
+    scene.playerResources = { food: 20, scrap: 20, money: 100, influence: 0 };
+  }
+  scene.updateResourceUI?.();
+}
+function _canAfford(scene, cost) {
+  const r = scene.playerResources || {};
+  return Object.entries(cost).every(([k, v]) => (r[k] ?? 0) >= v);
+}
+function _spend(scene, cost) {
+  if (!_canAfford(scene, cost)) return false;
+  Object.entries(cost).forEach(([k, v]) => {
+    scene.playerResources[k] = (scene.playerResources[k] ?? 0) - v;
+    scene.bumpResource?.(k);
+  });
+  scene.updateResourceUI?.();
+  return true;
+}
+function _gain(scene, gains) {
+  Object.entries(gains).forEach(([k, v]) => {
+    scene.playerResources[k] = (scene.playerResources[k] ?? 0) + v;
+    scene.bumpResource?.(k);
+  });
+  scene.updateResourceUI?.();
+}
 
 function _tileAt(scene, q, r) {
   return scene.mapData?.find?.(t => t.q === q && t.r === r);
@@ -1018,11 +1083,9 @@ function _destroyBuilding(scene, building) {
 
 /* ---------- Mobile Base resolver ---------- */
 function _getMobileBaseCoords(scene, hauler) {
-  // 1) live reference provided when the hauler was created
   if (hauler.baseRef && typeof hauler.baseRef.q === 'number' && typeof hauler.baseRef.r === 'number') {
     return { q: hauler.baseRef.q, r: hauler.baseRef.r };
   }
-  // 2) search in known units (if you tag the base with type/isMobileBase later)
   if (Array.isArray(scene.players)) {
     const mb = scene.players.find(u =>
       u?.type === 'mobileBase' || u?.isMobileBase === true || u?.name === 'Mobile Base'
@@ -1031,6 +1094,5 @@ function _getMobileBaseCoords(scene, hauler) {
       return { q: mb.q, r: mb.r };
     }
   }
-  // 3) fallback to original spawn tile
   return { q: hauler.baseQ, r: hauler.baseR };
 }
