@@ -4,6 +4,7 @@ import { findPath } from '../engine/AStar.js';
 import { setupCameraControls, setupTurnUI } from './WorldSceneUI.js';
 import { spawnUnitsAndEnemies, subscribeToGameUpdates } from './WorldSceneUnits.js';
 import { startDocksPlacement, cancelPlacement, placeDocks, applyShipRoutesOnEndTurn } from './WorldSceneBuildings.js';
+import { spawnFishResources } from './WorldSceneResources.js';
 import {
   drawHexMap, hexToPixel, pixelToHex, roundHex, drawHex, getColorForTerrain, isoOffset, LIFT_PER_LVL
 } from './WorldSceneMap.js';
