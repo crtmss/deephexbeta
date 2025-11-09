@@ -10,8 +10,8 @@
      * Docks: 🛠 20 + 💰 50
      * Ship:  🍖 10
      * Hauler:🍖 10
-   - Hauler deliveries add FOOD to playerResources (and update bar)
-   - Docks store up to 10 🍖; hauler picks up ≤5 from docks storage
+   - Docks store up to 10 🍖; hauler picks up ≤5 and delivers to mobile base
+   - Ship cargo cap 2; Hauler cargo cap 5
    ======================================================================= */
 
 const COLORS = {
@@ -113,6 +113,12 @@ export function placeDocks(q, r) {
   _placeDocks(scene, q, r, 'direct place');
 }
 
+/* -----------------------------------------------------------------------
+   SHIPS: apply on end turn
+   - Moves toward route, harvests 2 turns if on fish (max cargo 2),
+     then returns to docks and deposits into docks storage.
+   - Draws cyan line each time a move step happens.
+   --------------------------------------------------------------------- */
 export function applyShipRoutesOnEndTurn(scene) {
   _ensureResourceInit(scene);
 
@@ -149,11 +155,36 @@ export function applyShipRoutesOnEndTurn(scene) {
       // If no route but carrying, return home
       if (!route && s.cargoFood > 0) s.mode = 'returning';
 
+      /* ---------- HARVESTING TURN ----------
+         Each harvesting turn, collect up to 1 food per turn,
+         capped by SHIP_CARGO_CAP (2). After 2 turns OR when full,
+         switch to returning.
+      ------------------------------------- */
+      if (s.mode === 'harvesting') {
+        if (s.harvestTurnsRemaining > 0) {
+          const room = Math.max(0, SHIP_CARGO_CAP - s.cargoFood);
+          const take = Math.min(1, room);
+          if (take > 0) {
+            s.cargoFood += take;
+            _updateCargoLabel(scene, s);
+          }
+          s.harvestTurnsRemaining -= 1;
+        }
+        // Done harvesting or cargo full → return to docks
+        if (s.harvestTurnsRemaining <= 0 || s.cargoFood >= SHIP_CARGO_CAP) {
+          s.mode = 'returning';
+        }
+        // No movement this turn while harvesting
+        s.movePoints = s.maxMovePoints;
+        return;
+      }
+
+      // Determine target
       let targetQ = s.q, targetR = s.r;
       if (s.mode === 'toTarget' && route) { targetQ = route.q; targetR = route.r; }
       else if (s.mode === 'returning') { targetQ = b.q; targetR = b.r; }
 
-      // Arrived?
+      // Arrived at target?
       if (s.q === targetQ && s.r === targetR) {
         if (s.mode === 'toTarget') {
           const onFish = _fishAt(scene, s.q, s.r);
@@ -179,12 +210,13 @@ export function applyShipRoutesOnEndTurn(scene) {
         return;
       }
 
-      // Movement
+      // Movement leg
       if (s.movePoints <= 0) return;
 
       const path = _waterPath(scene, s.q, s.r, targetQ, targetR);
       if (!path || path.length <= 1) return;
 
+      // draw cyan trace for this leg
       _debugDrawWaterPath(scene, path);
 
       const steps = Math.min(s.movePoints, path.length - 1);
@@ -200,7 +232,7 @@ export function applyShipRoutesOnEndTurn(scene) {
     });
   });
 
-  // Regen MPs each end turn
+  // Regen MPs each end turn (so next turn they can continue)
   (scene.ships || []).forEach(s => {
     if (typeof s.maxMovePoints !== 'number') s.maxMovePoints = 8;
     s.movePoints = s.maxMovePoints;
@@ -329,6 +361,9 @@ export function enterHaulerRoutePicker() {
   });
 }
 
+/* -----------------------------------------------------------------------
+   HAULERS: apply on end turn (move/deliver/return)
+   --------------------------------------------------------------------- */
 export function applyHaulerBehaviorOnEndTurn(scene) {
   _ensureResourceInit(scene);
 
@@ -379,8 +414,7 @@ export function applyHaulerBehaviorOnEndTurn(scene) {
         h.mode = 'returningToBase';
       } else if (h.mode === 'returningToBase') {
         if (h.cargoFood > 0) {
-          // DEPOSIT to player's resource pool
-          _gain(scene, { food: h.cargoFood });
+          _gain(scene, { food: h.cargoFood }); // deposit to player
           h.cargoFood = 0;
           _updateCargoLabel(scene, h);
         }
@@ -622,7 +656,6 @@ function _openBuildingMenu(scene, building) {
     menu.add([g, t, hit]);
   };
 
-  // ✅ Single declaration of `defs`
   const defs = [
     { text: 'Build a ship', onClick: () => _buildShip(scene, building) },
     { text: 'Set route',    onClick: () => _enterRoutePicker(scene, building) },
