@@ -160,6 +160,7 @@ export default class WorldScene extends Phaser.Scene {
     delete this.mapData.__locationsApplied;
     drawHexMap.call(this);
 
+    spawnFishResources.call(this, 5, 8);
     // set camera background same as water color
     const waterColor = this.getColorForTerrain('water');
     this.cameras.main.setBackgroundColor(waterColor);
