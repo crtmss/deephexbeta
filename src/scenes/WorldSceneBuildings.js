@@ -86,6 +86,20 @@ export function startDocksPlacement() {
     return;
   }
 
+// --- RNG helpers (use map RNG if available for determinism) ---
+function _rand(scene) {
+  // If your HexMap exposes a deterministic RNG (e.g., scene.hexMap.rand), use it.
+  // Fallback to Math.random when not available.
+  return (scene?.hexMap && typeof scene.hexMap.rand === 'function')
+    ? scene.hexMap.rand()
+    : Math.random();
+}
+function _getRandom(list, scene) {
+  if (!list || list.length === 0) return null;
+  const i = Math.floor(_rand(scene) * list.length);
+  return list[i];
+}
+   
   // coastal water near the base
   const coastal = _computeCoastalWater(scene, u.q, u.r)
     .filter(({ q, r }) => BUILDINGS.docks.validateTile(scene, q, r));
