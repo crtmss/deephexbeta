@@ -1,4 +1,4 @@
-/ deephexbeta/src/scenes/WorldSceneResources.js
+// deephexbeta/src/scenes/WorldSceneResources.js
 
 /* =========================================================================
    Resource system (Fish)
