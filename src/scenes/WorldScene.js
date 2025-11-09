@@ -3,8 +3,19 @@ import HexMap from '../engine/HexMap.js';
 import { findPath } from '../engine/AStar.js';
 import { setupCameraControls, setupTurnUI } from './WorldSceneUI.js';
 import { spawnUnitsAndEnemies, subscribeToGameUpdates } from './WorldSceneUnits.js';
-import { startDocksPlacement, cancelPlacement, placeDocks } from './WorldSceneBuildings.js';
+
+// Buildings / Logistics helpers
+// NOTE: these are optional; if they exist we call them, otherwise we fall back locally.
+import {
+  startDocksPlacement,
+  cancelPlacement,
+  // Optional end-turn movers implemented in WorldSceneBuildings.js
+  applyShipRoutesOnEndTurn as _applyShipRoutesOnEndTurn,
+  applyHaulerRoutesOnEndTurn as _applyHaulerRoutesOnEndTurn,
+} from './WorldSceneBuildings.js';
+
 import { spawnFishResources } from './WorldSceneResources.js';
+
 import {
   drawHexMap, hexToPixel, pixelToHex, roundHex, drawHex, getColorForTerrain, isoOffset, LIFT_PER_LVL
 } from './WorldSceneMap.js';
@@ -52,6 +63,34 @@ function getWorldSummaryForSeed(seed) {
   return { geography, biome };
 }
 
+/* =========================
+   Small axial helpers
+   ========================= */
+const NEIGHBORS = [
+  { dq: +1, dr: 0 }, { dq: -1, dr: 0 },
+  { dq: 0, dr: +1 }, { dq: 0, dr: -1 },
+  { dq: +1, dr: -1 }, { dq: -1, dr: +1 }
+];
+
+function inBounds(scene, q, r) {
+  return q >= 0 && r >= 0 && q < scene.mapWidth && r < scene.mapHeight;
+}
+function getTile(scene, q, r) {
+  return scene.mapData.find(h => h.q === q && h.r === r);
+}
+function isLandPassable(tile) {
+  if (!tile) return false;
+  const t = String(tile.type || '').toLowerCase();
+  if (t === 'water' || t === 'ocean' || t === 'sea') return false;
+  if (t === 'mountain') return false;
+  return true;
+}
+function isWater(tile) {
+  if (!tile) return false;
+  const t = String(tile.type || '').toLowerCase();
+  return (t === 'water' || t === 'ocean' || t === 'sea');
+}
+
 export default class WorldScene extends Phaser.Scene {
   constructor() {
     super('WorldScene');
@@ -67,13 +106,17 @@ export default class WorldScene extends Phaser.Scene {
     this.isDragging = false;
     this.isUnitMoving = false;
 
+    // collections we use locally (ships typically live under buildings module, but keep handle arrays)
+    this.haulers = this.haulers || [];
+    this.ships = this.ships || [];   // if buildings module pushes ships here, we’ll move them on end turn.
+
     const pad = this.hexSize * 2;
     const mapPixelWidth = this.hexSize * Math.sqrt(3) * (this.mapWidth + 0.5) + pad * 2;
     const mapPixelHeight = this.hexSize * 1.5 * (this.mapHeight + 0.5) + pad * 2;
     this.cameras.main.setBounds(0, 0, mapPixelWidth, mapPixelHeight);
     this.cameras.main.setZoom(1.0);
 
-    const { roomCode, playerName, isHost } = this.scene.settings.data;
+    const { roomCode, playerName, isHost } = this.scene.settings.data || {};
     const { getLobbyState } = await import('../net/LobbyManager.js');
     const { data: lobbyData, error } = await getLobbyState(roomCode);
     if (error || !lobbyData?.state?.seed) return;
@@ -195,17 +238,13 @@ export default class WorldScene extends Phaser.Scene {
         }
       });
 
-      // 2) Hauler
+      // 2) Hauler (NEW: actually implemented below)
       btnHauler.hit.on('pointerdown', () => {
         console.log('[UI] Build Hauler clicked');
-        if (typeof this.buildHauler === 'function') {
-          this.buildHauler();
-        } else {
-          console.warn('buildHauler() is not defined yet');
-        }
+        this.buildHauler?.();
       });
 
-      // 3) Set route (mode flag; your logic can read this)
+      // 3) Set route (mode flag used by buildings/ships UI)
       btnSetRoute.hit.on('pointerdown', () => {
         console.log('[UI] Set route clicked');
         this.mode = 'set-route';
@@ -217,6 +256,44 @@ export default class WorldScene extends Phaser.Scene {
         this.hideUnitPanel?.();
       });
     }
+
+    // --- Implement buildHauler so the button works ---
+    this.buildHauler = () => {
+      try {
+        // Find the player's mobile base (we treat player's unit in this.players as the base)
+        const base = this.players?.find?.(p => p.playerName === this.playerName) || this.players?.[0];
+        if (!base) { console.warn('[HAULER] no base/player unit found'); return; }
+
+        // Find a nearby passable land tile to spawn on (prefer same hex; else closest neighbor)
+        let spawnQ = base.q, spawnR = base.r;
+        const baseTile = getTile(this, base.q, base.r);
+        if (!isLandPassable(baseTile)) {
+          // pick the first passable neighbor
+          for (const d of NEIGHBORS) {
+            const nq = base.q + d.dq, nr = base.r + d.dr;
+            if (!inBounds(this, nq, nr)) continue;
+            const t = getTile(this, nq, nr);
+            if (isLandPassable(t)) { spawnQ = nq; spawnR = nr; break; }
+          }
+        }
+
+        const pos = this.axialToWorld(spawnQ, spawnR);
+        const hauler = this.add.text(pos.x, pos.y, '🚚', {
+          fontSize: '18px', color: '#ffffff'
+        }).setOrigin(0.5).setDepth(2045);
+
+        hauler.q = spawnQ;
+        hauler.r = spawnR;
+        hauler.type = 'hauler';
+        hauler.owner = this.playerName;
+        hauler.movementPoints = 8;
+
+        this.haulers.push(hauler);
+        console.log(`[HAULER] spawned at (${spawnQ},${spawnR})`);
+      } catch (e) {
+        console.error('[HAULER] failed to build:', e);
+      }
+    };
 
     // Refresh button sync
     if (this.refreshButton) {
@@ -248,7 +325,7 @@ export default class WorldScene extends Phaser.Scene {
       });
     }
 
-    // Click selection / movement
+    // Click selection / movement (support selecting haulers too)
     this.input.on("pointerdown", pointer => {
       if (pointer.rightButtonDown()) return;
 
@@ -257,8 +334,11 @@ export default class WorldScene extends Phaser.Scene {
       const rounded = this.roundHex(approx.q, approx.r);
       if (rounded.q < 0 || rounded.r < 0 || rounded.q >= this.mapWidth || rounded.r >= this.mapHeight) return;
 
-      const tile = this.mapData.find(h => h.q === rounded.q && h.r === rounded.r);
-      const playerHere = this.players?.find?.(p => p.q === rounded.q && p.r === rounded.r);
+      const tile = getTile(this, rounded.q, rounded.r);
+
+      // allow selection of either player's base unit OR a hauler
+      const playerHere = (this.players?.find?.(p => p.q === rounded.q && p.r === rounded.r))
+        || (this.haulers?.find?.(h => h.q === rounded.q && h.r === rounded.r));
 
       this.selectedHex = rounded;
       this.debugHex(rounded.q, rounded.r);
@@ -270,6 +350,7 @@ export default class WorldScene extends Phaser.Scene {
           return;
         }
 
+        // block water/mountain for land movers
         const blocked = t => !t || t.type === 'water' || t.type === 'mountain';
         const fullPath = findPath(this.selectedUnit, rounded, this.mapData, blocked);
         if (fullPath && fullPath.length > 1) {
@@ -277,7 +358,7 @@ export default class WorldScene extends Phaser.Scene {
           let totalCost = 0;
           const trimmedPath = [fullPath[0]];
           for (let i = 1; i < fullPath.length; i++) {
-            const stepTile = this.mapData.find(h => h.q === fullPath[i].q && h.r === fullPath[i].r);
+            const stepTile = getTile(this, fullPath[i].q, fullPath[i].r);
             const cost = stepTile?.movementCost || 1;
             totalCost += cost;
             if (totalCost <= movePoints) trimmedPath.push(fullPath[i]); else break;
@@ -294,14 +375,14 @@ export default class WorldScene extends Phaser.Scene {
       } else {
         if (playerHere) {
           this.selectedUnit = playerHere;
-          this.selectedUnit.movementPoints = 10;
+          this.selectedUnit.movementPoints = this.selectedUnit.type === 'hauler' ? 8 : 10;
           this.showUnitPanel?.(this.selectedUnit);
           console.log(`[SELECTED] Unit at (${playerHere.q}, ${playerHere.r})`);
         }
       }
     });
 
-    // Path preview
+    // Path preview (land units only)
     this.input.on("pointermove", pointer => {
       if (!this.selectedUnit || this.isUnitMoving) return;
 
@@ -320,12 +401,11 @@ export default class WorldScene extends Phaser.Scene {
 
         for (let i = 0; i < path.length; i++) {
           const step = path[i];
-          const tile = this.mapData.find(h => h.q === step.q && h.r === step.r);
+          const tile = getTile(this, step.q, step.r);
           const moveCost = tile?.movementCost || 1;
 
           const { x, y } = this.axialToWorld(step.q, step.r);
           const isStart = i === 0;
-
           if (!isStart) costSum += moveCost;
 
           const fillColor = isStart ? 0xeeeeee : (costSum <= maxMove ? 0x00ff00 : 0xffffff);
@@ -410,7 +490,7 @@ export default class WorldScene extends Phaser.Scene {
     this.debugGraphics.lineStyle(2, 0xff00ff, 1);
     this.drawHex(this.debugGraphics, center.x, center.y, this.hexSize);
 
-    const tile = this.mapData.find(h => h.q === q && h.r === r);
+    const tile = getTile(this, q, r);
     const playerHere = this.players?.find?.(p => p.q === q && p.r === r);
     const enemiesHere = this.enemies?.filter?.(e => e.q === q && e.r === r) || [];
 
@@ -467,6 +547,32 @@ export default class WorldScene extends Phaser.Scene {
 
   endTurn() {
     if (this.playerName !== this.lobbyState.currentTurn) return;
+
+    // Restore ships moving to their set-route point:
+    if (typeof _applyShipRoutesOnEndTurn === 'function') {
+      try { _applyShipRoutesOnEndTurn.call(this); } catch (e) { console.warn('[SHIPS] external mover failed:', e); }
+    } else {
+      // Fallback: move any ships we know about along their precomputed water paths
+      (this.ships || []).forEach(ship => {
+        // ship.waterPath should be array of {q,r}, ship.movePoints regenerates each turn externally
+        if (!ship.route || !Array.isArray(ship.waterPath) || ship.waterPath.length === 0) return;
+        const steps = Math.min(ship.movePoints ?? 8, ship.waterPath.length);
+        for (let i = 0; i < steps; i++) {
+          const step = ship.waterPath.shift();
+          const pos = this.axialToWorld(step.q, step.r);
+          ship.setPosition(pos.x, pos.y);
+          ship.q = step.q; ship.r = step.r;
+        }
+        ship.movePoints = 8; // regen on turn end (your earlier rule)
+      });
+    }
+
+    // Hauler automatic routes (if your buildings module manages them)
+    if (typeof _applyHaulerRoutesOnEndTurn === 'function') {
+      try { _applyHaulerRoutesOnEndTurn.call(this); } catch (e) { console.warn('[HAULER] external mover failed:', e); }
+    }
+
+    // UI cleanup
     this.selectedUnit = null;
     this.hideUnitPanel?.();
     if (this.selectedHexGraphic) {
@@ -476,6 +582,8 @@ export default class WorldScene extends Phaser.Scene {
     if (this.turnText) {
       this.turnText.setText("Player Turn: ...");
     }
+
+    // Optional enemy roaming
     if (this.isHost) this.moveEnemies();
   }
 
@@ -490,7 +598,7 @@ export default class WorldScene extends Phaser.Scene {
       Phaser.Utils.Array.Shuffle(dirs);
       for (const d of dirs) {
         const nq = enemy.q + d.dq, nr = enemy.r + d.dr;
-        const tile = this.mapData.find(h => h.q === nq && h.r === nr);
+        const tile = getTile(this, nq, nr);
         if (tile && !['water', 'mountain'].includes(tile.type)) {
           const { x, y } = this.axialToWorld(nq, nr);
           enemy.setPosition(x, y);
