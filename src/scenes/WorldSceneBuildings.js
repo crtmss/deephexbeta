@@ -8,7 +8,7 @@
    - Hauler (🚚): land-only, 8 MP/turn; from mobile base. “Set Hauler Route” picks a docks hex.
                  Cycle: toDocks → pickup (≤5) → returningToBase → deposit into base store → repeat.
    - All water/land movement uses ODD-R OFFSET neighbors (consistent with your isometric map).
-   - Modal menus disable hex-inspect while open; clicking outside closes.
+   - Modal menus disable hex-inspect & world clicks while open; clicking outside closes.
    ======================================================================= */
 
 const COLORS = {
@@ -302,7 +302,10 @@ export function enterHaulerRoutePicker() {
 
   console.log('[HAULER] Click a docks to set as pickup point…');
 
-  overlay.once('pointerdown', pointer => {
+  overlay.once('pointerdown', (pointer, localX, localY, event) => {
+    // prevent this click from also triggering world pointerdown in the same frame
+    event?.stopPropagation?.();
+
     const approx = scene.pixelToHex(pointer.worldX - (scene.mapOffsetX || 0),
                                     pointer.worldY - (scene.mapOffsetY || 0),
                                     scene.hexSize);
@@ -429,7 +432,7 @@ export function applyHaulerBehaviorOnEndTurn(scene) {
 }
 
 /* =========================
-   Docks placement & menu (unchanged UI + storage label)
+   Docks placement & menu
    ========================= */
 
 function _placeDocks(scene, q, r, reason = '') {
@@ -490,7 +493,9 @@ function _placeDocks(scene, q, r, reason = '') {
   _ensureDocksStoreLabel(scene, building);
   _updateDocksStoreLabel(scene, building);
 
-  hit.on('pointerdown', () => {
+  hit.on('pointerdown', (pointer, lx, ly, event) => {
+    // prevent this click from bubbling to world handlers
+    event?.stopPropagation?.();
     _openBuildingMenu(scene, building);
   });
 
@@ -512,7 +517,12 @@ function _openBuildingMenu(scene, building) {
     .setInteractive({ useHandCursor: false })
     .setScrollFactor(0)
     .setDepth(UI.zOverlay);
-  overlay.on('pointerdown', () => _closeBuildingMenu(scene, building));
+
+  // Clicking anywhere outside menu closes it, and DOES NOT fall through to world click.
+  overlay.on('pointerdown', (pointer, lx, ly, event) => {
+    event?.stopPropagation?.();
+    _closeBuildingMenu(scene, building);
+  });
   building.overlay = overlay;
 
   const pos = scene.axialToWorld(building.q, building.r);
@@ -586,7 +596,12 @@ function _openBuildingMenu(scene, building) {
       g.strokePath();
     });
 
-    hit.on('pointerdown', () => onClick?.());
+    hit.on('pointerdown', (pointer, lx, ly, event) => {
+      // important: prevent falling through to world pointerdown
+      event?.stopPropagation?.();
+      onClick?.();
+    });
+
     menu.add([g, t, hit]);
   };
 
@@ -664,7 +679,10 @@ function _enterRoutePicker(scene, building) {
 
   console.log('[DOCKS] Click a reachable water hex to set route…');
 
-  overlay.once('pointerdown', pointer => {
+  overlay.once('pointerdown', (pointer, localX, localY, event) => {
+    // prevent click-through
+    event?.stopPropagation?.();
+
     const approx = scene.pixelToHex(pointer.worldX - (scene.mapOffsetX || 0),
                                     pointer.worldY - (scene.mapOffsetY || 0),
                                     scene.hexSize);
@@ -868,15 +886,11 @@ function _waterPath(scene, fromQ, fromR, toQ, toR) {
 function _landPath(scene, fromQ, fromR, toQ, toR) {
   if (!_isLand(scene, toQ, toR) || !_isLand(scene, fromQ, fromR)) {
     // allow the hauler to path to docks hex even if docks is water-adjacent?
-    // Docks are placed on water; hauler must stop on adjacent land and then “arrive”
-    // But per spec, the hauler should reach docks hex. We’ll allow target to be docks hex
-    // if it’s the docks location, by converting target to nearest land neighbor.
     const docks = (scene.buildings || []).find(b => b.type === 'docks' && b.q === toQ && b.r === toR);
     if (docks) {
       // try any adjacent land as final node
       const adjLand = _offsetNeighbors(toQ, toR).filter(n => _isLand(scene, n.q, n.r));
       if (adjLand.length) {
-        // change target to a reachable land neighbor of docks
         const best = adjLand[0];
         toQ = best.q; toR = best.r;
       } else {
