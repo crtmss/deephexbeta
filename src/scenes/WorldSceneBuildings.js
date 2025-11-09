@@ -566,12 +566,6 @@ function _openBuildingMenu(scene, building) {
   bezel.strokeRect(-W/2 + 8,  -H/2 + 8,  W - 16, H - 16);
 
   const btnSize = 70, pad = 8, startX = -W/2 + 12, startY = -H/2 + 12;
-  const defs = [
-    { text: 'Build a ship', onClick: () => _buildShip(scene, building) },
-    { text: 'Set route',    onClick: () => _enterRoutePicker(scene, building) },
-    { text: 'Recall ships', onClick: () => _recallShips(scene, building) },
-    { text: 'Destroy',      onClick: () => _destroyBuilding(scene, building) },
-  ];
 
   const drawButton = (x, y, label, onClick) => {
     const g = scene.add.graphics();
@@ -628,6 +622,7 @@ function _openBuildingMenu(scene, building) {
     menu.add([g, t, hit]);
   };
 
+  // ✅ Single declaration of `defs`
   const defs = [
     { text: 'Build a ship', onClick: () => _buildShip(scene, building) },
     { text: 'Set route',    onClick: () => _enterRoutePicker(scene, building) },
