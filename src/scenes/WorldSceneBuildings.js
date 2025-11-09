@@ -390,6 +390,9 @@ export function applyHaulerBehaviorOnEndTurn(scene) {
     const path = _landPath(scene, h.q, h.r, targetQ, targetR);
     if (!path || path.length <= 1) continue;
 
+    // NEW: cyan trace for hauler land path (mirrors ships)
+    _debugDrawLandPath(scene, path);
+
     const steps = Math.min(h.movePoints, path.length - 1);
     const nx = path[steps];
     h.q = nx.q; h.r = nx.r;
@@ -915,6 +918,7 @@ function _hexManhattan(q1, r1, q2, r2) {
   return dq + dr;
 }
 
+/* ---------- Cyan path traces ---------- */
 function _debugDrawWaterPath(scene, path) {
   try {
     if (!path || path.length < 2) return;
@@ -923,6 +927,24 @@ function _debugDrawWaterPath(scene, path) {
     scene._shipPathGfx = g;
 
     g.lineStyle(2, 0x6fe3ff, 0.9);
+    let p0 = scene.axialToWorld(path[0].q, path[0].r);
+    for (let i = 1; i < path.length; i++) {
+      const p1 = scene.axialToWorld(path[i].q, path[i].r);
+      g.strokeLineShape(new Phaser.Geom.Line(p0.x, p0.y, p1.x, p1.y));
+      p0 = p1;
+    }
+    scene.tweens.add({ targets: g, alpha: 0, duration: 900, delay: 600, onComplete: () => g.destroy() });
+  } catch {}
+}
+
+function _debugDrawLandPath(scene, path) {
+  try {
+    if (!path || path.length < 2) return;
+    if (scene._haulerPathGfx) scene._haulerPathGfx.destroy();
+    const g = scene.add.graphics().setDepth(2400);
+    scene._haulerPathGfx = g;
+
+    g.lineStyle(2, 0x6fe3ff, 0.9); // same cyan color as ships
     let p0 = scene.axialToWorld(path[0].q, path[0].r);
     for (let i = 1; i < path.length; i++) {
       const p1 = scene.axialToWorld(path[i].q, path[i].r);
