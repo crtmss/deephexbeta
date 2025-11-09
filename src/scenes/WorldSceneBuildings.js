@@ -1,12 +1,16 @@
 // deephexbeta/src/scenes/WorldSceneBuildings.js
 
 /* =========================================================================
-   Buildings & naval logic (modal UI)
+   Buildings & naval logic (modal UI + harvesting)
    - Docks (🚢): max 2 on map. Auto-placed near selected unit (ring-1/coastal/≤3 BFS).
    - Click docks → modal with 4 options:
        • Build a ship • Set route • Recall ships • Destroy
    - Set route: pick a REACHABLE water hex (odd-r offset BFS). Marks it with an "X".
-   - End turn: ships MOVE along the water path up to 8 hexes. MPs regen AFTER moving.
+   - End turn:
+       • Ships MOVE along water path up to 8 hexes (MPs regen AFTER move)
+       • If they reach route with FISH: stay 2 turns ("harvesting"), +1 🍖 each turn
+       • If they reach route without fish: switch to "returning" (start next turn)
+       • If "returning" and reach docks: deposit cargo into docks, switch to "toTarget"
    - Ships are naval-only (isNaval: true) and ignore land pathfinder.
    - Cyan line briefly renders the water path each end turn for debug.
    ======================================================================= */
@@ -17,6 +21,7 @@ const COLORS = {
   labelText: '#e8f6ff',
   xMarkerPlate: 0x112633,
   xMarkerStroke: 0x3da9fc,
+  cargoText: '#ffffff',
 };
 
 const UI = {
@@ -26,6 +31,7 @@ const UI = {
   zBuilding: 2100,     // above terrain
   zOverlay: 2290,      // modal overlay (below menu, above everything else)
   zMenu: 2300,         // building menu
+  zCargo: 2101,        // slightly above ship emoji
 };
 
 export const BUILDINGS = {
@@ -111,26 +117,98 @@ export function placeDocks(q, r) {
 export function applyShipRoutesOnEndTurn(scene) {
   const buildings = scene.buildings || [];
   const ships = scene.ships || [];
-  if (ships.length === 0) {
-    // nothing to do
-    return;
-  }
+  if (ships.length === 0) return;
 
   let movedAny = false;
 
+  // For each docks with a route, process ships attached to it
   buildings.forEach(b => {
-    if (b.type !== 'docks' || !b.route) return;
-    const target = b.route;
+    if (b.type !== 'docks') return;
 
-    ships.forEach(s => {
-      if (s.docksId !== b.id) return;
+    // Ensure docks storage exists
+    if (typeof b.storageFood !== 'number') b.storageFood = 0;
 
+    const docksShips = ships.filter(s => s.docksId === b.id);
+    if (docksShips.length === 0) return;
+
+    const route = b.route || null;
+
+    docksShips.forEach(s => {
       // Initialize MPs if missing
       if (typeof s.maxMovePoints !== 'number') s.maxMovePoints = 8;
       if (typeof s.movePoints !== 'number') s.movePoints = s.maxMovePoints;
 
-      // Already at target
-      if (s.q === target.q && s.r === target.r) {
+      // Initialize cargo/state if missing
+      if (typeof s.cargoFood !== 'number') s.cargoFood = 0;
+      if (!s.mode) s.mode = 'toTarget'; // toTarget | harvesting | returning
+      _ensureCargoLabel(scene, s);
+
+      // If harvesting but route changed to a different hex, cancel harvest and go toTarget again
+      if (s.mode === 'harvesting' && route && (s.harvestAt?.q !== route.q || s.harvestAt?.r !== route.r)) {
+        s.mode = 'toTarget';
+        s.harvestTurnsRemaining = 0;
+        s.harvestAt = null;
+      }
+
+      // If no route is set, just idle or return if carrying cargo
+      if (!route) {
+        if (s.cargoFood > 0 && s.mode !== 'returning') s.mode = 'returning';
+      }
+
+      // Decide current target based on mode
+      let targetQ = s.q, targetR = s.r; // default no movement
+      if (s.mode === 'toTarget' && route) { targetQ = route.q; targetR = route.r; }
+      else if (s.mode === 'returning') { targetQ = b.q; targetR = b.r; }
+
+      // Handle harvesting (no movement while harvesting)
+      if (s.mode === 'harvesting') {
+        // Collect 1 food this turn
+        s.cargoFood += 1;
+        s.harvestTurnsRemaining = Math.max(0, (s.harvestTurnsRemaining || 0) - 1);
+        _updateCargoLabel(scene, s);
+
+        console.log(`[SHIP] docks#${b.id} harvesting at (${s.q},${s.r}) — cargo 🍖×${s.cargoFood}, turns left ${s.harvestTurnsRemaining}`);
+
+        // If finished, switch to returning next turn
+        if (s.harvestTurnsRemaining === 0) {
+          s.mode = 'returning';
+        }
+
+        // Refill MPs for the next turn (ships always regen after resolution)
+        s.movePoints = s.maxMovePoints;
+        return;
+      }
+
+      // If at target already, resolve arrival effects and stop movement this turn
+      if (s.q === targetQ && s.r === targetR) {
+        if (s.mode === 'toTarget') {
+          // Arrived to route hex
+          const onFish = _fishAt(scene, s.q, s.r);
+          if (onFish) {
+            // Begin 2-turn harvest starting NEXT turn
+            s.mode = 'harvesting';
+            s.harvestTurnsRemaining = 2;
+            s.harvestAt = { q: s.q, r: s.r };
+            console.log(`[SHIP] docks#${b.id} arrived on fish (${s.q},${s.r}). Starting 2-turn harvest next turn.`);
+          } else {
+            // No fish: flip to returning next turn
+            s.mode = 'returning';
+            console.log(`[SHIP] docks#${b.id} arrived at route (${s.q},${s.r}) — no fish. Returning next turn.`);
+          }
+        } else if (s.mode === 'returning') {
+          // Arrived to docks: deposit cargo
+          if (s.cargoFood > 0) {
+            b.storageFood += s.cargoFood;
+            console.log(`[DOCKS] docks#${b.id} received 🍖×${s.cargoFood}. Total at docks: ${b.storageFood}.`);
+            s.cargoFood = 0;
+            _updateCargoLabel(scene, s);
+          }
+          // Prepare to head out again next turn if a route exists
+          s.mode = route ? 'toTarget' : 'returning';
+        }
+
+        // Refill MPs for next turn and skip moving this turn
+        s.movePoints = s.maxMovePoints;
         return;
       }
 
@@ -140,27 +218,21 @@ export function applyShipRoutesOnEndTurn(scene) {
         return;
       }
 
-      // Path from current ship pos to target (water-only, odd-r neighbors)
-      const path = _waterPath(scene, s.q, s.r, target.q, target.r);
+      // Compute water path to current target
+      const path = _waterPath(scene, s.q, s.r, targetQ, targetR);
       if (!path || path.length <= 1) {
-        console.warn(`[SHIP] docks#${b.id} ship@${s.q},${s.r} no water path to ${target.q},${target.r}`);
+        console.warn(`[SHIP] docks#${b.id} ship@${s.q},${s.r} no water path to ${targetQ},${targetR}`);
         return;
       }
 
-      // Debug draw route + verbose log
       _debugDrawWaterPath(scene, path);
       console.log(
-        `[SHIP] docks#${b.id} water path len=${path.length}: `,
+        `[SHIP] docks#${b.id} path len=${path.length} (${s.mode}) : `,
         path.map(n => `(${n.q},${n.r})`).join('→')
       );
 
       const stepsAvailable = Math.min(s.movePoints, path.length - 1);
       const nextHex = path[stepsAvailable];
-
-      console.log(
-        `[SHIP] docks#${b.id} ship@${s.q},${s.r} → target ${target.q},${target.r} | ` +
-        `mp=${s.movePoints} | steps=${stepsAvailable} | new=${nextHex.q},${nextHex.r}`
-      );
 
       // Apply move
       s.q = nextHex.q;
@@ -169,8 +241,11 @@ export function applyShipRoutesOnEndTurn(scene) {
 
       const p = scene.axialToWorld(s.q, s.r);
       s.obj.setPosition(p.x, p.y);
+      _repositionCargoLabel(scene, s);
 
       movedAny = true;
+
+      // On the same turn, do NOT process arrival effects; they occur next turn as per design
     });
   });
 
@@ -181,7 +256,7 @@ export function applyShipRoutesOnEndTurn(scene) {
   });
 
   if (!movedAny) {
-    const dbg = (scene.ships || []).map(s => `ship(docks#${s.docksId})@${s.q},${s.r} mp=${s.movePoints}`).join(' | ');
+    const dbg = (scene.ships || []).map(s => `ship(docks#${s.docksId})@${s.q},${s.r} mp=${s.movePoints} mode=${s.mode} 🍖${s.cargoFood}`).join(' | ');
     console.log(`[SHIP] No ships moved. Current ships: ${dbg}`);
   }
 }
@@ -243,6 +318,7 @@ function _placeDocks(scene, q, r, reason = '') {
     menu: null,          // building menu container
     overlay: null,       // modal overlay container
     route: null,         // {q,r}
+    storageFood: 0,      // accumulated food delivered by ships
   };
   scene.buildings.push(building);
 
@@ -411,8 +487,17 @@ function _buildShip(scene, building) {
     obj: t,
     maxMovePoints: 8,
     movePoints: 8,
+    // NEW: harvesting/cargo state
+    cargoFood: 0,
+    mode: 'toTarget',            // 'toTarget' | 'harvesting' | 'returning'
+    harvestTurnsRemaining: 0,    // counts down while harvesting
+    harvestAt: null,             // {q,r} where harvesting is occurring
+    cargoObj: null,              // small 🍖 label object
   };
   scene.ships.push(ship);
+
+  _ensureCargoLabel(scene, ship);
+  _repositionCargoLabel(scene, ship);
 
   console.log(`[DOCKS] Built Ship at (${ship.q},${ship.r}) for docks#${building.id}`);
 }
@@ -520,7 +605,8 @@ function _recallShips(scene, building) {
     s.q = building.q; s.r = building.r;
     const p = scene.axialToWorld(s.q, s.r);
     s.obj.setPosition(p.x, p.y);
-    // Keep their remaining MPs (don’t refill on arrival)
+    _repositionCargoLabel(scene, s);
+    // Keep remaining MPs and cargo; they’ll deposit on arrival next End Turn
   });
 
   console.log(`[DOCKS] Ships recalled to docks#${building.id} at (${building.q},${building.r}).`);
@@ -702,6 +788,33 @@ function _debugDrawWaterPath(scene, path) {
       onComplete: () => g.destroy()
     });
   } catch {}
+}
+
+/* ---------- Resource helpers ---------- */
+function _fishAt(scene, q, r) {
+  const res = (scene.resources || []).find(o => o.type === 'fish' && o.q === q && o.r === r);
+  return !!res;
+}
+
+/* ---------- Cargo label helpers ---------- */
+function _ensureCargoLabel(scene, ship) {
+  if (ship.cargoObj && !ship.cargoObj.destroyed) return;
+  ship.cargoObj = scene.add.text(0, 0, '', {
+    fontSize: '14px',
+    color: COLORS.cargoText,
+  }).setOrigin(0, 1).setDepth(UI.zCargo);
+  _updateCargoLabel(scene, ship);
+  _repositionCargoLabel(scene, ship);
+}
+function _updateCargoLabel(scene, ship) {
+  if (!ship.cargoObj) return;
+  const n = ship.cargoFood || 0;
+  ship.cargoObj.setText(n > 0 ? `🍖×${n}` : '');
+}
+function _repositionCargoLabel(scene, ship) {
+  if (!ship.cargoObj) return;
+  const p = scene.axialToWorld(ship.q, ship.r);
+  ship.cargoObj.setPosition(p.x + 10, p.y - 6);
 }
 
 function _getRandom(arr, scene) {
