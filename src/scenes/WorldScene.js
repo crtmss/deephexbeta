@@ -11,7 +11,6 @@ import {
 
 /* =========================
    Deterministic world summary
-   (mirrors the lobby so labels match)
    ========================= */
 function __hashStr32(s) {
   let h = 2166136261 >>> 0;
@@ -32,7 +31,6 @@ function __xorshift32(seed) {
 }
 function getWorldSummaryForSeed(seed) {
   const rng = __xorshift32(__hashStr32(String(seed ?? 'default')));
-
   const geoRoll = rng();
   const bioRoll = rng();
 
@@ -120,7 +118,7 @@ export default class WorldScene extends Phaser.Scene {
     this.getColorForTerrain = getColorForTerrain.bind(this);
     this.isoOffset = isoOffset.bind(this);
 
-    // === isometry-aware axial -> world position (includes map offsets + elevation lift)
+    // axial -> world (includes lift)
     this.axialToWorld = (q, r) => {
       const tile = this.mapData?.find(t => t.q === q && t.r === r);
       const elev = (tile && tile.type !== 'water')
@@ -141,13 +139,12 @@ export default class WorldScene extends Phaser.Scene {
     this.pathLabels = [];
     this.debugGraphics = this.add.graphics({ x: 0, y: 0 }).setDepth(100);
 
-    // === HEX INSPECT glue
+    // inspector hooks
     this.events.on('hex-inspect', (text) => this.hexInspect(text));
     this.events.on('hex-inspect-extra', ({ header, lines }) => {
       const payload = [`[HEX INSPECT] ${header}`, ...(lines || [])].join('\n');
       this.hexInspect(payload);
     });
-    // cleanup on shutdown
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       this.events.off('hex-inspect');
     });
@@ -160,10 +157,10 @@ export default class WorldScene extends Phaser.Scene {
     delete this.mapData.__locationsApplied;
     drawHexMap.call(this);
 
-    // === Spawn resources (fish)
+    // resources
     spawnFishResources.call(this);
 
-    // === Top-center world meta badge (Geography & Biome)
+    // world badge
     const { geography, biome } =
       (this.hexMap.worldInfo ?? this.hexMap.worldMeta) || getWorldSummaryForSeed(this.seed);
     this.addWorldMetaBadge(geography, biome);
@@ -173,10 +170,55 @@ export default class WorldScene extends Phaser.Scene {
     setupCameraControls(this);
     setupTurnUI(this);
 
+    // building placement API
     this.startDocksPlacement = () => startDocksPlacement.call(this);
     this.input.keyboard?.on('keydown-ESC', () => cancelPlacement.call(this));
 
-    // 🌀 Refresh Button (Unit sync)
+    /* ------------------------------------
+       WIRE UNIT ACTION PANEL BUTTONS (4)
+       ------------------------------------ */
+    if (this.unitPanelButtons && this.unitPanelButtons.length >= 4) {
+      const [btnDocks, btnHauler, btnSetRoute, btnClose] = this.unitPanelButtons;
+
+      btnDocks.hit.removeAllListeners();
+      btnHauler.hit.removeAllListeners();
+      btnSetRoute.hit.removeAllListeners();
+      btnClose.hit.removeAllListeners();
+
+      // 1) Docks
+      btnDocks.hit.on('pointerdown', () => {
+        console.log('[UI] Docks clicked');
+        if (typeof this.startDocksPlacement === 'function') {
+          this.startDocksPlacement();
+        } else {
+          console.warn('startDocksPlacement() is not defined');
+        }
+      });
+
+      // 2) Hauler
+      btnHauler.hit.on('pointerdown', () => {
+        console.log('[UI] Build Hauler clicked');
+        if (typeof this.buildHauler === 'function') {
+          this.buildHauler();
+        } else {
+          console.warn('buildHauler() is not defined yet');
+        }
+      });
+
+      // 3) Set route (mode flag; your logic can read this)
+      btnSetRoute.hit.on('pointerdown', () => {
+        console.log('[UI] Set route clicked');
+        this.mode = 'set-route';
+      });
+
+      // 4) Close panel
+      btnClose.hit.on('pointerdown', () => {
+        console.log('[UI] Close panel');
+        this.hideUnitPanel?.();
+      });
+    }
+
+    // Refresh button sync
     if (this.refreshButton) {
       this.refreshButton.removeAllListeners('pointerdown');
       this.refreshButton.on('pointerdown', async () => {
@@ -206,15 +248,13 @@ export default class WorldScene extends Phaser.Scene {
       });
     }
 
-    // 🖱️ Pointer Click: Move or Select
+    // Click selection / movement
     this.input.on("pointerdown", pointer => {
       if (pointer.rightButtonDown()) return;
 
       const { worldX, worldY } = pointer;
       const approx = this.pixelToHex(worldX - (this.mapOffsetX || 0), worldY - (this.mapOffsetY || 0), this.hexSize);
       const rounded = this.roundHex(approx.q, approx.r);
-
-      // bounds guard for inspector/selection
       if (rounded.q < 0 || rounded.r < 0 || rounded.q >= this.mapWidth || rounded.r >= this.mapHeight) return;
 
       const tile = this.mapData.find(h => h.q === rounded.q && h.r === rounded.r);
@@ -224,7 +264,6 @@ export default class WorldScene extends Phaser.Scene {
       this.debugHex(rounded.q, rounded.r);
 
       if (this.selectedUnit) {
-        // Deselect if clicking the same hex
         if (this.selectedUnit.q === rounded.q && this.selectedUnit.r === rounded.r) {
           this.selectedUnit = null;
           this.hideUnitPanel?.();
@@ -241,10 +280,8 @@ export default class WorldScene extends Phaser.Scene {
             const stepTile = this.mapData.find(h => h.q === fullPath[i].q && h.r === fullPath[i].r);
             const cost = stepTile?.movementCost || 1;
             totalCost += cost;
-            if (totalCost <= movePoints) trimmedPath.push(fullPath[i]);
-            else break;
+            if (totalCost <= movePoints) trimmedPath.push(fullPath[i]); else break;
           }
-
           if (trimmedPath.length > 1) {
             this.movingPath = trimmedPath.slice(1);
             this.isUnitMoving = true;
@@ -264,7 +301,7 @@ export default class WorldScene extends Phaser.Scene {
       }
     });
 
-    // 🧭 Pointer Move: Draw Path Preview
+    // Path preview
     this.input.on("pointermove", pointer => {
       if (!this.selectedUnit || this.isUnitMoving) return;
 
@@ -295,7 +332,6 @@ export default class WorldScene extends Phaser.Scene {
           const labelColor = costSum <= maxMove ? '#ffffff' : '#000000';
           const bgColor = costSum <= maxMove ? 0x008800 : 0xffffff;
 
-          // Draw hex background
           this.pathGraphics.lineStyle(1, 0x000000, 0.3);
           this.pathGraphics.fillStyle(fillColor, 0.4);
           this.pathGraphics.beginPath();
@@ -304,7 +340,6 @@ export default class WorldScene extends Phaser.Scene {
           this.pathGraphics.fillPath();
           this.pathGraphics.strokePath();
 
-          // Draw cost circle + text
           if (!isStart) {
             const circle = this.add.graphics();
             circle.fillStyle(bgColor, 1);
@@ -368,7 +403,6 @@ export default class WorldScene extends Phaser.Scene {
   }
 
   debugHex(q, r) {
-    // bounds guard for inspector
     if (q < 0 || r < 0 || q >= this.mapWidth || r >= this.mapHeight) return;
 
     const center = this.axialToWorld(q, r);
@@ -380,7 +414,6 @@ export default class WorldScene extends Phaser.Scene {
     const playerHere = this.players?.find?.(p => p.q === q && p.r === r);
     const enemiesHere = this.enemies?.filter?.(e => e.q === q && e.r === r) || [];
 
-    // resources & buildings as objects
     const resourcesHere = (this.resources || []).filter(o => o.q === q && o.r === r);
     const buildingsHere = (this.buildings || []).filter(b => (b.q === q && b.r === r) || (b.gq === q && b.gr === r));
 
