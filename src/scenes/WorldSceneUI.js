@@ -1,15 +1,11 @@
 // deephexbeta/src/scenes/WorldSceneUI.js
 
 import { refreshUnits } from './WorldSceneActions.js';
-
-/* ---------------- safe click sfx (prevents missing-audio crash) ---------------- */
-const CLICK_SFX_KEY = 'ui-click';
-function tryPlayClick(scene) {
-  const cache = scene.cache?.audio;
-  if (cache?.exists?.(CLICK_SFX_KEY)) {
-    scene.sound.play(CLICK_SFX_KEY, { volume: 0.3 });
-  }
-}
+import {
+  startDocksPlacement,
+  buildHaulerAtSelectedUnit,
+  enterHaulerRoutePicker
+} from './WorldSceneBuildings.js';
 
 /* ---------------- Camera controls (unchanged) ---------------- */
 export function setupCameraControls(scene) {
@@ -27,7 +23,7 @@ export function setupCameraControls(scene) {
     }
   });
 
-  scene.input.on('pointerup', pointer => {
+  scene.input.on('pointerup', () => {
     if (scene.isDragging) {
       scene.isDragging = false;
       scene.input.setDefaultCursor('grab');
@@ -51,7 +47,7 @@ export function setupCameraControls(scene) {
   });
 }
 
-/* ---------------- Turn UI (unchanged) ---------------- */
+/* ---------------- Turn UI ---------------- */
 export function setupTurnUI(scene) {
   scene.turnText = scene.add.text(20, 20, 'Player Turn: ...', {
     fontSize: '18px',
@@ -82,7 +78,7 @@ export function setupTurnUI(scene) {
     refreshUnits(scene);
   });
 
-  // NEW: Unit Action Panel
+  // Unit Action Panel (left UI)
   createUnitActionPanel(scene);
 }
 
@@ -93,7 +89,7 @@ export function updateTurnText(scene, currentTurn) {
 }
 
 /* =========================
-   Unit Action Panel (NEW)
+   Unit Action Panel (2x2)
    ========================= */
 function createUnitActionPanel(scene) {
   // Container position (fixed UI, below your Refresh)
@@ -124,77 +120,30 @@ function createUnitActionPanel(scene) {
   const startX = 12;
   const startY = 12;
 
-  const buttons = [
-    { label: 'Docks', onClick: () => {
-        tryPlayClick(scene);
-        console.log('[UI] Docks clicked — attempting to auto-place');
-        scene.startDocksPlacement?.();
-      }
-    },
-    { label: 'B', onClick: () => {
-        tryPlayClick(scene);
-        console.log('[UI] Button B (placeholder)');
-      }
-    },
-    { label: 'C', onClick: () => {
-        tryPlayClick(scene);
-        console.log('[UI] Button C (placeholder)');
-      }
-    },
-    { label: 'D', onClick: () => {
-        tryPlayClick(scene);
-        console.log('[UI] Button D (placeholder)');
-      }
-    },
+  // Final labels and handlers:
+  const labels = ['Docks', 'Hauler', 'Set Route', '—'];
+  const handlers = [
+    () => startDocksPlacement.call(scene),
+    () => buildHaulerAtSelectedUnit.call(scene),
+    () => enterHaulerRoutePicker.call(scene),
+    () => {} // reserved
   ];
 
   const btns = [];
-  for (let i = 0; i < 4; i++) {
-    const r = Math.floor(i / 2);
-    const c = i % 2;
-    const x = startX + c * (btnSize + pad);
-    const y = startY + r * (btnSize + pad);
-    const def = buttons[i];
+  for (let r = 0; r < 2; r++) {
+    for (let c = 0; c < 2; c++) {
+      const idx = r * 2 + c;
+      const x = startX + c * (btnSize + pad);
+      const y = startY + r * (btnSize + pad);
 
-    const g = scene.add.graphics();
-    // button body
-    g.fillStyle(0x173b52, 1);
-    g.fillRoundedRect(x, y, btnSize, btnSize, 8);
-    // subtle border glow
-    g.lineStyle(2, 0x6fe3ff, 0.7);
-    g.strokeRoundedRect(x, y, btnSize, btnSize, 8);
-    // crosshair lines
-    g.lineStyle(1, 0x6fe3ff, 0.15);
-    g.beginPath();
-    g.moveTo(x + btnSize/2, y + 6);
-    g.lineTo(x + btnSize/2, y + btnSize - 6);
-    g.moveTo(x + 6, y + btnSize/2);
-    g.lineTo(x + btnSize - 6, y + btnSize/2);
-    g.strokePath();
-
-    const label = scene.add.text(x + btnSize/2, y + btnSize/2, def.label, {
-      fontSize: '18px',
-      color: '#e8f6ff'
-    }).setOrigin(0.5).setDepth(1);
-
-    // hit-area for clicks / hover
-    const hit = scene.add.rectangle(x, y, btnSize, btnSize, 0x000000, 0)
-      .setOrigin(0,0)
-      .setInteractive({ useHandCursor: true });
-
-    hit.on('pointerover', () => {
-      g.clear();
-      g.fillStyle(0x1a4764, 1);
-      g.fillRoundedRect(x, y, btnSize, btnSize, 8);
-      g.lineStyle(2, 0x9be4ff, 1);
-      g.strokeRoundedRect(x, y, btnSize, btnSize, 8);
-    });
-    hit.on('pointerout', () => {
-      g.clear();
+      const g = scene.add.graphics();
+      // button body
       g.fillStyle(0x173b52, 1);
       g.fillRoundedRect(x, y, btnSize, btnSize, 8);
+      // subtle border glow
       g.lineStyle(2, 0x6fe3ff, 0.7);
       g.strokeRoundedRect(x, y, btnSize, btnSize, 8);
+      // crosshair lines
       g.lineStyle(1, 0x6fe3ff, 0.15);
       g.beginPath();
       g.moveTo(x + btnSize/2, y + 6);
@@ -202,12 +151,50 @@ function createUnitActionPanel(scene) {
       g.moveTo(x + 6, y + btnSize/2);
       g.lineTo(x + btnSize - 6, y + btnSize/2);
       g.strokePath();
-    });
 
-    hit.on('pointerdown', def.onClick);
+      const label = scene.add.text(x + btnSize/2, y + btnSize/2, labels[idx], {
+        fontSize: '16px',
+        color: '#e8f6ff',
+        align: 'center',
+        wordWrap: { width: btnSize - 8 }
+      }).setOrigin(0.5).setDepth(1);
 
-    btns.push({ g, hit, label });
-    panel.add([g, label, hit]);
+      // hit-area for clicks / hover
+      const hit = scene.add.rectangle(x, y, btnSize, btnSize, 0x000000, 0)
+        .setOrigin(0,0)
+        .setInteractive({ useHandCursor: true });
+
+      hit.on('pointerover', () => {
+        g.clear();
+        g.fillStyle(0x1a4764, 1);
+        g.fillRoundedRect(x, y, btnSize, btnSize, 8);
+        g.lineStyle(2, 0x9be4ff, 1);
+        g.strokeRoundedRect(x, y, btnSize, btnSize, 8);
+      });
+      hit.on('pointerout', () => {
+        g.clear();
+        g.fillStyle(0x173b52, 1);
+        g.fillRoundedRect(x, y, btnSize, btnSize, 8);
+        g.lineStyle(2, 0x6fe3ff, 0.7);
+        g.strokeRoundedRect(x, y, btnSize, btnSize, 8);
+        g.lineStyle(1, 0x6fe3ff, 0.15);
+        g.beginPath();
+        g.moveTo(x + btnSize/2, y + 6);
+        g.lineTo(x + btnSize/2, y + btnSize - 6);
+        g.moveTo(x + 6, y + btnSize/2);
+        g.lineTo(x + btnSize - 6, y + btnSize/2);
+        g.strokePath();
+      });
+
+      hit.on('pointerdown', () => {
+        // no sound play (avoid missing key error)
+        const fn = handlers[idx];
+        try { fn && fn(); } catch (e) { console.error(e); }
+      });
+
+      btns.push({ g, hit, label });
+      panel.add([g, label, hit]);
+    }
   }
 
   panel.add([bg, bezel]);
@@ -215,13 +202,8 @@ function createUnitActionPanel(scene) {
   panel.sendToBack(bezel);
 
   // Expose simple API on the scene
-  scene.showUnitPanel = (unit) => {
-    panel.visible = true;
-    // optional: show owner/role header later
-  };
-  scene.hideUnitPanel = () => {
-    panel.visible = false;
-  };
+  scene.showUnitPanel = () => { panel.visible = true; };
+  scene.hideUnitPanel = () => { panel.visible = false; };
 
   scene.unitActionPanel = panel;
 }
