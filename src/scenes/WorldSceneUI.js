@@ -51,7 +51,6 @@ export function setupTurnUI(scene) {
 
   // Resource HUD (top-left, fixed)
   createResourceHUD(scene);
-  // Expose update/bump so game logic can adjust HUD
   scene.updateResourceUI = () => updateResourceUI(scene);
   scene.bumpResource = (key) => bumpResource(scene, key);
   updateResourceUI(scene);
@@ -99,10 +98,9 @@ export function updateTurnText(scene, currentTurn) {
 }
 
 /* =========================
-   RESOURCE HUD (NEW)
+   RESOURCE HUD (top-left)
    ========================= */
 function createResourceHUD(scene) {
-  // Visual style
   const plateColor = 0x0f2233;
   const strokeColor = 0x3da9fc;
 
@@ -111,7 +109,6 @@ function createResourceHUD(scene) {
 
   const panel = scene.add.container(originX, originY).setScrollFactor(0).setDepth(2000);
 
-  // Background plate
   const W = 280, H = 34;
   const bg = scene.add.graphics();
   bg.fillStyle(plateColor, 0.92);
@@ -121,7 +118,6 @@ function createResourceHUD(scene) {
 
   panel.add(bg);
 
-  // Entries: emoji + value text, always shown even if 0
   const items = [
     { key: 'food',      emoji: '🍖', label: 'Food' },
     { key: 'scrap',     emoji: '🛠', label: 'Scrap' },
@@ -129,8 +125,8 @@ function createResourceHUD(scene) {
     { key: 'influence', emoji: '⭐', label: 'Inf' },
   ];
 
-  const gap = 66; // horizontal spacing between entries
-  const startX = 12; // padding from left
+  const gap = 66;
+  const startX = 12;
   const yMid = H / 2;
 
   const entries = {};
@@ -166,7 +162,6 @@ function updateResourceUI(scene) {
   const r = scene.playerResources || { food: 0, scrap: 0, money: 0, influence: 0 };
   const { entries } = scene.resourceHUD;
 
-  // Always display a value, even when zero
   if (entries.food)      entries.food.txt.setText(String(r.food ?? 0));
   if (entries.scrap)     entries.scrap.txt.setText(String(r.scrap ?? 0));
   if (entries.money)     entries.money.txt.setText(String(r.money ?? 0));
@@ -178,7 +173,6 @@ function bumpResource(scene, key) {
   const entry = scene.resourceHUD.entries[key];
   if (!entry) return;
 
-  // Small scale bump on both icon and text
   const targets = [entry.icon, entry.txt];
   targets.forEach(obj => {
     obj.setScale(1);
@@ -193,38 +187,35 @@ function bumpResource(scene, key) {
 }
 
 /* =========================
-   Unit Action Panel (kept)
+   Unit Action Panel (2×2)
    ========================= */
 function createUnitActionPanel(scene) {
-  // Container position (fixed UI, under Refresh)
   const originX = 20;
   const originY = 164;
 
   const panel = scene.add.container(originX, originY).setScrollFactor(0).setDepth(2000);
   panel.visible = false;
 
-  // Sci-fi plate background
   const W = 172, H = 172;
   const bg = scene.add.graphics();
-  bg.fillStyle(0x0f2233, 0.92);              // deep blue plate
+  bg.fillStyle(0x0f2233, 0.92);
   bg.fillRoundedRect(0, 0, W, H, 12);
-  bg.lineStyle(2, 0x3da9fc, 1);               // neon edge
+  bg.lineStyle(2, 0x3da9fc, 1);
   bg.strokeRoundedRect(0, 0, W, H, 12);
 
-  // Futuristic inner grid bezel
   const bezel = scene.add.graphics();
   bezel.lineStyle(1, 0x9be4ff, 0.25);
   for (let i = 1; i <= 2; i++) {
     bezel.strokeRect(8*i, 8*i, W - 16*i, H - 16*i);
   }
 
-  // 2x2 square buttons
-  const btnSize = 70; // square
+  const btnSize = 70;
   const pad = 8;
   const startX = 12;
   const startY = 12;
 
-  const labels = ['Docks', 'B', 'C', 'D']; // replace B/C/D later with real actions
+  // UPDATED labels
+  const labels = ['Docks', 'Hauler', 'Set route', 'Close'];
 
   const btns = [];
   for (let r = 0; r < 2; r++) {
@@ -233,13 +224,10 @@ function createUnitActionPanel(scene) {
       const y = startY + r * (btnSize + pad);
 
       const g = scene.add.graphics();
-      // button body
       g.fillStyle(0x173b52, 1);
       g.fillRoundedRect(x, y, btnSize, btnSize, 8);
-      // subtle border glow
       g.lineStyle(2, 0x6fe3ff, 0.7);
       g.strokeRoundedRect(x, y, btnSize, btnSize, 8);
-      // crosshair lines
       g.lineStyle(1, 0x6fe3ff, 0.15);
       g.beginPath();
       g.moveTo(x + btnSize/2, y + 6);
@@ -279,10 +267,7 @@ function createUnitActionPanel(scene) {
         g.strokePath();
       });
 
-      // NOTE: no audio here (removes "ui-click" error). Hook your actions externally.
-      // Example: in WorldScene.js you can attach:
-      // scene.unitPanelButtons[0].on('pointerdown', () => scene.startDocksPlacement());
-
+      // No audio here (avoids "ui-click" missing key)
       btns.push({ g, hit, label });
       panel.add([g, label, hit]);
     }
@@ -293,14 +278,9 @@ function createUnitActionPanel(scene) {
   panel.sendToBack(bezel);
 
   // Expose simple API on the scene
-  scene.showUnitPanel = (unit) => {
-    panel.visible = true;
-  };
-  scene.hideUnitPanel = () => {
-    panel.visible = false;
-  };
+  scene.showUnitPanel = () => { panel.visible = true; };
+  scene.hideUnitPanel = () => { panel.visible = false; };
 
-  // Expose buttons so WorldScene can attach handlers (e.g., Docks)
   scene.unitActionPanel = panel;
-  scene.unitPanelButtons = btns; // array of 4 hit areas in order
+  scene.unitPanelButtons = btns; // array of 4 hit areas: [Docks, Hauler, Set route, Close]
 }
