@@ -1,5 +1,4 @@
-
-// deephexbeta/src/scenes/WorldSceneResources.js
+/ deephexbeta/src/scenes/WorldSceneResources.js
 
 /* =========================================================================
    Resource system (Fish)
@@ -35,7 +34,7 @@ export function spawnFishResources(count = 5, minDist = 8) {
     return;
   }
 
-  const rnd = scene?.hexMap?.rng || Math.random;
+  const rand = scene?.hexMap?.rng ?? Math.random;
   const chosen = [];
   let attempts = 0;
   const maxAttempts = 5000;
@@ -43,7 +42,8 @@ export function spawnFishResources(count = 5, minDist = 8) {
   // Greedy random selection with min axial distance
   while (chosen.length < count && attempts < maxAttempts) {
     attempts++;
-    const pick = waterTiles[(Math.random ? Math.random() : rnd)() * waterTiles.length | 0];
+    const idx = Math.floor(rand() * waterTiles.length);
+    const pick = waterTiles[idx];
     if (!pick) continue;
 
     const ok = chosen.every(c => axialDistance(c.q, c.r, pick.q, pick.r) >= minDist);
