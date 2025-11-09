@@ -1,306 +1,95 @@
-// deephexbeta/src/scenes/WorldSceneUI.js
+// deephexbeta/src/scenes/WorldSceneResources.js
 
-import { refreshUnits } from './WorldSceneActions.js';
+/* =========================================================================
+   Resource spawner & helpers
+   - Places 5 🐟 fish resources on random water hexes
+   - Enforces minimum hex distance of 8 between fish
+   - Safe to call multiple times (won’t duplicate existing fish at same hex)
+   ======================================================================= */
 
-/* ---------------- Camera controls (unchanged) ---------------- */
-export function setupCameraControls(scene) {
-  scene.input.setDefaultCursor('grab');
-  scene.isDragging = false;
+export function spawnFishResources() {
+  const scene = /** @type {Phaser.Scene & any} */ (this);
 
-  scene.input.on('pointerdown', pointer => {
-    if (pointer.rightButtonDown()) {
-      scene.isDragging = true;
-      scene.input.setDefaultCursor('grabbing');
-      scene.dragStartX = pointer.x;
-      scene.dragStartY = pointer.y;
-      scene.cameraStartX = scene.cameras.main.scrollX;
-      scene.cameraStartY = scene.cameras.main.scrollY;
-    }
-  });
+  // collect or init holder
+  scene.resources = scene.resources || [];
 
-  scene.input.on('pointerup', () => {
-    if (scene.isDragging) {
-      scene.isDragging = false;
-      scene.input.setDefaultCursor('grab');
-    }
-  });
+  // Already have 5+ fish? do nothing.
+  const existingFish = scene.resources.filter(r => r.type === 'fish');
+  if (existingFish.length >= 5) return;
 
-  scene.input.on('pointermove', pointer => {
-    if (scene.isDragging) {
-      const dx = pointer.x - scene.dragStartX;
-      const dy = pointer.y - scene.dragStartY;
-      scene.cameras.main.scrollX = scene.cameraStartX - dx / scene.cameras.main.zoom;
-      scene.cameras.main.scrollY = scene.cameraStartY - dy / scene.cameras.main.zoom;
-    }
-  });
+  // Build list of candidate water tiles
+  const waterTiles = (scene.mapData || []).filter(t => _isWater(t.type));
+  if (waterTiles.length === 0) return;
 
-  scene.input.on('wheel', (pointer, _, __, deltaY) => {
-    const cam = scene.cameras.main;
-    let z = cam.zoom - deltaY * 0.001;
-    z = Phaser.Math.Clamp(z, 0.5, 2.5);
-    cam.setZoom(z);
-  });
-}
+  // Gather already-placed fish coordinates to respect min distance
+  const placed = existingFish.map(f => ({ q: f.q, r: f.r }));
 
-/* ---------------- Turn UI ---------------- */
-export function setupTurnUI(scene) {
-  // Ensure resource state exists BEFORE drawing HUD
-  if (!scene.playerResources) {
-    scene.playerResources = { food: 20, scrap: 20, money: 100, influence: 0 };
-  }
+  // We’ll try to place up to (5 - existing) new fish
+  const need = 5 - existingFish.length;
+  const rnd = _rng(scene);
 
-  // Resource HUD (top-left, fixed)
-  createResourceHUD(scene);
-  // Expose update/bump so game logic can adjust HUD
-  scene.updateResourceUI = () => updateResourceUI(scene);
-  scene.bumpResource = (key) => bumpResource(scene, key);
-  updateResourceUI(scene);
+  // Shuffle candidates for variety
+  const shuffled = [...waterTiles].sort(() => rnd() - 0.5);
 
-  // Turn label
-  scene.turnText = scene.add.text(20, 58, 'Player Turn: ...', {
-    fontSize: '18px',
-    fill: '#e8f6ff',
-    backgroundColor: '#133046',
-    padding: { x: 10, y: 5 }
-  }).setScrollFactor(0).setDepth(100).setInteractive();
+  for (const tile of shuffled) {
+    if (placed.length >= existingFish.length + need) break;
 
-  // End Turn button
-  scene.endTurnButton = scene.add.text(20, 88, 'End Turn', {
-    fontSize: '18px',
-    fill: '#fff',
-    backgroundColor: '#3da9fc',
-    padding: { x: 10, y: 5 }
-  }).setScrollFactor(0).setDepth(100).setInteractive();
+    const { q, r } = tile;
+    // Enforce bounds (0..mapWidth-1 / 0..mapHeight-1) just in case
+    if (!_inBounds(scene, q, r)) continue;
 
-  scene.endTurnButton.on('pointerdown', () => {
-    scene.endTurn();
-  });
+    // Enforce minimum hex distance to all already placed fish
+    const ok = placed.every(p => _hexDistanceAxial(p.q, p.r, q, r) >= 8);
+    if (!ok) continue;
 
-  // Refresh button
-  scene.refreshButton = scene.add.text(20, 121, 'Refresh', {
-    fontSize: '18px',
-    fill: '#fff',
-    backgroundColor: '#444',
-    padding: { x: 10, y: 5 }
-  }).setScrollFactor(0).setDepth(100).setInteractive();
+    // Avoid duplicates on same hex if something already placed there
+    const already = scene.resources.find(o => o.type === 'fish' && o.q === q && o.r === r);
+    if (already) continue;
 
-  scene.refreshButton.on('pointerdown', () => {
-    refreshUnits(scene);
-  });
-
-  // Unit Action Panel (2×2)
-  createUnitActionPanel(scene);
-}
-
-export function updateTurnText(scene, currentTurn) {
-  if (scene.turnText) {
-    scene.turnText.setText('Player Turn: ' + currentTurn);
-  }
-}
-
-/* =========================
-   RESOURCE HUD (NEW)
-   ========================= */
-function createResourceHUD(scene) {
-  // Visual style
-  const plateColor = 0x0f2233;
-  const strokeColor = 0x3da9fc;
-
-  const originX = 20;
-  const originY = 16;
-
-  const panel = scene.add.container(originX, originY).setScrollFactor(0).setDepth(2000);
-
-  // Background plate
-  const W = 280, H = 34;
-  const bg = scene.add.graphics();
-  bg.fillStyle(plateColor, 0.92);
-  bg.fillRoundedRect(0, 0, W, H, 10);
-  bg.lineStyle(2, strokeColor, 0.9);
-  bg.strokeRoundedRect(0, 0, W, H, 10);
-
-  panel.add(bg);
-
-  // Entries: emoji + value text, always shown even if 0
-  const items = [
-    { key: 'food',      emoji: '🍖', label: 'Food' },
-    { key: 'scrap',     emoji: '🛠', label: 'Scrap' },
-    { key: 'money',     emoji: '💰', label: 'Money' },
-    { key: 'influence', emoji: '⭐', label: 'Inf' },
-  ];
-
-  const gap = 66; // horizontal spacing between entries
-  const startX = 12; // padding from left
-  const yMid = H / 2;
-
-  const entries = {};
-
-  items.forEach((it, i) => {
-    const x = startX + i * gap;
-
-    const icon = scene.add.text(x, yMid, it.emoji, {
+    // Create visible emoji
+    const pos = scene.axialToWorld ? scene.axialToWorld(q, r) : _fallbackAxialToWorld(scene, q, r);
+    const obj = scene.add.text(pos.x, pos.y, '🐟', {
       fontSize: '18px',
       color: '#ffffff'
-    }).setOrigin(0, 0.5).setDepth(2001);
+    }).setOrigin(0.5).setDepth(2050);
 
-    const txt = scene.add.text(x + 22, yMid, '0', {
-      fontSize: '16px',
-      color: '#e8f6ff'
-    }).setOrigin(0, 0.5).setDepth(2001);
-
-    panel.add(icon);
-    panel.add(txt);
-
-    entries[it.key] = { icon, txt };
-  });
-
-  scene.resourceHUD = {
-    container: panel,
-    bg,
-    entries
-  };
-}
-
-function updateResourceUI(scene) {
-  if (!scene.resourceHUD || !scene.resourceHUD.entries) return;
-  const r = scene.playerResources || { food: 0, scrap: 0, money: 0, influence: 0 };
-  const { entries } = scene.resourceHUD;
-
-  // Always display a value, even when zero
-  if (entries.food)      entries.food.txt.setText(String(r.food ?? 0));
-  if (entries.scrap)     entries.scrap.txt.setText(String(r.scrap ?? 0));
-  if (entries.money)     entries.money.txt.setText(String(r.money ?? 0));
-  if (entries.influence) entries.influence.txt.setText(String(r.influence ?? 0));
-}
-
-function bumpResource(scene, key) {
-  if (!scene.resourceHUD || !scene.resourceHUD.entries) return;
-  const entry = scene.resourceHUD.entries[key];
-  if (!entry) return;
-
-  // Small scale bump on both icon and text
-  const targets = [entry.icon, entry.txt];
-  targets.forEach(obj => {
-    obj.setScale(1);
-    scene.tweens.add({
-      targets: obj,
-      scale: 1.15,
-      duration: 120,
-      yoyo: true,
-      ease: 'Quad.easeOut'
-    });
-  });
+    scene.resources.push({ type: 'fish', q, r, obj });
+    placed.push({ q, r });
+  }
 }
 
 /* =========================
-   Unit Action Panel (kept)
+   Helpers
    ========================= */
-function createUnitActionPanel(scene) {
-  // Container position (fixed UI, under Refresh)
-  const originX = 20;
-  const originY = 164;
 
-  const panel = scene.add.container(originX, originY).setScrollFactor(0).setDepth(2000);
-  panel.visible = false;
+function _isWater(terrainType) {
+  const t = String(terrainType || '').toLowerCase();
+  return t === 'water' || t === 'ocean' || t === 'sea';
+}
 
-  // Sci-fi plate background
-  const W = 172, H = 172;
-  const bg = scene.add.graphics();
-  bg.fillStyle(0x0f2233, 0.92);              // deep blue plate
-  bg.fillRoundedRect(0, 0, W, H, 12);
-  bg.lineStyle(2, 0x3da9fc, 1);               // neon edge
-  bg.strokeRoundedRect(0, 0, W, H, 12);
+function _rng(scene) {
+  if (scene?.hexMap && typeof scene.hexMap.rand === 'function') return scene.hexMap.rand;
+  return Math.random;
+}
 
-  // Futuristic inner grid bezel
-  const bezel = scene.add.graphics();
-  bezel.lineStyle(1, 0x9be4ff, 0.25);
-  for (let i = 1; i <= 2; i++) {
-    bezel.strokeRect(8*i, 8*i, W - 16*i, H - 16*i);
-  }
+function _inBounds(scene, q, r) {
+  const W = scene.mapWidth ?? 25;
+  const H = scene.mapHeight ?? 25;
+  return q >= 0 && r >= 0 && q < W && r < H;
+}
 
-  // 2x2 square buttons
-  const btnSize = 70; // square
-  const pad = 8;
-  const startX = 12;
-  const startY = 12;
+// Axial distance using cube conversion
+function _hexDistanceAxial(q1, r1, q2, r2) {
+  const x1 = q1, z1 = r1, y1 = -x1 - z1;
+  const x2 = q2, z2 = r2, y2 = -x2 - z2;
+  return (Math.abs(x1 - x2) + Math.abs(y1 - y2) + Math.abs(z1 - z2)) / 2;
+}
 
-  const labels = ['Docks', 'B', 'C', 'D']; // replace B/C/D later with real actions
-
-  const btns = [];
-  for (let r = 0; r < 2; r++) {
-    for (let c = 0; c < 2; c++) {
-      const x = startX + c * (btnSize + pad);
-      const y = startY + r * (btnSize + pad);
-
-      const g = scene.add.graphics();
-      // button body
-      g.fillStyle(0x173b52, 1);
-      g.fillRoundedRect(x, y, btnSize, btnSize, 8);
-      // subtle border glow
-      g.lineStyle(2, 0x6fe3ff, 0.7);
-      g.strokeRoundedRect(x, y, btnSize, btnSize, 8);
-      // crosshair lines
-      g.lineStyle(1, 0x6fe3ff, 0.15);
-      g.beginPath();
-      g.moveTo(x + btnSize/2, y + 6);
-      g.lineTo(x + btnSize/2, y + btnSize - 6);
-      g.moveTo(x + 6, y + btnSize/2);
-      g.lineTo(x + btnSize - 6, y + btnSize/2);
-      g.strokePath();
-
-      const label = scene.add.text(x + btnSize/2, y + btnSize/2, labels[r*2 + c], {
-        fontSize: '18px',
-        color: '#e8f6ff'
-      }).setOrigin(0.5).setDepth(1);
-
-      const hit = scene.add.rectangle(x, y, btnSize, btnSize, 0x000000, 0)
-        .setOrigin(0,0)
-        .setInteractive({ useHandCursor: true });
-
-      hit.on('pointerover', () => {
-        g.clear();
-        g.fillStyle(0x1a4764, 1);
-        g.fillRoundedRect(x, y, btnSize, btnSize, 8);
-        g.lineStyle(2, 0x9be4ff, 1);
-        g.strokeRoundedRect(x, y, btnSize, btnSize, 8);
-      });
-      hit.on('pointerout', () => {
-        g.clear();
-        g.fillStyle(0x173b52, 1);
-        g.fillRoundedRect(x, y, btnSize, btnSize, 8);
-        g.lineStyle(2, 0x6fe3ff, 0.7);
-        g.strokeRoundedRect(x, y, btnSize, btnSize, 8);
-        g.lineStyle(1, 0x6fe3ff, 0.15);
-        g.beginPath();
-        g.moveTo(x + btnSize/2, y + 6);
-        g.lineTo(x + btnSize/2, y + btnSize - 6);
-        g.moveTo(x + 6, y + btnSize/2);
-        g.lineTo(x + btnSize - 6, y + btnSize/2);
-        g.strokePath();
-      });
-
-      // NOTE: no audio here (removes "ui-click" error). Hook your actions externally.
-      // Example: in WorldScene.js you can attach:
-      // scene.unitPanelButtons[0].on('pointerdown', () => scene.startDocksPlacement());
-
-      btns.push({ g, hit, label });
-      panel.add([g, label, hit]);
-    }
-  }
-
-  panel.add([bg, bezel]);
-  panel.sendToBack(bg);
-  panel.sendToBack(bezel);
-
-  // Expose simple API on the scene
-  scene.showUnitPanel = (unit) => {
-    panel.visible = true;
+// Only used if scene.axialToWorld isn’t bound yet
+function _fallbackAxialToWorld(scene, q, r) {
+  const p = scene.hexToPixel ? scene.hexToPixel(q, r, scene.hexSize || 24) : { x: q * 24, y: r * 24 };
+  return {
+    x: p.x + (scene.mapOffsetX || 0),
+    y: p.y + (scene.mapOffsetY || 0),
   };
-  scene.hideUnitPanel = () => {
-    panel.visible = false;
-  };
-
-  // Expose buttons so WorldScene can attach handlers (e.g., Docks)
-  scene.unitActionPanel = panel;
-  scene.unitPanelButtons = btns; // array of 4 hit areas in order
 }
