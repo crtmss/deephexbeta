@@ -8,8 +8,7 @@
                  Deposit into docks (cap 10). MPs regen each End Turn.
    - Hauler (🚚): land-only, 8 MP/turn; created at mobile base. Auto-assigns nearest docks and
                   immediately heads there: toDocks → pickup (≤5) → returningToBase → deposit → loop.
-   - ODD-R OFFSET neighbors throughout to match the isometric grid you use elsewhere.
-   - Modal menus disable world clicks while open; clicking outside closes them.
+                  **FIX:** returns to the *current* Mobile Base position (not the spawn tile).
    ======================================================================= */
 
 const COLORS = {
@@ -26,10 +25,10 @@ const UI = {
   labelFontSize: 16,
   boxRadius: 8,
   boxStrokeAlpha: 0.9,
-  zBuilding: 2100,     // above terrain
-  zOverlay: 2290,      // modal overlay (below menu, above everything else)
-  zMenu: 2300,         // building menu
-  zCargo: 2101,        // slightly above unit emoji
+  zBuilding: 2100,
+  zOverlay: 2290,
+  zMenu: 2300,
+  zCargo: 2101,
   zDocksStore: 2101,
 };
 
@@ -46,10 +45,8 @@ export const BUILDINGS = {
     validateTile(scene, q, r) {
       const t = _tileAt(scene, q, r);
       if (!t || !_isWater(scene, q, r)) return false;
-      // there must be at least one adjacent land hex
       const landAdj = _offsetNeighbors(q, r).some(h => _isLand(scene, h.q, h.r));
       if (!landAdj) return false;
-      // prevent duplicate on same hex
       if ((scene.buildings || []).some(b => b.type === 'docks' && b.q === q && b.r === r)) return false;
       return true;
     },
@@ -66,16 +63,13 @@ export function startDocksPlacement() {
     console.warn('[BUILD] Docks: no unit selected.');
     return;
   }
-
   const count = (scene.buildings || []).filter(b => b.type === 'docks').length;
   if (count >= 2) {
     console.warn('[BUILD] Docks: limit reached (2). New docks will not spawn.');
     return;
   }
-
   const u = scene.selectedUnit;
 
-  // ring-1 water tiles with adjacent land
   const ring1 = _neighbors(u.q, u.r)
     .filter(({ q, r }) => _isWater(scene, q, r))
     .filter(({ q, r }) => BUILDINGS.docks.validateTile(scene, q, r));
@@ -86,21 +80,6 @@ export function startDocksPlacement() {
     return;
   }
 
-// --- RNG helpers (use map RNG if available for determinism) ---
-function _rand(scene) {
-  // If your HexMap exposes a deterministic RNG (e.g., scene.hexMap.rand), use it.
-  // Fallback to Math.random when not available.
-  return (scene?.hexMap && typeof scene.hexMap.rand === 'function')
-    ? scene.hexMap.rand()
-    : Math.random();
-}
-function _getRandom(list, scene) {
-  if (!list || list.length === 0) return null;
-  const i = Math.floor(_rand(scene) * list.length);
-  return list[i];
-}
-   
-  // coastal water near the base
   const coastal = _computeCoastalWater(scene, u.q, u.r)
     .filter(({ q, r }) => BUILDINGS.docks.validateTile(scene, q, r));
 
@@ -110,7 +89,6 @@ function _getRandom(list, scene) {
     return;
   }
 
-  // nearest water ≤ 3 with adjacent land
   const nearest = _nearestWaterWithin(scene, u.q, u.r, 3);
   if (nearest && BUILDINGS.docks.validateTile(scene, nearest.q, nearest.r)) {
     _placeDocks(scene, nearest.q, nearest.r, 'fallback radius≤3');
@@ -121,7 +99,7 @@ function _getRandom(list, scene) {
 }
 
 export function cancelPlacement() {
-  // kept for compatibility (no-op)
+  // no-op (kept for compatibility)
 }
 
 export function placeDocks(q, r) {
@@ -129,7 +107,6 @@ export function placeDocks(q, r) {
   _placeDocks(scene, q, r, 'direct place');
 }
 
-/** Ship movement/cargo & harvesting resolution (call on End Turn) */
 export function applyShipRoutesOnEndTurn(scene) {
   const buildings = scene.buildings || [];
   const ships = scene.ships || [];
@@ -140,7 +117,6 @@ export function applyShipRoutesOnEndTurn(scene) {
   buildings.forEach(b => {
     if (b.type !== 'docks') return;
 
-    // Ensure docks storage + label
     if (typeof b.storageFood !== 'number') b.storageFood = 0;
     _ensureDocksStoreLabel(scene, b);
     _updateDocksStoreLabel(scene, b);
@@ -152,37 +128,30 @@ export function applyShipRoutesOnEndTurn(scene) {
       if (typeof s.maxMovePoints !== 'number') s.maxMovePoints = 8;
       if (typeof s.movePoints !== 'number') s.movePoints = s.maxMovePoints;
       if (typeof s.cargoFood !== 'number') s.cargoFood = 0;
-      if (!s.mode) s.mode = 'toTarget'; // toTarget | harvesting | returning
+      if (!s.mode) s.mode = 'toTarget';
       _ensureCargoLabel(scene, s);
 
-      // If harvesting but route changed, cancel
       if (s.mode === 'harvesting' && route && (s.harvestAt?.q !== route.q || s.harvestAt?.r !== route.r)) {
         s.mode = 'toTarget';
         s.harvestTurnsRemaining = 0;
         s.harvestAt = null;
       }
 
-      // If no route, idle; if carrying cargo with no route, return
       if (!route && s.cargoFood > 0) s.mode = 'returning';
 
-      // current target based on mode
       let targetQ = s.q, targetR = s.r;
       if (s.mode === 'toTarget' && route) { targetQ = route.q; targetR = route.r; }
-      else if (s.mode === 'returning') { targetQ = b.q; targetR = b.r; } // return to WATER part
+      else if (s.mode === 'returning') { targetQ = b.q; targetR = b.r; }
 
-      // harvesting: collect, count down, regen MPs and skip move
       if (s.mode === 'harvesting') {
         s.cargoFood = Math.min(SHIP_CARGO_CAP, (s.cargoFood || 0) + 1);
         s.harvestTurnsRemaining = Math.max(0, (s.harvestTurnsRemaining || 0) - 1);
         _updateCargoLabel(scene, s);
-        console.log(`[SHIP] docks#${b.id} harvesting at (${s.q},${s.r}) — cargo 🍖×${s.cargoFood}, turns left ${s.harvestTurnsRemaining}`);
-
         if (s.harvestTurnsRemaining === 0 || s.cargoFood >= SHIP_CARGO_CAP) s.mode = 'returning';
         s.movePoints = s.maxMovePoints;
         return;
       }
 
-      // already at target hex
       if (s.q === targetQ && s.r === targetR) {
         if (s.mode === 'toTarget') {
           const onFish = _fishAt(scene, s.q, s.r);
@@ -190,13 +159,10 @@ export function applyShipRoutesOnEndTurn(scene) {
             s.mode = 'harvesting';
             s.harvestTurnsRemaining = 2;
             s.harvestAt = { q: s.q, r: s.r };
-            console.log(`[SHIP] docks#${b.id} arrived on fish (${s.q},${s.r}). Harvest starts next turn (2 turns, cap ${SHIP_CARGO_CAP}).`);
           } else {
             s.mode = 'returning';
-            console.log(`[SHIP] docks#${b.id} arrived at route (${s.q},${s.r}) — no fish. Returning next turn.`);
           }
         } else if (s.mode === 'returning') {
-          // deposit into docks (cap 10). Any overflow stays on ship.
           if (s.cargoFood > 0) {
             const room = Math.max(0, DOCKS_STORAGE_CAP - b.storageFood);
             const deposit = Math.min(room, s.cargoFood);
@@ -204,25 +170,17 @@ export function applyShipRoutesOnEndTurn(scene) {
             s.cargoFood -= deposit;
             _updateDocksStoreLabel(scene, b);
             _updateCargoLabel(scene, s);
-            console.log(`[DOCKS] docks#${b.id} received 🍖×${deposit} (stored=${b.storageFood}/${DOCKS_STORAGE_CAP}, ship left=${s.cargoFood}).`);
           }
-          // if route exists, head out again
           s.mode = route ? 'toTarget' : 'returning';
         }
         s.movePoints = s.maxMovePoints;
         return;
       }
 
-      // no MPs? skip
-      if (s.movePoints <= 0) {
-        return;
-      }
+      if (s.movePoints <= 0) return;
 
       const path = _waterPath(scene, s.q, s.r, targetQ, targetR);
-      if (!path || path.length <= 1) {
-        console.warn(`[SHIP] docks#${b.id} ship@${s.q},${s.r} no water path to ${targetQ},${targetR}`);
-        return;
-      }
+      if (!path || path.length <= 1) return;
 
       _debugDrawWaterPath(scene, path);
 
@@ -239,7 +197,6 @@ export function applyShipRoutesOnEndTurn(scene) {
     });
   });
 
-  // regen MPs at end
   (scene.ships || []).forEach(s => {
     if (typeof s.maxMovePoints !== 'number') s.maxMovePoints = 8;
     s.movePoints = s.maxMovePoints;
@@ -251,7 +208,6 @@ export function applyShipRoutesOnEndTurn(scene) {
   }
 }
 
-/** Build a land hauler at the currently selected unit (mobile base). Auto-assign nearest docks and start moving. */
 export function buildHaulerAtSelectedUnit() {
   const scene = /** @type {Phaser.Scene & any} */ (this);
   const u = scene.selectedUnit;
@@ -259,7 +215,6 @@ export function buildHaulerAtSelectedUnit() {
 
   scene.haulers = scene.haulers || [];
 
-  // Create at the base hex
   const pos = scene.axialToWorld(u.q, u.r);
   const t = scene.add.text(pos.x, pos.y, '🚚', {
     fontSize: '20px',
@@ -277,19 +232,21 @@ export function buildHaulerAtSelectedUnit() {
     movePoints: 8,
     cargoFood: 0,
     cargoObj: null,
-    mode: 'idle',            // 'idle' | 'toDocks' | 'returningToBase'
-    baseQ: u.q, baseR: u.r,  // where to bring food back
-    targetDocksId: null,     // set now → nearest docks
+    mode: 'idle',             // 'idle' | 'toDocks' | 'returningToBase'
+    // --- FIX: remember a *reference* to the Mobile Base, not a static spawn tile
+    baseRef: u,               // dynamic pointer to the unit (expects u.q/u.r to update as base moves)
+    baseQ: u.q,               // fallback if baseRef becomes unavailable
+    baseR: u.r,
+    targetDocksId: null,
   };
 
-  // pick nearest docks by ground hex distance
   const docksList = (scene.buildings || []).filter(b => b.type === 'docks');
   if (docksList.length > 0) {
     const best = docksList
       .map(b => ({ b, d: _hexManhattan(u.q, u.r, b.gq ?? b.q, b.gr ?? b.r) }))
       .sort((a, b) => a.d - b.d)[0].b;
     hauler.targetDocksId = best.id;
-    hauler.mode = 'toDocks'; // start immediately
+    hauler.mode = 'toDocks';
     console.log(`[HAULER] Auto-assigned to docks#${best.id} at ground(${best.gq},${best.gr}).`);
   } else {
     console.warn('[HAULER] No docks available to assign route.');
@@ -300,11 +257,9 @@ export function buildHaulerAtSelectedUnit() {
   _repositionCargoLabel(scene, hauler);
 }
 
-/** Pick a docks hex for the hauler of the current selection (or first hauler if none). */
 export function enterHaulerRoutePicker() {
   const scene = /** @type {Phaser.Scene & any} */ (this);
 
-  // choose which hauler to set: prefer selected unit if it's a hauler
   let targetHauler = null;
   const sel = scene.selectedUnit;
   if (sel && sel.type === 'hauler') {
@@ -332,7 +287,6 @@ export function enterHaulerRoutePicker() {
   console.log('[HAULER] Click a docks (water or land part) to set as pickup…');
 
   overlay.once('pointerdown', (pointer, localX, localY, event) => {
-    // prevent this click from also triggering world pointerdown in the same frame
     event?.stopPropagation?.();
 
     const approx = scene.pixelToHex(pointer.worldX - (scene.mapOffsetX || 0),
@@ -340,14 +294,12 @@ export function enterHaulerRoutePicker() {
                                     scene.hexSize);
     const rounded = scene.roundHex(approx.q, approx.r);
 
-    // bounds
     if (rounded.q < 0 || rounded.r < 0 || rounded.q >= scene.mapWidth || rounded.r >= scene.mapHeight) {
       console.warn('[HAULER] Route pick out of bounds.');
       overlay.destroy();
       return;
     }
 
-    // find docks whose water or ground hex matches
     const docks = (scene.buildings || []).find(b =>
       b.type === 'docks' && (
         (b.q === rounded.q && b.r === rounded.r) ||
@@ -368,12 +320,10 @@ export function enterHaulerRoutePicker() {
   });
 }
 
-/** Hauler shuttle logic (call on End Turn, after ships ideally). */
 export function applyHaulerBehaviorOnEndTurn(scene) {
   const haulers = scene.haulers || [];
   if (haulers.length === 0) return;
 
-  // Ensure scene base storage exists
   if (typeof scene.mobileBaseStorageFood !== 'number') scene.mobileBaseStorageFood = 0;
 
   let movedAny = false;
@@ -385,7 +335,6 @@ export function applyHaulerBehaviorOnEndTurn(scene) {
 
     const docks = (scene.buildings || []).find(b => b.type === 'docks' && b.id === h.targetDocksId) || null;
 
-    // Decide target based on mode & cargo
     if (!docks) {
       h.mode = 'idle';
       h.movePoints = h.maxMovePoints;
@@ -395,55 +344,45 @@ export function applyHaulerBehaviorOnEndTurn(scene) {
     _ensureDocksStoreLabel(scene, docks);
     _updateDocksStoreLabel(scene, docks);
 
-    // target for land path = docks ground hex
     const targetGroundQ = docks.gq ?? docks.q;
     const targetGroundR = docks.gr ?? docks.r;
 
-    // if carrying cargo and not heading to base, switch to returning
+    // --- FIX: dynamically resolve Mobile Base coords each turn
+    const basePos = _getMobileBaseCoords(scene, h);
+    const baseQ = basePos.q, baseR = basePos.r;
+
     if (h.cargoFood > 0 && h.mode !== 'returningToBase') h.mode = 'returningToBase';
-    // if no cargo and idle, go to docks
     if (h.cargoFood === 0 && h.mode === 'idle') h.mode = 'toDocks';
 
     let targetQ = h.q, targetR = h.r;
     if (h.mode === 'toDocks') { targetQ = targetGroundQ; targetR = targetGroundR; }
-    else if (h.mode === 'returningToBase') { targetQ = h.baseQ; targetR = h.baseR; }
+    else if (h.mode === 'returningToBase') { targetQ = baseQ; targetR = baseR; }
 
-    // arrival handling
     if (h.q === targetQ && h.r === targetR) {
       if (h.mode === 'toDocks') {
-        // pick up up to 5, limited by docks storage and capacity
         const room = Math.max(0, HAULER_CARGO_CAP - h.cargoFood);
         const take = Math.min(room, docks.storageFood || 0);
         docks.storageFood = Math.max(0, (docks.storageFood || 0) - take);
         h.cargoFood += take;
         _updateDocksStoreLabel(scene, docks);
         _updateCargoLabel(scene, h);
-        console.log(`[HAULER] Picked up 🍖×${take} from docks#${docks.id}. Hauler cargo=${h.cargoFood}, docks=${docks.storageFood}/${DOCKS_STORAGE_CAP}.`);
         h.mode = 'returningToBase';
       } else if (h.mode === 'returningToBase') {
-        // deposit to base storage
         if (h.cargoFood > 0) {
           scene.mobileBaseStorageFood += h.cargoFood;
-          console.log(`[BASE] Received 🍖×${h.cargoFood}. Base total=${scene.mobileBaseStorageFood}.`);
           h.cargoFood = 0;
           _updateCargoLabel(scene, h);
         }
-        // head back to docks if assigned
         h.mode = 'toDocks';
       }
       h.movePoints = h.maxMovePoints;
       continue;
     }
 
-    // move if MPs
     if (h.movePoints <= 0) continue;
 
-    // Land-only path (blocks water)
     const path = _landPath(scene, h.q, h.r, targetQ, targetR);
-    if (!path || path.length <= 1) {
-      console.warn(`[HAULER] No land path from (${h.q},${h.r}) to (${targetQ},${targetR}).`);
-      continue;
-    }
+    if (!path || path.length <= 1) continue;
 
     const steps = Math.min(h.movePoints, path.length - 1);
     const nx = path[steps];
@@ -456,7 +395,6 @@ export function applyHaulerBehaviorOnEndTurn(scene) {
     movedAny = true;
   }
 
-  // regen MPs at end
   haulers.forEach(h => { h.movePoints = h.maxMovePoints; });
 
   if (!movedAny) {
@@ -480,7 +418,6 @@ function _placeDocks(scene, q, r, reason = '') {
     return;
   }
 
-  // choose an adjacent land hex for the ground part
   const landAdj = _offsetNeighbors(q, r).filter(h => _isLand(scene, h.q, h.r));
   if (landAdj.length === 0) {
     console.warn(`[BUILD] Docks: no adjacent land at (${q},${r}).`);
@@ -492,7 +429,6 @@ function _placeDocks(scene, q, r, reason = '') {
   scene._buildingIdSeq = (scene._buildingIdSeq || 1) + 1;
   const id = scene._buildingIdSeq;
 
-  // WATER label
   const posW = scene.axialToWorld(q, r);
   const contWater = scene.add.container(posW.x, posW.y).setDepth(UI.zBuilding);
   const labelW = scene.add.text(0, 0, `${BUILDINGS.docks.emojiWater}  ${BUILDINGS.docks.name}`, {
@@ -508,7 +444,6 @@ function _placeDocks(scene, q, r, reason = '') {
   const hitW = scene.add.rectangle(0, 0, wW, hW, 0x000000, 0).setOrigin(0.5).setInteractive({ useHandCursor: true });
   contWater.add([boxW, labelW, hitW]);
 
-  // GROUND label
   const posG = scene.axialToWorld(ground.q, ground.r);
   const contLand = scene.add.container(posG.x, posG.y).setDepth(UI.zBuilding);
   const labelG = scene.add.text(0, 0, `${BUILDINGS.docks.emojiLand}  ${BUILDINGS.docks.name}`, {
@@ -528,16 +463,16 @@ function _placeDocks(scene, q, r, reason = '') {
     id,
     type: BUILDINGS.docks.key,
     name: BUILDINGS.docks.name,
-    q, r,                 // WATER hex
+    q, r, // WATER hex
     container: contWater,
     gq: ground.q, gr: ground.r, // GROUND hex
     containerLand: contLand,
     routeMarker: null,
     menu: null,
     overlay: null,
-    route: null,            // {q,r} (water hex)
-    storageFood: 0,         // 0..10
-    storageObj: null,       // 🍖×N label near ground
+    route: null,
+    storageFood: 0,
+    storageObj: null,
   };
 
   scene.buildings.push(building);
@@ -576,7 +511,6 @@ function _openBuildingMenu(scene, building) {
   });
   building.overlay = overlay;
 
-  // place the menu centered between water & land (slightly toward land)
   const midX = (scene.axialToWorld(building.q, building.r).x + scene.axialToWorld(building.gq, building.gr).x) / 2;
   const midY = (scene.axialToWorld(building.q, building.r).y + scene.axialToWorld(building.gq, building.gr).y) / 2;
 
@@ -682,10 +616,11 @@ function _closeBuildingMenu(scene, building) {
   if (scene.uiLock === 'buildingMenu') scene.uiLock = null;
 }
 
-/* ---------- Ships (build, route, recall) ---------- */
+/* ---------- Ships ---------- */
+
 function _buildShip(scene, building) {
   scene.ships = scene.ships || [];
-  const pos = scene.axialToWorld(building.q, building.r); // WATER hex
+  const pos = scene.axialToWorld(building.q, building.r);
   const t = scene.add.text(pos.x, pos.y, '🚢', {
     fontSize: '20px',
     color: '#ffffff'
@@ -696,14 +631,14 @@ function _buildShip(scene, building) {
     name: 'Ship',
     emoji: '🚢',
     isNaval: true,
-    q: building.q, r: building.r,     // water
+    q: building.q, r: building.r,
     docksId: building.id,
     obj: t,
     maxMovePoints: 8,
     movePoints: 8,
     cargoFood: 0,
     cargoObj: null,
-    mode: 'toTarget',                 // 'toTarget' | 'harvesting' | 'returning'
+    mode: 'toTarget',
     harvestTurnsRemaining: 0,
     harvestAt: null,
   };
@@ -711,7 +646,6 @@ function _buildShip(scene, building) {
 
   _ensureCargoLabel(scene, ship);
   _repositionCargoLabel(scene, ship);
-  console.log(`[DOCKS] Built Ship at WATER(${ship.q},${ship.r}) for docks#${building.id}`);
 }
 
 function _enterRoutePicker(scene, building) {
@@ -733,7 +667,6 @@ function _enterRoutePicker(scene, building) {
   console.log('[DOCKS] Click a reachable water hex to set route…');
 
   overlay.once('pointerdown', (pointer, localX, localY, event) => {
-    // prevent click-through
     event?.stopPropagation?.();
 
     const approx = scene.pixelToHex(pointer.worldX - (scene.mapOffsetX || 0),
@@ -759,7 +692,6 @@ function _enterRoutePicker(scene, building) {
     }
 
     _setRouteMarker(scene, building, rounded.q, rounded.r);
-    console.log(`[DOCKS] Route set for docks#${building.id} at (${rounded.q},${rounded.r}).`);
     overlay.destroy();
   });
 }
@@ -793,13 +725,11 @@ function _recallShips(scene, building) {
   if (ships.length === 0) { console.log(`[DOCKS] Recall: no ships for docks#${building.id}`); return; }
 
   ships.forEach(s => {
-    s.q = building.q; s.r = building.r; // WATER
+    s.q = building.q; s.r = building.r;
     const p = scene.axialToWorld(s.q, s.r);
     s.obj.setPosition(p.x, p.y);
     _repositionCargoLabel(scene, s);
   });
-
-  console.log(`[DOCKS] Ships recalled to WATER docks#${building.id} at (${building.q},${building.r}).`);
 }
 
 /* =========================
@@ -807,7 +737,7 @@ function _recallShips(scene, building) {
    ========================= */
 function _ensureDocksStoreLabel(scene, docks) {
   if (docks.storageObj && !docks.storageObj.destroyed) return;
-  const pos = scene.axialToWorld(docks.gq ?? docks.q, docks.gr ?? docks.r); // prefer ground side
+  const pos = scene.axialToWorld(docks.gq ?? docks.q, docks.gr ?? docks.r);
   docks.storageObj = scene.add.text(pos.x + 16, pos.y - 14, '', {
     fontSize: '14px',
     color: COLORS.docksStoreText,
@@ -821,7 +751,7 @@ function _updateDocksStoreLabel(scene, docks) {
 }
 
 /* =========================
-   Helpers: map, neighbors, paths (ODD-R OFFSET)
+   Helpers
    ========================= */
 
 function _tileAt(scene, q, r) {
@@ -849,7 +779,6 @@ function _offsetNeighbors(q, r) {
 }
 function _neighbors(q, r) { return _offsetNeighbors(q, r); }
 
-/* nearest water within radius (BFS) enforcing adjacent land for docks */
 function _nearestWaterWithin(scene, uq, ur, maxRadius = 3) {
   const key = (q, r) => `${q},${r}`;
   const seen = new Set([key(uq, ur)]);
@@ -874,7 +803,6 @@ function _nearestWaterWithin(scene, uq, ur, maxRadius = 3) {
   return null;
 }
 
-/* coastal water: land neighbor → its water neighbors (enforce adjacent land later) */
 function _computeCoastalWater(scene, uq, ur) {
   const set = new Set(), out = [];
   const add = (q, r) => { const k = `${q},${r}`; if (!set.has(k)) { set.add(k); out.push({ q, r }); } };
@@ -891,14 +819,12 @@ function _computeCoastalWater(scene, uq, ur) {
   return out;
 }
 
-/* water-only reachability */
 function _reachableOnWater(scene, fromQ, fromR, toQ, toR) {
   if (!_isWater(scene, fromQ, fromR) || !_isWater(scene, toQ, toR)) return false;
   if (fromQ === toQ && fromR === toR) return true;
   return !!_waterPath(scene, fromQ, fromR, toQ, toR);
 }
 
-/* BFS water shortest path */
 function _waterPath(scene, fromQ, fromR, toQ, toR) {
   if (!_isWater(scene, toQ, toR) || !_isWater(scene, fromQ, fromR)) return null;
 
@@ -935,7 +861,6 @@ function _waterPath(scene, fromQ, fromR, toQ, toR) {
   return null;
 }
 
-/* BFS land shortest path (blocks water) */
 function _landPath(scene, fromQ, fromR, toQ, toR) {
   if (!_isLand(scene, fromQ, fromR)) return null;
   if (!_isLand(scene, toQ, toR)) return null;
@@ -973,17 +898,12 @@ function _landPath(scene, fromQ, fromR, toQ, toR) {
   return null;
 }
 
-/* Manhattan-ish distance on axial offset grid (for nearest docks) */
 function _hexManhattan(q1, r1, q2, r2) {
-  // convert odd-r to cube approximation or use simple taxi metric
   const dq = Math.abs(q1 - q2);
   const dr = Math.abs(r1 - r2);
   return dq + dr;
 }
 
-/* =========================
-   Debug path polyline (cyan)
-   ========================= */
 function _debugDrawWaterPath(scene, path) {
   try {
     if (!path || path.length < 2) return;
@@ -1002,14 +922,25 @@ function _debugDrawWaterPath(scene, path) {
   } catch {}
 }
 
-/* =========================
-   Resource helpers (fish) + cargo labels
-   ========================= */
+/* ---------- RNG helpers ---------- */
+function _rand(scene) {
+  return (scene?.hexMap && typeof scene.hexMap.rand === 'function')
+    ? scene.hexMap.rand()
+    : Math.random();
+}
+function _getRandom(list, scene) {
+  if (!list || list.length === 0) return null;
+  const i = Math.floor(_rand(scene) * list.length);
+  return list[i];
+}
+
+/* ---------- Resource helpers ---------- */
 function _fishAt(scene, q, r) {
   const res = (scene.resources || []).find(o => o.type === 'fish' && o.q === q && o.r === r);
   return !!res;
 }
 
+/* ---------- Cargo labels ---------- */
 function _ensureCargoLabel(scene, unit) {
   if (unit.cargoObj && !unit.cargoObj.destroyed) return;
   unit.cargoObj = scene.add.text(0, 0, '', {
@@ -1030,11 +961,8 @@ function _repositionCargoLabel(scene, unit) {
   unit.cargoObj.setPosition(p.x + 10, p.y - 6);
 }
 
-/* =========================
-   Destroy building
-   ========================= */
+/* ---------- Destroy building ---------- */
 function _destroyBuilding(scene, building) {
-  // remove labels/containers
   building.container?.destroy(true);
   building.containerLand?.destroy(true);
   building.menu?.destroy(true);
@@ -1042,7 +970,6 @@ function _destroyBuilding(scene, building) {
   building.storageObj?.destroy(true);
   building.routeMarker?.destroy(true);
 
-  // unassign ships/haulers targeting this docks
   (scene.ships || []).forEach(s => {
     if (s.docksId === building.id) s.docksId = null;
   });
@@ -1054,4 +981,23 @@ function _destroyBuilding(scene, building) {
   if (scene.uiLock === 'buildingMenu') scene.uiLock = null;
 
   console.log(`[BUILD] Docks destroyed (id=${building.id}).`);
+}
+
+/* ---------- Mobile Base resolver (FIX) ---------- */
+function _getMobileBaseCoords(scene, hauler) {
+  // 1) live reference provided when the hauler was created
+  if (hauler.baseRef && typeof hauler.baseRef.q === 'number' && typeof hauler.baseRef.r === 'number') {
+    return { q: hauler.baseRef.q, r: hauler.baseRef.r };
+  }
+  // 2) search in known units (if you tag the base with type/isMobileBase later)
+  if (Array.isArray(scene.players)) {
+    const mb = scene.players.find(u =>
+      u?.type === 'mobileBase' || u?.isMobileBase === true || u?.name === 'Mobile Base'
+    );
+    if (mb && typeof mb.q === 'number' && typeof mb.r === 'number') {
+      return { q: mb.q, r: mb.r };
+    }
+  }
+  // 3) fallback to original spawn tile
+  return { q: hauler.baseQ, r: hauler.baseR };
 }
