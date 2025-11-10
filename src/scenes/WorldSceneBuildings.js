@@ -119,7 +119,9 @@ export function placeDocks(q, r) {
      then returns to docks and deposits into docks storage.
    - Draws cyan line each time a move step happens.
    --------------------------------------------------------------------- */
-export function applyShipRoutesOnEndTurn(scene) {
+export function applyShipRoutesOnEndTurn(sceneArg) {
+  const scene = sceneArg || /** @type {any} */ (this);
+  if (!scene) return; // safety if called unbound and no arg
   _ensureResourceInit(scene);
 
   const buildings = scene.buildings || [];
@@ -286,7 +288,7 @@ export function buildHaulerAtSelectedUnit() {
   const docksList = (scene.buildings || []).filter(b => b.type === 'docks');
   if (docksList.length > 0) {
     const best = docksList
-      .map(b => ({ b, d: _hexManhattan(u.q, u.r, b.gq ?? b.q, b.gr ?? b.r) }))
+      .map(b => ({ b, d: _hexManhattan(u.q, u.r, b.gq ?? b.q, b.gr ?? b.r) }))}
       .sort((a, b) => a.d - b.d)[0].b;
     hauler.targetDocksId = best.id;
     hauler.mode = 'toDocks';
@@ -364,7 +366,9 @@ export function enterHaulerRoutePicker() {
 /* -----------------------------------------------------------------------
    HAULERS: apply on end turn (move/deliver/return)
    --------------------------------------------------------------------- */
-export function applyHaulerBehaviorOnEndTurn(scene) {
+export function applyHaulerBehaviorOnEndTurn(sceneArg) {
+  const scene = sceneArg || /** @type {any} */ (this);
+  if (!scene) return; // safety if called unbound and no arg
   _ensureResourceInit(scene);
 
   const haulers = scene.haulers || [];
