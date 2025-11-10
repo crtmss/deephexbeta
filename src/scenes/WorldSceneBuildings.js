@@ -287,9 +287,9 @@ export function buildHaulerAtSelectedUnit() {
 
   const docksList = (scene.buildings || []).filter(b => b.type === 'docks');
   if (docksList.length > 0) {
-    const best = docksList
-      .map(b => ({ b, d: _hexManhattan(u.q, u.r, b.gq ?? b.q, b.gr ?? b.r) }))}
-      .sort((a, b) => a.d - b.d)[0].b;
+const best = docksList
+  .map(b => ({ b, d: _hexManhattan(u.q, u.r, b.gq ?? b.q, b.gr ?? b.r) }))
+  .sort((a, b) => a.d - b.d)[0].b;
     hauler.targetDocksId = best.id;
     hauler.mode = 'toDocks';
     console.log(`[HAULER] Auto-assigned to docks#${best.id} at ground(${best.gq},${best.gr}).`);
