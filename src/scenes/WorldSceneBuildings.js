@@ -314,18 +314,6 @@ if (docksList.length > 0) {
   _repositionCargoLabel(scene, hauler);
 }
 
-export function enterHaulerRoutePicker() {
-  const scene = /** @type {Phaser.Scene & any} */ (this);
-  const sel = scene.selectedUnit;
-  let targetHauler = null;
-
-  if (sel && sel.type === 'hauler') targetHauler = sel;
-  else targetHauler = (scene.haulers || [])[0] || null;
-
-  if (!targetHauler) {
-    console.warn('[HAULER] No hauler available to set a route for.');
-    return;
-  }
 
   const cam = scene.cameras.main;
   const overlay = scene.add.rectangle(
@@ -1145,3 +1133,15 @@ function _getMobileBaseCoords(scene, hauler) {
    Back-compat export alias for older imports in WorldScene.js
    --------------------------------------------------------------------- */
 export { applyHaulerBehaviorOnEndTurn as applyHaulerRoutesOnEndTurn };
+export function enterHaulerRoutePicker() {
+  const scene = /** @type {Phaser.Scene & any} */ (this);
+  const sel = scene.selectedUnit;
+  let targetHauler = null;
+
+  if (sel && sel.type === 'hauler') targetHauler = sel;
+  else targetHauler = (scene.haulers || [])[0] || null;
+
+  if (!targetHauler) {
+    console.warn('[HAULER] No hauler available to set a route for.');
+    return;
+  }
