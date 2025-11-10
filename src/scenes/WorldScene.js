@@ -9,11 +9,10 @@ import { spawnUnitsAndEnemies, subscribeToGameUpdates } from './WorldSceneUnits.
 import {
   startDocksPlacement,
   cancelPlacement,
+  // Optional end-turn movers implemented in WorldSceneBuildings.js
   applyShipRoutesOnEndTurn as _applyShipRoutesOnEndTurn,
-  // The hauler handler might not yet exist — import optional fallback
+  applyHaulerRoutesOnEndTurn as _applyHaulerRoutesOnEndTurn,
 } from './WorldSceneBuildings.js';
-
-const _applyHaulerRoutesOnEndTurn = null; // placeholder so no missing export
 
 import { spawnFishResources } from './WorldSceneResources.js';
 
