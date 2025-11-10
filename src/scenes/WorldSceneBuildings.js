@@ -1,4 +1,14 @@
-// deephexbeta/src/scenes/WorldSceneBuildings.js
+const docksList = (scene.buildings || []).filter(b => b.type === 'docks');
+if (docksList.length > 0) {
+  const best = docksList
+    .map(b => ({ b, d: _hexManhattan(u.q, u.r, b.gq ?? b.q, b.gr ?? b.r) }))
+    .sort((a, b) => a.d - b.d)[0].b;
+  hauler.targetDocksId = best.id;
+  hauler.mode = 'toDocks';
+  console.log(`[HAULER] Auto-assigned to docks#${best.id} at ground(${best.gq},${best.gr}).`);
+} else {
+  console.warn('[HAULER] No docks available to assign route.');
+}// deephexbeta/src/scenes/WorldSceneBuildings.js
 
 /* =========================================================================
    Buildings, Ships, Haulers + Resources
@@ -287,15 +297,17 @@ export function buildHaulerAtSelectedUnit() {
 
   const docksList = (scene.buildings || []).filter(b => b.type === 'docks');
   if (docksList.length > 0) {
-const best = docksList
-  .map(b => ({ b, d: _hexManhattan(u.q, u.r, b.gq ?? b.q, b.gr ?? b.r) }))
-  .sort((a, b) => a.d - b.d)[0].b;
-    hauler.targetDocksId = best.id;
-    hauler.mode = 'toDocks';
-    console.log(`[HAULER] Auto-assigned to docks#${best.id} at ground(${best.gq},${best.gr}).`);
-  } else {
-    console.warn('[HAULER] No docks available to assign route.');
-  }
+const docksList = (scene.buildings || []).filter(b => b.type === 'docks');
+if (docksList.length > 0) {
+  const best = docksList
+    .map(b => ({ b, d: _hexManhattan(u.q, u.r, b.gq ?? b.q, b.gr ?? b.r) }))
+    .sort((a, b) => a.d - b.d)[0].b;
+  hauler.targetDocksId = best.id;
+  hauler.mode = 'toDocks';
+  console.log(`[HAULER] Auto-assigned to docks#${best.id} at ground(${best.gq},${best.gr}).`);
+} else {
+  console.warn('[HAULER] No docks available to assign route.');
+}
 
   scene.haulers.push(hauler);
   _ensureCargoLabel(scene, hauler);
