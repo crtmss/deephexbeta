@@ -1124,3 +1124,8 @@ function _getMobileBaseCoords(scene, hauler) {
   }
   return { q: hauler.baseQ, r: hauler.baseR };
 }
+
+/* -----------------------------------------------------------------------
+   Back-compat export alias for older imports in WorldScene.js
+   --------------------------------------------------------------------- */
+export { applyHaulerBehaviorOnEndTurn as applyHaulerRoutesOnEndTurn };
