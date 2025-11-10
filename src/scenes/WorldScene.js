@@ -67,7 +67,6 @@ export default class WorldScene extends Phaser.Scene {
     this.input.setDefaultCursor('grab');
     this.isDragging = false;
     this.isUnitMoving = false;
-    this.uiLock = null; // NEW: when truthy, disable map clicks/hex inspect
 
     const pad = this.hexSize * 2;
     const mapPixelWidth = this.hexSize * Math.sqrt(3) * (this.mapWidth + 0.5) + pad * 2;
@@ -120,12 +119,6 @@ export default class WorldScene extends Phaser.Scene {
     this.getColorForTerrain = getColorForTerrain.bind(this);
     this.isoOffset = isoOffset.bind(this);
 
-    // Match camera background to water color
-    try {
-      const waterColor = this.getColorForTerrain('water');
-      if (waterColor != null) this.cameras.main.setBackgroundColor(waterColor);
-    } catch (_) { /* ignore */ }
-
     // === isometry-aware axial -> world position (includes map offsets + elevation lift)
     this.axialToWorld = (q, r) => {
       const tile = this.mapData?.find(t => t.q === q && t.r === r);
@@ -147,7 +140,7 @@ export default class WorldScene extends Phaser.Scene {
     this.pathLabels = [];
     this.debugGraphics = this.add.graphics({ x: 0, y: 0 }).setDepth(100);
 
-    // === HEX INSPECT glue
+    // === HEX INSPECT glue (so geo-object clicks can feed into it)
     this.events.on('hex-inspect', (text) => this.hexInspect(text));
     this.events.on('hex-inspect-extra', ({ header, lines }) => {
       const payload = [`[HEX INSPECT] ${header}`, ...(lines || [])].join('\n');
@@ -166,6 +159,10 @@ export default class WorldScene extends Phaser.Scene {
     delete this.mapData.__locationsApplied;
     drawHexMap.call(this);
 
+    // set camera background same as water color
+    const waterColor = this.getColorForTerrain('water');
+    this.cameras.main.setBackgroundColor(waterColor);
+
     // === Top-center world meta badge (Geography & Biome)
     const { geography, biome } =
       (this.hexMap.worldInfo ?? this.hexMap.worldMeta) || getWorldSummaryForSeed(this.seed);
@@ -176,7 +173,6 @@ export default class WorldScene extends Phaser.Scene {
     setupCameraControls(this);
     setupTurnUI(this);
 
-    // Expose Docks placement to the UI and allow ESC to cancel (no-op for auto version)
     this.startDocksPlacement = () => startDocksPlacement.call(this);
     this.input.keyboard?.on('keydown-ESC', () => cancelPlacement.call(this));
 
@@ -210,39 +206,25 @@ export default class WorldScene extends Phaser.Scene {
       });
     }
 
-    // 🖱️ Pointer Click: Move or Select (respect uiLock)
+    // 🖱️ Pointer Click: Move or Select
     this.input.on("pointerdown", pointer => {
-      if (pointer.rightButtonDown()) return;
-
-      // If a modal (building menu) is open, ignore map clicks entirely
+      // Block map interactions when a modal (building menu / route picker) is active
       if (this.uiLock) return;
+
+      if (pointer.rightButtonDown()) return;
 
       const { worldX, worldY } = pointer;
       const approx = this.pixelToHex(worldX - (this.mapOffsetX || 0), worldY - (this.mapOffsetY || 0), this.hexSize);
       const rounded = this.roundHex(approx.q, approx.r);
 
-      // guard: ignore out-of-bounds for all actions
-      if (rounded.q < 0 || rounded.r < 0 || rounded.q >= this.mapWidth || rounded.r >= this.mapHeight) {
-        return;
-      }
-
-      /* ---------- Handle building placement first (auto for Docks) ---------- */
-      if (this.placing?.type === 'docks') {
-        const key = `${rounded.q},${rounded.r}`;
-        if (this.placing.valid?.has(key)) {
-          placeDocks.call(this, rounded.q, rounded.r);
-        } else {
-          cancelPlacement.call(this);
-        }
-        return;
-      }
-      /* --------------------------------------------------------------------- */
+      // bounds guard for selection
+      if (rounded.q < 0 || rounded.r < 0 || rounded.q >= this.mapWidth || rounded.r >= this.mapHeight) return;
 
       const tile = this.mapData.find(h => h.q === rounded.q && h.r === rounded.r);
       const playerHere = this.players.find(p => p.q === rounded.q && p.r === rounded.r);
 
       this.selectedHex = rounded;
-      this.debugHex(rounded.q, rounded.r); // enhanced debug (bounds-safe)
+      this.debugHex(rounded.q, rounded.r); // enhanced debug (has its own bounds guard)
 
       if (this.selectedUnit) {
         // Deselect if clicking the same hex
@@ -252,17 +234,21 @@ export default class WorldScene extends Phaser.Scene {
           return;
         }
 
-        const isBlocked = t => !t || t.type === 'water' || t.type === 'mountain';
+        const isBlocked = tile => !tile || tile.type === 'water' || tile.type === 'mountain';
         const fullPath = findPath(this.selectedUnit, rounded, this.mapData, isBlocked);
         if (fullPath && fullPath.length > 1) {
           const movePoints = this.selectedUnit.movementPoints || 10;
           let totalCost = 0;
           const trimmedPath = [fullPath[0]];
           for (let i = 1; i < fullPath.length; i++) {
-            const stepTile = this.mapData.find(h => h.q === fullPath[i].q && h.r === fullPath[i].r);
-            const cost = stepTile?.movementCost || 1;
+            const t = this.mapData.find(h => h.q === fullPath[i].q && h.r === fullPath[i].r);
+            const cost = t?.movementCost || 1;
             totalCost += cost;
-            if (totalCost <= movePoints) trimmedPath.push(fullPath[i]); else break;
+            if (totalCost <= movePoints) {
+              trimmedPath.push(fullPath[i]);
+            } else {
+              break;
+            }
           }
 
           if (trimmedPath.length > 1) {
@@ -275,36 +261,31 @@ export default class WorldScene extends Phaser.Scene {
           console.log("Path not found or blocked.");
         }
       } else {
-        // Nothing selected yet: click selects a unit
         if (playerHere) {
           this.selectedUnit = playerHere;
           this.selectedUnit.movementPoints = 10;
           this.showUnitPanel?.(this.selectedUnit);   // show the 4-button panel
           console.log(`[SELECTED] Unit at (${playerHere.q}, ${playerHere.r})`);
-        } else {
-          // Clicked empty terrain → ensure the panel is hidden
-          this.selectedUnit = null;
-          this.hideUnitPanel?.();
         }
       }
     });
 
-    // 🧭 Pointer Move: Draw Path Preview (respect uiLock)
+    // 🧭 Pointer Move: Draw Path Preview
     this.input.on("pointermove", pointer => {
-      if (this.uiLock) return; // ignore while modal open
+      if (this.uiLock) return;                // block while modal is active
       if (!this.selectedUnit || this.isUnitMoving) return;
 
       const { worldX, worldY } = pointer;
       const approx = this.pixelToHex(worldX - (this.mapOffsetX || 0), worldY - (this.mapOffsetY || 0), this.hexSize);
       const rounded = this.roundHex(approx.q, approx.r);
 
-      // guard: ignore out-of-bounds previews
+      // bounds guard for preview
       if (rounded.q < 0 || rounded.r < 0 || rounded.q >= this.mapWidth || rounded.r >= this.mapHeight) {
         this.clearPathPreview();
         return;
       }
 
-      const isBlocked = t => !t || t.type === 'water' || t.type === 'mountain';
+      const isBlocked = tile => !tile || tile.type === 'water' || tile.type === 'mountain';
       const path = findPath(this.selectedUnit, rounded, this.mapData, isBlocked);
 
       this.clearPathPreview();
@@ -314,8 +295,8 @@ export default class WorldScene extends Phaser.Scene {
 
         for (let i = 0; i < path.length; i++) {
           const step = path[i];
-          const stepTile = this.mapData.find(h => h.q === step.q && h.r === step.r);
-          const moveCost = stepTile?.movementCost || 1;
+          const t = this.mapData.find(h => h.q === step.q && h.r === step.r);
+          const moveCost = t?.movementCost || 1;
 
           const { x, y } = this.axialToWorld(step.q, step.r);
           const isStart = i === 0;
@@ -358,7 +339,16 @@ export default class WorldScene extends Phaser.Scene {
   // Minimal inspector that the geo-object code can call.
   // Feel free to replace with your in-game panel later.
   hexInspect(text) {
-    if (!text || this.uiLock) return; // lock prevents console spam while menu open
+    if (!text) return;
+
+    // early bounds filter for (q,r) logs in our debugHex; this method may receive plain text too
+    const tryMatch = String(text).match(/\(([-]?\d+),\s*([-]?\d+)\)/);
+    if (tryMatch) {
+      const q = parseInt(tryMatch[1], 10);
+      const r = parseInt(tryMatch[2], 10);
+      if (q < 0 || r < 0 || q >= this.mapWidth || r >= this.mapHeight) return;
+    }
+
     const lines = String(text).split('\n');
     const title = lines.shift() || '[HEX INSPECT]';
     console.groupCollapsed(title);
@@ -401,14 +391,12 @@ export default class WorldScene extends Phaser.Scene {
     this.pathLabels = [];
   }
 
-  // --- CLICK DEBUG: neighbor levels; bounds-safe and includes buildings ---
+  // --- CLICK DEBUG: neighbor levels per YOUR side numbering using odd-r axial deltas ---
   debugHex(q, r) {
-    // ignore while modal open
-    if (this.uiLock) return;
-
-    // ignore out-of-bounds requests
+    // bounds guard
     if (q < 0 || r < 0 || q >= this.mapWidth || r >= this.mapHeight) return;
 
+    // Local outline
     const center = this.axialToWorld(q, r);
     this.debugGraphics.clear();
     this.debugGraphics.lineStyle(2, 0xff00ff, 1);
@@ -425,10 +413,10 @@ export default class WorldScene extends Phaser.Scene {
     if (tile?.hasVehicle) objects.push("Vehicle");
     if (tile?.hasRoad) objects.push("Road");
 
-    // include buildings
+    // count buildings on this tile
     const buildingsHere = (this.buildings || []).filter(b => b.q === q && b.r === r);
-    if (buildingsHere.length) {
-      buildingsHere.forEach(b => objects.push(`Building: ${b.name}`));
+    if (buildingsHere.length > 0) {
+      objects.push(...buildingsHere.map(b => b.name || b.type));
     }
 
     console.log(`[HEX INSPECT] (${q}, ${r})`);
@@ -437,36 +425,6 @@ export default class WorldScene extends Phaser.Scene {
     console.log(`• Player Unit: ${playerHere ? "Yes" : "No"}`);
     console.log(`• Enemy Units: ${enemiesHere.length}`);
     console.log(`• Objects: ${objects.join(", ") || "None"}`);
-
-    const isOdd = (r & 1) === 1;
-
-    // even row deltas
-    const evenNE = [0, -1], evenE = [+1, 0], evenSE = [0, +1];
-    const evenSW = [-1, +1], evenW = [-1, 0], evenNW = [-1, -1];
-
-    // odd row deltas
-    const oddNE = [+1, -1], oddE = [+1, 0], oddSE = [+1, +1];
-    const oddSW = [0, +1], oddW = [-1, 0], oddNW = [0, -1];
-
-    const deltas = isOdd
-      ? [oddNE, oddE, oddSE, oddSW, oddW, oddNW]
-      : [evenNE, evenE, evenSE, evenSW, evenW, evenNW];
-
-    for (let side = 0; side < 6; side++) {
-      const [dq, dr] = deltas[side];
-      const nq = q + dq, nr = r + dr;
-      if (nq < 0 || nr < 0 || nq >= this.mapWidth || nr >= this.mapHeight) {
-        console.log(`Side ${side} - adjacent to hex level N/A (off map)`);
-        continue;
-      }
-      const nTile = this.mapData.find(h => h.q === nq && h.r === nr);
-      if (!nTile) {
-        console.log(`Side ${side} - adjacent to hex level N/A (off map)`);
-      } else {
-        const lvl = (typeof nTile.elevation === 'number') ? nTile.elevation : 'N/A';
-        console.log(`Side ${side} - adjacent to hex level ${lvl} (terrain ${nTile.type})`);
-      }
-    }
   }
 
   startStepMovement() {
@@ -502,12 +460,9 @@ export default class WorldScene extends Phaser.Scene {
 
   endTurn() {
     if (this.playerName !== this.lobbyState.currentTurn) return;
-
-    // NEW: apply ship routes (teleport ships to their 'X' route)
-    applyShipRoutesOnEndTurn(this);
-
     this.selectedUnit = null;
     this.hideUnitPanel?.();  // hide the panel when the turn ends
+
     if (this.selectedHexGraphic) {
       this.selectedHexGraphic.destroy();
       this.selectedHexGraphic = null;
@@ -515,6 +470,12 @@ export default class WorldScene extends Phaser.Scene {
     if (this.turnText) {
       this.turnText.setText("Player Turn: ...");
     }
+
+    // NEW: teleport boats to their assigned route on end turn
+    if (typeof applyShipRoutesOnEndTurn === 'function') {
+      applyShipRoutesOnEndTurn(this);
+    }
+
     if (this.isHost) this.moveEnemies();
   }
 
@@ -540,6 +501,31 @@ export default class WorldScene extends Phaser.Scene {
       }
     });
 
-    this.syncEnemies();
+    // Guarded sync call
+    if (typeof this.syncEnemies === 'function') {
+      this.syncEnemies();
+    } else {
+      console.warn('[SYNC] syncEnemies() is not defined; skipping enemy sync.');
+    }
+  }
+
+  // --- Multiplayer sync for enemy positions (safe no-op if supabase unavailable)
+  async syncEnemies() {
+    try {
+      if (!this.supabase || !this.roomCode) {
+        console.warn('[SYNC] Supabase not available; skipping enemy sync.');
+        return;
+      }
+      // Persist enemies as plain {q,r}
+      const state = this.lobbyState || {};
+      state.enemies = (this.enemies || []).map(e => ({ q: e.q, r: e.r }));
+      await this.supabase
+        .from('lobbies')
+        .update({ state })
+        .eq('room_code', this.roomCode);
+      // console.log('[SYNC] Enemies synced:', state.enemies);
+    } catch (err) {
+      console.warn('[SYNC] Failed to sync enemies:', err);
+    }
   }
 }
