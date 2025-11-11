@@ -1114,6 +1114,5 @@ export {
   // BUILDINGS registry + public API
   BUILDINGS,
   startDocksPlacement,
-  cancelPlacement,
 };
 // ===== End of WorldSceneBuildings.js (Part 4/4, FINAL) =====
