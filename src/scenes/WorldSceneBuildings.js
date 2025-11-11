@@ -1116,7 +1116,6 @@ export {
   startDocksPlacement,
   cancelPlacement,
   placeDocks,
-  applyShipRoutesOnEndTurn,
   buildHaulerAtSelectedUnit,
   applyHaulerBehaviorOnEndTurn
 };
