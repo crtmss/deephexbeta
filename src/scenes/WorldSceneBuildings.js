@@ -1113,6 +1113,5 @@ export { applyHaulerBehaviorOnEndTurn as applyHaulerRoutesOnEndTurn };
 export {
   // BUILDINGS registry + public API
   BUILDINGS,
-  startDocksPlacement,
 };
 // ===== End of WorldSceneBuildings.js (Part 4/4, FINAL) =====
