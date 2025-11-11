@@ -1110,8 +1110,5 @@ export { applyHaulerBehaviorOnEndTurn as applyHaulerRoutesOnEndTurn };
 // NOTE: most functions are already exported at declaration site.
 // This final block is only for clarity and tooling friendliness.
 // If your bundler complains about re-exports, you can remove this block.
-export {
-  // BUILDINGS registry + public API
-  BUILDINGS,
-};
+
 // ===== End of WorldSceneBuildings.js (Part 4/4, FINAL) =====
