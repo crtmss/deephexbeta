@@ -1115,6 +1115,5 @@ export {
   BUILDINGS,
   startDocksPlacement,
   cancelPlacement,
-  placeDocks,
 };
 // ===== End of WorldSceneBuildings.js (Part 4/4, FINAL) =====
