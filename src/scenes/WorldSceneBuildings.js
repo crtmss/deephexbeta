@@ -1111,25 +1111,13 @@ export { applyHaulerBehaviorOnEndTurn as applyHaulerRoutesOnEndTurn };
 // This final block is only for clarity and tooling friendliness.
 // If your bundler complains about re-exports, you can remove this block.
 export {
-  // UI constants if you want to reuse colors/z-depths elsewhere
-  // (commented out by default to keep external surface tighter)
-  // COLORS, UI,
-
-  // Buildings registry
+  // BUILDINGS registry + public API
   BUILDINGS,
-
-  // Docks flow
   startDocksPlacement,
   cancelPlacement,
   placeDocks,
-
-  // Ships turn logic
   applyShipRoutesOnEndTurn,
-
-  // Haulers
   buildHaulerAtSelectedUnit,
-  applyHaulerBehaviorOnEndTurn,
-  enterHaulerRoutePicker,
+  applyHaulerBehaviorOnEndTurn
 };
-
 // ===== End of WorldSceneBuildings.js (Part 4/4, FINAL) =====
