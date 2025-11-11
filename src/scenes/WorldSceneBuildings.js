@@ -1116,6 +1116,5 @@ export {
   startDocksPlacement,
   cancelPlacement,
   placeDocks,
-  buildHaulerAtSelectedUnit,
 };
 // ===== End of WorldSceneBuildings.js (Part 4/4, FINAL) =====
