@@ -860,18 +860,17 @@ function setupUnitPanel(scene) {
         { fontSize: '11px', color: '#e8f6ff' }
       ).setOrigin(0, 0.5);
 
-      // FIX: hitbox centered so it covers the text too
       const hit = scene.add.rectangle(
-        startX + 80,  // center x
-        y,            // center y
-        160,          // width
-        16,           // height
+        startX + 80,
+        y,
+        160,
+        16,
         0x000000,
         0
       ).setOrigin(0.5, 0.5)
         .setInteractive({ useHandCursor: true });
 
-      // === ACTION HOOKS FOR OPTIONS ===
+      // Default: just log
       let onClick = () => {
         console.log(`[BUILD MENU] ${scene.buildMenuCategory} → ${name}`);
       };
@@ -881,6 +880,14 @@ function setupUnitPanel(scene) {
         onClick = () => {
           console.log('[BUILD MENU] Buildings → Docks (start placement)');
           startDocksPlacement.call(scene);
+        };
+      }
+
+      // Real action: Units → Hauler builds hauler
+      if (scene.buildMenuCategory === 'units' && name === 'Hauler') {
+        onClick = () => {
+          console.log('[BUILD MENU] Units → Hauler (build hauler)');
+          buildHaulerAtSelectedUnit.call(scene);
         };
       }
 
