@@ -176,6 +176,7 @@ export default class WorldScene extends Phaser.Scene {
     this.pathGraphics = this.add.graphics({ x: 0, y: 0 }).setDepth(50);
     this.pathLabels = [];
     this.debugGraphics = this.add.graphics({ x: 0, y: 0 }).setDepth(100);
+    this.uiLock = null; // 'buildMenu' when build submenu is open
 
     // inspector hooks
     this.events.on('hex-inspect', (text) => this.hexInspect(text));
@@ -207,7 +208,7 @@ export default class WorldScene extends Phaser.Scene {
 
     setupCameraControls(this);
     setupTurnUI(this);
-    setupUnitPanel(this);  // <<< creates Buildings / Blank / Set Path / Close panel
+    setupUnitPanel(this); // bottom-left unit action panel
 
     // building placement API
     this.startDocksPlacement = () => startDocksPlacement.call(this);
@@ -252,6 +253,9 @@ export default class WorldScene extends Phaser.Scene {
     this.input.on("pointerdown", pointer => {
       if (pointer.rightButtonDown()) return;
 
+      // Don't move units if build menu is open
+      if (this.uiLock === 'buildMenu') return;
+
       const { worldX, worldY } = pointer;
       const approx = this.pixelToHex(
         worldX - (this.mapOffsetX || 0),
@@ -277,7 +281,6 @@ export default class WorldScene extends Phaser.Scene {
           return;
         }
 
-        // block water/mountain for land movers
         const blocked = t => !t || t.type === 'water' || t.type === 'mountain';
         const fullPath = findPath(this.selectedUnit, rounded, this.mapData, blocked);
         if (fullPath && fullPath.length > 1) {
@@ -314,6 +317,7 @@ export default class WorldScene extends Phaser.Scene {
     // Path preview (land units only)
     this.input.on("pointermove", pointer => {
       if (!this.selectedUnit || this.isUnitMoving) return;
+      if (this.uiLock === 'buildMenu') return; // no preview while build menu open
 
       const { worldX, worldY } = pointer;
       const approx = this.pixelToHex(
@@ -370,165 +374,6 @@ export default class WorldScene extends Phaser.Scene {
         }
       }
     });
-  }
-
-  // ---- BUILD MENU POPUP (Buildings / Units / Infrastructure) ----
-  openBuildMenu() {
-    // If already exists, just show it
-    if (this.buildMenuContainer) {
-      this.buildMenuContainer.setVisible(true);
-      this.buildMenuOverlay?.setVisible(true).setInteractive({ useHandCursor: false });
-      return;
-    }
-
-    const cam = this.cameras.main;
-    const W = 240;
-    const H = 220;
-    const x = cam.width / 2 - W / 2;
-    const y = cam.height / 2 - H / 2;
-
-    // Dim overlay to close on click
-    const overlay = this.add.rectangle(
-      cam.width / 2,
-      cam.height / 2,
-      cam.width,
-      cam.height,
-      0x000000,
-      0.25
-    )
-      .setScrollFactor(0)
-      .setDepth(2050)
-      .setInteractive({ useHandCursor: false });
-
-    overlay.on('pointerdown', () => {
-      this.closeBuildMenu();
-    });
-
-    this.buildMenuOverlay = overlay;
-
-    const container = this.add.container(x, y).setScrollFactor(0).setDepth(2060);
-
-    const bg = this.add.graphics();
-    bg.fillStyle(0x0f2233, 0.95);
-    bg.fillRoundedRect(0, 0, W, H, 10);
-    bg.lineStyle(2, 0x3da9fc, 0.9);
-    bg.strokeRoundedRect(0, 0, W, H, 10);
-
-    // Title
-    const title = this.add.text(W / 2, 18, 'Build Menu', {
-      fontSize: '16px',
-      color: '#e8f6ff'
-    }).setOrigin(0.5, 0.5);
-
-    // Close "X"
-    const closeText = this.add.text(W - 16, 14, '✕', {
-      fontSize: '14px',
-      color: '#e8f6ff'
-    }).setOrigin(0.5, 0.5).setInteractive({ useHandCursor: true });
-
-    closeText.on('pointerdown', () => {
-      this.closeBuildMenu();
-    });
-
-    // Tabs: Buildings / Units / Infrastructure
-    const tabY = 40;
-    const tabXStart = 20;
-    const tabWidth = 70;
-    const tabs = [
-      { id: 'buildings', label: 'Buildings' },
-      { id: 'units',     label: 'Units' },
-      { id: 'infra',     label: 'Infra' },
-    ];
-
-    this.buildMenuTabs = {};
-    this.buildMenuActiveCategory = 'buildings';
-
-    tabs.forEach((t, idx) => {
-      const tx = tabXStart + idx * (tabWidth + 5);
-      const tabRect = this.add.rectangle(tx + tabWidth / 2, tabY, tabWidth, 22, 0x173b52, 1)
-        .setOrigin(0.5)
-        .setInteractive({ useHandCursor: true });
-      const tabLabel = this.add.text(tx + tabWidth / 2, tabY, t.label, {
-        fontSize: '12px',
-        color: '#e8f6ff'
-      }).setOrigin(0.5, 0.5);
-
-      tabRect.on('pointerdown', () => {
-        this.showBuildMenuCategory(t.id);
-      });
-
-      this.buildMenuTabs[t.id] = { rect: tabRect, label: tabLabel };
-      container.add(tabRect);
-      container.add(tabLabel);
-    });
-
-    // Options container area
-    const optionsContainer = this.add.container(0, 68);
-    this.buildMenuOptionsContainer = optionsContainer;
-
-    container.add([bg, title, closeText, optionsContainer]);
-    this.buildMenuContainer = container;
-
-    // First render
-    this.showBuildMenuCategory('buildings');
-  }
-
-  showBuildMenuCategory(category) {
-    this.buildMenuActiveCategory = category;
-
-    const optionsByCategory = {
-      buildings: ['Bunker', 'Docks', 'Mine', 'Factory'],
-      units:     ['Hauler', 'Builder', 'Scout', 'Raider'],
-      infra:     ['Bridge', 'Canal', 'Road', 'Remove Forest', 'Level', 'Other'],
-    };
-
-    // Visual tab highlighting
-    if (this.buildMenuTabs) {
-      Object.entries(this.buildMenuTabs).forEach(([id, obj]) => {
-        const isActive = id === category;
-        obj.rect.fillColor = isActive ? 0x235070 : 0x173b52;
-      });
-    }
-
-    // Clear old option items
-    if (this.buildMenuOptionsContainer) {
-      this.buildMenuOptionsContainer.removeAll(true);
-    }
-
-    const opts = optionsByCategory[category] || [];
-    const startX = 20;
-    const startY = 0;
-    const lineH = 24;
-
-    opts.forEach((name, idx) => {
-      const y = startY + idx * lineH;
-      const optionBg = this.add.rectangle(startX + 90, y + 10, 180, 20, 0x173b52, 0.9)
-        .setOrigin(0.5)
-        .setInteractive({ useHandCursor: true });
-
-      const label = this.add.text(startX + 90, y + 10, name, {
-        fontSize: '13px',
-        color: '#e8f6ff'
-      }).setOrigin(0.5, 0.5);
-
-      optionBg.on('pointerdown', () => {
-        console.log(`[BUILD MENU] ${category} → ${name} (no functionality yet)`);
-        // future: hook real build logic here.
-      });
-
-      this.buildMenuOptionsContainer.add(optionBg);
-      this.buildMenuOptionsContainer.add(label);
-    });
-  }
-
-  closeBuildMenu() {
-    if (this.buildMenuContainer) {
-      this.buildMenuContainer.setVisible(false);
-    }
-    if (this.buildMenuOverlay) {
-      this.buildMenuOverlay.disableInteractive();
-      this.buildMenuOverlay.setVisible(false);
-    }
   }
 
   // Minimal inspector (logs)
@@ -754,7 +599,6 @@ function setupCameraControls(scene) {
   let camStartX = 0;
   let camStartY = 0;
 
-  // Middle mouse drag (or left with ALT, adjust if you like)
   scene.input.on('pointerdown', pointer => {
     if (pointer.middleButtonDown() || pointer.altKey) {
       dragging = true;
@@ -804,7 +648,7 @@ function setupTurnUI(scene) {
     scene.endTurn();
   });
 
-  // End Turn button (HUD, bottom-right-ish)
+  // End Turn button (HUD, bottom-right)
   const cam = scene.cameras.main;
   const x = cam.width - 110;
   const y = cam.height - 40;
@@ -850,11 +694,15 @@ function setupTurnUI(scene) {
   scene.endTurnButton = container;
 }
 
-// Creates the small 4-button unit panel (Buildings / Blank / Set Path / Close)
+/**
+ * Bottom-left unit panel:
+ * Row 1: Buildings / Blank / Set Path / Close
+ * Row 2 (inside same panel): sub-menu with category tabs + options.
+ */
 function setupUnitPanel(scene) {
   const cam = scene.cameras.main;
-  const W = 260;
-  const H = 60;
+  const W = 280;
+  const H = 120;
   const x = 20;
   const y = cam.height - H - 20;
 
@@ -872,26 +720,26 @@ function setupUnitPanel(scene) {
   const btnHeight = 26;
   const margin = 8;
   const startX = 10;
-  const centerY = H / 2;
+  const row1Y = 26;
 
   function makeButton(labelText, index) {
     const xPos = startX + index * (btnWidth + margin);
     const btnBg = scene.add.graphics();
     btnBg.fillStyle(0x173b52, 1);
-    btnBg.fillRoundedRect(xPos, centerY - btnHeight / 2, btnWidth, btnHeight, 6);
+    btnBg.fillRoundedRect(xPos, row1Y - btnHeight / 2, btnWidth, btnHeight, 6);
     btnBg.lineStyle(1, 0x6fe3ff, 0.8);
-    btnBg.strokeRoundedRect(xPos, centerY - btnHeight / 2, btnWidth, btnHeight, 6);
+    btnBg.strokeRoundedRect(xPos, row1Y - btnHeight / 2, btnWidth, btnHeight, 6);
 
     const label = scene.add.text(
       xPos + btnWidth / 2,
-      centerY,
+      row1Y,
       labelText,
       { fontSize: '11px', color: '#e8f6ff' }
     ).setOrigin(0.5, 0.5);
 
     const hit = scene.add.rectangle(
       xPos + btnWidth / 2,
-      centerY,
+      row1Y,
       btnWidth,
       btnHeight,
       0x000000,
@@ -902,35 +750,161 @@ function setupUnitPanel(scene) {
     hit.on('pointerover', () => {
       btnBg.clear();
       btnBg.fillStyle(0x1d4c70, 1);
-      btnBg.fillRoundedRect(xPos, centerY - btnHeight / 2, btnWidth, btnHeight, 6);
+      btnBg.fillRoundedRect(xPos, row1Y - btnHeight / 2, btnWidth, btnHeight, 6);
       btnBg.lineStyle(1, 0x9be4ff, 1);
-      btnBg.strokeRoundedRect(xPos, centerY - btnHeight / 2, btnWidth, btnHeight, 6);
+      btnBg.strokeRoundedRect(xPos, row1Y - btnHeight / 2, btnWidth, btnHeight, 6);
     });
     hit.on('pointerout', () => {
       btnBg.clear();
       btnBg.fillStyle(0x173b52, 1);
-      btnBg.fillRoundedRect(xPos, centerY - btnHeight / 2, btnWidth, btnHeight, 6);
+      btnBg.fillRoundedRect(xPos, row1Y - btnHeight / 2, btnWidth, btnHeight, 6);
       btnBg.lineStyle(1, 0x6fe3ff, 0.8);
-      btnBg.strokeRoundedRect(xPos, centerY - btnHeight / 2, btnWidth, btnHeight, 6);
+      btnBg.strokeRoundedRect(xPos, row1Y - btnHeight / 2, btnWidth, btnHeight, 6);
     });
 
     panel.add([btnBg, label, hit]);
     return { label, hit };
   }
 
-  const btnBuildings = makeButton('Buildings', 0);
-  const btnBlank     = makeButton('Blank',     1);
+  const btnBuildings = makeButton('Buildings', 0); // opens inline submenu
+  const btnBlank     = makeButton('Blank',     1); // was Hauler
   const btnSetPath   = makeButton('Set Path',  2);
   const btnClose     = makeButton('Close',     3);
 
-  // Wire behaviors:
+  // Submenu container (inside panel, row 2)
+  const subY = 52;
+  const subContainer = scene.add.container(0, subY);
+  panel.add(subContainer);
+  scene.buildSubpanel = subContainer;
+  subContainer.setVisible(false);
+  scene.buildMenuCategory = 'buildings';
+
+  const categoryButtons = {};
+  const optionsText = [];
+
+  function clearSubpanel() {
+    subContainer.removeAll(true);
+    optionsText.length = 0;
+  }
+
+  function setUILock(lock) {
+    scene.uiLock = lock ? 'buildMenu' : null;
+  }
+
+  function renderSubpanel() {
+    clearSubpanel();
+
+    // Tabs: Buildings / Units / Infra
+    const catXStart = 16;
+    const catWidth = 70;
+    const catY = 8;
+    const cats = [
+      { id: 'buildings', label: 'Buildings' },
+      { id: 'units',     label: 'Units' },
+      { id: 'infra',     label: 'Infra' },
+    ];
+
+    cats.forEach((c, idx) => {
+      const xPos = catXStart + idx * (catWidth + 6);
+      const g = scene.add.graphics();
+      const isActive = (scene.buildMenuCategory === c.id);
+      g.fillStyle(isActive ? 0x235070 : 0x173b52, 1);
+      g.fillRoundedRect(xPos, 0, catWidth, 20, 6);
+      g.lineStyle(1, 0x6fe3ff, 0.8);
+      g.strokeRoundedRect(xPos, 0, catWidth, 20, 6);
+
+      const t = scene.add.text(
+        xPos + catWidth / 2,
+        10,
+        c.label,
+        { fontSize: '11px', color: '#e8f6ff' }
+      ).setOrigin(0.5, 0.5);
+
+      const hit = scene.add.rectangle(
+        xPos + catWidth / 2,
+        10,
+        catWidth,
+        20,
+        0x000000,
+        0
+      ).setOrigin(0.5, 0.5)
+        .setInteractive({ useHandCursor: true });
+
+      hit.on('pointerdown', () => {
+        scene.buildMenuCategory = c.id;
+        renderSubpanel();
+      });
+
+      subContainer.add([g, t, hit]);
+      categoryButtons[c.id] = { g, t, hit };
+    });
+
+    // Options list for active category
+    const optionsByCategory = {
+      buildings: ['Bunker', 'Docks', 'Mine', 'Factory'],
+      units:     ['Hauler', 'Builder', 'Scout', 'Raider'],
+      infra:     ['Bridge', 'Canal', 'Road', 'Remove Forest', 'Level', 'Other'],
+    };
+    const opts = optionsByCategory[scene.buildMenuCategory] || [];
+
+    const startX = 24;
+    const startY = 28;
+    const lineH = 18;
+
+    opts.forEach((name, idx) => {
+      const y = startY + idx * lineH;
+      const t = scene.add.text(
+        startX,
+        y,
+        `• ${name}`,
+        { fontSize: '11px', color: '#e8f6ff' }
+      ).setOrigin(0, 0.5);
+
+      const hit = scene.add.rectangle(
+        startX + 80,
+        y,
+        160,
+        16,
+        0x000000,
+        0
+      ).setOrigin(0, 0.5)
+        .setInteractive({ useHandCursor: true });
+
+      hit.on('pointerdown', () => {
+        console.log(`[BUILD MENU] ${scene.buildMenuCategory} → ${name}`);
+        // No new functionality (for now): just log selection.
+      });
+
+      subContainer.add([t, hit]);
+      optionsText.push(t);
+    });
+  }
+
+  function openSubpanel() {
+    scene.buildMenuCategory = scene.buildMenuCategory || 'buildings';
+    renderSubpanel();
+    subContainer.setVisible(true);
+    setUILock(true); // unit movement blocked
+  }
+
+  function closeSubpanel() {
+    subContainer.setVisible(false);
+    clearSubpanel();
+    setUILock(false);
+  }
+
+  // Wire main row buttons
   btnBuildings.hit.on('pointerdown', () => {
     console.log('[UI] Buildings button clicked');
-    scene.openBuildMenu();
+    if (subContainer.visible) {
+      closeSubpanel();
+    } else {
+      openSubpanel();
+    }
   });
 
   btnBlank.hit.on('pointerdown', () => {
-    console.log('[UI] Blank button clicked (no action yet)');
+    console.log('[UI] Blank button clicked (no action)');
   });
 
   btnSetPath.hit.on('pointerdown', () => {
@@ -940,6 +914,7 @@ function setupUnitPanel(scene) {
 
   btnClose.hit.on('pointerdown', () => {
     console.log('[UI] Close unit panel');
+    closeSubpanel();
     scene.hideUnitPanel?.();
   });
 
@@ -951,6 +926,7 @@ function setupUnitPanel(scene) {
   };
   scene.hideUnitPanel = () => {
     panel.setVisible(false);
+    closeSubpanel(); // ensure movement is unlocked if panel hidden
   };
 
   // Hotkey: B toggles panel for current selected unit
