@@ -85,6 +85,134 @@ function getTile(scene, q, r) {
   return scene.mapData.find(h => h.q === q && h.r === r);
 }
 
+/* =========================================================
+   BUILDINGS / UNITS / INFRA MENU HELPERS
+   ========================================================= */
+
+function closeBuildMenu(scene) {
+  if (scene.buildMenu) {
+    scene.buildMenu.destroy(true);
+    scene.buildMenu = null;
+  }
+}
+
+/** Root: Buildings / Units / Infrastructure */
+function openBuildRootMenu(scene) {
+  const options = [
+    { label: 'Buildings', onClick: () => openBuildingsMenu(scene) },
+    { label: 'Units', onClick: () => openUnitsMenu(scene) },
+    { label: 'Infrastructure', onClick: () => openInfraMenu(scene) },
+  ];
+  createBuildMenu(scene, 'Build', options);
+}
+
+function openBuildingsMenu(scene) {
+  const options = [
+    { label: 'Bunker',  onClick: () => console.log('[BUILD] Bunker (placeholder)') },
+    { label: 'Docks',   onClick: () => { console.log('[BUILD] Docks'); startDocksPlacement.call(scene); } },
+    { label: 'Mine',    onClick: () => console.log('[BUILD] Mine (placeholder)') },
+    { label: 'Factory', onClick: () => console.log('[BUILD] Factory (placeholder)') },
+  ];
+  createBuildMenu(scene, 'Buildings', options);
+}
+
+function openUnitsMenu(scene) {
+  const options = [
+    { label: 'Hauler',  onClick: () => { console.log('[UNITS] Hauler build'); buildHaulerAtSelectedUnit.call(scene); } },
+    { label: 'Builder', onClick: () => console.log('[UNITS] Builder (placeholder)') },
+    { label: 'Scout',   onClick: () => console.log('[UNITS] Scout (placeholder)') },
+    { label: 'Raider',  onClick: () => console.log('[UNITS] Raider (placeholder)') },
+  ];
+  createBuildMenu(scene, 'Units', options);
+}
+
+function openInfraMenu(scene) {
+  const options = [
+    { label: 'Bridge',        onClick: () => console.log('[INFRA] Bridge (placeholder)') },
+    { label: 'Canal',         onClick: () => console.log('[INFRA] Canal (placeholder)') },
+    { label: 'Road',          onClick: () => console.log('[INFRA] Road (placeholder)') },
+    { label: 'Remove Forest', onClick: () => console.log('[INFRA] Remove Forest (placeholder)') },
+    { label: 'Level',         onClick: () => console.log('[INFRA] Level (placeholder)') },
+    { label: 'Other',         onClick: () => console.log('[INFRA] Other (placeholder)') },
+  ];
+  createBuildMenu(scene, 'Infrastructure', options);
+}
+
+/**
+ * Small floating menu near bottom-left of the screen.
+ * Uses camera width/height + scrollFactor(0) + very high depth.
+ */
+function createBuildMenu(scene, title, options) {
+  closeBuildMenu(scene);
+
+  const cam = scene.cameras.main;
+  const screenW = cam.width;
+  const screenH = cam.height;
+
+  const width = 190;
+  const lineHeight = 26;
+  const padding = 10;
+  const titleHeight = 24;
+  const totalHeight = padding * 2 + titleHeight + options.length * lineHeight + 10;
+
+  const x = 140;                        // near left edge
+  const y = screenH - totalHeight - 40; // a bit above bottom
+
+  console.log('[UI] createBuildMenu at', x, y, 'screenH=', screenH);
+
+  const container = scene.add.container(x, y).setScrollFactor(0).setDepth(99999);
+
+  const bg = scene.add.graphics();
+  bg.fillStyle(0x0f2233, 0.96);
+  bg.fillRoundedRect(0, 0, width, totalHeight, 10);
+  bg.lineStyle(1, 0x3da9fc, 0.8);
+  bg.strokeRoundedRect(0, 0, width, totalHeight, 10);
+
+  const titleText = scene.add.text(width / 2, padding + titleHeight / 2, title, {
+    fontSize: '14px',
+    color: '#e8f6ff',
+    fontStyle: 'bold'
+  }).setOrigin(0.5);
+
+  container.add([bg, titleText]);
+
+  options.forEach((opt, idx) => {
+    const oy = padding + titleHeight + 5 + idx * lineHeight;
+
+    const label = scene.add.text(12, oy + lineHeight / 2, opt.label, {
+      fontSize: '13px',
+      color: '#e8f6ff'
+    }).setOrigin(0, 0.5);
+
+    const hit = scene.add.rectangle(
+      width / 2,
+      oy + lineHeight / 2,
+      width - 10,
+      lineHeight,
+      0x000000,
+      0
+    ).setInteractive({ useHandCursor: true });
+
+    hit.on('pointerover', () => {
+      label.setColor('#ffffff');
+    });
+    hit.on('pointerout', () => {
+      label.setColor('#e8f6ff');
+    });
+    hit.on('pointerdown', () => {
+      opt.onClick?.();
+    });
+
+    container.add([label, hit]);
+  });
+
+  scene.buildMenu = container;
+}
+
+/* =========================================================
+   MAIN SCENE
+   ========================================================= */
+
 export default class WorldScene extends Phaser.Scene {
   constructor() {
     super('WorldScene');
@@ -216,6 +344,12 @@ export default class WorldScene extends Phaser.Scene {
     this.startDocksPlacement = () => startDocksPlacement.call(this);
     this.input.keyboard?.on('keydown-ESC', () => cancelPlacement.call(this));
 
+    // debug: open root build menu with B key
+    this.input.keyboard?.on('keydown-B', () => {
+      console.log('[DEBUG] B pressed -> openBuildRootMenu');
+      openBuildRootMenu(this);
+    });
+
     /* ------------------------------------
        WIRE UNIT ACTION PANEL BUTTONS (4)
        ------------------------------------ */
@@ -302,7 +436,6 @@ export default class WorldScene extends Phaser.Scene {
 
     // Click selection / movement (support selecting haulers too)
     this.input.on("pointerdown", pointer => {
-      // Don't interfere with UI menus
       if (pointer.rightButtonDown()) return;
 
       const { worldX, worldY } = pointer;
@@ -694,132 +827,4 @@ function setupTurnUI(scene) {
   scene.input.keyboard?.on('keydown-ENTER', () => {
     scene.endTurn();
   });
-}
-
-/* =========================================================
-   BUILDINGS / UNITS / INFRA MENU HELPERS
-   ========================================================= */
-
-function closeBuildMenu(scene) {
-  if (scene.buildMenu) {
-    scene.buildMenu.destroy(true);
-    scene.buildMenu = null;
-  }
-}
-
-/** Root: Buildings / Units / Infrastructure */
-function openBuildRootMenu(scene) {
-  const options = [
-    { label: 'Buildings', onClick: () => openBuildingsMenu(scene) },
-    { label: 'Units', onClick: () => openUnitsMenu(scene) },
-    { label: 'Infrastructure', onClick: () => openInfraMenu(scene) },
-  ];
-  createBuildMenu(scene, 'Build', options);
-}
-
-function openBuildingsMenu(scene) {
-  const options = [
-    { label: 'Bunker',  onClick: () => console.log('[BUILD] Bunker (placeholder)') },
-    { label: 'Docks',   onClick: () => { console.log('[BUILD] Docks'); startDocksPlacement.call(scene); } },
-    { label: 'Mine',    onClick: () => console.log('[BUILD] Mine (placeholder)') },
-    { label: 'Factory', onClick: () => console.log('[BUILD] Factory (placeholder)') },
-  ];
-  createBuildMenu(scene, 'Buildings', options);
-}
-
-function openUnitsMenu(scene) {
-  const options = [
-    { label: 'Hauler',  onClick: () => { console.log('[UNITS] Hauler build'); buildHaulerAtSelectedUnit.call(scene); } },
-    { label: 'Builder', onClick: () => console.log('[UNITS] Builder (placeholder)') },
-    { label: 'Scout',   onClick: () => console.log('[UNITS] Scout (placeholder)') },
-    { label: 'Raider',  onClick: () => console.log('[UNITS] Raider (placeholder)') },
-  ];
-  createBuildMenu(scene, 'Units', options);
-}
-
-function openInfraMenu(scene) {
-  const options = [
-    { label: 'Bridge',        onClick: () => console.log('[INFRA] Bridge (placeholder)') },
-    { label: 'Canal',         onClick: () => console.log('[INFRA] Canal (placeholder)') },
-    { label: 'Road',          onClick: () => console.log('[INFRA] Road (placeholder)') },
-    { label: 'Remove Forest', onClick: () => console.log('[INFRA] Remove Forest (placeholder)') },
-    { label: 'Level',         onClick: () => console.log('[INFRA] Level (placeholder)') },
-    { label: 'Other',         onClick: () => console.log('[INFRA] Other (placeholder)') },
-  ];
-  createBuildMenu(scene, 'Infrastructure', options);
-}
-
-/**
- * Small floating menu near bottom-left of the screen.
- * coords use scene.scale (screen size) and scrollFactor(0) so it stays in UI space.
- */
-function createBuildMenu(scene, title, options) {
-  closeBuildMenu(scene);
-
-  const screenW = scene.scale.width;
-  const screenH = scene.scale.height;
-
-  const width = 190;
-  const lineHeight = 26;
-  const padding = 10;
-  const titleHeight = 24;
-  const totalHeight = padding * 2 + titleHeight + options.length * lineHeight + 10;
-
-  const x = 140;                       // a bit right from left edge
-  const y = screenH - totalHeight - 40; // above bottom (so it doesn't overlap bottom UI too much)
-
-  console.log('[UI] createBuildMenu at', x, y, 'screenH=', screenH);
-
-  const container = scene.add.container(x, y).setScrollFactor(0).setDepth(2100);
-
-  const bg = scene.add.graphics();
-  bg.fillStyle(0x0f2233, 0.96);
-  bg.fillRoundedRect(0, 0, width, totalHeight, 10);
-  bg.lineStyle(1, 0x3da9fc, 0.8);
-  bg.strokeRoundedRect(0, 0, width, totalHeight, 10);
-
-  const titleText = scene.add.text(width / 2, padding + titleHeight / 2, title, {
-    fontSize: '14px',
-    color: '#e8f6ff',
-    fontStyle: 'bold'
-  }).setOrigin(0.5);
-
-  container.add([bg, titleText]);
-
-  options.forEach((opt, idx) => {
-    const oy = padding + titleHeight + 5 + idx * lineHeight;
-
-    const label = scene.add.text(12, oy + lineHeight / 2, opt.label, {
-      fontSize: '13px',
-      color: '#e8f6ff'
-    }).setOrigin(0, 0.5);
-
-    const hit = scene.add.rectangle(width / 2, oy + lineHeight / 2, width - 10, lineHeight, 0x000000, 0)
-      .setInteractive({ useHandCursor: true });
-
-    hit.on('pointerover', () => {
-      label.setColor('#ffffff');
-    });
-    hit.on('pointerout', () => {
-      label.setColor('#e8f6ff');
-    });
-    hit.on('pointerdown', () => {
-      opt.onClick?.();
-    });
-
-    container.add([label, hit]);
-  });
-
-  // Close on right-click anywhere inside menu
-  container.list.forEach(child => {
-    if (child.input && child.input.enabled) {
-      child.on('pointerdown', pointer => {
-        if (pointer.rightButtonDown()) {
-          closeBuildMenu(scene);
-        }
-      });
-    }
-  });
-
-  scene.buildMenu = container;
 }
