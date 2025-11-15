@@ -870,10 +870,21 @@ function setupUnitPanel(scene) {
       ).setOrigin(0, 0.5)
         .setInteractive({ useHandCursor: true });
 
-      hit.on('pointerdown', () => {
+      // === ACTION HOOKS FOR OPTIONS ===
+      let onClick = () => {
         console.log(`[BUILD MENU] ${scene.buildMenuCategory} → ${name}`);
-        // No new functionality (for now): just log selection.
-      });
+      };
+
+      // Restore old behavior: Buildings → Docks starts docks placement
+      if (scene.buildMenuCategory === 'buildings' && name === 'Docks') {
+        onClick = () => {
+          console.log('[BUILD MENU] Buildings → Docks (start placement)');
+          // keep panel open, but you can close manually with Close or ESC
+          startDocksPlacement.call(scene);
+        };
+      }
+
+      hit.on('pointerdown', onClick);
 
       subContainer.add([t, hit]);
       optionsText.push(t);
