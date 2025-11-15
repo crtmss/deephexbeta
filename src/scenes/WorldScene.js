@@ -214,7 +214,7 @@ export default class WorldScene extends Phaser.Scene {
     this.startDocksPlacement = () => startDocksPlacement.call(this);
     this.input.keyboard?.on('keydown-ESC', () => cancelPlacement.call(this));
 
-    // Keep a thin wrapper if other code calls this.buildHauler()
+    // wrapper if other code calls this.buildHauler()
     this.buildHauler = () => {
       buildHaulerAtSelectedUnit.call(this);
     };
@@ -860,14 +860,15 @@ function setupUnitPanel(scene) {
         { fontSize: '11px', color: '#e8f6ff' }
       ).setOrigin(0, 0.5);
 
+      // FIX: hitbox centered so it covers the text too
       const hit = scene.add.rectangle(
-        startX + 80,
-        y,
-        160,
-        16,
+        startX + 80,  // center x
+        y,            // center y
+        160,          // width
+        16,           // height
         0x000000,
         0
-      ).setOrigin(0, 0.5)
+      ).setOrigin(0.5, 0.5)
         .setInteractive({ useHandCursor: true });
 
       // === ACTION HOOKS FOR OPTIONS ===
@@ -875,11 +876,10 @@ function setupUnitPanel(scene) {
         console.log(`[BUILD MENU] ${scene.buildMenuCategory} → ${name}`);
       };
 
-      // Restore old behavior: Buildings → Docks starts docks placement
+      // Real action: Buildings → Docks starts docks placement
       if (scene.buildMenuCategory === 'buildings' && name === 'Docks') {
         onClick = () => {
           console.log('[BUILD MENU] Buildings → Docks (start placement)');
-          // keep panel open, but you can close manually with Close or ESC
           startDocksPlacement.call(scene);
         };
       }
