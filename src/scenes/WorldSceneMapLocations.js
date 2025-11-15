@@ -1,5 +1,14 @@
 // src/scenes/WorldSceneMapLocations.js
-// Use scene.hexToPixel directly (already isometric). Only add map offsets + elevation lift.
+// Roads + POIs rendering. Geography (landmarks + UI/overlay) is delegated
+// to WorldSceneGeography.js.
+
+import Geography, {
+  resolveBiome,
+  effectiveElevationLocal,
+  initOrUpdateGeography,
+  drawGeographyOverlay,
+  getNoPOISet,
+} from './WorldSceneGeography.js';
 
 function mulberry32(a) {
   let t = a >>> 0;
@@ -34,12 +43,7 @@ function neighborTiles(byKey, width, height, q, r, skipWater = true) {
   return out;
 }
 
-/* --------------------- Biome helpers --------------------- */
-function resolveBiome(scene, mapData) {
-  return scene?.hexMap?.worldMeta?.biome ||
-         mapData?.__worldMeta?.biome ||
-         'Temperate Biome';
-}
+/* --------------------- Biome + POI helpers --------------------- */
 function treeEmojiFor(biome, tileType) {
   if (tileType === 'volcano_ash') return '🌴';
   if (tileType === 'sand')        return '🌴';
@@ -51,14 +55,6 @@ function treeEmojiFor(biome, tileType) {
   if (b.includes('icy'))     return '🌲';
   if (b.includes('swamp'))   return '🌳';
   return '🌳';
-}
-function outlineColorFor(biome) {
-  const b = (biome || '').toLowerCase();
-  if (b.includes('icy'))     return 0x1e88e5; // blue
-  if (b.includes('volcan'))  return 0xd32f2f; // red
-  if (b.includes('desert'))  return 0xfdd835; // yellow
-  if (b.includes('swamp'))   return 0x4e342e; // dark brown
-  return 0x43a047; // temperate green
 }
 
 /* ================= Placement & flags (POIs) ================= */
@@ -198,6 +194,7 @@ function generateRoads(mapData, width, height, seed) {
   }
 }
 
+/* Public: apply POI flags + roads */
 export function applyLocationFlags(mapData, width, height, seed = 1337) {
   const rnd = mulberry32(seed >>> 0);
   placeLocations(mapData, width, height, rnd);
@@ -205,159 +202,21 @@ export function applyLocationFlags(mapData, width, height, seed = 1337) {
   return mapData;
 }
 
-/* ----------------- geo-object helpers (renderer-side) ----------------- */
-function buildCellsIfMissing(meta, map, width, height) {
-  if (Array.isArray(meta.geoCells) && meta.geoCells.length) return meta.geoCells.slice();
-
-  const type = meta.geoLandmark?.type || '';
-  let center = null;
-
-  // If q/r missing, pick a sensible center candidate by type
-  if (Number.isInteger(meta.geoLandmark?.q) && Number.isInteger(meta.geoLandmark?.r)) {
-    center = map.find(t => t.q === meta.geoLandmark.q && t.r === meta.geoLandmark.r);
-  }
-  if (!center) {
-    const land = map.filter(t => t.type !== 'water');
-    const cx = land.reduce((s, t) => s + t.q, 0) / Math.max(1, land.length);
-    const cy = land.reduce((s, t) => s + t.r, 0) / Math.max(1, land.length);
-    const prefer = (pred) => {
-      let best = null, bd = Infinity;
-      for (const t of map) {
-        if (!pred(t)) continue;
-        const d = (t.q - cx) * (t.q - cx) + (t.r - cy) * (t.r - cy);
-        if (d < bd) { bd = d; best = t; }
-      }
-      return best;
-    };
-
-    if (type === 'volcano') {
-      center = prefer(t => t.type === 'mountain' || t.elevation === 4) || prefer(t => t.type !== 'water');
-    } else if (type === 'glacier') {
-      // glacier can include water; prefer coastal/inner-water areas
-      center = prefer(t => t.type !== 'mountain');
-    } else if (type === 'desert') {
-      center = prefer(t => t.type !== 'water');
-    } else if (type === 'bog') {
-      center = prefer(t => t.type !== 'mountain');
-    } else {
-      center = prefer(t => t.type !== 'water');
-    }
-    if (!center) return [];
-    meta.geoLandmark.q = center.q; // persist resolved center back to meta
-    meta.geoLandmark.r = center.r;
-  }
-
-  const byKey = new Map(map.map(t => [keyOf(t.q, t.r), t]));
-  const want = (type === 'plateau') ? 6 : 9;
-
-  const pred = (t) => {
-    if (!t) return false;
-    if (type === 'glacier') return (t.type !== 'mountain'); // allow water; convert later
-    if (type === 'desert')  return (t.type !== 'water');
-    if (type === 'bog')     return (t.type !== 'mountain');
-    if (type === 'plateau') return true;
-    if (type === 'volcano') return true;
-    return true;
-  };
-
-  const q = [center];
-  const seen = new Set([keyOf(center.q, center.r)]);
-  const cells = [];
-  while (q.length && cells.length < want) {
-    const cur = q.shift();
-    if (pred(cur)) cells.push({ q: cur.q, r: cur.r });
-    for (const [dq, dr] of neighborsOddR(cur.q, cur.r)) {
-      const nq = cur.q + dq, nr = cur.r + dr, k = keyOf(nq, nr);
-      if (seen.has(k) || !byKey.has(k)) continue;
-      seen.add(k); q.push(byKey.get(k));
-    }
-  }
-  return cells;
-}
-function centroidOf(cells) {
-  if (!cells || !cells.length) return null;
-  const sx = cells.reduce((s, c) => s + c.q, 0);
-  const sy = cells.reduce((s, c) => s + c.r, 0);
-  return { q: sx / cells.length, r: sy / cells.length };
-}
-function closestTileTo(map, target, predicate = () => true) {
-  let best = null, bd = Infinity;
-  for (const t of map) {
-    if (!predicate(t)) continue;
-    const d = (t.q - target.q) * (t.q - target.q) + (t.r - target.r) * (t.r - target.r);
-    if (d < bd) { bd = d; best = t; }
-  }
-  return best;
-}
-
-/* ---- recompute highlight tiles every draw, based on current map ---- */
-function computeHighlightCells(map, lm, geoCells) {
-  const out = [];
-  if (!lm) return out;
-  const byKey = new Map(map.map(t => [keyOf(t.q, t.r), t]));
-  const add = (q, r) => out.push({ q, r });
-
-  if (lm.type === 'volcano') {
-    const center = byKey.get(keyOf(lm.q, lm.r));
-    if (center) {
-      for (const [dq, dr] of neighborsOddR(center.q, center.r)) {
-        const n = byKey.get(keyOf(center.q + dq, center.r + dr));
-        if (n && n.type === 'volcano_ash') add(n.q, n.r);
-      }
-    }
-  } else if (lm.type === 'plateau') {
-    for (const c of geoCells) {
-      const t = byKey.get(keyOf(c.q, c.r));
-      if (t && t.elevation === 3) add(c.q, c.r);
-    }
-  } else if (lm.type === 'desert') {
-    for (const c of geoCells) {
-      const t = byKey.get(keyOf(c.q, c.r));
-      if (t && t.type === 'sand') add(c.q, c.r);
-    }
-  } else if (lm.type === 'bog') {
-    for (const c of geoCells) {
-      const t = byKey.get(keyOf(c.q, c.r));
-      if (t && t.type === 'swamp') add(c.q, c.r);
-    }
-  } else if (lm.type === 'glacier') {
-    for (const c of geoCells) {
-      const t = byKey.get(keyOf(c.q, c.r));
-      if (t && t.type === 'ice') add(c.q, c.r);
-    }
-  }
-  return out;
-}
-
-/* ------------------------- HEX INSPECT helper ------------------------- */
-function sendHexInspect(scene, header, bodyLines) {
-  const text = `[HEX INSPECT] ${header}\n` + (Array.isArray(bodyLines) ? bodyLines.join('\n') : '');
-  if (scene && scene.events && typeof scene.events.emit === 'function') {
-    scene.events.emit('hex-inspect', text);
-  } else {
-    console.log(text);
-  }
-}
-
 /* ------------------------- rendering core ------------------------- */
-
-function effectiveElevationLocal(tile) {
-  if (!tile || tile.type === 'water') return 0;
-  const e = typeof tile.elevation === 'number' ? tile.elevation : 0;
-  return Math.max(0, e - 1);
-}
-
 export function drawLocationsAndRoads() {
   const scene = this;
   const map = this.mapData;
   const size = this.hexSize || 24;
   if (!Array.isArray(map) || !map.length) return;
 
-  // Apply placement once per map build
+  // Apply POIs/roads once per map build
   if (!map.__locationsApplied) {
     try { applyLocationFlags(map, this.mapWidth, this.mapHeight, this.seed ?? 1337); } catch {}
     Object.defineProperty(map, '__locationsApplied', { value: true, enumerable: false });
   }
+
+  // (Re)build geography once and keep metadata on map
+  initOrUpdateGeography(scene, map);
 
   // Reset layers
   if (scene.roadsGraphics) scene.roadsGraphics.destroy();
@@ -366,8 +225,6 @@ export function drawLocationsAndRoads() {
 
   const roads = scene.add.graphics({ x: 0, y: 0 }).setDepth(30);
   const layer = scene.add.container(0, 0).setDepth(40);
-
-  // High depth so outlines sit above tiles/roads/icons
   const geoOutline = scene.add.graphics({ x: 0, y: 0 }).setDepth(120);
 
   scene.roadsGraphics = roads;
@@ -402,7 +259,10 @@ export function drawLocationsAndRoads() {
     }
   }
 
-  // ---- POIs (emojis; never on water)
+  // ---- Geography overlay (emoji+label once, outlines every draw)
+  drawGeographyOverlay(scene);
+
+  // ---- POIs (skip geo-bound tiles)
   const addEmoji = (x, y, char, fontPx, depth = 42) => {
     const t = scene.add.text(x, y, char, {
       fontSize: `${fontPx}px`,
@@ -411,210 +271,16 @@ export function drawLocationsAndRoads() {
     layer.add(t);
     return t;
   };
-
   const biomeName = resolveBiome(scene, map);
-  const meta = scene?.hexMap?.worldMeta || map.__worldMeta || {};
+  const noPOISet = getNoPOISet(map);
 
-  // ----- Ensure geo-landmark exists and has a center/type -----
-  function landmarkFromBiome(biome) {
-    const b = (biome || '').toLowerCase();
-    if (b.includes('icy'))     return { type: 'glacier', emoji: '❄️', label: 'Glacier' };
-    if (b.includes('volcan'))  return { type: 'volcano', emoji: '🌋', label: 'Volcano' };
-    if (b.includes('desert'))  return { type: 'desert',  emoji: '🌵', label: 'Dune Field' };
-    if (b.includes('swamp'))   return { type: 'bog',     emoji: '🌾', label: 'Bog' };
-    return { type: 'plateau',   emoji: '🌄', label: 'Plateau' };
-  }
-
-  // ----- Build/Mutate geo object ONCE -----
-  if (!map.__geoBuilt) {
-    let lm = meta.geoLandmark;
-    if (!lm || !lm.type) lm = { ...landmarkFromBiome(biomeName) };
-
-    // Resolve center if q/r missing
-    if (!Number.isInteger(lm.q) || !Number.isInteger(lm.r)) {
-      const proxyMeta = { geoLandmark: { ...lm } };
-      // buildCellsIfMissing resolves & writes q/r into proxyMeta.geoLandmark
-      const tmp = buildCellsIfMissing(proxyMeta, map, this.mapWidth, this.mapHeight);
-      lm.q = proxyMeta.geoLandmark.q;
-      lm.r = proxyMeta.geoLandmark.r;
-    }
-
-    // Base footprint (9 or 6 cells)
-    const baseCells = buildCellsIfMissing({ geoLandmark: lm, geoCells: meta.geoCells }, map, this.mapWidth, this.mapHeight);
-    const byKeyLocal = new Map(map.map(t => [keyOf(t.q, t.r), t]));
-
-    // Tiles actually affected by the geo object (used to suppress POIs)
-    const noPOISet = new Set();
-
-    // Volcano: ensure level-4 mountain center & neighbors -> ash
-    if (lm && lm.type === 'volcano') {
-      let center = map.find(t => t.q === lm.q && t.r === lm.r);
-      const isPeak = (t) => t && (t.type === 'mountain' || t.elevation === 4);
-      if (!isPeak(center)) {
-        const target = closestTileTo(
-          map,
-          center || { q: (this.mapWidth||25)/2, r:(this.mapHeight||25)/2 },
-          t => t.type === 'mountain' || t.elevation === 4
-        );
-        center = target || center;
-      }
-      if (center) {
-        center.type = 'mountain';
-        center.elevation = 4;
-        center.hasMountainIcon = false; // suppress mountain icon, show 🌋 instead
-        lm.q = center.q; lm.r = center.r;
-        noPOISet.add(keyOf(center.q, center.r));
-        for (const [dq, dr] of neighborsOddR(center.q, center.r)) {
-          const n = byKeyLocal.get(keyOf(center.q + dq, center.r + dr));
-          if (!n) continue;
-          if (n.type !== 'water' && n.type !== 'mountain') n.type = 'volcano_ash';
-          n.hasForest = n.hasRuin = n.hasCrashSite = n.hasVehicle = false;
-          n.hasMountainIcon = false;
-          noPOISet.add(keyOf(n.q, n.r));
-        }
-      }
-    }
-
-    // Glacier: convert footprint (including water) to ice
-    if (lm && lm.type === 'glacier') {
-      for (const c of baseCells) {
-        const t = byKeyLocal.get(keyOf(c.q, c.r));
-        if (!t) continue;
-        t.type = 'ice';
-        t.hasForest = t.hasRuin = t.hasCrashSite = t.hasVehicle = false;
-        t.hasMountainIcon = false;
-        noPOISet.add(keyOf(t.q, t.r));
-      }
-    }
-
-    // Plateau: 6 tiles elevation 3 (only footprint tiles are "bound")
-    if (lm && lm.type === 'plateau') {
-      for (const c of baseCells) {
-        const t = byKeyLocal.get(keyOf(c.q, c.r));
-        if (!t) continue;
-        t.type = 'grassland';
-        t.elevation = 3;
-        t.hasMountainIcon = false;
-        t.hasForest = t.hasRuin = t.hasCrashSite = t.hasVehicle = false;
-        noPOISet.add(keyOf(t.q, t.r));
-      }
-    }
-
-    // Desert / Bog
-    if (lm && (lm.type === 'desert' || lm.type === 'bog')) {
-      const target = lm.type === 'desert' ? 'sand' : 'swamp';
-      for (const c of baseCells) {
-        const t = byKeyLocal.get(keyOf(c.q, c.r));
-        if (!t) continue;
-        t.type = target;
-        t.hasForest = t.hasRuin = t.hasCrashSite = t.hasVehicle = false;
-        t.hasMountainIcon = false;
-        noPOISet.add(keyOf(t.q, t.r));
-      }
-    }
-
-    // Center for label/emoji: volcano uses peak; others use centroid of base footprint
-    const centerAxial = (lm && lm.type === 'volcano')
-      ? { q: lm.q, r: lm.r }
-      : centroidOf(baseCells);
-    const centerTile = centerAxial
-      ? closestTileTo(map, centerAxial, tt => tt.type !== 'water')
-      : map.find(t => t.q === lm.q && t.r === lm.r);
-
-    Object.defineProperty(map, '__geoLandmark',   { value: lm,        enumerable: false });
-    Object.defineProperty(map, '__geoCells',      { value: baseCells, enumerable: false }); // footprint cells
-    Object.defineProperty(map, '__geoNoPOISet',   { value: noPOISet,  enumerable: false }); // affected tiles
-    Object.defineProperty(map, '__geoCenterTile', { value: centerTile || null, enumerable: false });
-    Object.defineProperty(map, '__geoBuilt',      { value: true,      enumerable: false });
-  }
-
-  // ---- Landmark emoji + label once (clickable → HEX INSPECT)
-  if (!map.__geoDecorAdded && map.__geoLandmark && map.__geoCenterTile) {
-    const lm = map.__geoLandmark;
-    const ct = map.__geoCenterTile;
-    const p = this.hexToPixel(ct.q, ct.r, size);
-    const px = p.x + offsetX;
-    const py = p.y + offsetY - LIFT * effectiveElevationLocal(ct);
-    const emoji = lm.emoji || (
-      lm.type === 'volcano' ? '🌋' :
-      lm.type === 'glacier' ? '❄️' :
-      lm.type === 'desert'  ? '🌵' :
-      lm.type === 'bog'     ? '🌾' :
-      '🌄'
-    );
-    const label = lm.label || (
-      lm.type === 'volcano' ? 'Volcano' :
-      lm.type === 'glacier' ? 'Glacier' :
-      lm.type === 'desert'  ? 'Dune Field' :
-      lm.type === 'bog'     ? 'Bog' :
-      'Plateau'
-    );
-
-    const icon = addEmoji(px, py, emoji, Math.max(16, size * 0.95), 200);
-    const txt = scene.add.text(px, py + size * 0.9, label, {
-      fontSize: `${Math.max(12, size * 0.55)}px`,
-      color: '#ffffff',
-      backgroundColor: 'rgba(0,0,0,0.35)',
-      padding: { left: 4, right: 4, top: 2, bottom: 2 }
-    }).setOrigin(0.5).setDepth(200);
-    scene.locationsLayer.add(txt);
-
-    // Click to send [HEX INSPECT] message with bound tiles list
-    icon.setInteractive({ useHandCursor: true });
-    icon.on('pointerdown', () => {
-      const base = map.__geoCells || [];
-      const highlight = computeHighlightCells(map, lm, base);
-      const listed = highlight.map(c => {
-        const t = map.find(tt => tt.q === c.q && tt.r === c.r);
-        const lvl = (t && typeof t.elevation === 'number') ? t.elevation : 0;
-        const tp  = t ? t.type : '?';
-        return `(${c.q},${c.r}) — ${tp}, lvl ${lvl}`;
-      });
-      const header = `${label} @ (${ct.q},${ct.r}) — bound tiles: ${listed.length}`;
-      sendHexInspect(scene, header, listed);
-    });
-
-    Object.defineProperty(map, '__geoDecorAdded', { value: true, enumerable: false });
-  }
-
-  // ---- Draw outlines each frame from current state
-  {
-    const lm   = map.__geoLandmark;
-    const base = map.__geoCells || [];
-    const col  = outlineColorFor(biomeName);
-
-    const highlightCells = computeHighlightCells(map, lm, base);
-    geoOutline.clear();
-    geoOutline.lineStyle(4, col, 0.98);
-
-    for (const c of highlightCells) {
-      const t = byKey.get(keyOf(c.q, c.r)); if (!t) continue;
-      const center = this.hexToPixel(t.q, t.r, size);
-      const cx = center.x + offsetX;
-      const cy = center.y + offsetY - LIFT * effectiveElevationLocal(t);
-      const pts = [];
-      for (let i = 0; i < 6; i++) {
-        const ang = Phaser.Math.DegToRad(60 * i - 30);
-        pts.push({ x: cx + size * Math.cos(ang), y: cy + size * Math.sin(ang) });
-      }
-      geoOutline.beginPath();
-      geoOutline.moveTo(pts[0].x, pts[0].y);
-      for (let i = 1; i < 6; i++) geoOutline.lineTo(pts[i].x, pts[i].y);
-      geoOutline.closePath();
-      geoOutline.strokePath();
-    }
-  }
-
-  const noPOISet = map.__geoNoPOISet;
-
-  // ---- Per-tile POIs (skip geo-object affected tiles entirely)
   for (const t of map) {
     if (t.type === 'water') continue;
     if (noPOISet && noPOISet.has(keyOf(t.q, t.r))) continue;
 
     const c = scene.hexToPixel(t.q, t.r, size);
     const cx = c.x + offsetX;
-    const cy = c.y + offsetY - LIFT * effectiveElevationLocal(t);
+    const cy = c.y + offsetY - (this?.LIFT_PER_LVL ?? 4) * effectiveElevationLocal(t);
 
     if (!t.hasMountainIcon) {
       const elev = typeof t.elevation === 'number' ? t.elevation : 0;
