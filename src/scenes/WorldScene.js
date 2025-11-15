@@ -1,18 +1,17 @@
-// deephexbeta/src/scenes/WorldScene.js
+// src/scenes/WorldScene.js
 import HexMap from '../engine/HexMap.js';
-import { findPath } from '../engine/AStar.js';
-import { setupCameraControls, setupTurnUI } from './WorldSceneUI.js';
-import { spawnUnitsAndEnemies, subscribeToGameUpdates } from './WorldSceneUnits.js';
-
-// Buildings / Logistics helpers
-// NOTE: these are optional; if they exist we call them, otherwise we fall back locally.
+import { drawLocationsAndRoads } from './WorldSceneMapLocations.js';
 import {
   startDocksPlacement,
-  cancelPlacement,
-  // Optional end-turn movers implemented in WorldSceneBuildings.js
-  applyShipRoutesOnEndTurn as _applyShipRoutesOnEndTurn,
-  applyHaulerRoutesOnEndTurn as _applyHaulerRoutesOnEndTurn,
+  placeDocks,
 } from './WorldSceneBuildings.js';
+
+import {
+  applyShipRoutesOnEndTurn,
+  applyHaulerBehaviorOnEndTurn as applyHaulerRoutesOnEndTurn,
+  buildHaulerAtSelectedUnit,
+  enterHaulerRoutePicker,
+} from './WorldSceneHaulers.js';
 
 import { spawnFishResources } from './WorldSceneResources.js';
 
