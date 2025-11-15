@@ -81,137 +81,24 @@ const NEIGHBORS = [
   { dq: +1, dr: -1 }, { dq: -1, dr: +1 }
 ];
 
+function inBounds(scene, q, r) {
+  return q >= 0 && r >= 0 && q < scene.mapWidth && r < scene.mapHeight;
+}
 function getTile(scene, q, r) {
   return scene.mapData.find(h => h.q === q && h.r === r);
 }
-
-/* =========================================================
-   BUILDINGS / UNITS / INFRA MENU HELPERS
-   ========================================================= */
-
-function closeBuildMenu(scene) {
-  if (scene.buildMenu) {
-    scene.buildMenu.destroy(true);
-    scene.buildMenu = null;
-  }
+function isLandPassable(tile) {
+  if (!tile) return false;
+  const t = String(tile.type || '').toLowerCase();
+  if (t === 'water' || t === 'ocean' || t === 'sea') return false;
+  if (t === 'mountain') return false;
+  return true;
 }
-
-/** Root: Buildings / Units / Infrastructure */
-function openBuildRootMenu(scene) {
-  const options = [
-    { label: 'Buildings', onClick: () => openBuildingsMenu(scene) },
-    { label: 'Units', onClick: () => openUnitsMenu(scene) },
-    { label: 'Infrastructure', onClick: () => openInfraMenu(scene) },
-  ];
-  createBuildMenu(scene, 'Build', options);
+function isWater(tile) {
+  if (!tile) return false;
+  const t = String(tile.type || '').toLowerCase();
+  return (t === 'water' || t === 'ocean' || t === 'sea');
 }
-
-function openBuildingsMenu(scene) {
-  const options = [
-    { label: 'Bunker',  onClick: () => console.log('[BUILD] Bunker (placeholder)') },
-    { label: 'Docks',   onClick: () => { console.log('[BUILD] Docks'); startDocksPlacement.call(scene); } },
-    { label: 'Mine',    onClick: () => console.log('[BUILD] Mine (placeholder)') },
-    { label: 'Factory', onClick: () => console.log('[BUILD] Factory (placeholder)') },
-  ];
-  createBuildMenu(scene, 'Buildings', options);
-}
-
-function openUnitsMenu(scene) {
-  const options = [
-    { label: 'Hauler',  onClick: () => { console.log('[UNITS] Hauler build'); buildHaulerAtSelectedUnit.call(scene); } },
-    { label: 'Builder', onClick: () => console.log('[UNITS] Builder (placeholder)') },
-    { label: 'Scout',   onClick: () => console.log('[UNITS] Scout (placeholder)') },
-    { label: 'Raider',  onClick: () => console.log('[UNITS] Raider (placeholder)') },
-  ];
-  createBuildMenu(scene, 'Units', options);
-}
-
-function openInfraMenu(scene) {
-  const options = [
-    { label: 'Bridge',        onClick: () => console.log('[INFRA] Bridge (placeholder)') },
-    { label: 'Canal',         onClick: () => console.log('[INFRA] Canal (placeholder)') },
-    { label: 'Road',          onClick: () => console.log('[INFRA] Road (placeholder)') },
-    { label: 'Remove Forest', onClick: () => console.log('[INFRA] Remove Forest (placeholder)') },
-    { label: 'Level',         onClick: () => console.log('[INFRA] Level (placeholder)') },
-    { label: 'Other',         onClick: () => console.log('[INFRA] Other (placeholder)') },
-  ];
-  createBuildMenu(scene, 'Infrastructure', options);
-}
-
-/**
- * Small floating menu near bottom-left of the screen.
- * Uses camera width/height + scrollFactor(0) + very high depth.
- */
-function createBuildMenu(scene, title, options) {
-  closeBuildMenu(scene);
-
-  const cam = scene.cameras.main;
-  const screenW = cam.width;
-  const screenH = cam.height;
-
-  const width = 190;
-  const lineHeight = 26;
-  const padding = 10;
-  const titleHeight = 24;
-  const totalHeight = padding * 2 + titleHeight + options.length * lineHeight + 10;
-
-  const x = 140;                        // near left edge
-  const y = screenH - totalHeight - 40; // a bit above bottom
-
-  console.log('[UI] createBuildMenu at', x, y, 'screenH=', screenH);
-
-  const container = scene.add.container(x, y).setScrollFactor(0).setDepth(99999);
-
-  const bg = scene.add.graphics();
-  bg.fillStyle(0x0f2233, 0.96);
-  bg.fillRoundedRect(0, 0, width, totalHeight, 10);
-  bg.lineStyle(1, 0x3da9fc, 0.8);
-  bg.strokeRoundedRect(0, 0, width, totalHeight, 10);
-
-  const titleText = scene.add.text(width / 2, padding + titleHeight / 2, title, {
-    fontSize: '14px',
-    color: '#e8f6ff',
-    fontStyle: 'bold'
-  }).setOrigin(0.5);
-
-  container.add([bg, titleText]);
-
-  options.forEach((opt, idx) => {
-    const oy = padding + titleHeight + 5 + idx * lineHeight;
-
-    const label = scene.add.text(12, oy + lineHeight / 2, opt.label, {
-      fontSize: '13px',
-      color: '#e8f6ff'
-    }).setOrigin(0, 0.5);
-
-    const hit = scene.add.rectangle(
-      width / 2,
-      oy + lineHeight / 2,
-      width - 10,
-      lineHeight,
-      0x000000,
-      0
-    ).setInteractive({ useHandCursor: true });
-
-    hit.on('pointerover', () => {
-      label.setColor('#ffffff');
-    });
-    hit.on('pointerout', () => {
-      label.setColor('#e8f6ff');
-    });
-    hit.on('pointerdown', () => {
-      opt.onClick?.();
-    });
-
-    container.add([label, hit]);
-  });
-
-  scene.buildMenu = container;
-}
-
-/* =========================================================
-   MAIN SCENE
-   ========================================================= */
 
 export default class WorldScene extends Phaser.Scene {
   constructor() {
@@ -246,7 +133,7 @@ export default class WorldScene extends Phaser.Scene {
     this.seed = lobbyData.state.seed;
     this.lobbyState = lobbyData.state;
 
-    // Only Supabase client here
+    // Only Supabase client here; old subscribeToGameUpdates is removed
     const { supabase } = await import('../net/SupabaseClient.js');
 
     this.playerName = playerName;
@@ -256,11 +143,7 @@ export default class WorldScene extends Phaser.Scene {
 
     // simple move sync
     this.syncPlayerMove = async unit => {
-      const res = await this.supabase
-        .from('lobbies')
-        .select('state')
-        .eq('room_code', this.roomCode)
-        .single();
+      const res = await this.supabase.from('lobbies').select('state').eq('room_code', this.roomCode).single();
       if (!res.data) return;
       const nextPlayer = this.getNextPlayer(res.data.state.players, this.playerName);
       await this.supabase
@@ -344,62 +227,43 @@ export default class WorldScene extends Phaser.Scene {
     this.startDocksPlacement = () => startDocksPlacement.call(this);
     this.input.keyboard?.on('keydown-ESC', () => cancelPlacement.call(this));
 
-    // debug: open root build menu with B key
-    this.input.keyboard?.on('keydown-B', () => {
-      console.log('[DEBUG] B pressed -> openBuildRootMenu');
-      openBuildRootMenu(this);
-    });
-
     /* ------------------------------------
        WIRE UNIT ACTION PANEL BUTTONS (4)
        ------------------------------------ */
     if (this.unitPanelButtons && this.unitPanelButtons.length >= 4) {
-      const [btnBuildingsMain, btnHaulerMain, btnSetRoute, btnClose] = this.unitPanelButtons;
+      const [btnBuildings, btnUnits, btnInfra, btnClose] = this.unitPanelButtons;
 
-      btnBuildingsMain.hit.removeAllListeners();
-      btnHaulerMain.hit.removeAllListeners();
-      btnSetRoute.hit.removeAllListeners();
+      btnBuildings.hit.removeAllListeners();
+      btnUnits.hit.removeAllListeners();
+      btnInfra.hit.removeAllListeners();
       btnClose.hit.removeAllListeners();
 
-      // Rename labels safely if they exist
-      if (btnBuildingsMain.label?.setText) {
-        btnBuildingsMain.label.setText('Buildings');
-      } else if (btnBuildingsMain.text?.setText) {
-        btnBuildingsMain.text.setText('Buildings');
-      }
-
-      if (btnHaulerMain.label?.setText) {
-        btnHaulerMain.label.setText('Blank');
-      } else if (btnHaulerMain.text?.setText) {
-        btnHaulerMain.text.setText('Blank');
-      }
-
-      // 1) Buildings main button -> open root build menu
-      btnBuildingsMain.hit.on('pointerdown', () => {
-        console.log('[UI] Buildings main clicked');
-        openBuildRootMenu(this);
+      // 1) Buildings submenu
+      btnBuildings.hit.on('pointerdown', () => {
+        console.log('[UI] Buildings clicked');
+        this.showBuildingsMenu?.();
       });
 
-      // 2) Second main button -> Blank (no functionality)
-      btnHaulerMain.hit.on('pointerdown', () => {
-        console.log('[UI] Blank main button clicked (no action).');
+      // 2) Units submenu (Hauler / Builder / Scout / Raider)
+      btnUnits.hit.on('pointerdown', () => {
+        console.log('[UI] Units clicked');
+        this.showUnitsMenu?.();
       });
 
-      // 3) Set route -> hauler route picker
-      btnSetRoute.hit.on('pointerdown', () => {
-        console.log('[UI] Set route clicked');
-        enterHaulerRoutePicker.call(this);
+      // 3) Infrastructure submenu (Bridge / Canal / Road / Remove Forest / Level / Other)
+      btnInfra.hit.on('pointerdown', () => {
+        console.log('[UI] Infrastructure clicked');
+        this.showInfrastructureMenu?.();
       });
 
       // 4) Close panel
       btnClose.hit.on('pointerdown', () => {
         console.log('[UI] Close panel');
         this.hideUnitPanel?.();
-        closeBuildMenu(this);
       });
     }
 
-    // Thin wrapper if other code calls this.buildHauler()
+    // Keep a thin wrapper if other code calls this.buildHauler()
     this.buildHauler = () => {
       buildHaulerAtSelectedUnit.call(this);
     };
@@ -447,6 +311,8 @@ export default class WorldScene extends Phaser.Scene {
       const rounded = this.roundHex(approx.q, approx.r);
       if (rounded.q < 0 || rounded.r < 0 || rounded.q >= this.mapWidth || rounded.r >= this.mapHeight) return;
 
+      const tile = getTile(this, rounded.q, rounded.r);
+
       const playerHere =
         (this.players?.find?.(p => p.q === rounded.q && p.r === rounded.r)) ||
         (this.haulers?.find?.(h => h.q === rounded.q && h.r === rounded.r));
@@ -461,6 +327,7 @@ export default class WorldScene extends Phaser.Scene {
           return;
         }
 
+        // block water/mountain for land movers
         const blocked = t => !t || t.type === 'water' || t.type === 'mountain';
         const fullPath = findPath(this.selectedUnit, rounded, this.mapData, blocked);
         if (fullPath && fullPath.length > 1) {
@@ -778,7 +645,7 @@ function setupCameraControls(scene) {
   let camStartX = 0;
   let camStartY = 0;
 
-  // Middle mouse drag (or left with ALT)
+  // Middle mouse drag (or left with ALT, adjust if you like)
   scene.input.on('pointerdown', pointer => {
     if (pointer.middleButtonDown() || pointer.altKey) {
       dragging = true;
@@ -823,8 +690,53 @@ function setupCameraControls(scene) {
 }
 
 function setupTurnUI(scene) {
-  // Minimal: end turn on ENTER key
+  // Keyboard shortcut
   scene.input.keyboard?.on('keydown-ENTER', () => {
     scene.endTurn();
   });
+
+  // End Turn button (HUD, bottom-right-ish)
+  const cam = scene.cameras.main;
+  const x = cam.width - 110;
+  const y = cam.height - 40;
+
+  const container = scene.add.container(x, y).setScrollFactor(0).setDepth(2100);
+
+  const bg = scene.add.graphics();
+  bg.fillStyle(0x0f2233, 0.9);
+  bg.fillRoundedRect(0, 0, 100, 30, 8);
+  bg.lineStyle(2, 0x3da9fc, 0.9);
+  bg.strokeRoundedRect(0, 0, 100, 30, 8);
+
+  const label = scene.add.text(50, 15, 'End Turn ▶', {
+    fontSize: '14px',
+    color: '#e8f6ff'
+  }).setOrigin(0.5, 0.5);
+
+  const hit = scene.add.rectangle(50, 15, 100, 30, 0x000000, 0)
+    .setOrigin(0.5)
+    .setInteractive({ useHandCursor: true });
+
+  hit.on('pointerdown', () => {
+    scene.endTurn();
+  });
+
+  hit.on('pointerover', () => {
+    bg.clear();
+    bg.fillStyle(0x173b52, 0.95);
+    bg.fillRoundedRect(0, 0, 100, 30, 8);
+    bg.lineStyle(2, 0x9be4ff, 1);
+    bg.strokeRoundedRect(0, 0, 100, 30, 8);
+  });
+
+  hit.on('pointerout', () => {
+    bg.clear();
+    bg.fillStyle(0x0f2233, 0.9);
+    bg.fillRoundedRect(0, 0, 100, 30, 8);
+    bg.lineStyle(2, 0x3da9fc, 0.9);
+    bg.strokeRoundedRect(0, 0, 100, 30, 8);
+  });
+
+  container.add([bg, label, hit]);
+  scene.endTurnButton = container;
 }
