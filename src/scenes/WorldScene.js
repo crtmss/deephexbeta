@@ -81,23 +81,8 @@ const NEIGHBORS = [
   { dq: +1, dr: -1 }, { dq: -1, dr: +1 }
 ];
 
-function inBounds(scene, q, r) {
-  return q >= 0 && r >= 0 && q < scene.mapWidth && r < scene.mapHeight;
-}
 function getTile(scene, q, r) {
   return scene.mapData.find(h => h.q === q && h.r === r);
-}
-function isLandPassable(tile) {
-  if (!tile) return false;
-  const t = String(tile.type || '').toLowerCase();
-  if (t === 'water' || t === 'ocean' || t === 'sea') return false;
-  if (t === 'mountain') return false;
-  return true;
-}
-function isWater(tile) {
-  if (!tile) return false;
-  const t = String(tile.type || '').toLowerCase();
-  return (t === 'water' || t === 'ocean' || t === 'sea');
 }
 
 export default class WorldScene extends Phaser.Scene {
@@ -143,7 +128,11 @@ export default class WorldScene extends Phaser.Scene {
 
     // simple move sync
     this.syncPlayerMove = async unit => {
-      const res = await this.supabase.from('lobbies').select('state').eq('room_code', this.roomCode).single();
+      const res = await this.supabase
+        .from('lobbies')
+        .select('state')
+        .eq('room_code', this.roomCode)
+        .single();
       if (!res.data) return;
       const nextPlayer = this.getNextPlayer(res.data.state.players, this.playerName);
       await this.supabase
