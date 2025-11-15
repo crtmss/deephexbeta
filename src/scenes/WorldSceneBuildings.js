@@ -432,6 +432,23 @@ function _nearestValidWithin(scene, uq, ur, maxRadius, isValid) {
   return null;
 }
 
+///////////////////////////////
+// RNG helpers (local to buildings)
+/////////////////////////////////
+function _rand(scene) {
+  // Use HexMap RNG if available for determinism, else fallback
+  return (scene?.hexMap && typeof scene.hexMap.rand === 'function')
+    ? scene.hexMap.rand()
+    : Math.random();
+}
+
+function _getRandom(list, scene) {
+  if (!list || list.length === 0) return null;
+  const i = Math.floor(_rand(scene) * list.length);
+  return list[i];
+}
+
+
 export default {
   BUILDINGS,
   startDocksPlacement,
