@@ -81,23 +81,8 @@ const NEIGHBORS = [
   { dq: +1, dr: -1 }, { dq: -1, dr: +1 }
 ];
 
-function inBounds(scene, q, r) {
-  return q >= 0 && r >= 0 && q < scene.mapWidth && r < scene.mapHeight;
-}
 function getTile(scene, q, r) {
   return scene.mapData.find(h => h.q === q && h.r === r);
-}
-function isLandPassable(tile) {
-  if (!tile) return false;
-  const t = String(tile.type || '').toLowerCase();
-  if (t === 'water' || t === 'ocean' || t === 'sea') return false;
-  if (t === 'mountain') return false;
-  return true;
-}
-function isWater(tile) {
-  if (!tile) return false;
-  const t = String(tile.type || '').toLowerCase();
-  return (t === 'water' || t === 'ocean' || t === 'sea');
 }
 
 export default class WorldScene extends Phaser.Scene {
@@ -222,51 +207,11 @@ export default class WorldScene extends Phaser.Scene {
 
     setupCameraControls(this);
     setupTurnUI(this);
+    setupUnitPanel(this);  // <<< creates Buildings / Blank / Set Path / Close panel
 
     // building placement API
     this.startDocksPlacement = () => startDocksPlacement.call(this);
     this.input.keyboard?.on('keydown-ESC', () => cancelPlacement.call(this));
-
-    /* ------------------------------------
-       WIRE UNIT ACTION PANEL BUTTONS (4)
-       ------------------------------------ */
-    if (this.unitPanelButtons && this.unitPanelButtons.length >= 4) {
-      // We assume the panel still creates 4 buttons in order.
-      const [btnBuildings, btnBlank, btnSetRoute, btnClose] = this.unitPanelButtons;
-
-      btnBuildings.hit.removeAllListeners();
-      btnBlank.hit.removeAllListeners();
-      btnSetRoute.hit.removeAllListeners();
-      btnClose.hit.removeAllListeners();
-
-      // Update labels safely if they exist
-      if (btnBuildings.label?.setText) btnBuildings.label.setText('Buildings');
-      if (btnBlank.label?.setText) btnBlank.label.setText('Blank');
-      if (btnSetRoute.label?.setText) btnSetRoute.label.setText('Set Path');
-
-      // 1) Buildings → open our in-scene Build Menu popup
-      btnBuildings.hit.on('pointerdown', () => {
-        console.log('[UI] Buildings clicked');
-        this.openBuildMenu();
-      });
-
-      // 2) Blank → currently no behavior (reserved)
-      btnBlank.hit.on('pointerdown', () => {
-        console.log('[UI] Blank clicked (no action yet)');
-      });
-
-      // 3) Set Path → for now, use hauler route picker (can be extended later)
-      btnSetRoute.hit.on('pointerdown', () => {
-        console.log('[UI] Set Path clicked');
-        enterHaulerRoutePicker.call(this);
-      });
-
-      // 4) Close panel
-      btnClose.hit.on('pointerdown', () => {
-        console.log('[UI] Close panel');
-        this.hideUnitPanel?.();
-      });
-    }
 
     // Keep a thin wrapper if other code calls this.buildHauler()
     this.buildHauler = () => {
@@ -903,4 +848,115 @@ function setupTurnUI(scene) {
 
   container.add([bg, label, hit]);
   scene.endTurnButton = container;
+}
+
+// Creates the small 4-button unit panel (Buildings / Blank / Set Path / Close)
+function setupUnitPanel(scene) {
+  const cam = scene.cameras.main;
+  const W = 260;
+  const H = 60;
+  const x = 20;
+  const y = cam.height - H - 20;
+
+  const panel = scene.add.container(x, y).setScrollFactor(0).setDepth(2090);
+  panel.setVisible(false);
+
+  const bg = scene.add.graphics();
+  bg.fillStyle(0x0f2233, 0.9);
+  bg.fillRoundedRect(0, 0, W, H, 10);
+  bg.lineStyle(2, 0x3da9fc, 0.9);
+  bg.strokeRoundedRect(0, 0, W, H, 10);
+  panel.add(bg);
+
+  const btnWidth = 60;
+  const btnHeight = 26;
+  const margin = 8;
+  const startX = 10;
+  const centerY = H / 2;
+
+  function makeButton(labelText, index) {
+    const xPos = startX + index * (btnWidth + margin);
+    const btnBg = scene.add.graphics();
+    btnBg.fillStyle(0x173b52, 1);
+    btnBg.fillRoundedRect(xPos, centerY - btnHeight / 2, btnWidth, btnHeight, 6);
+    btnBg.lineStyle(1, 0x6fe3ff, 0.8);
+    btnBg.strokeRoundedRect(xPos, centerY - btnHeight / 2, btnWidth, btnHeight, 6);
+
+    const label = scene.add.text(
+      xPos + btnWidth / 2,
+      centerY,
+      labelText,
+      { fontSize: '11px', color: '#e8f6ff' }
+    ).setOrigin(0.5, 0.5);
+
+    const hit = scene.add.rectangle(
+      xPos + btnWidth / 2,
+      centerY,
+      btnWidth,
+      btnHeight,
+      0x000000,
+      0
+    ).setOrigin(0.5, 0.5)
+      .setInteractive({ useHandCursor: true });
+
+    hit.on('pointerover', () => {
+      btnBg.clear();
+      btnBg.fillStyle(0x1d4c70, 1);
+      btnBg.fillRoundedRect(xPos, centerY - btnHeight / 2, btnWidth, btnHeight, 6);
+      btnBg.lineStyle(1, 0x9be4ff, 1);
+      btnBg.strokeRoundedRect(xPos, centerY - btnHeight / 2, btnWidth, btnHeight, 6);
+    });
+    hit.on('pointerout', () => {
+      btnBg.clear();
+      btnBg.fillStyle(0x173b52, 1);
+      btnBg.fillRoundedRect(xPos, centerY - btnHeight / 2, btnWidth, btnHeight, 6);
+      btnBg.lineStyle(1, 0x6fe3ff, 0.8);
+      btnBg.strokeRoundedRect(xPos, centerY - btnHeight / 2, btnWidth, btnHeight, 6);
+    });
+
+    panel.add([btnBg, label, hit]);
+    return { label, hit };
+  }
+
+  const btnBuildings = makeButton('Buildings', 0);
+  const btnBlank     = makeButton('Blank',     1);
+  const btnSetPath   = makeButton('Set Path',  2);
+  const btnClose     = makeButton('Close',     3);
+
+  // Wire behaviors:
+  btnBuildings.hit.on('pointerdown', () => {
+    console.log('[UI] Buildings button clicked');
+    scene.openBuildMenu();
+  });
+
+  btnBlank.hit.on('pointerdown', () => {
+    console.log('[UI] Blank button clicked (no action yet)');
+  });
+
+  btnSetPath.hit.on('pointerdown', () => {
+    console.log('[UI] Set Path button clicked');
+    enterHaulerRoutePicker.call(scene);
+  });
+
+  btnClose.hit.on('pointerdown', () => {
+    console.log('[UI] Close unit panel');
+    scene.hideUnitPanel?.();
+  });
+
+  scene.unitPanel = panel;
+  scene.unitPanelButtons = [btnBuildings, btnBlank, btnSetPath, btnClose];
+
+  scene.showUnitPanel = () => {
+    panel.setVisible(true);
+  };
+  scene.hideUnitPanel = () => {
+    panel.setVisible(false);
+  };
+
+  // Hotkey: B toggles panel for current selected unit
+  scene.input.keyboard?.on('keydown-B', () => {
+    if (!scene.selectedUnit) return;
+    if (panel.visible) scene.hideUnitPanel();
+    else scene.showUnitPanel(scene.selectedUnit);
+  });
 }
