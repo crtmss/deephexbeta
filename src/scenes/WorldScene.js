@@ -231,29 +231,34 @@ export default class WorldScene extends Phaser.Scene {
        WIRE UNIT ACTION PANEL BUTTONS (4)
        ------------------------------------ */
     if (this.unitPanelButtons && this.unitPanelButtons.length >= 4) {
-      const [btnBuildings, btnUnits, btnInfra, btnClose] = this.unitPanelButtons;
+      // We assume the panel still creates 4 buttons in order.
+      const [btnBuildings, btnBlank, btnSetRoute, btnClose] = this.unitPanelButtons;
 
       btnBuildings.hit.removeAllListeners();
-      btnUnits.hit.removeAllListeners();
-      btnInfra.hit.removeAllListeners();
+      btnBlank.hit.removeAllListeners();
+      btnSetRoute.hit.removeAllListeners();
       btnClose.hit.removeAllListeners();
 
-      // 1) Buildings submenu
+      // Update labels safely if they exist
+      if (btnBuildings.label?.setText) btnBuildings.label.setText('Buildings');
+      if (btnBlank.label?.setText) btnBlank.label.setText('Blank');
+      if (btnSetRoute.label?.setText) btnSetRoute.label.setText('Set Path');
+
+      // 1) Buildings → open our in-scene Build Menu popup
       btnBuildings.hit.on('pointerdown', () => {
         console.log('[UI] Buildings clicked');
-        this.showBuildingsMenu?.();
+        this.openBuildMenu();
       });
 
-      // 2) Units submenu (Hauler / Builder / Scout / Raider)
-      btnUnits.hit.on('pointerdown', () => {
-        console.log('[UI] Units clicked');
-        this.showUnitsMenu?.();
+      // 2) Blank → currently no behavior (reserved)
+      btnBlank.hit.on('pointerdown', () => {
+        console.log('[UI] Blank clicked (no action yet)');
       });
 
-      // 3) Infrastructure submenu (Bridge / Canal / Road / Remove Forest / Level / Other)
-      btnInfra.hit.on('pointerdown', () => {
-        console.log('[UI] Infrastructure clicked');
-        this.showInfrastructureMenu?.();
+      // 3) Set Path → for now, use hauler route picker (can be extended later)
+      btnSetRoute.hit.on('pointerdown', () => {
+        console.log('[UI] Set Path clicked');
+        enterHaulerRoutePicker.call(this);
       });
 
       // 4) Close panel
@@ -420,6 +425,165 @@ export default class WorldScene extends Phaser.Scene {
         }
       }
     });
+  }
+
+  // ---- BUILD MENU POPUP (Buildings / Units / Infrastructure) ----
+  openBuildMenu() {
+    // If already exists, just show it
+    if (this.buildMenuContainer) {
+      this.buildMenuContainer.setVisible(true);
+      this.buildMenuOverlay?.setVisible(true).setInteractive({ useHandCursor: false });
+      return;
+    }
+
+    const cam = this.cameras.main;
+    const W = 240;
+    const H = 220;
+    const x = cam.width / 2 - W / 2;
+    const y = cam.height / 2 - H / 2;
+
+    // Dim overlay to close on click
+    const overlay = this.add.rectangle(
+      cam.width / 2,
+      cam.height / 2,
+      cam.width,
+      cam.height,
+      0x000000,
+      0.25
+    )
+      .setScrollFactor(0)
+      .setDepth(2050)
+      .setInteractive({ useHandCursor: false });
+
+    overlay.on('pointerdown', () => {
+      this.closeBuildMenu();
+    });
+
+    this.buildMenuOverlay = overlay;
+
+    const container = this.add.container(x, y).setScrollFactor(0).setDepth(2060);
+
+    const bg = this.add.graphics();
+    bg.fillStyle(0x0f2233, 0.95);
+    bg.fillRoundedRect(0, 0, W, H, 10);
+    bg.lineStyle(2, 0x3da9fc, 0.9);
+    bg.strokeRoundedRect(0, 0, W, H, 10);
+
+    // Title
+    const title = this.add.text(W / 2, 18, 'Build Menu', {
+      fontSize: '16px',
+      color: '#e8f6ff'
+    }).setOrigin(0.5, 0.5);
+
+    // Close "X"
+    const closeText = this.add.text(W - 16, 14, '✕', {
+      fontSize: '14px',
+      color: '#e8f6ff'
+    }).setOrigin(0.5, 0.5).setInteractive({ useHandCursor: true });
+
+    closeText.on('pointerdown', () => {
+      this.closeBuildMenu();
+    });
+
+    // Tabs: Buildings / Units / Infrastructure
+    const tabY = 40;
+    const tabXStart = 20;
+    const tabWidth = 70;
+    const tabs = [
+      { id: 'buildings', label: 'Buildings' },
+      { id: 'units',     label: 'Units' },
+      { id: 'infra',     label: 'Infra' },
+    ];
+
+    this.buildMenuTabs = {};
+    this.buildMenuActiveCategory = 'buildings';
+
+    tabs.forEach((t, idx) => {
+      const tx = tabXStart + idx * (tabWidth + 5);
+      const tabRect = this.add.rectangle(tx + tabWidth / 2, tabY, tabWidth, 22, 0x173b52, 1)
+        .setOrigin(0.5)
+        .setInteractive({ useHandCursor: true });
+      const tabLabel = this.add.text(tx + tabWidth / 2, tabY, t.label, {
+        fontSize: '12px',
+        color: '#e8f6ff'
+      }).setOrigin(0.5, 0.5);
+
+      tabRect.on('pointerdown', () => {
+        this.showBuildMenuCategory(t.id);
+      });
+
+      this.buildMenuTabs[t.id] = { rect: tabRect, label: tabLabel };
+      container.add(tabRect);
+      container.add(tabLabel);
+    });
+
+    // Options container area
+    const optionsContainer = this.add.container(0, 68);
+    this.buildMenuOptionsContainer = optionsContainer;
+
+    container.add([bg, title, closeText, optionsContainer]);
+    this.buildMenuContainer = container;
+
+    // First render
+    this.showBuildMenuCategory('buildings');
+  }
+
+  showBuildMenuCategory(category) {
+    this.buildMenuActiveCategory = category;
+
+    const optionsByCategory = {
+      buildings: ['Bunker', 'Docks', 'Mine', 'Factory'],
+      units:     ['Hauler', 'Builder', 'Scout', 'Raider'],
+      infra:     ['Bridge', 'Canal', 'Road', 'Remove Forest', 'Level', 'Other'],
+    };
+
+    // Visual tab highlighting
+    if (this.buildMenuTabs) {
+      Object.entries(this.buildMenuTabs).forEach(([id, obj]) => {
+        const isActive = id === category;
+        obj.rect.fillColor = isActive ? 0x235070 : 0x173b52;
+      });
+    }
+
+    // Clear old option items
+    if (this.buildMenuOptionsContainer) {
+      this.buildMenuOptionsContainer.removeAll(true);
+    }
+
+    const opts = optionsByCategory[category] || [];
+    const startX = 20;
+    const startY = 0;
+    const lineH = 24;
+
+    opts.forEach((name, idx) => {
+      const y = startY + idx * lineH;
+      const optionBg = this.add.rectangle(startX + 90, y + 10, 180, 20, 0x173b52, 0.9)
+        .setOrigin(0.5)
+        .setInteractive({ useHandCursor: true });
+
+      const label = this.add.text(startX + 90, y + 10, name, {
+        fontSize: '13px',
+        color: '#e8f6ff'
+      }).setOrigin(0.5, 0.5);
+
+      optionBg.on('pointerdown', () => {
+        console.log(`[BUILD MENU] ${category} → ${name} (no functionality yet)`);
+        // future: hook real build logic here.
+      });
+
+      this.buildMenuOptionsContainer.add(optionBg);
+      this.buildMenuOptionsContainer.add(label);
+    });
+  }
+
+  closeBuildMenu() {
+    if (this.buildMenuContainer) {
+      this.buildMenuContainer.setVisible(false);
+    }
+    if (this.buildMenuOverlay) {
+      this.buildMenuOverlay.disableInteractive();
+      this.buildMenuOverlay.setVisible(false);
+    }
   }
 
   // Minimal inspector (logs)
