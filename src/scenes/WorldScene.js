@@ -13,6 +13,7 @@ import {
   enterHaulerRoutePicker,
 } from './WorldSceneHaulers.js';
 
+import { spawnUnitsAndEnemies } from './WorldSceneUnits.js';
 import { spawnFishResources } from './WorldSceneResources.js';
 
 import {
