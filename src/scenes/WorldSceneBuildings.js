@@ -1,31 +1,37 @@
 // src/scenes/WorldSceneBuildings.js
-
+//
+// Buildings module (single-hex Docks + menu)
+//
+// This file only handles:
+// - Docks registry + validation (single hex, must be coastal)
+// - Docks placement (framed ⚓ + plain "Docks" label underneath)
+// - Docks context menu + overlay
+// - Minimal resource helpers used for build costs
+// - Destroy building cleanup
+//
+// Ship/Hauler logic, storage labels, route picking, cyan paths, etc. live in:
+//   src/scenes/WorldSceneHaulers.js
+//
+// Required imports from Haulers module:
 import {
   buildShipForDocks,
   openDocksRoutePicker,
   recallShipsToDocks,
   ensureDocksStoreLabel,
   updateDocksStoreLabel,
-  applyHaulerBehaviorOnEndTurn,   // if you were re-exporting it from buildings
-  applyShipRoutesOnEndTurn,       // optional if buildings calls it
-  enterHaulerRoutePicker          // if you show a “Set Hauler Route” button elsewhere
 } from './WorldSceneHaulers.js';
 
-// Re-export (back-compat): some old code may import these names from Buildings.
-export { applyHaulerBehaviorOnEndTurn as applyHaulerRoutesOnEndTurn } from './WorldSceneHaulers.js';
-export { enterHaulerRoutePicker, buildHaulerAtSelectedUnit, applyShipRoutesOnEndTurn } from './WorldSceneHaulers.js';
-
 ///////////////////////////////
-// Visual + UI constants (shared with this file only)
+// Visual + UI constants
 ///////////////////////////////
 const COLORS = {
   plate: 0x0f2233,
   stroke: 0x3da9fc,
   labelText: '#e8f6ff',
 };
+
 const UI = {
   labelFontSize: 16,
-  boxRadius: 8,
   boxStrokeAlpha: 0.9,
   zBuilding: 2100,
   zOverlay: 2290,
@@ -33,44 +39,62 @@ const UI = {
 };
 
 ///////////////////////////////
-// Storage cap used by labels inside Haulers module
+// Costs
 ///////////////////////////////
-const DOCKS_STORAGE_CAP = 10; // kept for reference; labels handled in Haulers
+const COSTS = {
+  docks: { scrap: 20, money: 50 },
+};
 
 ///////////////////////////////
-// Buildings registry
+// Buildings registry (single-hex docks)
 ///////////////////////////////
 export const BUILDINGS = {
   docks: {
     key: 'docks',
     name: 'Docks',
-    emojiWater: '🚢',
-    emojiLand: '⚓',
+    emoji: '⚓',
+    /**
+     * Single-hex coastal rule:
+     * - The hex itself can be land or water.
+     * - It must have at least one adjacent WATER and at least one adjacent LAND neighbor
+     *   so both ships and haulers can reach it.
+     * - No duplicate docks on the same hex.
+     */
     validateTile(scene, q, r) {
       const t = _tileAt(scene, q, r);
-      if (!t || !_isWater(scene, q, r)) return false;
-      const landAdj = _offsetNeighbors(q, r).some(h => _isLand(scene, h.q, h.r));
-      if (!landAdj) return false;
+      if (!t) return false;
+
+      // Cannot place two docks on the same hex
       if ((scene.buildings || []).some(b => b.type === 'docks' && b.q === q && b.r === r)) return false;
-      return true;
+
+      const adj = _offsetNeighbors(q, r)
+        .filter(h => h.q >= 0 && h.r >= 0 && h.q < scene.mapWidth && h.r < scene.mapHeight)
+        .map(h => ({ ...h, water: _isWater(scene, h.q, h.r) }));
+      const hasWaterAdj = adj.some(a => a.water);
+      const hasLandAdj  = adj.some(a => !a.water);
+      return hasWaterAdj && hasLandAdj;
     },
   },
 };
 
 ///////////////////////////////
-// Public API: Docks building flow
+// Public API
 ///////////////////////////////
+
+/** Start automatic docks placement near the selected unit (limit 2 docks total). */
 export function startDocksPlacement() {
   const scene = /** @type {Phaser.Scene & any} */ (this);
   _ensureResourceInit(scene);
 
-  if (!_canAfford(scene, { scrap: 20, money: 50 })) {
+  // resource cost check
+  if (!_canAfford(scene, COSTS.docks)) {
     console.warn('[BUILD] Not enough resources for Docks (need 🛠20 + 💰50).');
     return;
   }
+
   const count = (scene.buildings || []).filter(b => b.type === 'docks').length;
   if (count >= 2) {
-    console.warn('[BUILD] Docks: limit reached (2).');
+    console.warn('[BUILD] Docks: limit reached (2). New docks will not spawn.');
     return;
   }
   if (!scene.selectedUnit) {
@@ -80,57 +104,54 @@ export function startDocksPlacement() {
 
   const u = scene.selectedUnit;
 
+  // Prefer ring-1 tiles around the unit that pass docks.validateTile
   const ring1 = _neighbors(u.q, u.r)
-    .filter(({ q, r }) => _isWater(scene, q, r))
     .filter(({ q, r }) => BUILDINGS.docks.validateTile(scene, q, r));
 
   let pick = null;
   if (ring1.length) pick = _getRandom(ring1, scene);
 
+  // Else any nearby valid "coastal" within radius 3
   if (!pick) {
-    const coastal = _computeCoastalWater(scene, u.q, u.r)
-      .filter(({ q, r }) => BUILDINGS.docks.validateTile(scene, q, r));
-    if (coastal.length) pick = _getRandom(coastal, scene);
+    pick = _nearestValidWithin(scene, u.q, u.r, 3, (q, r) => BUILDINGS.docks.validateTile(scene, q, r));
   }
 
   if (!pick) {
-    const nearest = _nearestWaterWithin(scene, u.q, u.r, 3);
-    if (nearest && BUILDINGS.docks.validateTile(scene, nearest.q, nearest.r)) pick = nearest;
-  }
-
-  if (!pick) {
-    console.warn('[BUILD] Docks: no nearby valid water found.');
+    console.warn('[BUILD] Docks: no nearby valid coastal hex found.');
     return;
   }
 
-  if (!_spend(scene, { scrap: 20, money: 50 })) {
+  // spend resources, then place
+  if (!_spend(scene, COSTS.docks)) {
     console.warn('[BUILD] Failed to spend resources for Docks.');
     return;
   }
   _placeDocks(scene, pick.q, pick.r, 'spawned from mobile base');
 }
 
-export function cancelPlacement() { /* reserved */ }
+export function cancelPlacement() { /* reserved for future */ }
 
+/** Direct placement (if you already have target q,r). */
 export function placeDocks(q, r) {
   const scene = /** @type {Phaser.Scene & any} */ (this);
   _ensureResourceInit(scene);
 
-  if (!_canAfford(scene, { scrap: 20, money: 50 })) {
+  if (!_canAfford(scene, COSTS.docks)) {
     console.warn('[BUILD] Not enough resources for Docks (need 🛠20 + 💰50).');
     return;
   }
-  if (!_spend(scene, { scrap: 20, money: 50 })) return;
+  if (!_spend(scene, COSTS.docks)) return;
+
   _placeDocks(scene, q, r, 'direct place');
 }
 
 ///////////////////////////////
-// Docks placement + menu
+// Docks placement (single-hex; framed ⚓ + plain text under)
 ///////////////////////////////
-function _placeDocks(scene, q, r, reason='') {
+function _placeDocks(scene, q, r, reason = '') {
   const docksCount = (scene.buildings || []).filter(b => b.type === 'docks').length;
   if (docksCount >= 2) {
-    console.warn('[BUILD] Docks: limit reached (2).');
+    console.warn('[BUILD] Docks: limit reached (2). New docks will not spawn.');
     return;
   }
   if (!BUILDINGS.docks.validateTile(scene, q, r)) {
@@ -138,55 +159,44 @@ function _placeDocks(scene, q, r, reason='') {
     return;
   }
 
-  const landAdj = _offsetNeighbors(q, r).filter(h => _isLand(scene, h.q, h.r));
-  if (landAdj.length === 0) {
-    console.warn(`[BUILD] Docks: no adjacent land at (${q},${r}).`);
-    return;
-  }
-  const ground = landAdj[0];
-
   scene.buildings = scene.buildings || [];
   scene._buildingIdSeq = (scene._buildingIdSeq || 1) + 1;
   const id = scene._buildingIdSeq;
 
-  // Water label/container
-  const posW = scene.axialToWorld(q, r);
-  const contWater = scene.add.container(posW.x, posW.y).setDepth(UI.zBuilding);
-  const labelW = scene.add.text(0, 0, `${BUILDINGS.docks.emojiWater}  ${BUILDINGS.docks.name}`, {
-    fontSize: `${UI.labelFontSize}px`, color: COLORS.labelText,
-  }).setOrigin(0.5);
-  const wW = Math.max(64, labelW.width + 12), hW = Math.max(26, labelW.height + 12);
-  const boxW = scene.add.graphics();
-  boxW.fillStyle(COLORS.plate ?? 0x0f2233, 0.92);
-  boxW.fillRoundedRect(-wW/2, -hW/2, wW, hW, 8);
-  boxW.lineStyle(2, COLORS.stroke ?? 0x3da9fc, UI.boxStrokeAlpha ?? 0.9);
-  boxW.strokeRoundedRect(-wW/2, -hW/2, wW, hW, 8);
-  const hitW = scene.add.rectangle(0, 0, wW, hW, 0x000000, 0).setOrigin(0.5).setInteractive({ useHandCursor: true });
-  contWater.add([boxW, labelW, hitW]);
+  const pos = scene.axialToWorld(q, r);
+  const cont = scene.add.container(pos.x, pos.y).setDepth(UI.zBuilding);
 
-  // Ground label/container
-  const posG = scene.axialToWorld(ground.q, ground.r);
-  const contLand = scene.add.container(posG.x, posG.y).setDepth(UI.zBuilding);
-  const labelG = scene.add.text(0, 0, `${BUILDINGS.docks.emojiLand}  ${BUILDINGS.docks.name}`, {
-    fontSize: `${UI.labelFontSize}px`, color: COLORS.labelText,
+  // --- Framed anchor (background plate + ⚓ on top)
+  const plate = scene.add.graphics();
+  const plateW = 36, plateH = 36, radius = 8;
+  plate.fillStyle(COLORS.plate, 0.92);
+  plate.fillRoundedRect(-plateW/2, -plateH/2, plateW, plateH, radius);
+  plate.lineStyle(2, COLORS.stroke, UI.boxStrokeAlpha);
+  plate.strokeRoundedRect(-plateW/2, -plateH/2, plateW, plateH, radius);
+
+  const anchor = scene.add.text(0, 0, '⚓', {
+    fontSize: '22px',
+    color: '#ffffff'
   }).setOrigin(0.5);
-  const wG = Math.max(64, labelG.width + 12), hG = Math.max(26, labelG.height + 12);
-  const boxG = scene.add.graphics();
-  boxG.fillStyle(COLORS.plate ?? 0x0f2233, 0.92);
-  boxG.fillRoundedRect(-wG/2, -hG/2, wG, hG, 8);
-  boxG.lineStyle(2, COLORS.stroke ?? 0x3da9fc, UI.boxStrokeAlpha ?? 0.9);
-  boxG.strokeRoundedRect(-wG/2, -hG/2, wG, hG, 8);
-  const hitG = scene.add.rectangle(0, 0, wG, hG, 0x000000, 0).setOrigin(0, 0).setInteractive({ useHandCursor: true });
-  contLand.add([boxG, labelG, hitG]);
+
+  // --- Plain label under the plate (no background)
+  const label = scene.add.text(0, plateH/2 + 10, 'Docks', {
+    fontSize: `${UI.labelFontSize}px`,
+    color: COLORS.labelText
+  }).setOrigin(0.5, 0);
+
+  // Single hit area (for the building menu)
+  const hit = scene.add.rectangle(0, 0, plateW, plateH + 26, 0x000000, 0)
+    .setOrigin(0.5).setInteractive({ useHandCursor: true });
+
+  cont.add([plate, anchor, label, hit]);
 
   const building = {
     id,
     type: BUILDINGS.docks.key,
     name: BUILDINGS.docks.name,
-    q, r,            // WATER hex
-    container: contWater,
-    gq: ground.q, gr: ground.r, // GROUND hex
-    containerLand: contLand,
+    q, r,
+    container: cont,
     routeMarker: null,
     menu: null,
     overlay: null,
@@ -197,7 +207,7 @@ function _placeDocks(scene, q, r, reason='') {
 
   scene.buildings.push(building);
 
-  // Ensure storage label (now implemented in Haulers module)
+  // storage label near this hex (delegated to Haulers module)
   ensureDocksStoreLabel(scene, building);
   updateDocksStoreLabel(scene, building);
 
@@ -205,12 +215,14 @@ function _placeDocks(scene, q, r, reason='') {
     event?.stopPropagation?.();
     _openBuildingMenu(scene, building);
   };
-  hitW.on('pointerdown', openMenu);
-  hitG.on('pointerdown', openMenu);
+  hit.on('pointerdown', openMenu);
 
-  console.log(`[BUILD] Docks placed at WATER(${q},${r}) + GROUND(${ground.q},${ground.r}) — ${reason}`);
+  console.log(`[BUILD] Docks placed at (${q},${r}) — ${reason}`);
 }
 
+///////////////////////////////
+// Menu (created above the building; overlay disables hex-inspect)
+///////////////////////////////
 function _openBuildingMenu(scene, building) {
   _closeAnyBuildingMenu(scene, building.id);
   scene.uiLock = 'buildingMenu';
@@ -222,19 +234,24 @@ function _openBuildingMenu(scene, building) {
     cam.worldView.width,
     cam.worldView.height,
     0x000000, 0.001
-  ).setInteractive({ useHandCursor: false })
-   .setScrollFactor(0)
-   .setDepth(UI.zOverlay);
-  overlay.on('pointerdown', (pointer, lx, ly, event) => { event?.stopPropagation?.(); _closeBuildingMenu(scene, building); });
+  )
+    .setInteractive({ useHandCursor: false })
+    .setScrollFactor(0)
+    .setDepth(UI.zOverlay);
+
+  overlay.on('pointerdown', (pointer, lx, ly, event) => {
+    event?.stopPropagation?.();
+    _closeBuildingMenu(scene, building);
+  });
   building.overlay = overlay;
 
-  const midX = (scene.axialToWorld(building.q, building.r).x + scene.axialToWorld(building.gq, building.gr).x) / 2;
-  const midY = (scene.axialToWorld(building.q, building.r).y + scene.axialToWorld(building.gq, building.gr).y) / 2;
-
-  const menu = scene.add.container(midX, midY - 56).setDepth(UI.zMenu);
+  // Position menu from the single docks hex
+  const midPos = scene.axialToWorld(building.q, building.r);
+  const menu = scene.add.container(midPos.x, midPos.y - 56).setDepth(UI.zMenu);
   building.menu = menu;
 
   const W = 172, H = 172;
+
   const bg = scene.add.graphics();
   bg.fillStyle(0x0f2233, 0.96);
   bg.fillRoundedRect(-W/2, -H/2, W, H, 12);
@@ -248,21 +265,57 @@ function _openBuildingMenu(scene, building) {
 
   const btnSize = 70, pad = 8, startX = -W/2 + 12, startY = -H/2 + 12;
 
-  const addBtn = (x, y, label, onClick) => {
+  const drawButton = (x, y, label, onClick) => {
     const g = scene.add.graphics();
     g.fillStyle(0x173b52, 1);
     g.fillRoundedRect(x, y, btnSize, btnSize, 8);
     g.lineStyle(2, 0x6fe3ff, 0.7);
     g.strokeRoundedRect(x, y, btnSize, btnSize, 8);
+    g.lineStyle(1, 0x6fe3ff, 0.15);
+    g.beginPath();
+    g.moveTo(x + btnSize/2, y + 6);
+    g.lineTo(x + btnSize/2, y + btnSize - 6);
+    g.moveTo(x + 6, y + btnSize/2);
+    g.lineTo(x + btnSize - 6, y + btnSize/2);
+    g.strokePath();
 
     const t = scene.add.text(x + btnSize/2, y + btnSize/2, label, {
-      fontSize: '14px', color: '#e8f6ff', align: 'center', wordWrap: { width: btnSize - 10 }
+      fontSize: '14px',
+      color: '#e8f6ff',
+      align: 'center',
+      wordWrap: { width: btnSize - 10 }
     }).setOrigin(0.5);
 
     const hit = scene.add.rectangle(x, y, btnSize, btnSize, 0x000000, 0)
       .setOrigin(0, 0)
       .setInteractive({ useHandCursor: true });
-    hit.on('pointerdown', (pointer, lx, ly, event) => { event?.stopPropagation?.(); onClick?.(); });
+
+    hit.on('pointerover', () => {
+      g.clear();
+      g.fillStyle(0x1a4764, 1);
+      g.fillRoundedRect(x, y, btnSize, btnSize, 8);
+      g.lineStyle(2, 0x9be4ff, 1);
+      g.strokeRoundedRect(x, y, btnSize, btnSize, 8);
+    });
+    hit.on('pointerout', () => {
+      g.clear();
+      g.fillStyle(0x173b52, 1);
+      g.fillRoundedRect(x, y, btnSize, btnSize, 8);
+      g.lineStyle(2, 0x6fe3ff, 0.7);
+      g.strokeRoundedRect(x, y, btnSize, btnSize, 8);
+      g.lineStyle(1, 0x6fe3ff, 0.15);
+      g.beginPath();
+      g.moveTo(x + btnSize/2, y + 6);
+      g.lineTo(x + btnSize/2, y + btnSize - 6);
+      g.moveTo(x + 6, y + btnSize/2);
+      g.lineTo(x + btnSize - 6, y + btnSize/2);
+      g.strokePath();
+    });
+
+    hit.on('pointerdown', (pointer, lx, ly, event) => {
+      event?.stopPropagation?.();
+      onClick?.();
+    });
 
     menu.add([g, t, hit]);
   };
@@ -274,10 +327,11 @@ function _openBuildingMenu(scene, building) {
     { text: 'Destroy',      onClick: () => _destroyBuilding(scene, building) },
   ];
   for (let i = 0; i < defs.length; i++) {
-    const r = Math.floor(i / 2), c = i % 2;
+    const r = Math.floor(i / 2);
+    const c = i % 2;
     const x = startX + c * (btnSize + pad);
     const y = startY + r * (btnSize + pad);
-    addBtn(x, y, defs[i].text, defs[i].onClick);
+    drawButton(x, y, defs[i].text, defs[i].onClick);
   }
 
   menu.add([bg, bezel]);
@@ -286,36 +340,42 @@ function _openBuildingMenu(scene, building) {
 }
 
 function _closeAnyBuildingMenu(scene, exceptId) {
-  (scene.buildings || []).forEach(b => { if (b.menu && b.id !== exceptId) _closeBuildingMenu(scene, b); });
+  (scene.buildings || []).forEach(b => {
+    if (b.menu && b.id !== exceptId) _closeBuildingMenu(scene, b);
+  });
 }
 function _closeBuildingMenu(scene, building) {
-  building.menu?.destroy(true); building.menu = null;
-  building.overlay?.destroy(true); building.overlay = null;
+  if (building.menu)   { building.menu.destroy(true);   building.menu = null; }
+  if (building.overlay){ building.overlay.destroy(true);building.overlay = null; }
   if (scene.uiLock === 'buildingMenu') scene.uiLock = null;
 }
 
+///////////////////////////////
+// Destroy building
+///////////////////////////////
 function _destroyBuilding(scene, building) {
   building.container?.destroy(true);
-  building.containerLand?.destroy(true);
   building.menu?.destroy(true);
   building.overlay?.destroy(true);
   building.storageObj?.destroy(true);
   building.routeMarker?.destroy(true);
 
-  (scene.ships || []).forEach(s => { if (s.docksId === building.id) s.docksId = null; });
+  // Detach ships / haulers that referenced this docks
+  (scene.ships   || []).forEach(s => { if (s.docksId === building.id)   s.docksId = null; });
   (scene.haulers || []).forEach(h => { if (h.targetDocksId === building.id) h.targetDocksId = null; });
 
   scene.buildings = (scene.buildings || []).filter(b => b !== building);
   if (scene.uiLock === 'buildingMenu') scene.uiLock = null;
-
   console.log(`[BUILD] Docks destroyed (id=${building.id}).`);
 }
 
 ///////////////////////////////
-// Shared helpers (kept local)
+// Minimal resource helpers
 ///////////////////////////////
 function _ensureResourceInit(scene) {
-  if (!scene.playerResources) scene.playerResources = { food: 20, scrap: 20, money: 100, influence: 0 };
+  if (!scene.playerResources) {
+    scene.playerResources = { food: 20, scrap: 20, money: 100, influence: 0 };
+  }
   scene.updateResourceUI?.();
 }
 function _canAfford(scene, cost) {
@@ -331,46 +391,50 @@ function _spend(scene, cost) {
   scene.updateResourceUI?.();
   return true;
 }
-function _tileAt(scene, q, r) { return scene.mapData?.find?.(t => t.q === q && t.r === r); }
-function _isWater(scene, q, r) { const t=_tileAt(scene,q,r); return !!t && (t.type==='water'||t.type==='ocean'||t.type==='sea'); }
-function _isLand(scene, q, r)  { const t=_tileAt(scene,q,r); return !!t && !_isWater(scene, q, r); }
 
+///////////////////////////////
+// Tile + neighbor helpers
+///////////////////////////////
+function _tileAt(scene, q, r) {
+  return scene.mapData?.find?.(t => t.q === q && t.r === r);
+}
+function _isWater(scene, q, r) {
+  const t = _tileAt(scene, q, r);
+  return !!t && (t.type === 'water' || t.type === 'ocean' || t.type === 'sea');
+}
 function _offsetNeighbors(q, r) {
   const isOdd = (r & 1) === 1;
   const even = [[0,-1],[+1,0],[0,+1],[-1,+1],[-1,0],[-1,-1]];
   const odd  = [[+1,-1],[+1,0],[+1,+1],[0,+1],[-1,0],[0,-1]];
-  return (isOdd ? odd : even).map(([dq, dr]) => ({ q: q + dq, r: r + dr }));
+  const deltas = isOdd ? odd : even;
+  return deltas.map(([dq, dr]) => ({ q: q + dq, r: r + dr }));
 }
 function _neighbors(q, r) { return _offsetNeighbors(q, r); }
 
-function _nearestWaterWithin(scene, uq, ur, maxRadius=3) {
-  const key=(q,r)=>`${q},${r}`, seen=new Set([key(uq,ur)]);
-  const qArr=[{q:uq,r:ur,dist:0}];
-  while(qArr.length){
-    const cur=qArr.shift();
-    if(cur.dist>maxRadius) break;
-    if(_isWater(scene,cur.q,cur.r)&&BUILDINGS.docks.validateTile(scene,cur.q,cur.r)){
-      if(!(cur.q===uq&&cur.r===ur)) return { q: cur.q, r: cur.r };
+function _nearestValidWithin(scene, uq, ur, maxRadius, isValid) {
+  const key = (q, r) => `${q},${r}`;
+  const seen = new Set([key(uq, ur)]);
+  const qArr = [{ q: uq, r: ur, dist: 0 }];
+  while (qArr.length) {
+    const cur = qArr.shift();
+    if (cur.dist > maxRadius) break;
+    if (!(cur.q === uq && cur.r === ur) && isValid(cur.q, cur.r)) {
+      return { q: cur.q, r: cur.r };
     }
-    for(const n of _offsetNeighbors(cur.q,cur.r)){
-      if(n.q<0||n.r<0||n.q>=scene.mapWidth||n.r>=scene.mapHeight)continue;
-      const k=key(n.q,n.r); if(seen.has(k))continue;
-      seen.add(k); qArr.push({ q:n.q, r:n.r, dist:cur.dist+1 });
+    for (const n of _offsetNeighbors(cur.q, cur.r)) {
+      if (n.q < 0 || n.r < 0 || n.q >= scene.mapWidth || n.r >= scene.mapHeight) continue;
+      const k = key(n.q, n.r);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      qArr.push({ q: n.q, r: n.r, dist: cur.dist + 1 });
     }
   }
   return null;
 }
-function _computeCoastalWater(scene,uq,ur){
-  const set=new Set(), out=[]; const add=(q,r)=>{const k=`${q},${r}`; if(!set.has(k)){set.add(k); out.push({q,r});}};
-  for(const h of _offsetNeighbors(uq,ur)){
-    if(h.q<0||h.r<0||h.q>=scene.mapWidth||h.r>=scene.mapHeight)continue;
-    if(_isLand(scene,h.q,h.r)){
-      for(const n of _offsetNeighbors(h.q,h.r)){
-        if(n.q<0||n.r<0||n.q>=scene.mapWidth||n.r>=scene.mapHeight)continue;
-        if(_isWater(scene,n.q,n.r)) add(n.q,n.r);
-      }
-    }
-  }
-  return out;
-}
-function _getRandom(list, scene){ if(!list||!list.length) return null; const i=Math.floor((scene?.hexMap?.rand?.() ?? Math.random())*list.length); return list[i]; }
+
+export default {
+  BUILDINGS,
+  startDocksPlacement,
+  placeDocks,
+  cancelPlacement,
+};
