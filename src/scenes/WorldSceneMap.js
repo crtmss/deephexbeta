@@ -18,7 +18,6 @@ export function getColorForTerrain(terrain) {
     case 'swamp':       return 0x8AA18A; // #8AA18A
     case 'mountain':    return 0xC9C9C9; // #C9C9C9
     case 'water':       return 0x7CC4FF; // #7CC4FF
-    // NEW:
     case 'volcano_ash': return 0x9A9A9A; // grey
     case 'ice':         return 0xCFEFFF; // light blue
     case 'snow':        return 0xF7FBFF; // very light
