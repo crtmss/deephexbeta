@@ -1,5 +1,6 @@
 // src/scenes/WorldSceneHaulers.js
 // Ships + Haulers module (movement, harvesting, cyan path, labels, route picker)
+// Unified locomotion: domain-based passability + single BFS + single cyan tracer.
 
 ///////////////////////////////
 // Visual + UI constants (scoped here)
@@ -10,6 +11,7 @@ const COLORS = {
   cargoText: '#ffffff',
   docksStoreText: '#ffffff',
 };
+
 const UI = {
   zBuilding: 2100,
   zOverlay: 2290,
@@ -18,8 +20,8 @@ const UI = {
 };
 
 const DOCKS_STORAGE_CAP = 10;
-const SHIP_CARGO_CAP = 2;
-const HAULER_CARGO_CAP = 5;
+const SHIP_CARGO_CAP     = 2;
+const HAULER_CARGO_CAP   = 5;
 
 ///////////////////////////////
 // Public API (named exports)
@@ -39,6 +41,9 @@ export function buildShipForDocks(scene, building) {
     .setOrigin(0.5).setDepth(UI.zBuilding);
 
   const ship = {
+    kind: 'ship',
+    domain: 'water',           // unified movement
+    cargoCap: SHIP_CARGO_CAP,  // unified cargo cap access
     type: 'ship',
     name: 'Ship',
     emoji: '🚢',
@@ -97,7 +102,7 @@ export function openDocksRoutePicker(scene, building) {
       console.warn('[DOCKS] Route must be on water.');
       overlay.destroy(); return;
     }
-    if (!_reachableOnWater(scene, building.q, building.r, rounded.q, rounded.r)) {
+    if (!isReachable(scene, { domain: 'water' }, building.q, building.r, rounded.q, rounded.r)) {
       console.warn('[DOCKS] Route water hex is not reachable by water.');
       overlay.destroy(); return;
     }
@@ -161,7 +166,7 @@ export function applyShipRoutesOnEndTurn(sceneArg) {
       // Harvest turn (no movement)
       if (s.mode === 'harvesting') {
         if (s.harvestTurnsRemaining > 0) {
-          const room = Math.max(0, SHIP_CARGO_CAP - s.cargoFood);
+          const room = Math.max(0, (s.cargoCap ?? SHIP_CARGO_CAP) - s.cargoFood);
           const take = Math.min(1, room);
           if (take > 0) {
             s.cargoFood += take;
@@ -169,7 +174,7 @@ export function applyShipRoutesOnEndTurn(sceneArg) {
           }
           s.harvestTurnsRemaining -= 1;
         }
-        if (s.harvestTurnsRemaining <= 0 || s.cargoFood >= SHIP_CARGO_CAP) {
+        if (s.harvestTurnsRemaining <= 0 || s.cargoFood >= (s.cargoCap ?? SHIP_CARGO_CAP)) {
           s.mode = 'returning';
         }
         s.movePoints = s.maxMovePoints;
@@ -207,12 +212,12 @@ export function applyShipRoutesOnEndTurn(sceneArg) {
         return;
       }
 
-      // Movement leg
+      // Movement leg (unified)
       if (s.movePoints <= 0) return;
-      const path = _waterPath(scene, s.q, s.r, targetQ, targetR);
+      const path = findPath(scene, s, s.q, s.r, targetQ, targetR);
       if (!path || path.length <= 1) return;
 
-      _debugDrawWaterPath(scene, path);
+      debugDrawPath(scene, path);
       const steps = Math.min(s.movePoints, path.length - 1);
       const nx = path[steps];
       s.q = nx.q; s.r = nx.r;
@@ -255,6 +260,9 @@ export function buildHaulerAtSelectedUnit() {
     .setOrigin(0.5).setDepth(UI.zBuilding);
 
   const hauler = {
+    kind: 'hauler',
+    domain: 'land',              // unified movement
+    cargoCap: HAULER_CARGO_CAP,  // unified cargo cap access
     type: 'hauler',
     name: 'Hauler',
     emoji: '🚚',
@@ -273,7 +281,7 @@ export function buildHaulerAtSelectedUnit() {
   const docksList = (scene.buildings || []).filter(b => b.type === 'docks');
   if (docksList.length > 0) {
     const best = docksList
-      .map(b => ({ b, d: _hexManhattan(u.q, u.r, b.gq ?? b.q, b.gr ?? b.r) }))
+      .map(b => ({ b, d: hexManhattan(u.q, u.r, b.gq ?? b.q, b.gr ?? b.r) }))
       .sort((a, b) => a.d - b.d)[0].b;
     hauler.targetDocksId = best.id;
     hauler.mode = 'toDocks';
@@ -325,7 +333,7 @@ export function applyHaulerBehaviorOnEndTurn(sceneArg) {
     // Arrived?
     if (h.q === targetQ && h.r === targetR) {
       if (h.mode === 'toDocks') {
-        const room = Math.max(0, HAULER_CARGO_CAP - h.cargoFood);
+        const room = Math.max(0, (h.cargoCap ?? HAULER_CARGO_CAP) - h.cargoFood);
         const take = Math.min(room, docks.storageFood || 0);
         docks.storageFood = Math.max(0, (docks.storageFood || 0) - take);
         h.cargoFood += take;
@@ -344,12 +352,12 @@ export function applyHaulerBehaviorOnEndTurn(sceneArg) {
       continue;
     }
 
-    // Move
+    // Move (unified)
     if (h.movePoints <= 0) continue;
-    const path = _landPath(scene, h.q, h.r, targetQ, targetR);
+    const path = findPath(scene, h, h.q, h.r, targetQ, targetR);
     if (!path || path.length <= 1) continue;
 
-    _debugDrawLandPath(scene, path);
+    debugDrawPath(scene, path);
     const steps = Math.min(h.movePoints, path.length - 1);
     const nx = path[steps];
     h.q = nx.q; h.r = nx.r;
@@ -453,7 +461,7 @@ export function updateDocksStoreLabel(scene, docks) {
 }
 
 ///////////////////////////////
-// Internal helpers (movement, paths, labels, resources, etc.)
+// Internal helpers (unified movement, labels, resources, etc.)
 ///////////////////////////////
 function _setRouteMarker(scene, building, q, r) {
   if (building.routeMarker) building.routeMarker.destroy(true);
@@ -505,7 +513,7 @@ function _isWater(scene, q, r) {
 }
 function _isLand(scene, q, r) { const t = _tileAt(scene, q, r); return !!t && !_isWater(scene, q, r); }
 
-function _offsetNeighbors(q, r) {
+function offsetNeighbors(q, r) {
   const isOdd = (r & 1) === 1;
   const even = [[0,-1],[+1,0],[0,+1],[-1,+1],[-1,0],[-1,-1]];
   const odd  = [[+1,-1],[+1,0],[+1,+1],[0,+1],[-1,0],[0,-1]];
@@ -513,80 +521,72 @@ function _offsetNeighbors(q, r) {
   return d.map(([dq, dr]) => ({ q: q + dq, r: r + dr }));
 }
 
-function _reachableOnWater(scene, fromQ, fromR, toQ, toR) {
-  if (!_isWater(scene, fromQ, fromR) || !_isWater(scene, toQ, toR)) return false;
+// ---------- Unified passability + path + cyan drawing ----------
+function isPassable(scene, unit, q, r) {
+  const t = _tileAt(scene, q, r);
+  if (!t) return false;
+  if (unit.domain === 'water') return _isWater(scene, q, r);
+  if (unit.domain === 'land')  return _isLand(scene, q, r);
+  return false;
+}
+
+function isReachable(scene, unit, fromQ, fromR, toQ, toR) {
+  if (!isPassable(scene, unit, fromQ, fromR) || !isPassable(scene, unit, toQ, toR)) return false;
   if (fromQ === toQ && fromR === toR) return true;
-  return !!_waterPath(scene, fromQ, fromR, toQ, toR);
-}
-function _waterPath(scene, fromQ, fromR, toQ, toR) {
-  if (!_isWater(scene,toQ,toR)||!_isWater(scene,fromQ,fromR)) return null;
-  const key=(q,r)=>`${q},${r}`; const came=new Map(),seen=new Set([key(fromQ,fromR)]);
-  const qArr=[{q:fromQ,r:fromR}];
-  while(qArr.length){
-    const cur=qArr.shift();
-    if(cur.q===toQ&&cur.r===toR){
-      const path=[]; let node=cur,k=key(cur.q,cur.r);
-      while(node){path.push({q:node.q,r:node.r});const prev=came.get(k);if(!prev)break;k=key(prev.q,prev.r);node=prev;}
-      return path.reverse();
-    }
-    for(const n of _offsetNeighbors(cur.q,cur.r)){
-      if(n.q<0||n.r<0||n.q>=scene.mapWidth||n.r>=scene.mapHeight)continue;
-      if(!_isWater(scene,n.q,n.r))continue;
-      const nk=key(n.q,n.r); if(seen.has(nk))continue;
-      seen.add(nk); came.set(nk,cur); qArr.push(n);
-    }
-  } return null;
-}
-function _landPath(scene,fromQ,fromR,toQ,toR){
-  if(!_isLand(scene,fromQ,fromR)||!_isLand(scene,toQ,toR))return null;
-  const key=(q,r)=>`${q},${r}`;const came=new Map(),seen=new Set([key(fromQ,fromR)]);
-  const qArr=[{q:fromQ,r:fromR}];
-  while(qArr.length){
-    const cur=qArr.shift();
-    if(cur.q===toQ&&cur.r===toR){
-      const path=[];let node=cur,k=key(cur.q,cur.r);
-      while(node){path.push({q:node.q,r:node.r});const prev=came.get(k);if(!prev)break;k=key(prev.q,prev.r);node=prev;}
-      return path.reverse();
-    }
-    for(const n of _offsetNeighbors(cur.q,cur.r)){
-      if(n.q<0||n.r<0||n.q>=scene.mapWidth||n.r>=scene.mapHeight)continue;
-      if(!_isLand(scene,n.q,n.r))continue;
-      const nk=key(n.q,n.r); if(seen.has(nk))continue;
-      seen.add(nk); came.set(nk,cur); qArr.push(n);
-    }
-  } return null;
+  return !!findPath(scene, unit, fromQ, fromR, toQ, toR);
 }
 
-function _hexManhattan(q1,r1,q2,r2){return Math.abs(q1-q2)+Math.abs(r1-r2);}
+function findPath(scene, unit, fromQ, fromR, toQ, toR) {
+  if (!isPassable(scene, unit, toQ, toR)) return null;
+  const key = (q,r)=>`${q},${r}`;
+  const came = new Map();
+  const seen = new Set([key(fromQ, fromR)]);
+  const qArr = [{ q: fromQ, r: fromR }];
 
-function _debugDrawWaterPath(scene, path){
-  try{
-    if(!path||path.length<2)return;
-    if(scene._shipPathGfx)scene._shipPathGfx.destroy();
-    const g=scene.add.graphics().setDepth(2400);
-    scene._shipPathGfx=g; g.lineStyle(2,0x6fe3ff,0.9);
-    let p0=scene.axialToWorld(path[0].q,path[0].r);
-    for(let i=1;i<path.length;i++){
-      const p1=scene.axialToWorld(path[i].q,path[i].r);
-      g.strokeLineShape(new Phaser.Geom.Line(p0.x,p0.y,p1.x,p1.y)); p0=p1;
+  while (qArr.length) {
+    const cur = qArr.shift();
+    if (cur.q === toQ && cur.r === toR) {
+      const path = [];
+      let k = key(cur.q, cur.r), node = cur;
+      while (node) {
+        path.push({ q: node.q, r: node.r });
+        const prev = came.get(k);
+        if (!prev) break;
+        k = key(prev.q, prev.r);
+        node = prev;
+      }
+      return path.reverse();
     }
-    scene.tweens.add({targets:g,alpha:0,duration:900,delay:600,onComplete:()=>g.destroy()});
-  }catch{}
-}
-function _debugDrawLandPath(scene, path){
-  try{
-    if(!path||path.length<2)return;
-    if(scene._haulerPathGfx)scene._haulerPathGfx.destroy();
-    const g=scene.add.graphics().setDepth(2400);
-    scene._haulerPathGfx=g; g.lineStyle(2,0x6fe3ff,0.9);
-    let p0=scene.axialToWorld(path[0].q,path[0].r);
-    for(let i=1;i<path.length;i++){
-      const p1=scene.axialToWorld(path[i].q,path[i].r);
-      g.strokeLineShape(new Phaser.Geom.Line(p0.x,p0.y,p1.x,p1.y)); p0=p1;
+    for (const n of offsetNeighbors(cur.q, cur.r)) {
+      if (n.q < 0 || n.r < 0 || n.q >= scene.mapWidth || n.r >= scene.mapHeight) continue;
+      if (!isPassable(scene, unit, n.q, n.r)) continue;
+      const nk = key(n.q, n.r);
+      if (seen.has(nk)) continue;
+      seen.add(nk); came.set(nk, cur); qArr.push(n);
     }
-    scene.tweens.add({targets:g,alpha:0,duration:900,delay:600,onComplete:()=>g.destroy()});
-  }catch{}
+  }
+  return null;
 }
+
+function debugDrawPath(scene, path) {
+  try {
+    if (!path || path.length < 2) return;
+    if (scene._cyanPathGfx) scene._cyanPathGfx.destroy();
+    const g = scene.add.graphics().setDepth(2400);
+    scene._cyanPathGfx = g;
+    g.lineStyle(2, 0x6fe3ff, 0.9);
+    let p0 = scene.axialToWorld(path[0].q, path[0].r);
+    for (let i = 1; i < path.length; i++) {
+      const p1 = scene.axialToWorld(path[i].q, path[i].r);
+      g.strokeLineShape(new Phaser.Geom.Line(p0.x, p0.y, p1.x, p1.y));
+      p0 = p1;
+    }
+    scene.tweens.add({ targets: g, alpha: 0, duration: 900, delay: 600, onComplete: () => g.destroy() });
+  } catch {}
+}
+// ---------------------------------------------------------------
+
+function hexManhattan(q1,r1,q2,r2){return Math.abs(q1-q2)+Math.abs(r1-r2);}
 
 function _fishAt(scene,q,r){
   return !!(scene.resources||[]).find(o=>o.type==='fish'&&o.q===q&&o.r===r);
@@ -616,11 +616,13 @@ function _getMobileBaseCoords(scene, hauler) {
     const mb = scene.players.find(u =>
       u?.type === 'mobileBase' ||
       u?.isMobileBase === true ||
-      u?.name === 'Mobile Base'
+      u?.name === 'Mobile Base' ||
+      u?.emoji === '🏕️' ||
+      u?.emoji === '🚚'
     );
     if (mb && typeof mb.q === 'number' && typeof mb.r === 'number') {
       return { q: mb.q, r: mb.r };
     }
   }
-  return { q: hauler.baseQ ?? 0, r: hauler.baseR ?? 0 };
+  return { q: hauler.baseQ ?? (scene.players?.[0]?.q ?? 0), r: hauler.baseR ?? (scene.players?.[0]?.r ?? 0) };
 }
