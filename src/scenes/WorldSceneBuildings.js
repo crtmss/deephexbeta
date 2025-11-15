@@ -6,8 +6,9 @@ import {
   recallShipsToDocks,
   ensureDocksStoreLabel,
   updateDocksStoreLabel,
-  // Back-compat re-exports for callers that imported from buildings before split:
-  applyHaulerRoutesOnEndTurn,           // eslint-disable-line no-unused-vars
+  applyHaulerBehaviorOnEndTurn,   // if you were re-exporting it from buildings
+  applyShipRoutesOnEndTurn,       // optional if buildings calls it
+  enterHaulerRoutePicker          // if you show a “Set Hauler Route” button elsewhere
 } from './WorldSceneHaulers.js';
 
 // Re-export (back-compat): some old code may import these names from Buildings.
