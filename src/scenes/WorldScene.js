@@ -31,7 +31,6 @@ import {
   LIFT_PER_LVL
 } from './WorldSceneMap.js';
 
-
 /* =========================
    Deterministic world summary
    ========================= */
@@ -182,8 +181,11 @@ export default class WorldScene extends Phaser.Scene {
     // resources spawner uses `this`
     spawnFishResources.call(this);
 
-    // ⬅️ IMPORTANT: original calling style so WorldSceneUnits.js sees `scene` arg
-    spawnUnitsAndEnemies(this, { mapWidth: this.mapWidth, mapHeight: this.mapHeight });
+    // ✅ ensure both `this` and `scene` arg are valid inside WorldSceneUnits.js
+    spawnUnitsAndEnemies.call(this, this, {
+      mapWidth: this.mapWidth,
+      mapHeight: this.mapHeight
+    });
 
     this.players = this.units.filter(u => u.isPlayer);
     this.enemies = this.units.filter(u => u.isEnemy);
@@ -250,7 +252,7 @@ Biomes: ${biome}`;
 
     const pad = { x: 8, y: 6 };
 
-    // ⬇️ moved to the right so it doesn't overlap the resource HUD
+    // moved to the right so it doesn't overlap the resource HUD
     const x = 320;
     const y = 16;
 
@@ -289,12 +291,16 @@ Biomes: ${biome}`;
   axialToWorld(q, r) {
     const size = this.hexSize;
     const { x, y } = hexToPixel(q, r, size);
-    return { x, y };
+    const ox = this.mapOffsetX || 0;
+    const oy = this.mapOffsetY || 0;
+    return { x: x + ox, y: y + oy };
   }
 
   worldToAxial(x, y) {
     const size = this.hexSize;
-    const { q, r } = pixelToHex(x, y, size);
+    const ox = this.mapOffsetX || 0;
+    const oy = this.mapOffsetY || 0;
+    const { q, r } = pixelToHex(x - ox, y - oy, size);
     return roundHex(q, r);
   }
 
