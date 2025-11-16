@@ -16,7 +16,7 @@ import {
   enterHaulerRoutePicker,
 } from './WorldSceneHaulers.js';
 
-import { setupWorldSceneUI } from './WorldSceneUI.js';
+import setupWorldSceneUI from './WorldSceneUI.js';
 import { spawnUnitsAndEnemies } from './WorldSceneUnits.js';
 import { spawnFishResources } from './WorldSceneResources.js';
 
