@@ -1,5 +1,6 @@
 // src/scenes/WorldScene.js
 import HexMap from '../engine/HexMap.js';
+import { findPath as aStarFindPath } from '../engine/AStar.js';
 import { drawLocationsAndRoads } from './WorldSceneMapLocations.js';
 
 import {
@@ -15,6 +16,7 @@ import {
   enterHaulerRoutePicker,
 } from './WorldSceneHaulers.js';
 
+import { setupWorldSceneUI } from './WorldSceneUI.js';
 import { spawnUnitsAndEnemies } from './WorldSceneUnits.js';
 import { spawnFishResources } from './WorldSceneResources.js';
 
@@ -29,9 +31,11 @@ import {
   LIFT_PER_LVL
 } from './WorldSceneMap.js';
 
+
 /* =========================
    Deterministic world summary
    ========================= */
+
 function __hashStr32(s) {
   let h = 2166136261 >>> 0;
   for (let i = 0; i < s.length; i++) {
@@ -49,25 +53,41 @@ function __xorshift32(seed) {
     return (x >>> 0) / 4294967296;
   };
 }
-function getWorldSummaryForSeed(seed) {
-  const rng = __xorshift32(__hashStr32(String(seed ?? 'default')));
-  const geoRoll = rng();
-  const bioRoll = rng();
+function getWorldSummaryForSeed(seedStr, width, height) {
+  const seed = __hashStr32(seedStr);
+  const rng = __xorshift32(seed);
 
-  let geography;
-  if (geoRoll < 0.15) geography = 'Big Lagoon';
-  else if (geoRoll < 0.30) geography = 'Central Lake';
-  else if (geoRoll < 0.50) geography = 'Small Bays';
-  else if (geoRoll < 0.70) geography = 'Scattered Terrain';
-  else if (geoRoll < 0.85) geography = 'Diagonal Island';
-  else geography = 'Multiple Islands';
+  const totalTiles = width * height;
+  const waterRatio = 0.28 + (rng() - 0.5) * 0.08;
+  const forestRatio = 0.25 + (rng() - 0.5) * 0.10;
+  const mountainRatio = 0.10 + (rng() - 0.5) * 0.05;
 
-  let biome;
-  if (bioRoll < 0.20) biome = 'Icy Biome';
-  else if (bioRoll < 0.40) biome = 'Volcanic Biome';
-  else if (bioRoll < 0.60) biome = 'Desert Biome';
-  else if (bioRoll < 0.80) biome = 'Temperate Biome';
-  else biome = 'Swamp Biome';
+  const roughness = 0.4 + rng() * 0.4;
+  const elevationVar = 0.6 + rng() * 0.4;
+
+  const geography = {
+    waterTiles: Math.round(totalTiles * waterRatio),
+    forestTiles: Math.round(totalTiles * forestRatio),
+    mountainTiles: Math.round(totalTiles * mountainRatio),
+    roughness: +roughness.toFixed(2),
+    elevationVar: +elevationVar.toFixed(2),
+  };
+
+  const biomes = [];
+  if (waterRatio > 0.3) biomes.push('Archipelago');
+  else if (waterRatio < 0.22) biomes.push('Continental');
+
+  if (forestRatio > 0.28) biomes.push('Dense Forests');
+  else if (forestRatio < 0.20) biomes.push('Sparse Forests');
+
+  if (mountainRatio > 0.12) biomes.push('Mountainous');
+  if (roughness > 0.6) biomes.push('Rugged Terrain');
+  if (elevationVar > 0.7) biomes.push('High Elevation Contrast');
+
+  const biome =
+    biomes.length > 0
+      ? biomes.join(', ')
+      : 'Mixed Terrain';
 
   return { geography, biome };
 }
@@ -75,12 +95,6 @@ function getWorldSummaryForSeed(seed) {
 /* =========================
    Small axial helpers
    ========================= */
-const NEIGHBORS = [
-  { dq: +1, dr: 0 }, { dq: -1, dr: 0 },
-  { dq: 0, dr: +1 }, { dq: 0, dr: -1 },
-  { dq: +1, dr: -1 }, { dq: -1, dr: +1 }
-];
-
 function getTile(scene, q, r) {
   return scene.mapData.find(h => h.q === q && h.r === r);
 }
@@ -101,432 +115,253 @@ export default class WorldScene extends Phaser.Scene {
     this.isUnitMoving = false;
 
     // collections
-    this.haulers = this.haulers || [];
-    this.ships = this.ships || [];
+    this.units = [];
+    this.enemies = [];
+    this.players = [];
+    this.buildings = [];
+    this.haulers = [];
+    this.shipRoutes = [];
+    this.resources = [];
 
-    const pad = this.hexSize * 2;
-    const mapPixelWidth = this.hexSize * Math.sqrt(3) * (this.mapWidth + 0.5) + pad * 2;
-    const mapPixelHeight = this.hexSize * 1.5 * (this.mapHeight + 0.5) + pad * 2;
-    this.cameras.main.setBounds(0, 0, mapPixelWidth, mapPixelHeight);
-    this.cameras.main.setZoom(1.0);
+    // selection state
+    this.selectedUnit = null;
+    this.selectedHex = null;
+    this.pathPreviewTiles = [];
+    this.pathPreviewLabels = [];
 
-    const { roomCode, playerName, isHost } = this.scene.settings.data || {};
-    const { getLobbyState } = await import('../net/LobbyManager.js');
-    const { data: lobbyData, error } = await getLobbyState(roomCode);
-    if (error || !lobbyData?.state?.seed) return;
+    this.uiLocked = false;
 
-    this.seed = lobbyData.state.seed;
-    this.lobbyState = lobbyData.state;
-
-    // Only Supabase client here; old subscribeToGameUpdates is removed
-    const { supabase } = await import('../net/SupabaseClient.js');
-
+    const { seed, playerName, roomCode, isHost, supabase } = this.scene.settings.data || {};
+    this.seed = seed || 'default-seed';
     this.playerName = playerName;
     this.roomCode = roomCode;
     this.isHost = isHost;
     this.supabase = supabase;
 
-    // simple move sync
-    this.syncPlayerMove = async unit => {
-      const res = await this.supabase.from('lobbies').select('state').eq('room_code', this.roomCode).single();
-      if (!res.data) return;
-      const nextPlayer = this.getNextPlayer(res.data.state.players, this.playerName);
-      await this.supabase
-        .from('lobbies')
-        .update({
-          state: {
-            ...res.data.state,
-            units: { ...res.data.state.units, [this.playerName]: { q: unit.q, r: unit.r } },
-            currentTurn: nextPlayer
-          }
-        })
-        .eq('room_code', this.roomCode);
-    };
+    this.turnOwner = null;
+    this.turnNumber = 1;
 
-    this.getNextPlayer = (list, current) => {
-      const idx = list.indexOf(current);
-      return list[(idx + 1) % list.length];
-    };
-
-    // bind geometry helpers to scene
-    this.hexToPixel = hexToPixel.bind(this);
-    this.pixelToHex = pixelToHex.bind(this);
-    this.roundHex = roundHex.bind(this);
-    this.drawHex = drawHex.bind(this);
-    this.getColorForTerrain = getColorForTerrain.bind(this);
-    this.isoOffset = isoOffset.bind(this);
-
-    // axial -> world (includes lift)
-    this.axialToWorld = (q, r) => {
-      const tile = this.mapData?.find(t => t.q === q && t.r === r);
-      const elev = (tile && tile.type !== 'water')
-        ? Math.max(0, (typeof tile?.elevation === 'number' ? tile.elevation : 0) - 1)
-        : 0;
-      const p = this.hexToPixel(q, r, this.hexSize);
-      return {
-        x: p.x + (this.mapOffsetX || 0),
-        y: p.y + (this.mapOffsetY || 0) - (LIFT_PER_LVL * elev),
-      };
-    };
-
-    this.tileMap = {};
-    this.selectedUnit = null;
-    this.selectedHex = null;
-    this.movingPath = [];
-    this.pathGraphics = this.add.graphics({ x: 0, y: 0 }).setDepth(50);
-    this.pathLabels = [];
-    this.debugGraphics = this.add.graphics({ x: 0, y: 0 }).setDepth(100);
-    this.uiLock = null; // 'buildMenu' when build submenu is open
-
-    // inspector hooks
-    this.events.on('hex-inspect', (text) => this.hexInspect(text));
-    this.events.on('hex-inspect-extra', ({ header, lines }) => {
-      const payload = [`[HEX INSPECT] ${header}`, ...(lines || [])].join('\n');
-      this.hexInspect(payload);
-    });
-    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
-      this.events.off('hex-inspect');
-      this.events.off('hex-inspect-extra');
-    });
-
-    // map gen
     this.hexMap = new HexMap(this.mapWidth, this.mapHeight, this.seed);
-    this.mapData = this.hexMap.getMap();
-    delete this.mapData.__locationsApplied;
-    drawHexMap.call(this);
+    const mapInfo = this.hexMap.generateMap();
+    this.mapData = mapInfo.tiles;
 
-    // resources
-    spawnFishResources.call(this);
+    drawHexMap(this);
 
-    // world badge
-    const { geography, biome } =
-      (this.hexMap.worldInfo ?? this.hexMap.worldMeta) || getWorldSummaryForSeed(this.seed);
-    this.addWorldMetaBadge(geography, biome);
+    drawLocationsAndRoads(this, this.mapData);
+    spawnFishResources(this);
 
-    // units
-    await spawnUnitsAndEnemies.call(this);
+    spawnUnitsAndEnemies(this, { mapWidth: this.mapWidth, mapHeight: this.mapHeight });
+
+    this.players = this.units.filter(u => u.isPlayer);
+    this.enemies = this.units.filter(u => u.isEnemy);
+
+    this.turnOwner = this.players[0]?.name || null;
+
+    setupWorldSceneUI(this);
+
+    this.addWorldMetaBadge();
 
     setupCameraControls(this);
-    setupTurnUI(this);
-    setupUnitPanel(this); // bottom-left unit action panel
 
-    // building placement API
-    this.startDocksPlacement = () => startDocksPlacement.call(this);
-    this.input.keyboard?.on('keydown-ESC', () => cancelPlacement.call(this));
+    this.setupInputHandlers?.();
 
-    // wrapper if other code calls this.buildHauler()
-    this.buildHauler = () => {
-      buildHaulerAtSelectedUnit.call(this);
-    };
-
-    // Refresh button
-    if (this.refreshButton) {
-      this.refreshButton.removeAllListeners('pointerdown');
-      this.refreshButton.on('pointerdown', async () => {
-        const { data: lobbyData, error } = await this.supabase
+    if (this.supabase) {
+      this.syncPlayerMove = async unit => {
+        const res = await this.supabase.from('lobbies').select('state').eq('room_code', this.roomCode).single();
+        if (!res.data) return;
+        const nextPlayer = this.getNextPlayer(res.data.state.players, this.playerName);
+        await this.supabase
           .from('lobbies')
-          .select('state')
-          .eq('room_code', this.roomCode)
-          .single();
-
-        if (error || !lobbyData?.state?.units) {
-          console.error("Failed to refresh units:", error);
-          return;
-        }
-
-        const unitData = lobbyData.state.units[this.playerName];
-        if (!unitData) return;
-
-        const { q, r } = unitData;
-        const { x, y } = this.axialToWorld(q, r);
-        const unit = this.players.find(p => p.name === this.playerName);
-        if (unit) {
-          unit.setPosition(x, y);
-          unit.q = q;
-          unit.r = r;
-          console.log(`[REFRESH] Unit moved to synced position: (${q}, ${r})`);
-        }
-      });
+          .update({
+            state: {
+              ...res.data.state,
+              players: res.data.state.players.map(p =>
+                p.name === this.playerName
+                  ? { ...p, q: unit.q, r: unit.r }
+                  : p
+              ),
+              currentTurn: nextPlayer,
+            },
+          })
+          .eq('room_code', this.roomCode);
+      };
     }
 
-    // Click selection / movement (support selecting haulers too)
-    this.input.on("pointerdown", pointer => {
-      if (pointer.rightButtonDown()) return;
+    this.printTurnSummary?.();
+  }
 
-      // Don't move units if build menu is open
-      if (this.uiLock === 'buildMenu') return;
+  getNextPlayer(players, currentName) {
+    if (!players || players.length === 0) return null;
+    const idx = players.findIndex(p => p.name === currentName);
+    if (idx === -1) return players[0].name;
+    return players[(idx + 1) % players.length].name;
+  }
 
-      const { worldX, worldY } = pointer;
-      const approx = this.pixelToHex(
-        worldX - (this.mapOffsetX || 0),
-        worldY - (this.mapOffsetY || 0),
-        this.hexSize
-      );
-      const rounded = this.roundHex(approx.q, approx.r);
-      if (rounded.q < 0 || rounded.r < 0 || rounded.q >= this.mapWidth || rounded.r >= this.mapHeight) return;
+  addWorldMetaBadge() {
+    const { geography, biome } = getWorldSummaryForSeed(this.seed, this.mapWidth, this.mapHeight);
 
-      const tile = getTile(this, rounded.q, rounded.r);
+    const text = `Seed: ${this.seed}
+Water: ~${geography.waterTiles}
+Forest: ~${geography.forestTiles}
+Mountains: ~${geography.mountainTiles}
+Roughness: ${geography.roughness}
+Elev.Var: ${geography.elevationVar}
+Biomes: ${biome}`;
 
-      const playerHere =
-        (this.players?.find?.(p => p.q === rounded.q && p.r === rounded.r)) ||
-        (this.haulers?.find?.(h => h.q === rounded.q && h.r === rounded.r));
+    const pad = { x: 8, y: 6 };
+    const x = 10;
+    const y = 10;
 
-      this.selectedHex = rounded;
-      this.debugHex(rounded.q, rounded.r);
+    const tempText = this.add.text(0, 0, text, {
+      fontFamily: 'monospace',
+      fontSize: '11px',
+      color: '#d0f2ff',
+    }).setVisible(false);
 
-      if (this.selectedUnit) {
-        if (this.selectedUnit.q === rounded.q && this.selectedUnit.r === rounded.r) {
-          this.selectedUnit = null;
-          this.hideUnitPanel?.();
-          return;
-        }
+    const bounds = tempText.getBounds();
+    tempText.destroy();
 
-        const blocked = t => !t || t.type === 'water' || t.type === 'mountain';
-        const fullPath = findPath(this.selectedUnit, rounded, this.mapData, blocked);
-        if (fullPath && fullPath.length > 1) {
-          const movePoints = this.selectedUnit.movementPoints || 10;
-          let totalCost = 0;
-          const trimmedPath = [fullPath[0]];
-          for (let i = 1; i < fullPath.length; i++) {
-            const stepTile = getTile(this, fullPath[i].q, fullPath[i].r);
-            const cost = stepTile?.movementCost || 1;
-            totalCost += cost;
-            if (totalCost <= movePoints) trimmedPath.push(fullPath[i]);
-            else break;
-          }
-          if (trimmedPath.length > 1) {
-            this.movingPath = trimmedPath.slice(1);
-            this.isUnitMoving = true;
-            this.clearPathPreview();
-            this.startStepMovement();
-          }
-        } else {
-          console.log("Path not found or blocked.");
-        }
-      } else {
-        if (playerHere) {
-          this.selectedUnit = playerHere;
-          this.selectedUnit.movementPoints =
-            this.selectedUnit.type === 'hauler' ? 8 : 10;
-          this.showUnitPanel?.(this.selectedUnit);
-          console.log(`[SELECTED] Unit at (${playerHere.q}, ${playerHere.r})`);
-        }
+    const bgWidth = bounds.width + pad.x * 2;
+    const bgHeight = bounds.height + pad.y * 2;
+
+    const graphics = this.add.graphics();
+    graphics.fillStyle(0x050f1a, 0.85);
+    graphics.fillRoundedRect(x, y, bgWidth, bgHeight, 8);
+    graphics.lineStyle(1, 0x34d2ff, 0.9);
+    graphics.strokeRoundedRect(x, y, bgWidth, bgHeight, 8);
+    graphics.setDepth(100);
+
+    const label = this.add.text(
+      x + pad.x,
+      y + pad.y,
+      text,
+      {
+        fontFamily: 'monospace',
+        fontSize: '11px',
+        color: '#d0f2ff',
       }
-    });
-
-    // Path preview (land units only)
-    this.input.on("pointermove", pointer => {
-      if (!this.selectedUnit || this.isUnitMoving) return;
-      if (this.uiLock === 'buildMenu') return; // no preview while build menu open
-
-      const { worldX, worldY } = pointer;
-      const approx = this.pixelToHex(
-        worldX - (this.mapOffsetX || 0),
-        worldY - (this.mapOffsetY || 0),
-        this.hexSize
-      );
-      const rounded = this.roundHex(approx.q, approx.r);
-      if (rounded.q < 0 || rounded.r < 0 || rounded.q >= this.mapWidth || rounded.r >= this.mapHeight) return;
-
-      const blocked = t => !t || t.type === 'water' || t.type === 'mountain';
-      const path = findPath(this.selectedUnit, rounded, this.mapData, blocked);
-
-      this.clearPathPreview();
-      if (path && path.length > 1) {
-        let costSum = 0;
-        const maxMove = this.selectedUnit.movementPoints || 10;
-
-        for (let i = 0; i < path.length; i++) {
-          const step = path[i];
-          const tile = getTile(this, step.q, step.r);
-          const moveCost = tile?.movementCost || 1;
-
-          const { x, y } = this.axialToWorld(step.q, step.r);
-          const isStart = i === 0;
-          if (!isStart) costSum += moveCost;
-
-          const fillColor = isStart ? 0xeeeeee : (costSum <= maxMove ? 0x00ff00 : 0xffffff);
-          const labelColor = costSum <= maxMove ? '#ffffff' : '#000000';
-          const bgColor = costSum <= maxMove ? 0x008800 : 0xffffff;
-
-          this.pathGraphics.lineStyle(1, 0x000000, 0.3);
-          this.pathGraphics.fillStyle(fillColor, 0.4);
-          this.pathGraphics.beginPath();
-          this.drawHex(this.pathGraphics, x, y, this.hexSize);
-          this.pathGraphics.closePath();
-          this.pathGraphics.fillPath();
-          this.pathGraphics.strokePath();
-
-          if (!isStart) {
-            const circle = this.add.graphics();
-            circle.fillStyle(bgColor, 1);
-            circle.fillCircle(x, y, 9);
-            circle.setDepth(50);
-            this.pathLabels.push(circle);
-
-            const label = this.add.text(x, y, `${costSum}`, {
-              fontSize: '10px',
-              color: labelColor,
-              fontStyle: 'bold'
-            }).setOrigin(0.5).setDepth(51);
-            this.pathLabels.push(label);
-          }
-        }
-      }
-    });
+    );
+    label.setDepth(101);
   }
 
-  // Minimal inspector (logs)
-  hexInspect(text) {
-    if (!text) return;
-    const lines = String(text).split('\n');
-    const title = lines.shift() || '[HEX INSPECT]';
-    console.groupCollapsed(title);
-    lines.forEach(l => console.log(l));
-    console.groupEnd();
+  axialToWorld(q, r) {
+    const size = this.hexSize;
+    const { x, y } = hexToPixel(q, r, size);
+    return { x, y };
   }
 
-  addWorldMetaBadge(geography, biome) {
-    const cam = this.cameras.main;
-    const cx = cam.width / 2;
-
-    const container = this.add.container(cx, 18).setScrollFactor(0).setDepth(2000);
-    const text1 = this.add.text(0, 0, `🌍 Geography: ${geography}`, {
-      fontSize: '16px',
-      color: '#e8f6ff'
-    }).setOrigin(0.5, 0.5).setDepth(2001);
-
-    const text2 = this.add.text(0, 20, `🌿 Biome: ${biome}`, {
-      fontSize: '16px',
-      color: '#e8f6ff'
-    }).setOrigin(0.5, 0.5).setDepth(2001);
-
-    const w = Math.max(text1.width, text2.width) + 24;
-    const h = 44;
-    const bg = this.add.graphics().setDepth(2000);
-    bg.fillStyle(0x000000, 0.35);
-    bg.fillRoundedRect(-w/2, -10, w, h, 10);
-    bg.lineStyle(1, 0xffffff, 0.15);
-    bg.strokeRoundedRect(-w/2, -10, w, h, 10);
-
-    container.add([bg, text1, text2]);
-    this.worldMetaBadge = container;
-  }
-
-  clearPathPreview() {
-    this.pathGraphics.clear();
-    this.pathLabels.forEach(label => label.destroy());
-    this.pathLabels = [];
+  worldToAxial(x, y) {
+    const size = this.hexSize;
+    const { q, r } = pixelToHex(x, y, size);
+    return roundHex(q, r);
   }
 
   debugHex(q, r) {
-    if (q < 0 || r < 0 || q >= this.mapWidth || r >= this.mapHeight) return;
-
-    const center = this.axialToWorld(q, r);
-    this.debugGraphics.clear();
-    this.debugGraphics.lineStyle(2, 0xff00ff, 1);
-    this.drawHex(this.debugGraphics, center.x, center.y, this.hexSize);
-
     const tile = getTile(this, q, r);
-    const playerHere = this.players?.find?.(p => p.q === q && p.r === r);
-    const enemiesHere = this.enemies?.filter?.(e => e.q === q && e.r === r) || [];
-
-    const resourcesHere = (this.resources || []).filter(o => o.q === q && o.r === r);
-    const buildingsHere = (this.buildings || []).filter(b =>
-      (b.q === q && b.r === r) || (b.gq === q && b.gr === r)
+    if (!tile) {
+      console.log(`Clicked outside map at (${q},${r})`);
+      return;
+    }
+    console.log(
+      `Hex (${q},${r}) type=${tile.type}, elev=${tile.elevation}, movementCost=${tile.movementCost}, feature=${tile.feature}`
     );
-
-    const objects = [];
-    if (tile?.hasForest) objects.push("Forest");
-    if (tile?.hasRuin) objects.push("Ruin");
-    if (tile?.hasCrashSite) objects.push("Crash Site");
-    if (tile?.hasVehicle) objects.push("Vehicle");
-    if (tile?.hasRoad) objects.push("Road");
-    if (resourcesHere.length) objects.push(`Resources×${resourcesHere.length}`);
-    if (buildingsHere.length) objects.push(`Buildings×${buildingsHere.length}`);
-
-    console.log(`[HEX INSPECT] (${q}, ${r})`);
-    console.log(`• Terrain: ${tile?.type}`);
-    console.log(`• Level (elevation): ${tile?.elevation ?? 'N/A'}`);
-    console.log(`• Player Unit: ${playerHere ? "Yes" : "No"}`);
-    console.log(`• Enemy Units: ${enemiesHere.length}`);
-    console.log(`• Objects: ${objects.join(", ") || "None"}`);
   }
 
-  startStepMovement() {
-    if (!this.selectedUnit || !this.movingPath || this.movingPath.length === 0) return;
+  clearPathPreview() {
+    if (this.pathPreviewTiles) {
+      this.pathPreviewTiles.forEach(g => g.destroy());
+      this.pathPreviewTiles = [];
+    }
+    if (this.pathPreviewLabels) {
+      this.pathPreviewLabels.forEach(l => l.destroy());
+      this.pathPreviewLabels = [];
+    }
+  }
 
-    const unit = this.selectedUnit;
-    const step = this.movingPath.shift();
-    const { x, y } = this.axialToWorld(step.q, step.r);
+  checkCombat(unit, destHex) {
+    const enemy = this.enemies.find(e => e.q === destHex.q && e.r === destHex.r);
+    if (!enemy) return false;
 
-    this.tweens.add({
-      targets: unit,
-      x, y,
-      duration: 200,
+    console.log(`[COMBAT] ${unit.name} engages enemy at (${destHex.q},${destHex.r}) — TODO: enter combat scene.`);
+    return true;
+  }
+
+  startStepMovement(unit, path, onComplete) {
+    if (!path || path.length < 2) {
+      if (onComplete) onComplete();
+      return;
+    }
+
+    this.isUnitMoving = true;
+
+    const tweens = [];
+    for (let i = 1; i < path.length; i++) {
+      const step = path[i];
+      const { x, y } = this.axialToWorld(step.q, step.r);
+      tweens.push({
+        targets: unit,
+        x,
+        y,
+        duration: 160,
+        ease: 'Sine.easeInOut',
+      });
+    }
+
+    this.tweens.timeline({
+      tweens,
       onComplete: () => {
-        unit.q = step.q;
-        unit.r = step.r;
-        this.clearPathPreview();
-
-        if (this.movingPath.length > 0) {
-          this.startStepMovement();
-        } else {
-          this.syncPlayerMove(unit);
-          this.isUnitMoving = false;
-          this.checkCombat();
-        }
-      }
+        const last = path[path.length - 1];
+        unit.q = last.q;
+        unit.r = last.r;
+        this.isUnitMoving = false;
+        if (onComplete) onComplete();
+      },
     });
   }
 
-  checkCombat() {
-    console.log("[Combat] not implemented yet.");
-  }
-
   endTurn() {
-    if (this.playerName !== this.lobbyState.currentTurn) return;
+    if (this.uiLocked) return;
+    this.uiLocked = true;
 
-    // Ships: movement / harvesting / deposit
-    try {
-      applyShipRoutesOnEndTurn.call(this);
-    } catch (e) {
-      console.warn('[SHIP] applyShipRoutesOnEndTurn failed:', e);
-    }
+    console.log(`[TURN] Ending turn for ${this.turnOwner} (Turn ${this.turnNumber})`);
 
-    // Haulers: pickups / deliveries
-    try {
-      applyHaulerRoutesOnEndTurn.call(this);
-    } catch (e) {
-      console.warn('[HAULER] applyHaulerRoutesOnEndTurn failed:', e);
-    }
+    applyShipRoutesOnEndTurn(this);
+    applyHaulerRoutesOnEndTurn(this);
 
-    // UI cleanup
-    this.selectedUnit = null;
-    this.hideUnitPanel?.();
-    if (this.selectedHexGraphic) {
-      this.selectedHexGraphic.destroy();
-      this.selectedHexGraphic = null;
-    }
-    if (this.turnText) {
-      this.turnText.setText("Player Turn: ...");
-    }
+    this.moveEnemies();
 
-    // Optional enemy roaming
-    if (this.isHost) this.moveEnemies();
+    const idx = this.players.findIndex(p => p.name === this.turnOwner);
+    const nextIdx = (idx + 1) % this.players.length;
+    this.turnOwner = this.players[nextIdx].name;
+    this.turnNumber += 1;
+
+    console.log(`[TURN] New turn owner: ${this.turnOwner} (Turn ${this.turnNumber})`);
+
+    this.printTurnSummary?.();
+
+    this.uiLocked = false;
   }
 
   moveEnemies() {
-    const dirs = [
-      { dq: +1, dr: 0 }, { dq: -1, dr: 0 },
-      { dq: 0, dr: +1 }, { dq: 0, dr: -1 },
-      { dq: +1, dr: -1 }, { dq: -1, dr: +1 }
-    ];
+    if (!this.enemies || this.enemies.length === 0) return;
 
-    this.enemies?.forEach?.(enemy => {
+    this.enemies.forEach(enemy => {
+      const dirsEven = [
+        { dq: +1, dr: 0 }, { dq: 0, dr: -1 }, { dq: -1, dr: -1 },
+        { dq: -1, dr: 0 }, { dq: -1, dr: +1 }, { dq: 0, dr: +1 },
+      ];
+      const dirsOdd = [
+        { dq: +1, dr: 0 }, { dq: +1, dr: -1 }, { dq: 0, dr: -1 },
+        { dq: -1, dr: 0 }, { dq: 0, dr: +1 }, { dq: +1, dr: +1 },
+      ];
+      const dirs = (enemy.r & 1) ? dirsOdd : dirsEven;
+
       Phaser.Utils.Array.Shuffle(dirs);
+
       for (const d of dirs) {
-        const nq = enemy.q + d.dq, nr = enemy.r + d.dr;
+        const nq = enemy.q + d.dq;
+        const nr = enemy.r + d.dr;
+        if (nq < 0 || nr < 0 || nq >= this.mapWidth || nr >= this.mapHeight) continue;
         const tile = getTile(this, nq, nr);
         if (tile && !['water', 'mountain'].includes(tile.type)) {
           const { x, y } = this.axialToWorld(nq, nr);
@@ -544,8 +379,8 @@ export default class WorldScene extends Phaser.Scene {
    Helpers defined outside the class
    ========================================================= */
 
-// Simple axial BFS pathfinder (no A*, fine for 25x25)
-function findPath(unit, targetHex, mapData, blockedPred) {
+// Wrapper to use shared A* pathfinding logic
+function computePathWithAStar(unit, targetHex, mapData, blockedPred) {
   const start = { q: unit.q, r: unit.r };
   const goal = { q: targetHex.q, r: targetHex.r };
 
@@ -553,42 +388,12 @@ function findPath(unit, targetHex, mapData, blockedPred) {
     return [start];
   }
 
-  const key = (q, r) => `${q},${r}`;
-  const cameFrom = new Map();
-  const visited = new Set([key(start.q, start.r)]);
-  const queue = [start];
+  const isBlocked = tile => {
+    if (!tile) return true;
+    return blockedPred ? blockedPred(tile) : false;
+  };
 
-  const getTileLocal = (q, r) => mapData.find(t => t.q === q && t.r === r);
-
-  while (queue.length > 0) {
-    const cur = queue.shift();
-    if (cur.q === goal.q && cur.r === goal.r) {
-      const path = [];
-      let node = cur;
-      while (node) {
-        path.push({ q: node.q, r: node.r });
-        const prev = cameFrom.get(key(node.q, node.r));
-        node = prev || null;
-      }
-      return path.reverse();
-    }
-
-    for (const d of NEIGHBORS) {
-      const nq = cur.q + d.dq;
-      const nr = cur.r + d.dr;
-      const k = key(nq, nr);
-      if (visited.has(k)) continue;
-
-      const tile = getTileLocal(nq, nr);
-      if (blockedPred && blockedPred(tile)) continue;
-
-      visited.add(k);
-      cameFrom.set(k, cur);
-      queue.push({ q: nq, r: nr });
-    }
-  }
-
-  return null;
+  return aStarFindPath(start, goal, mapData, isBlocked);
 }
 
 function setupCameraControls(scene) {
@@ -627,7 +432,6 @@ function setupCameraControls(scene) {
     cam.scrollY = camStartY - dy / cam.zoom;
   });
 
-  // Wheel zoom
   scene.input.on('wheel', (pointer, _x, _y, deltaY) => {
     const oldZoom = cam.zoom;
     const newZoom = Phaser.Math.Clamp(oldZoom - deltaY * 0.001, 0.4, 2.2);
@@ -642,346 +446,163 @@ function setupCameraControls(scene) {
   });
 }
 
-function setupTurnUI(scene) {
-  // Keyboard shortcut
-  scene.input.keyboard?.on('keydown-ENTER', () => {
-    scene.endTurn();
-  });
-
-  // End Turn button (HUD, bottom-right)
-  const cam = scene.cameras.main;
-  const x = cam.width - 110;
-  const y = cam.height - 40;
-
-  const container = scene.add.container(x, y).setScrollFactor(0).setDepth(2100);
-
-  const bg = scene.add.graphics();
-  bg.fillStyle(0x0f2233, 0.9);
-  bg.fillRoundedRect(0, 0, 100, 30, 8);
-  bg.lineStyle(2, 0x3da9fc, 0.9);
-  bg.strokeRoundedRect(0, 0, 100, 30, 8);
-
-  const label = scene.add.text(50, 15, 'End Turn ▶', {
-    fontSize: '14px',
-    color: '#e8f6ff'
-  }).setOrigin(0.5, 0.5);
-
-  const hit = scene.add.rectangle(50, 15, 100, 30, 0x000000, 0)
-    .setOrigin(0.5)
-    .setInteractive({ useHandCursor: true });
-
-  hit.on('pointerdown', () => {
-    scene.endTurn();
-  });
-
-  hit.on('pointerover', () => {
-    bg.clear();
-    bg.fillStyle(0x173b52, 0.95);
-    bg.fillRoundedRect(0, 0, 100, 30, 8);
-    bg.lineStyle(2, 0x9be4ff, 1);
-    bg.strokeRoundedRect(0, 0, 100, 30, 8);
-  });
-
-  hit.on('pointerout', () => {
-    bg.clear();
-    bg.fillStyle(0x0f2233, 0.9);
-    bg.fillRoundedRect(0, 0, 100, 30, 8);
-    bg.lineStyle(2, 0x3da9fc, 0.9);
-    bg.strokeRoundedRect(0, 0, 100, 30, 8);
-  });
-
-  container.add([bg, label, hit]);
-  scene.endTurnButton = container;
-}
-
 /**
- * Bottom-left unit panel:
- * Row 1: Buildings / Blank / Set Path / Close
- * Row 2 (inside same panel): sub-menu with category tabs + options.
+ * Hook up pointer input for selecting units, tiles, and plotting paths.
  */
-function setupUnitPanel(scene) {
-  const cam = scene.cameras.main;
-  const W = 280;
-  const H = 120;
-  const x = 20;
-  const y = cam.height - H - 20;
+WorldScene.prototype.setupInputHandlers = function () {
+  const scene = this;
 
-  const panel = scene.add.container(x, y).setScrollFactor(0).setDepth(2090);
-  panel.setVisible(false);
+  this.input.on('pointerdown', pointer => {
+    if (scene.isDragging) return;
 
-  const bg = scene.add.graphics();
-  bg.fillStyle(0x0f2233, 0.9);
-  bg.fillRoundedRect(0, 0, W, H, 10);
-  bg.lineStyle(2, 0x3da9fc, 0.9);
-  bg.strokeRoundedRect(0, 0, W, H, 10);
-  panel.add(bg);
+    const worldPoint = pointer.positionToCamera(scene.cameras.main);
+    const rounded = scene.worldToAxial(worldPoint.x, worldPoint.y);
 
-  const btnWidth = 60;
-  const btnHeight = 26;
-  const margin = 8;
-  const startX = 10;
-  const row1Y = 26;
+    if (rounded.q < 0 || rounded.r < 0 || rounded.q >= scene.mapWidth || rounded.r >= scene.mapHeight) return;
 
-  function makeButton(labelText, index) {
-    const xPos = startX + index * (btnWidth + margin);
-    const btnBg = scene.add.graphics();
-    btnBg.fillStyle(0x173b52, 1);
-    btnBg.fillRoundedRect(xPos, row1Y - btnHeight / 2, btnWidth, btnHeight, 6);
-    btnBg.lineStyle(1, 0x6fe3ff, 0.8);
-    btnBg.strokeRoundedRect(xPos, row1Y - btnHeight / 2, btnWidth, btnHeight, 6);
+    const clickedUnit =
+      scene.units.find(u => u.q === rounded.q && u.r === rounded.r && u.isPlayer) ||
+      scene.haulers?.find?.(h => h.q === rounded.q && h.r === rounded.r);
 
-    const label = scene.add.text(
-      xPos + btnWidth / 2,
-      row1Y,
-      labelText,
-      { fontSize: '11px', color: '#e8f6ff' }
-    ).setOrigin(0.5, 0.5);
+    if (clickedUnit) {
+      scene.selectedUnit = clickedUnit;
+      scene.showUnitPanel?.(clickedUnit);
+      scene.clearPathPreview();
+      scene.selectedHex = null;
+      scene.debugHex(rounded.q, rounded.r);
+      return;
+    }
 
-    const hit = scene.add.rectangle(
-      xPos + btnWidth / 2,
-      row1Y,
-      btnWidth,
-      btnHeight,
-      0x000000,
-      0
-    ).setOrigin(0.5, 0.5)
-      .setInteractive({ useHandCursor: true });
+    const tile = getTile(scene, rounded.q, rounded.r);
+    if (tile && tile.isLocation) {
+      console.log(`[LOCATION] Clicked on location: ${tile.locationType || 'Unknown'} at (${rounded.q},${rounded.r})`);
+    }
 
-    hit.on('pointerover', () => {
-      btnBg.clear();
-      btnBg.fillStyle(0x1d4c70, 1);
-      btnBg.fillRoundedRect(xPos, row1Y - btnHeight / 2, btnWidth, btnHeight, 6);
-      btnBg.lineStyle(1, 0x9be4ff, 1);
-      btnBg.strokeRoundedRect(xPos, row1Y - btnHeight / 2, btnWidth, btnHeight, 6);
-    });
-    hit.on('pointerout', () => {
-      btnBg.clear();
-      btnBg.fillStyle(0x173b52, 1);
-      btnBg.fillRoundedRect(xPos, row1Y - btnHeight / 2, btnWidth, btnHeight, 6);
-      btnBg.lineStyle(1, 0x6fe3ff, 0.8);
-      btnBg.strokeRoundedRect(xPos, row1Y - btnHeight / 2, btnWidth, btnHeight, 6);
-    });
+    scene.selectedHex = rounded;
+    scene.debugHex(rounded.q, rounded.r);
 
-    panel.add([btnBg, label, hit]);
-    return { label, hit };
-  }
+    if (scene.selectedUnit) {
+      if (scene.selectedUnit.q === rounded.q && scene.selectedUnit.r === rounded.r) {
+        scene.selectedUnit = null;
+        scene.hideUnitPanel?.();
+        scene.clearPathPreview();
+      } else {
+        const blocked = t => !t || t.type === 'water' || t.type === 'mountain';
+        const fullPath = computePathWithAStar(scene.selectedUnit, rounded, scene.mapData, blocked);
+        if (fullPath && fullPath.length > 1) {
+          let movementPoints = scene.selectedUnit.movementPoints || 4;
+          const trimmedPath = [];
+          let costSum = 0;
+          for (let i = 0; i < fullPath.length; i++) {
+            const step = fullPath[i];
+            const tile = getTile(scene, step.q, step.r);
+            const cost = tile?.movementCost || 1;
+            if (i > 0 && costSum + cost > movementPoints) break;
+            trimmedPath.push(step);
+            if (i > 0) costSum += cost;
+          }
 
-  const btnBuildings = makeButton('Buildings', 0); // opens inline submenu
-  const btnBlank     = makeButton('Blank',     1); // was Hauler
-  const btnSetPath   = makeButton('Set Path',  2);
-  const btnClose     = makeButton('Close',     3);
-
-  // Submenu container (inside panel, row 2)
-  const subY = 52;
-  const subContainer = scene.add.container(0, subY);
-  panel.add(subContainer);
-  scene.buildSubpanel = subContainer;
-  subContainer.setVisible(false);
-  scene.buildMenuCategory = 'buildings';
-
-  const categoryButtons = {};
-  const optionsText = [];
-
-  function clearSubpanel() {
-    subContainer.removeAll(true);
-    optionsText.length = 0;
-  }
-
-  function setUILock(lock) {
-    scene.uiLock = lock ? 'buildMenu' : null;
-  }
-
-  function renderSubpanel() {
-    clearSubpanel();
-
-    // Tabs: Buildings / Units / Infra
-    const catXStart = 16;
-    const catWidth = 70;
-    const catY = 8;
-    const cats = [
-      { id: 'buildings', label: 'Buildings' },
-      { id: 'units',     label: 'Units' },
-      { id: 'infra',     label: 'Infra' },
-    ];
-
-    cats.forEach((c, idx) => {
-      const xPos = catXStart + idx * (catWidth + 6);
-      const g = scene.add.graphics();
-      const isActive = (scene.buildMenuCategory === c.id);
-      g.fillStyle(isActive ? 0x235070 : 0x173b52, 1);
-      g.fillRoundedRect(xPos, 0, catWidth, 20, 6);
-      g.lineStyle(1, 0x6fe3ff, 0.8);
-      g.strokeRoundedRect(xPos, 0, catWidth, 20, 6);
-
-      const t = scene.add.text(
-        xPos + catWidth / 2,
-        10,
-        c.label,
-        { fontSize: '11px', color: '#e8f6ff' }
-      ).setOrigin(0.5, 0.5);
-
-      const hit = scene.add.rectangle(
-        xPos + catWidth / 2,
-        10,
-        catWidth,
-        20,
-        0x000000,
-        0
-      ).setOrigin(0.5, 0.5)
-        .setInteractive({ useHandCursor: true });
-
-      hit.on('pointerdown', () => {
-        scene.buildMenuCategory = c.id;
-        renderSubpanel();
-      });
-
-      subContainer.add([g, t, hit]);
-      categoryButtons[c.id] = { g, t, hit };
-    });
-
-    // Options list for active category
-    const optionsByCategory = {
-      buildings: ['Bunker', 'Docks', 'Mine', 'Factory'],
-      units:     ['Hauler', 'Builder', 'Scout', 'Raider'],
-      infra:     ['Bridge', 'Canal', 'Road', 'Remove Forest', 'Level', 'Other'],
-    };
-    const opts = optionsByCategory[scene.buildMenuCategory] || [];
-
-const startX = 24;
-const startY = 32;
-const lineH = 22;
-const optWidth = 140;
-const optHeight = 18;
-
-opts.forEach((name, idx) => {
-  const y = startY + idx * lineH;
-  const xPos = startX;
-
-  // Button background
-  const g = scene.add.graphics();
-  g.fillStyle(0x173b52, 1);
-  g.fillRoundedRect(xPos, y - optHeight / 2, optWidth, optHeight, 6);
-  g.lineStyle(1, 0x6fe3ff, 0.8);
-  g.strokeRoundedRect(xPos, y - optHeight / 2, optWidth, optHeight, 6);
-
-  // Button label
-  const t = scene.add.text(
-    xPos + optWidth / 2,
-    y,
-    name,
-    { fontSize: '11px', color: '#e8f6ff' }
-  ).setOrigin(0.5, 0.5);
-
-  // Hit area
-  const hit = scene.add.rectangle(
-    xPos + optWidth / 2,
-    y,
-    optWidth,
-    optHeight,
-    0x000000,
-    0
-  ).setOrigin(0.5, 0.5)
-    .setInteractive({ useHandCursor: true });
-
-  // Hover effects
-  hit.on('pointerover', () => {
-    g.clear();
-    g.fillStyle(0x1a4764, 1);
-    g.fillRoundedRect(xPos, y - optHeight / 2, optWidth, optHeight, 6);
-    g.lineStyle(1, 0x9be4ff, 1);
-    g.strokeRoundedRect(xPos, y - optHeight / 2, optWidth, optHeight, 6);
-  });
-
-  hit.on('pointerout', () => {
-    g.clear();
-    g.fillStyle(0x173b52, 1);
-    g.fillRoundedRect(xPos, y - optHeight / 2, optWidth, optHeight, 6);
-    g.lineStyle(1, 0x6fe3ff, 0.8);
-    g.strokeRoundedRect(xPos, y - optHeight / 2, optWidth, optHeight, 6);
-  });
-
-  // Default action: log
-  let onClick = () => {
-    console.log(`[BUILD MENU] ${scene.buildMenuCategory} → ${name}`);
-  };
-
-  // Real action: Buildings → Docks starts docks placement
-  if (scene.buildMenuCategory === 'buildings' && name === 'Docks') {
-    onClick = () => {
-      console.log('[BUILD MENU] Buildings → Docks (start placement)');
-      startDocksPlacement.call(scene);
-    };
-  }
-
-  // Real action: Units → Hauler builds hauler
-  if (scene.buildMenuCategory === 'units' && name === 'Hauler') {
-    onClick = () => {
-      console.log('[BUILD MENU] Units → Hauler (build hauler)');
-      buildHaulerAtSelectedUnit.call(scene);
-    };
-  }
-
-  hit.on('pointerdown', onClick);
-
-  subContainer.add([g, t, hit]);
-  optionsText.push(t);
-});
-
-  }
-
-  function openSubpanel() {
-    scene.buildMenuCategory = scene.buildMenuCategory || 'buildings';
-    renderSubpanel();
-    subContainer.setVisible(true);
-    setUILock(true); // unit movement blocked
-  }
-
-  function closeSubpanel() {
-    subContainer.setVisible(false);
-    clearSubpanel();
-    setUILock(false);
-  }
-
-  // Wire main row buttons
-  btnBuildings.hit.on('pointerdown', () => {
-    console.log('[UI] Buildings button clicked');
-    if (subContainer.visible) {
-      closeSubpanel();
-    } else {
-      openSubpanel();
+          if (trimmedPath.length > 1) {
+            console.log('[MOVE] Committing move along path:', trimmedPath);
+            scene.startStepMovement(scene.selectedUnit, trimmedPath, () => {
+              if (scene.checkCombat(scene.selectedUnit, trimmedPath[trimmedPath.length - 1])) {
+                scene.scene.start('CombatScene', {
+                  seed: scene.seed,
+                  playerUnit: scene.selectedUnit,
+                });
+              } else {
+                scene.syncPlayerMove?.(scene.selectedUnit);
+              }
+            });
+          }
+        }
+      }
     }
   });
 
-  btnBlank.hit.on('pointerdown', () => {
-    console.log('[UI] Blank button clicked (no action)');
+  this.input.on('pointermove', pointer => {
+    if (scene.isDragging) return;
+    if (!scene.selectedUnit || scene.isUnitMoving) return;
+
+    const worldPoint = pointer.positionToCamera(scene.cameras.main);
+    const rounded = scene.worldToAxial(worldPoint.x, worldPoint.y);
+
+    if (rounded.q < 0 || rounded.r < 0 || rounded.q >= scene.mapWidth || rounded.r >= scene.mapHeight) {
+      scene.clearPathPreview();
+      return;
+    }
+
+    const blocked = t => !t || t.type === 'water' || t.type === 'mountain';
+    const path = computePathWithAStar(scene.selectedUnit, rounded, scene.mapData, blocked);
+
+    scene.clearPathPreview();
+    if (path && path.length > 1) {
+      let movementPoints = scene.selectedUnit.movementPoints || 4;
+      let costSum = 0;
+      const maxPath = [];
+
+      for (let i = 0; i < path.length; i++) {
+        const step = path[i];
+        const tile = getTile(scene, step.q, step.r);
+        const cost = tile?.movementCost || 1;
+
+        if (i > 0 && costSum + cost > movementPoints) break;
+        maxPath.push(step);
+        if (i > 0) costSum += cost;
+      }
+
+      const graphics = scene.add.graphics();
+      graphics.lineStyle(2, 0x64ffda, 0.9);
+      graphics.setDepth(50);
+
+      for (let i = 0; i < maxPath.length - 1; i++) {
+        const a = maxPath[i];
+        const b = maxPath[i + 1];
+        const wa = scene.axialToWorld(a.q, a.r);
+        const wb = scene.axialToWorld(b.q, b.r);
+        graphics.beginPath();
+        graphics.moveTo(wa.x, wa.y);
+        graphics.lineTo(wb.x, wb.y);
+        graphics.strokePath();
+      }
+
+      scene.pathPreviewTiles.push(graphics);
+
+      const baseColor = '#e8f6ff';
+      const outOfRangeColor = '#ff7b7b';
+      costSum = 0;
+      for (let i = 0; i < maxPath.length; i++) {
+        const step = maxPath[i];
+        const tile = getTile(scene, step.q, step.r);
+        const cost = tile?.movementCost || 1;
+        if (i > 0) costSum += cost;
+        const { x, y } = scene.axialToWorld(step.q, step.r);
+        const labelColor = costSum <= movementPoints ? baseColor : outOfRangeColor;
+        const label = scene.add.text(x, y, `${costSum}`, {
+          fontSize: '10px',
+          color: labelColor,
+          fontStyle: 'bold'
+        }).setOrigin(0.5).setDepth(51);
+        scene.pathPreviewLabels.push(label);
+      }
+    }
   });
 
-  btnSetPath.hit.on('pointerdown', () => {
-    console.log('[UI] Set Path button clicked');
-    enterHaulerRoutePicker.call(scene);
+  this.input.on('pointerout', () => {
+    scene.clearPathPreview();
   });
+};
 
-  btnClose.hit.on('pointerdown', () => {
-    console.log('[UI] Close unit panel');
-    closeSubpanel();
-    scene.hideUnitPanel?.();
-  });
+WorldScene.prototype.printTurnSummary = function () {
+  console.log(`[WORLD] Turn ${this.turnNumber} – Current player: ${this.turnOwner}`);
+};
 
-  scene.unitPanel = panel;
-  scene.unitPanelButtons = [btnBuildings, btnBlank, btnSetPath, btnClose];
+WorldScene.prototype.showUnitPanel = function (unit) {
+  if (!this.unitPanel) return;
+  this.unitPanel.setVisible(true);
+};
 
-  scene.showUnitPanel = () => {
-    panel.setVisible(true);
-  };
-  scene.hideUnitPanel = () => {
-    panel.setVisible(false);
-    closeSubpanel(); // ensure movement is unlocked if panel hidden
-  };
-
-  // Hotkey: B toggles panel for current selected unit
-  scene.input.keyboard?.on('keydown-B', () => {
-    if (!scene.selectedUnit) return;
-    if (panel.visible) scene.hideUnitPanel();
-    else scene.showUnitPanel(scene.selectedUnit);
-  });
-}
+WorldScene.prototype.hideUnitPanel = function () {
+  if (!this.unitPanel) return;
+  this.unitPanel.setVisible(false);
+};
