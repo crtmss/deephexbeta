@@ -60,20 +60,26 @@ export const BUILDINGS = {
      *   so both ships and haulers can reach it.
      * - No duplicate docks on the same hex.
      */
-    validateTile(scene, q, r) {
-      const t = _tileAt(scene, q, r);
-      if (!t) return false;
+validateTile(scene, q, r) {
+  const t = _tileAt(scene, q, r);
+  if (!t) return false;
 
-      // Cannot place two docks on the same hex
-      if ((scene.buildings || []).some(b => b.type === 'docks' && b.q === q && b.r === r)) return false;
+  // NEW: docks must be on land (no water tiles)
+  if (_isWater(scene, q, r)) return false;
 
-      const adj = _offsetNeighbors(q, r)
-        .filter(h => h.q >= 0 && h.r >= 0 && h.q < scene.mapWidth && h.r < scene.mapHeight)
-        .map(h => ({ ...h, water: _isWater(scene, h.q, h.r) }));
-      const hasWaterAdj = adj.some(a => a.water);
-      const hasLandAdj  = adj.some(a => !a.water);
-      return hasWaterAdj && hasLandAdj;
-    },
+  // Cannot place two docks on the same hex
+  if ((scene.buildings || []).some(b => b.type === 'docks' && b.q === q && b.r === r)) return false;
+
+  // Still require at least one adjacent WATER and at least one adjacent LAND
+  const adj = _offsetNeighbors(q, r)
+    .filter(h => h.q >= 0 && h.r >= 0 && h.q < scene.mapWidth && h.r < scene.mapHeight)
+    .map(h => ({ ...h, water: _isWater(scene, h.q, h.r) }));
+
+  const hasWaterAdj = adj.some(a => a.water);
+  const hasLandAdj  = adj.some(a => !a.water);
+
+  return hasWaterAdj && hasLandAdj;
+},
   },
 };
 
