@@ -16,9 +16,7 @@ import {
   enterHaulerRoutePicker,
 } from './WorldSceneHaulers.js';
 
-// ⬇️ NEW: use the actual exports from WorldSceneUI.js
 import { setupTurnUI, updateTurnText } from './WorldSceneUI.js';
-
 import { spawnUnitsAndEnemies } from './WorldSceneUnits.js';
 import { spawnFishResources } from './WorldSceneResources.js';
 
@@ -116,9 +114,11 @@ export default class WorldScene extends Phaser.Scene {
     this.isDragging = false;
     this.isUnitMoving = false;
 
-    // ⬇️ NEW: helpers for WorldSceneMapLocations & others that expect scene.hexToPixel / scene.pixelToHex
-    this.hexToPixel = (q, r) => hexToPixel(q, r, this.hexSize);
-    this.pixelToHex = (x, y) => pixelToHex(x, y, this.hexSize);
+    // expose helpers for other modules that expect them on scene
+    this.hexToPixel = (q, r, sizeOverride) =>
+      hexToPixel(q, r, sizeOverride ?? this.hexSize);
+    this.pixelToHex = (x, y, sizeOverride) =>
+      pixelToHex(x, y, sizeOverride ?? this.hexSize);
 
     // collections
     this.units = [];
@@ -147,7 +147,7 @@ export default class WorldScene extends Phaser.Scene {
     this.turnOwner = null;
     this.turnNumber = 1;
 
-    // --- map generation: robust mapInfo so .tiles / .objects never crash ---
+    // --- map generation: use HexMap.generateMap() but wrap into mapInfo ---
     this.hexMap = new HexMap(this.mapWidth, this.mapHeight, this.seed);
     let mapInfo = this.hexMap.generateMap && this.hexMap.generateMap();
 
@@ -157,8 +157,10 @@ export default class WorldScene extends Phaser.Scene {
         objects: this.hexMap.objects || [],
       };
     } else if (!mapInfo || !Array.isArray(mapInfo.tiles)) {
+      // Fallback to HexMap internal map (flat array)
+      const tiles = this.hexMap.getMap ? this.hexMap.getMap() : (this.hexMap.map || []);
       mapInfo = {
-        tiles: this.hexMap.tiles || [],
+        tiles,
         objects: this.hexMap.objects || [],
       };
     } else {
@@ -170,13 +172,17 @@ export default class WorldScene extends Phaser.Scene {
     this.mapInfo = mapInfo;
     this.hexMap.mapInfo = mapInfo;
     this.mapData = mapInfo.tiles;
-    // ----------------------------------------------------------------------
 
-    drawHexMap(this);
+    // ✅ bind `this` correctly so WorldSceneMap.js sees scene as `this`
+    drawHexMap.call(this);
 
-    drawLocationsAndRoads(this, this.mapData);
-    spawnFishResources(this);
+    // ✅ roads / POIs renderer also expects `this`
+    drawLocationsAndRoads.call(this);
 
+    // ✅ resources spawner uses `this`
+    spawnFishResources.call(this);
+
+    // units & enemies
     spawnUnitsAndEnemies(this, { mapWidth: this.mapWidth, mapHeight: this.mapHeight });
 
     this.players = this.units.filter(u => u.isPlayer);
@@ -184,7 +190,7 @@ export default class WorldScene extends Phaser.Scene {
 
     this.turnOwner = this.players[0]?.name || null;
 
-    // ⬇️ REPLACED: setupWorldSceneUI(this);
+    // Turn UI (no camera controls here)
     setupTurnUI(this);
     if (this.turnOwner) {
       updateTurnText(this, this.turnOwner);
@@ -192,14 +198,16 @@ export default class WorldScene extends Phaser.Scene {
 
     this.addWorldMetaBadge();
 
-    // ❌ Do NOT call setupCameraControls -> no camera pan/zoom
-    // setupCameraControls(this);
-
+    // ❌ no call to setupCameraControls -> no pan/zoom
     this.setupInputHandlers?.();
 
     if (this.supabase) {
       this.syncPlayerMove = async unit => {
-        const res = await this.supabase.from('lobbies').select('state').eq('room_code', this.roomCode).single();
+        const res = await this.supabase
+          .from('lobbies')
+          .select('state')
+          .eq('room_code', this.roomCode)
+          .single();
         if (!res.data) return;
         const nextPlayer = this.getNextPlayer(res.data.state.players, this.playerName);
         await this.supabase
@@ -226,7 +234,7 @@ export default class WorldScene extends Phaser.Scene {
     if (!players || players.length === 0) return null;
     const idx = players.findIndex(p => p.name === currentName);
     if (idx === -1) return players[0].name;
-    return (players[(idx + 1) % players.length]).name;
+    return players[(idx + 1) % players.length].name;
   }
 
   addWorldMetaBadge() {
@@ -582,11 +590,13 @@ WorldScene.prototype.printTurnSummary = function () {
 
 // Kept for compatibility; WorldSceneUI may override these with unitActionPanel API
 WorldScene.prototype.showUnitPanel = function (unit) {
-  if (!this.unitPanel) return;
-  this.unitPanel.setVisible(true);
+  if (!this.unitPanel && !this.unitActionPanel) return;
+  if (this.unitPanel) this.unitPanel.setVisible(true);
+  if (this.unitActionPanel) this.unitActionPanel.visible = true;
 };
 
 WorldScene.prototype.hideUnitPanel = function () {
-  if (!this.unitPanel) return;
-  this.unitPanel.setVisible(false);
+  if (!this.unitPanel && !this.unitActionPanel) return;
+  if (this.unitPanel) this.unitPanel.setVisible(false);
+  if (this.unitActionPanel) this.unitActionPanel.visible = false;
 };
