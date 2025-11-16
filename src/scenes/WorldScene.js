@@ -173,16 +173,16 @@ export default class WorldScene extends Phaser.Scene {
     this.hexMap.mapInfo = mapInfo;
     this.mapData = mapInfo.tiles;
 
-    // ✅ bind `this` correctly so WorldSceneMap.js sees scene as `this`
+    // bind `this` correctly so WorldSceneMap.js sees scene as `this`
     drawHexMap.call(this);
 
-    // ✅ roads / POIs renderer also expects `this`
+    // roads / POIs renderer also expects `this`
     drawLocationsAndRoads.call(this);
 
-    // ✅ resources spawner uses `this`
+    // resources spawner uses `this`
     spawnFishResources.call(this);
 
-    // units & enemies
+    // ⬅️ IMPORTANT: original calling style so WorldSceneUnits.js sees `scene` arg
     spawnUnitsAndEnemies(this, { mapWidth: this.mapWidth, mapHeight: this.mapHeight });
 
     this.players = this.units.filter(u => u.isPlayer);
@@ -198,7 +198,7 @@ export default class WorldScene extends Phaser.Scene {
 
     this.addWorldMetaBadge();
 
-    // ❌ no call to setupCameraControls -> no pan/zoom
+    // no call to setupCameraControls -> no pan/zoom
     this.setupInputHandlers?.();
 
     if (this.supabase) {
@@ -249,8 +249,10 @@ Elev.Var: ${geography.elevationVar}
 Biomes: ${biome}`;
 
     const pad = { x: 8, y: 6 };
-    const x = 10;
-    const y = 10;
+
+    // ⬇️ moved to the right so it doesn't overlap the resource HUD
+    const x = 320;
+    const y = 16;
 
     const tempText = this.add.text(0, 0, text, {
       fontFamily: 'monospace',
