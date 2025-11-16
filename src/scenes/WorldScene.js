@@ -16,7 +16,9 @@ import {
   enterHaulerRoutePicker,
 } from './WorldSceneHaulers.js';
 
+// 🔁 FIXED: import real exports from WorldSceneUI.js
 import { setupCameraControls, setupTurnUI, updateTurnText } from './WorldSceneUI.js';
+
 import { spawnUnitsAndEnemies } from './WorldSceneUnits.js';
 import { spawnFishResources } from './WorldSceneResources.js';
 
@@ -31,6 +33,7 @@ import {
   LIFT_PER_LVL
 } from './WorldSceneMap.js';
 
+
 /* =========================
    Deterministic world summary
    ========================= */
@@ -43,7 +46,6 @@ function __hashStr32(s) {
   }
   return h >>> 0;
 }
-
 function __xorshift32(seed) {
   let x = (seed || 1) >>> 0;
   return () => {
@@ -53,7 +55,6 @@ function __xorshift32(seed) {
     return (x >>> 0) / 4294967296;
   };
 }
-
 function getWorldSummaryForSeed(seedStr, width, height) {
   const seed = __hashStr32(seedStr);
   const rng = __xorshift32(seed);
@@ -94,7 +95,7 @@ function getWorldSummaryForSeed(seedStr, width, height) {
 }
 
 /* =========================
-   Small helpers
+   Small axial helpers
    ========================= */
 function getTile(scene, q, r) {
   return scene.mapData.find(h => h.q === q && h.r === r);
@@ -111,8 +112,6 @@ export default class WorldScene extends Phaser.Scene {
     this.hexSize = 24;
     this.mapWidth = 25;
     this.mapHeight = 25;
-
-    // base cursor state
     this.input.setDefaultCursor('grab');
     this.isDragging = false;
     this.isUnitMoving = false;
@@ -144,22 +143,23 @@ export default class WorldScene extends Phaser.Scene {
     this.turnOwner = null;
     this.turnNumber = 1;
 
-    // generate & draw map
     this.hexMap = new HexMap(this.mapWidth, this.mapHeight, this.seed);
     const mapInfo = this.hexMap.generateMap();
     this.mapData = mapInfo.tiles;
 
     drawHexMap(this);
+
     drawLocationsAndRoads(this, this.mapData);
     spawnFishResources(this);
 
-    // units
     spawnUnitsAndEnemies(this, { mapWidth: this.mapWidth, mapHeight: this.mapHeight });
+
     this.players = this.units.filter(u => u.isPlayer);
     this.enemies = this.units.filter(u => u.isEnemy);
+
     this.turnOwner = this.players[0]?.name || null;
 
-    // UI
+    // 🔁 NEW: use UI helpers from WorldSceneUI.js instead of setupWorldSceneUI
     setupCameraControls(this);
     setupTurnUI(this);
     if (this.turnOwner) {
@@ -168,10 +168,8 @@ export default class WorldScene extends Phaser.Scene {
 
     this.addWorldMetaBadge();
 
-    // input handlers for selection & movement
     this.setupInputHandlers?.();
 
-    // Supabase sync
     if (this.supabase) {
       this.syncPlayerMove = async unit => {
         const res = await this.supabase.from('lobbies').select('state').eq('room_code', this.roomCode).single();
@@ -201,7 +199,7 @@ export default class WorldScene extends Phaser.Scene {
     if (!players || players.length === 0) return null;
     const idx = players.findIndex(p => p.name === currentName);
     if (idx === -1) return players[0].name;
-    return (players[(idx + 1) % players.length]).name;
+    return players[(idx + 1) % players.length].name;
   }
 
   addWorldMetaBadge() {
@@ -344,7 +342,9 @@ Biomes: ${biome}`;
 
     console.log(`[TURN] New turn owner: ${this.turnOwner} (Turn ${this.turnNumber})`);
 
+    // 🔁 keep UI turn label in sync
     updateTurnText(this, this.turnOwner);
+
     this.printTurnSummary?.();
 
     this.uiLocked = false;
@@ -387,10 +387,10 @@ Biomes: ${biome}`;
    Helpers defined outside the class
    ========================================================= */
 
-// Centralised wrapper to use shared A* pathfinding logic
+// Wrapper to use shared A* pathfinding logic
 function computePathWithAStar(unit, targetHex, mapData, blockedPred) {
   const start = { q: unit.q, r: unit.r };
-  const goal  = { q: targetHex.q, r: targetHex.r };
+  const goal = { q: targetHex.q, r: targetHex.r };
 
   if (start.q === goal.q && start.r === goal.r) {
     return [start];
@@ -401,7 +401,6 @@ function computePathWithAStar(unit, targetHex, mapData, blockedPred) {
     return blockedPred ? blockedPred(tile) : false;
   };
 
-  // Delegate to engine/AStar.js
   return aStarFindPath(start, goal, mapData, isBlocked);
 }
 
@@ -434,9 +433,7 @@ WorldScene.prototype.setupInputHandlers = function () {
 
     const tile = getTile(scene, rounded.q, rounded.r);
     if (tile && tile.isLocation) {
-      console.log(
-        `[LOCATION] Clicked on location: ${tile.locationType || 'Unknown'} at (${rounded.q},${rounded.r})`
-      );
+      console.log(`[LOCATION] Clicked on location: ${tile.locationType || 'Unknown'} at (${rounded.q},${rounded.r})`);
     }
 
     scene.selectedHex = rounded;
@@ -450,16 +447,14 @@ WorldScene.prototype.setupInputHandlers = function () {
       } else {
         const blocked = t => !t || t.type === 'water' || t.type === 'mountain';
         const fullPath = computePathWithAStar(scene.selectedUnit, rounded, scene.mapData, blocked);
-
         if (fullPath && fullPath.length > 1) {
           let movementPoints = scene.selectedUnit.movementPoints || 4;
           const trimmedPath = [];
           let costSum = 0;
-
           for (let i = 0; i < fullPath.length; i++) {
             const step = fullPath[i];
-            const stepTile = getTile(scene, step.q, step.r);
-            const cost = stepTile?.movementCost || 1;
+            const tile = getTile(scene, step.q, step.r);
+            const cost = tile?.movementCost || 1;
             if (i > 0 && costSum + cost > movementPoints) break;
             trimmedPath.push(step);
             if (i > 0) costSum += cost;
@@ -499,7 +494,6 @@ WorldScene.prototype.setupInputHandlers = function () {
     const path = computePathWithAStar(scene.selectedUnit, rounded, scene.mapData, blocked);
 
     scene.clearPathPreview();
-
     if (path && path.length > 1) {
       let movementPoints = scene.selectedUnit.movementPoints || 4;
       let costSum = 0;
@@ -507,8 +501,8 @@ WorldScene.prototype.setupInputHandlers = function () {
 
       for (let i = 0; i < path.length; i++) {
         const step = path[i];
-        const stepTile = getTile(scene, step.q, step.r);
-        const cost = stepTile?.movementCost || 1;
+        const tile = getTile(scene, step.q, step.r);
+        const cost = tile?.movementCost || 1;
 
         if (i > 0 && costSum + cost > movementPoints) break;
         maxPath.push(step);
@@ -535,11 +529,10 @@ WorldScene.prototype.setupInputHandlers = function () {
       const baseColor = '#e8f6ff';
       const outOfRangeColor = '#ff7b7b';
       costSum = 0;
-
       for (let i = 0; i < maxPath.length; i++) {
         const step = maxPath[i];
-        const stepTile = getTile(scene, step.q, step.r);
-        const cost = stepTile?.movementCost || 1;
+        const tile = getTile(scene, step.q, step.r);
+        const cost = tile?.movementCost || 1;
         if (i > 0) costSum += cost;
         const { x, y } = scene.axialToWorld(step.q, step.r);
         const labelColor = costSum <= movementPoints ? baseColor : outOfRangeColor;
@@ -560,4 +553,16 @@ WorldScene.prototype.setupInputHandlers = function () {
 
 WorldScene.prototype.printTurnSummary = function () {
   console.log(`[WORLD] Turn ${this.turnNumber} – Current player: ${this.turnOwner}`);
+};
+
+// NOTE: these prototype methods are effectively unused now, because
+// WorldSceneUI's createUnitActionPanel overwrites scene.showUnitPanel / hideUnitPanel
+WorldScene.prototype.showUnitPanel = function (unit) {
+  if (!this.unitPanel) return;
+  this.unitPanel.setVisible(true);
+};
+
+WorldScene.prototype.hideUnitPanel = function () {
+  if (!this.unitPanel) return;
+  this.unitPanel.setVisible(false);
 };
