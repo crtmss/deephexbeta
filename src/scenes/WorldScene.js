@@ -181,11 +181,20 @@ export default class WorldScene extends Phaser.Scene {
     // resources spawner uses `this`
     spawnFishResources.call(this);
 
-    // ✅ ensure both `this` and `scene` arg are valid inside WorldSceneUnits.js
-    spawnUnitsAndEnemies.call(this, this, {
-      mapWidth: this.mapWidth,
-      mapHeight: this.mapHeight
-    });
+    // ✅ robust call so WorldSceneUnits.js works whether it uses `this` or a `scene` arg
+    if (typeof this.spawnUnitsAndEnemies === 'function') {
+      // prototype method form: WorldScene.prototype.spawnUnitsAndEnemies = function(scene, opts) { ... }
+      this.spawnUnitsAndEnemies(this, {
+        mapWidth: this.mapWidth,
+        mapHeight: this.mapHeight
+      });
+    } else if (typeof spawnUnitsAndEnemies === 'function') {
+      // plain exported function: export function spawnUnitsAndEnemies(scene, opts) { ... }
+      spawnUnitsAndEnemies(this, {
+        mapWidth: this.mapWidth,
+        mapHeight: this.mapHeight
+      });
+    }
 
     this.players = this.units.filter(u => u.isPlayer);
     this.enemies = this.units.filter(u => u.isEnemy);
