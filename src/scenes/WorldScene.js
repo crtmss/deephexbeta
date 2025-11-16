@@ -143,19 +143,11 @@ export default class WorldScene extends Phaser.Scene {
     this.turnOwner = null;
     this.turnNumber = 1;
 
-    // --- map generation (robust to different HexMap.generateMap shapes) ---
+    // --- map generation (back to original pattern, plus mapInfo on scene) ---
     this.hexMap = new HexMap(this.mapWidth, this.mapHeight, this.seed);
     const mapInfo = this.hexMap.generateMap();
-    if (Array.isArray(mapInfo)) {
-      this.mapData = mapInfo;
-    } else if (mapInfo && Array.isArray(mapInfo.tiles)) {
-      this.mapData = mapInfo.tiles;
-    } else if (Array.isArray(this.hexMap.tiles)) {
-      this.mapData = this.hexMap.tiles;
-    } else {
-      console.warn('[WorldScene] HexMap.generateMap() returned unexpected value:', mapInfo);
-      this.mapData = [];
-    }
+    this.mapInfo = mapInfo;                // so WorldSceneMap.js can access objects
+    this.mapData = mapInfo.tiles;          // same as your previous version
     // -----------------------------------------------------
 
     drawHexMap(this);
@@ -171,7 +163,8 @@ export default class WorldScene extends Phaser.Scene {
     this.turnOwner = this.players[0]?.name || null;
 
     // UI from WorldSceneUI.js
-    setupCameraControls(this);
+    // ❌ disable camera movement & zoom: do NOT call setupCameraControls
+    // setupCameraControls(this);
     setupTurnUI(this);
     if (this.turnOwner) {
       updateTurnText(this, this.turnOwner);
