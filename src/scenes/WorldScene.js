@@ -181,20 +181,28 @@ export default class WorldScene extends Phaser.Scene {
     // resources spawner uses `this`
     spawnFishResources.call(this);
 
-    // ✅ robust call so WorldSceneUnits.js works whether it uses `this` or a `scene` arg
-    if (typeof this.spawnUnitsAndEnemies === 'function') {
-      // prototype method form: WorldScene.prototype.spawnUnitsAndEnemies = function(scene, opts) { ... }
-      this.spawnUnitsAndEnemies(this, {
-        mapWidth: this.mapWidth,
-        mapHeight: this.mapHeight
-      });
-    } else if (typeof spawnUnitsAndEnemies === 'function') {
-      // plain exported function: export function spawnUnitsAndEnemies(scene, opts) { ... }
+    // ==== UNITS & ENEMIES SPAWN – robust calling ====
+    try {
+      // pattern 1: spawnUnitsAndEnemies(scene, { mapWidth, mapHeight })
       spawnUnitsAndEnemies(this, {
         mapWidth: this.mapWidth,
         mapHeight: this.mapHeight
       });
+    } catch (err) {
+      console.warn('[WorldScene] spawnUnitsAndEnemies(scene, opts) failed, retrying with config object:', err);
+
+      try {
+        // pattern 2: spawnUnitsAndEnemies({ scene, mapWidth, mapHeight })
+        spawnUnitsAndEnemies({
+          scene: this,
+          mapWidth: this.mapWidth,
+          mapHeight: this.mapHeight
+        });
+      } catch (err2) {
+        console.error('[WorldScene] spawnUnitsAndEnemies also failed with config object. Skipping unit spawn.', err2);
+      }
     }
+    // ===============================================
 
     this.players = this.units.filter(u => u.isPlayer);
     this.enemies = this.units.filter(u => u.isEnemy);
