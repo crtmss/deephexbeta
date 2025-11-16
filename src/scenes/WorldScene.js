@@ -16,8 +16,8 @@ import {
   enterHaulerRoutePicker,
 } from './WorldSceneHaulers.js';
 
-// use UI helpers actually exported by WorldSceneUI.js
-import { setupCameraControls, setupTurnUI, updateTurnText } from './WorldSceneUI.js';
+// UI helpers actually exported by WorldSceneUI.js
+import { setupTurnUI, updateTurnText } from './WorldSceneUI.js';
 
 import { spawnUnitsAndEnemies } from './WorldSceneUnits.js';
 import { spawnFishResources } from './WorldSceneResources.js';
@@ -143,11 +143,16 @@ export default class WorldScene extends Phaser.Scene {
     this.turnOwner = null;
     this.turnNumber = 1;
 
-    // --- map generation (back to original pattern, plus mapInfo on scene) ---
+    // --- map generation: use side effects on HexMap, don't trust return ---
     this.hexMap = new HexMap(this.mapWidth, this.mapHeight, this.seed);
-    const mapInfo = this.hexMap.generateMap();
-    this.mapInfo = mapInfo;                // so WorldSceneMap.js can access objects
-    this.mapData = mapInfo.tiles;          // same as your previous version
+    const maybeInfo = this.hexMap.generateMap && this.hexMap.generateMap();
+
+    // Build mapInfo robustly for WorldSceneMap.js (needs .tiles & .objects)
+    this.mapInfo = {
+      tiles: (maybeInfo && maybeInfo.tiles) || this.hexMap.tiles || [],
+      objects: (maybeInfo && maybeInfo.objects) || this.hexMap.objects || []
+    };
+    this.mapData = this.mapInfo.tiles;
     // -----------------------------------------------------
 
     drawHexMap(this);
@@ -162,9 +167,7 @@ export default class WorldScene extends Phaser.Scene {
 
     this.turnOwner = this.players[0]?.name || null;
 
-    // UI from WorldSceneUI.js
-    // ❌ disable camera movement & zoom: do NOT call setupCameraControls
-    // setupCameraControls(this);
+    // UI from WorldSceneUI.js (camera controls intentionally NOT called)
     setupTurnUI(this);
     if (this.turnOwner) {
       updateTurnText(this, this.turnOwner);
