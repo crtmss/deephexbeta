@@ -16,7 +16,7 @@ import {
   enterHaulerRoutePicker,
 } from './WorldSceneHaulers.js';
 
-// 🔁 FIXED: import real exports from WorldSceneUI.js
+// use UI helpers actually exported by WorldSceneUI.js
 import { setupCameraControls, setupTurnUI, updateTurnText } from './WorldSceneUI.js';
 
 import { spawnUnitsAndEnemies } from './WorldSceneUnits.js';
@@ -143,9 +143,20 @@ export default class WorldScene extends Phaser.Scene {
     this.turnOwner = null;
     this.turnNumber = 1;
 
+    // --- map generation (robust to different HexMap.generateMap shapes) ---
     this.hexMap = new HexMap(this.mapWidth, this.mapHeight, this.seed);
     const mapInfo = this.hexMap.generateMap();
-    this.mapData = mapInfo.tiles;
+    if (Array.isArray(mapInfo)) {
+      this.mapData = mapInfo;
+    } else if (mapInfo && Array.isArray(mapInfo.tiles)) {
+      this.mapData = mapInfo.tiles;
+    } else if (Array.isArray(this.hexMap.tiles)) {
+      this.mapData = this.hexMap.tiles;
+    } else {
+      console.warn('[WorldScene] HexMap.generateMap() returned unexpected value:', mapInfo);
+      this.mapData = [];
+    }
+    // -----------------------------------------------------
 
     drawHexMap(this);
 
@@ -159,7 +170,7 @@ export default class WorldScene extends Phaser.Scene {
 
     this.turnOwner = this.players[0]?.name || null;
 
-    // 🔁 NEW: use UI helpers from WorldSceneUI.js instead of setupWorldSceneUI
+    // UI from WorldSceneUI.js
     setupCameraControls(this);
     setupTurnUI(this);
     if (this.turnOwner) {
@@ -342,9 +353,7 @@ Biomes: ${biome}`;
 
     console.log(`[TURN] New turn owner: ${this.turnOwner} (Turn ${this.turnNumber})`);
 
-    // 🔁 keep UI turn label in sync
     updateTurnText(this, this.turnOwner);
-
     this.printTurnSummary?.();
 
     this.uiLocked = false;
@@ -453,8 +462,8 @@ WorldScene.prototype.setupInputHandlers = function () {
           let costSum = 0;
           for (let i = 0; i < fullPath.length; i++) {
             const step = fullPath[i];
-            const tile = getTile(scene, step.q, step.r);
-            const cost = tile?.movementCost || 1;
+            const tile2 = getTile(scene, step.q, step.r);
+            const cost = tile2?.movementCost || 1;
             if (i > 0 && costSum + cost > movementPoints) break;
             trimmedPath.push(step);
             if (i > 0) costSum += cost;
@@ -555,8 +564,8 @@ WorldScene.prototype.printTurnSummary = function () {
   console.log(`[WORLD] Turn ${this.turnNumber} – Current player: ${this.turnOwner}`);
 };
 
-// NOTE: these prototype methods are effectively unused now, because
-// WorldSceneUI's createUnitActionPanel overwrites scene.showUnitPanel / hideUnitPanel
+// These are effectively overridden by WorldSceneUI's createUnitActionPanel,
+// but left here so any older code referencing unitPanel doesn't explode.
 WorldScene.prototype.showUnitPanel = function (unit) {
   if (!this.unitPanel) return;
   this.unitPanel.setVisible(true);
