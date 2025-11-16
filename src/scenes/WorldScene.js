@@ -847,55 +847,86 @@ function setupUnitPanel(scene) {
     };
     const opts = optionsByCategory[scene.buildMenuCategory] || [];
 
-    const startX = 24;
-    const startY = 28;
-    const lineH = 18;
+const startX = 24;
+const startY = 32;
+const lineH = 22;
+const optWidth = 140;
+const optHeight = 18;
 
-    opts.forEach((name, idx) => {
-      const y = startY + idx * lineH;
-      const t = scene.add.text(
-        startX,
-        y,
-        `• ${name}`,
-        { fontSize: '11px', color: '#e8f6ff' }
-      ).setOrigin(0, 0.5);
+opts.forEach((name, idx) => {
+  const y = startY + idx * lineH;
+  const xPos = startX;
 
-      const hit = scene.add.rectangle(
-        startX + 80,
-        y,
-        160,
-        16,
-        0x000000,
-        0
-      ).setOrigin(0.5, 0.5)
-        .setInteractive({ useHandCursor: true });
+  // Button background
+  const g = scene.add.graphics();
+  g.fillStyle(0x173b52, 1);
+  g.fillRoundedRect(xPos, y - optHeight / 2, optWidth, optHeight, 6);
+  g.lineStyle(1, 0x6fe3ff, 0.8);
+  g.strokeRoundedRect(xPos, y - optHeight / 2, optWidth, optHeight, 6);
 
-      // Default: just log
-      let onClick = () => {
-        console.log(`[BUILD MENU] ${scene.buildMenuCategory} → ${name}`);
-      };
+  // Button label
+  const t = scene.add.text(
+    xPos + optWidth / 2,
+    y,
+    name,
+    { fontSize: '11px', color: '#e8f6ff' }
+  ).setOrigin(0.5, 0.5);
 
-      // Real action: Buildings → Docks starts docks placement
-      if (scene.buildMenuCategory === 'buildings' && name === 'Docks') {
-        onClick = () => {
-          console.log('[BUILD MENU] Buildings → Docks (start placement)');
-          startDocksPlacement.call(scene);
-        };
-      }
+  // Hit area
+  const hit = scene.add.rectangle(
+    xPos + optWidth / 2,
+    y,
+    optWidth,
+    optHeight,
+    0x000000,
+    0
+  ).setOrigin(0.5, 0.5)
+    .setInteractive({ useHandCursor: true });
 
-      // Real action: Units → Hauler builds hauler
-      if (scene.buildMenuCategory === 'units' && name === 'Hauler') {
-        onClick = () => {
-          console.log('[BUILD MENU] Units → Hauler (build hauler)');
-          buildHaulerAtSelectedUnit.call(scene);
-        };
-      }
+  // Hover effects
+  hit.on('pointerover', () => {
+    g.clear();
+    g.fillStyle(0x1a4764, 1);
+    g.fillRoundedRect(xPos, y - optHeight / 2, optWidth, optHeight, 6);
+    g.lineStyle(1, 0x9be4ff, 1);
+    g.strokeRoundedRect(xPos, y - optHeight / 2, optWidth, optHeight, 6);
+  });
 
-      hit.on('pointerdown', onClick);
+  hit.on('pointerout', () => {
+    g.clear();
+    g.fillStyle(0x173b52, 1);
+    g.fillRoundedRect(xPos, y - optHeight / 2, optWidth, optHeight, 6);
+    g.lineStyle(1, 0x6fe3ff, 0.8);
+    g.strokeRoundedRect(xPos, y - optHeight / 2, optWidth, optHeight, 6);
+  });
 
-      subContainer.add([t, hit]);
-      optionsText.push(t);
-    });
+  // Default action: log
+  let onClick = () => {
+    console.log(`[BUILD MENU] ${scene.buildMenuCategory} → ${name}`);
+  };
+
+  // Real action: Buildings → Docks starts docks placement
+  if (scene.buildMenuCategory === 'buildings' && name === 'Docks') {
+    onClick = () => {
+      console.log('[BUILD MENU] Buildings → Docks (start placement)');
+      startDocksPlacement.call(scene);
+    };
+  }
+
+  // Real action: Units → Hauler builds hauler
+  if (scene.buildMenuCategory === 'units' && name === 'Hauler') {
+    onClick = () => {
+      console.log('[BUILD MENU] Units → Hauler (build hauler)');
+      buildHaulerAtSelectedUnit.call(scene);
+    };
+  }
+
+  hit.on('pointerdown', onClick);
+
+  subContainer.add([g, t, hit]);
+  optionsText.push(t);
+});
+
   }
 
   function openSubpanel() {
