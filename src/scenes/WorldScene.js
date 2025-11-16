@@ -143,15 +143,20 @@ export default class WorldScene extends Phaser.Scene {
     this.turnOwner = null;
     this.turnNumber = 1;
 
-    // --- map generation: use side effects on HexMap, don't trust return ---
+    // --- map generation: use side effects, and build mapInfo for WorldSceneMap ---
     this.hexMap = new HexMap(this.mapWidth, this.mapHeight, this.seed);
     const maybeInfo = this.hexMap.generateMap && this.hexMap.generateMap();
 
-    // Build mapInfo robustly for WorldSceneMap.js (needs .tiles & .objects)
-    this.mapInfo = {
-      tiles: (maybeInfo && maybeInfo.tiles) || this.hexMap.tiles || [],
-      objects: (maybeInfo && maybeInfo.objects) || this.hexMap.objects || []
-    };
+    const tiles =
+      (maybeInfo && Array.isArray(maybeInfo.tiles) && maybeInfo.tiles) ||
+      (Array.isArray(this.hexMap.tiles) ? this.hexMap.tiles : []);
+
+    const objects =
+      (maybeInfo && Array.isArray(maybeInfo.objects) && maybeInfo.objects) ||
+      (Array.isArray(this.hexMap.objects) ? this.hexMap.objects : []);
+
+    this.mapInfo = { tiles, objects };
+    this.hexMap.mapInfo = this.mapInfo;  // in case WorldSceneMap.js reads from hexMap
     this.mapData = this.mapInfo.tiles;
     // -----------------------------------------------------
 
@@ -167,7 +172,7 @@ export default class WorldScene extends Phaser.Scene {
 
     this.turnOwner = this.players[0]?.name || null;
 
-    // UI from WorldSceneUI.js (camera controls intentionally NOT called)
+    // UI from WorldSceneUI.js (camera controls intentionally NOT called -> no pan/zoom)
     setupTurnUI(this);
     if (this.turnOwner) {
       updateTurnText(this, this.turnOwner);
