@@ -113,12 +113,6 @@ export default class WorldScene extends Phaser.Scene {
     this.isDragging = false;
     this.isUnitMoving = false;
 
-    // expose helpers for other modules that expect them on scene
-    this.hexToPixel = (q, r, sizeOverride) =>
-      hexToPixel(q, r, sizeOverride ?? this.hexSize);
-    this.pixelToHex = (x, y, sizeOverride) =>
-      pixelToHex(x, y, sizeOverride ?? this.hexSize);
-
     // collections
     this.units = [];
     this.enemies = [];
@@ -156,7 +150,6 @@ export default class WorldScene extends Phaser.Scene {
         objects: this.hexMap.objects || [],
       };
     } else if (!mapInfo || !Array.isArray(mapInfo.tiles)) {
-      // Fallback to HexMap internal map (flat array)
       const tiles = this.hexMap.getMap ? this.hexMap.getMap() : (this.hexMap.map || []);
       mapInfo = {
         tiles,
@@ -172,6 +165,20 @@ export default class WorldScene extends Phaser.Scene {
     this.hexMap.mapInfo = mapInfo;
     this.mapData = mapInfo.tiles;
 
+    // expose helpers for other modules that expect them on scene (with offset)
+    this.hexToPixel = (q, r, sizeOverride) => {
+      const { x, y } = hexToPixel(q, r, sizeOverride ?? this.hexSize);
+      const ox = this.mapOffsetX || 0;
+      const oy = this.mapOffsetY || 0;
+      return { x: x + ox, y: y + oy };
+    };
+    this.pixelToHex = (x, y, sizeOverride) => {
+      const ox = this.mapOffsetX || 0;
+      const oy = this.mapOffsetY || 0;
+      const { q, r } = pixelToHex(x - ox, y - oy, sizeOverride ?? this.hexSize);
+      return { q, r };
+    };
+
     // bind `this` correctly so WorldSceneMap.js sees scene as `this`
     drawHexMap.call(this);
 
@@ -181,33 +188,14 @@ export default class WorldScene extends Phaser.Scene {
     // resources spawner uses `this`
     spawnFishResources.call(this);
 
-    // ==== UNITS & ENEMIES SPAWN – robust calling ====
-    try {
-      // pattern 1: spawnUnitsAndEnemies(scene, { mapWidth, mapHeight })
-      spawnUnitsAndEnemies(this, {
-        mapWidth: this.mapWidth,
-        mapHeight: this.mapHeight
-      });
-    } catch (err) {
-      console.warn('[WorldScene] spawnUnitsAndEnemies(scene, opts) failed, retrying with config object:', err);
+    // === UNITS & ENEMIES SPAWN ===
+    await spawnUnitsAndEnemies.call(this);
+    // ==============================
 
-      try {
-        // pattern 2: spawnUnitsAndEnemies({ scene, mapWidth, mapHeight })
-        spawnUnitsAndEnemies({
-          scene: this,
-          mapWidth: this.mapWidth,
-          mapHeight: this.mapHeight
-        });
-      } catch (err2) {
-        console.error('[WorldScene] spawnUnitsAndEnemies also failed with config object. Skipping unit spawn.', err2);
-      }
-    }
-    // ===============================================
+    this.players = this.players || this.units.filter(u => u.isPlayer);
+    this.enemies = this.enemies || this.units.filter(u => u.isEnemy);
 
-    this.players = this.units.filter(u => u.isPlayer);
-    this.enemies = this.units.filter(u => u.isEnemy);
-
-    this.turnOwner = this.players[0]?.name || null;
+    this.turnOwner = this.players[0]?.playerName || this.players[0]?.name || null;
 
     // Turn UI (no camera controls here)
     setupTurnUI(this);
@@ -445,7 +433,6 @@ Biomes: ${biome}`;
    Helpers defined outside the class
    ========================================================= */
 
-// Wrapper to use shared A* pathfinding logic
 function computePathWithAStar(unit, targetHex, mapData, blockedPred) {
   const start = { q: unit.q, r: unit.r };
   const goal = { q: targetHex.q, r: targetHex.r };
@@ -462,9 +449,6 @@ function computePathWithAStar(unit, targetHex, mapData, blockedPred) {
   return aStarFindPath(start, goal, mapData, isBlocked);
 }
 
-/**
- * Hook up pointer input for selecting units, tiles, and plotting paths.
- */
 WorldScene.prototype.setupInputHandlers = function () {
   const scene = this;
 
@@ -613,8 +597,7 @@ WorldScene.prototype.printTurnSummary = function () {
   console.log(`[WORLD] Turn ${this.turnNumber} – Current player: ${this.turnOwner}`);
 };
 
-// Kept for compatibility; WorldSceneUI may override these with unitActionPanel API
-WorldScene.prototype.showUnitPanel = function (unit) {
+WorldScene.prototype.showUnitPanel = function () {
   if (!this.unitPanel && !this.unitActionPanel) return;
   if (this.unitPanel) this.unitPanel.setVisible(true);
   if (this.unitActionPanel) this.unitActionPanel.visible = true;
