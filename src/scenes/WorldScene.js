@@ -351,31 +351,36 @@ Biomes: ${biome}`;
     }
 
     this.isUnitMoving = true;
+    const scene = this;
+    let index = 1; // start from second node
 
-    // Use a Phaser timeline compatible with your build
-    const timeline = this.tweens.createTimeline();
+    function stepNext() {
+      if (index >= path.length) {
+        const last = path[path.length - 1];
+        unit.q = last.q;
+        unit.r = last.r;
+        scene.isUnitMoving = false;
+        if (onComplete) onComplete();
+        return;
+      }
 
-    for (let i = 1; i < path.length; i++) {
-      const step = path[i];
-      const { x, y } = this.axialToWorld(step.q, step.r);
-      timeline.add({
+      const step = path[index];
+      const { x, y } = scene.axialToWorld(step.q, step.r);
+
+      scene.tweens.add({
         targets: unit,
         x,
         y,
         duration: 160,
         ease: 'Sine.easeInOut',
+        onComplete: () => {
+          index += 1;
+          stepNext();
+        }
       });
     }
 
-    timeline.setCallback('onComplete', () => {
-      const last = path[path.length - 1];
-      unit.q = last.q;
-      unit.r = last.r;
-      this.isUnitMoving = false;
-      if (onComplete) onComplete();
-    });
-
-    timeline.play();
+    stepNext();
   }
 
   endTurn() {
