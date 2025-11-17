@@ -1,5 +1,4 @@
 // src/scenes/WorldScene.js
-import { setupTurnUI, updateTurnText } from './WorldSceneUI.js';
 import HexMap from '../engine/HexMap.js';
 import { findPath as aStarFindPath } from '../engine/AStar.js';
 import { drawLocationsAndRoads } from './WorldSceneMapLocations.js';
@@ -17,7 +16,7 @@ import {
   enterHaulerRoutePicker,
 } from './WorldSceneHaulers.js';
 
-import { setupTurnUI, updateTurnText } from './WorldSceneUI.js';
+import { setupTurnUI, updateTurnText, setupWorldInputUI } from './WorldSceneUI.js';
 import { spawnUnitsAndEnemies } from './WorldSceneUnits.js';
 import { spawnFishResources } from './WorldSceneResources.js';
 
