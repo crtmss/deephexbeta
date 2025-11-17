@@ -10,17 +10,21 @@ export function handleHexClick(scene, pointer) {
   if (scene.playerName !== scene.lobbyState.currentTurn) return;
 
   const worldPoint = pointer.positionToCamera(scene.cameras.main);
-  const clickedHex = scene.pixelToHex(worldPoint.x, worldPoint.y);
+
+  // Use the scene's offset-aware conversion
+  const clickedHex = scene.worldToAxial(worldPoint.x, worldPoint.y);
   const target = scene.mapData.find(h => h.q === clickedHex.q && h.r === clickedHex.r);
   if (!target || ['water', 'mountain'].includes(target.type)) return;
 
+  // Highlight selected hex
   if (scene.selectedHexGraphic) scene.selectedHexGraphic.destroy();
-  const { x, y } = scene.hexToPixel(target.q, target.r, scene.hexSize);
+  const { x, y } = scene.axialToWorld(target.q, target.r);
   scene.selectedHexGraphic = scene.add.graphics({ x: 0, y: 0 });
   scene.selectedHexGraphic.lineStyle(2, 0xffff00);
   scene.selectedHexGraphic.strokeCircle(x, y, scene.hexSize * 0.8);
 
   scene.selectedHex = target;
+
   const path = findPath(
     { q: scene.selectedUnit.q, r: scene.selectedUnit.r },
     { q: target.q, r: target.r },
@@ -31,17 +35,22 @@ export function handleHexClick(scene, pointer) {
   if (path.length > 1) {
     scene.movingPath = path.slice(1);
 
+    // Draw path using axialToWorld so it matches the grid
     scene.pathGraphics.clear();
     scene.pathGraphics.lineStyle(3, 0x00ffff, 1);
     scene.pathGraphics.beginPath();
-    const start = scene.hexToPixel(path[0].q, path[0].r, scene.hexSize);
+
+    const start = scene.axialToWorld(path[0].q, path[0].r);
     scene.pathGraphics.moveTo(start.x, start.y);
+
     for (let i = 1; i < path.length; i++) {
-      const pt = scene.hexToPixel(path[i].q, path[i].r, scene.hexSize);
+      const pt = scene.axialToWorld(path[i].q, path[i].r);
       scene.pathGraphics.lineTo(pt.x, pt.y);
     }
     scene.pathGraphics.strokePath();
 
+    // NOTE: in your newer WorldScene, startStepMovement(unit, path, cb) is used,
+    // so this older call may not be wired anymore. Kept for compatibility.
     scene.startStepMovement();
   }
 }
@@ -51,26 +60,42 @@ export function handleHexClick(scene, pointer) {
  */
 export function refreshUnits(scene) {
   if (!scene.lobbyState?.units) return;
+
+  // Players (including your red mobile base)
   for (const name in scene.lobbyState.units) {
     const other = scene.lobbyState.units[name];
     const existing = scene.players.find(p => p.playerName === name);
     if (existing) {
-      const { x, y } = scene.hexToPixel(other.q, other.r, scene.hexSize);
+      const { x, y } = scene.axialToWorld(other.q, other.r);
       existing.setPosition(x, y);
       existing.q = other.q;
       existing.r = other.r;
-      scene.tweens.add({ targets: existing, alpha: 0.5, duration: 100, yoyo: true, repeat: 1 });
+      scene.tweens.add({
+        targets: existing,
+        alpha: 0.5,
+        duration: 100,
+        yoyo: true,
+        repeat: 1
+      });
     }
   }
+
+  // Enemies (client-side refresh when you're not host)
   if (scene.lobbyState.enemies && !scene.isHost) {
     scene.enemies.forEach((enemy, i) => {
       if (scene.lobbyState.enemies[i]) {
         const pos = scene.lobbyState.enemies[i];
-        const { x, y } = scene.hexToPixel(pos.q, pos.r, scene.hexSize);
+        const { x, y } = scene.axialToWorld(pos.q, pos.r);
         enemy.setPosition(x, y);
         enemy.q = pos.q;
         enemy.r = pos.r;
-        scene.tweens.add({ targets: enemy, alpha: 0.5, duration: 100, yoyo: true, repeat: 1 });
+        scene.tweens.add({
+          targets: enemy,
+          alpha: 0.5,
+          duration: 100,
+          yoyo: true,
+          repeat: 1
+        });
       }
     });
   }
