@@ -130,12 +130,21 @@ export default class WorldScene extends Phaser.Scene {
 
     this.uiLocked = false;
 
-    const { seed, playerName, roomCode, isHost, supabase } = this.scene.settings.data || {};
+    const {
+      seed,
+      playerName,
+      roomCode,
+      isHost,
+      supabase,
+      lobbyState,        // <-- include lobbyState from scene data
+    } = this.scene.settings.data || {};
+
     this.seed = seed || 'default-seed';
     this.playerName = playerName;
     this.roomCode = roomCode;
     this.isHost = isHost;
     this.supabase = supabase;
+    this.lobbyState = lobbyState || { units: {}, enemies: [] }; // <-- ensure defined
 
     this.turnOwner = null;
     this.turnNumber = 1;
@@ -165,27 +174,15 @@ export default class WorldScene extends Phaser.Scene {
     this.hexMap.mapInfo = mapInfo;
     this.mapData = mapInfo.tiles;
 
-    // expose helpers for other modules that expect them on scene (with offset)
-    this.hexToPixel = (q, r, sizeOverride) => {
-      const { x, y } = hexToPixel(q, r, sizeOverride ?? this.hexSize);
-      const ox = this.mapOffsetX || 0;
-      const oy = this.mapOffsetY || 0;
-      return { x: x + ox, y: y + oy };
-    };
-    this.pixelToHex = (x, y, sizeOverride) => {
-      const ox = this.mapOffsetX || 0;
-      const oy = this.mapOffsetY || 0;
-      const { q, r } = pixelToHex(x - ox, y - oy, sizeOverride ?? this.hexSize);
-      return { q, r };
-    };
+    // expose helpers (no extra offset; WorldSceneMap already handles placement)
+    this.hexToPixel = (q, r, sizeOverride) =>
+      hexToPixel(q, r, sizeOverride ?? this.hexSize);
+    this.pixelToHex = (x, y, sizeOverride) =>
+      pixelToHex(x, y, sizeOverride ?? this.hexSize);
 
-    // bind `this` correctly so WorldSceneMap.js sees scene as `this`
+    // draw map and world objects
     drawHexMap.call(this);
-
-    // roads / POIs renderer also expects `this`
     drawLocationsAndRoads.call(this);
-
-    // resources spawner uses `this`
     spawnFishResources.call(this);
 
     // === UNITS & ENEMIES SPAWN ===
@@ -195,9 +192,12 @@ export default class WorldScene extends Phaser.Scene {
     this.players = this.players || this.units.filter(u => u.isPlayer);
     this.enemies = this.enemies || this.units.filter(u => u.isEnemy);
 
-    this.turnOwner = this.players[0]?.playerName || this.players[0]?.name || null;
+    this.turnOwner =
+      this.players[0]?.playerName ||
+      this.players[0]?.name ||
+      null;
 
-    // Turn UI (no camera controls here)
+    // Turn UI
     setupTurnUI(this);
     if (this.turnOwner) {
       updateTurnText(this, this.turnOwner);
@@ -205,7 +205,7 @@ export default class WorldScene extends Phaser.Scene {
 
     this.addWorldMetaBadge();
 
-    // no call to setupCameraControls -> no pan/zoom
+    // no camera pan/zoom
     this.setupInputHandlers?.();
 
     if (this.supabase) {
@@ -296,16 +296,12 @@ Biomes: ${biome}`;
   axialToWorld(q, r) {
     const size = this.hexSize;
     const { x, y } = hexToPixel(q, r, size);
-    const ox = this.mapOffsetX || 0;
-    const oy = this.mapOffsetY || 0;
-    return { x: x + ox, y: y + oy };
+    return { x, y };
   }
 
   worldToAxial(x, y) {
     const size = this.hexSize;
-    const ox = this.mapOffsetX || 0;
-    const oy = this.mapOffsetY || 0;
-    const { q, r } = pixelToHex(x - ox, y - oy, size);
+    const { q, r } = pixelToHex(x, y, size);
     return roundHex(q, r);
   }
 
@@ -433,6 +429,7 @@ Biomes: ${biome}`;
    Helpers defined outside the class
    ========================================================= */
 
+// Wrapper to use shared A* pathfinding logic
 function computePathWithAStar(unit, targetHex, mapData, blockedPred) {
   const start = { q: unit.q, r: unit.r };
   const goal = { q: targetHex.q, r: targetHex.r };
@@ -449,6 +446,9 @@ function computePathWithAStar(unit, targetHex, mapData, blockedPred) {
   return aStarFindPath(start, goal, mapData, isBlocked);
 }
 
+/**
+ * Hook up pointer input for selecting units, tiles, and plotting paths.
+ */
 WorldScene.prototype.setupInputHandlers = function () {
   const scene = this;
 
