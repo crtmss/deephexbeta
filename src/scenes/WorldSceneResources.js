@@ -31,9 +31,6 @@ export function spawnFishResources() {
   // Shuffle candidates for variety
   const shuffled = [...waterTiles].sort(() => rnd() - 0.5);
 
-  const ox = scene.mapOffsetX || 0;
-  const oy = scene.mapOffsetY || 0;
-
   for (const tile of shuffled) {
     if (placed.length >= existingFish.length + need) break;
 
@@ -50,15 +47,11 @@ export function spawnFishResources() {
     if (already) continue;
 
     // Create visible emoji
-    let basePos;
-    if (scene.axialToWorld) {
-      basePos = scene.axialToWorld(q, r);
-      basePos = { x: basePos.x + ox, y: basePos.y + oy };
-    } else {
-      basePos = _fallbackAxialToWorld(scene, q, r); // already includes offset
-    }
+    const pos = scene.axialToWorld
+      ? scene.axialToWorld(q, r)
+      : _fallbackAxialToWorld(scene, q, r); // fallback includes offset
 
-    const obj = scene.add.text(basePos.x, basePos.y, '🐟', {
+    const obj = scene.add.text(pos.x, pos.y, '🐟', {
       fontSize: '18px',
       color: '#ffffff'
     }).setOrigin(0.5).setDepth(2050);
@@ -97,7 +90,11 @@ function _hexDistanceAxial(q1, r1, q2, r2) {
 
 // Only used if scene.axialToWorld isn’t bound yet
 function _fallbackAxialToWorld(scene, q, r) {
-  const p = scene.hexToPixel ? scene.hexToPixel(q, r, scene.hexSize || 24) : { x: q * 24, y: r * 24 };
+  const p = scene.hexToPixel
+    ? scene.hexToPixel(q, r, scene.hexSize || 24)
+    : { x: q * 24, y: r * 24 };
+
+  // include map offset here so behaviour matches axialToWorld
   return {
     x: p.x + (scene.mapOffsetX || 0),
     y: p.y + (scene.mapOffsetY || 0),
