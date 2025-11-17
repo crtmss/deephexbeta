@@ -199,6 +199,7 @@ export default class WorldScene extends Phaser.Scene {
 
     // Turn UI
     setupTurnUI(this);
+    setupWorldInputUI(this);
     if (this.turnOwner) {
       updateTurnText(this, this.turnOwner);
     }
