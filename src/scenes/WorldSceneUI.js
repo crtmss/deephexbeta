@@ -1,6 +1,7 @@
 // deephexbeta/src/scenes/WorldSceneUI.js
 
 import { refreshUnits } from './WorldSceneActions.js';
+import { findPath as aStarFindPath } from '../engine/AStar.js';
 
 /* ---------------- Camera controls (unchanged) ---------------- */
 export function setupCameraControls(scene) {
@@ -214,7 +215,7 @@ function createUnitActionPanel(scene) {
   const startX = 12;
   const startY = 12;
 
-  // UPDATED labels
+  // Labels correspond to: [Build docks, Build hauler, Set route, Close]
   const labels = ['Docks', 'Hauler', 'Set route', 'Close'];
 
   const btns = [];
@@ -267,7 +268,6 @@ function createUnitActionPanel(scene) {
         g.strokePath();
       });
 
-      // No audio here (avoids "ui-click" missing key)
       btns.push({ g, hit, label });
       panel.add([g, label, hit]);
     }
@@ -282,5 +282,183 @@ function createUnitActionPanel(scene) {
   scene.hideUnitPanel = () => { panel.visible = false; };
 
   scene.unitActionPanel = panel;
-  scene.unitPanelButtons = btns; // array of 4 hit areas: [Docks, Hauler, Set route, Close]
+  scene.unitPanelButtons = btns; // [Docks, Hauler, Set route, Close]
+}
+
+/* =========================
+   Path preview & selection UI
+   ========================= */
+
+// local helper, same as in WorldScene
+function getTile(scene, q, r) {
+  return (scene.mapData || []).find(h => h.q === q && h.r === r);
+}
+
+// wrapper around shared A* to keep logic here
+function computePathWithAStar(scene, unit, targetHex, blockedPred) {
+  const start = { q: unit.q, r: unit.r };
+  const goal = { q: targetHex.q, r: targetHex.r };
+
+  if (start.q === goal.q && start.r === goal.r) {
+    return [start];
+  }
+
+  const isBlocked = tile => {
+    if (!tile) return true;
+    return blockedPred ? blockedPred(tile) : false;
+  };
+
+  return aStarFindPath(start, goal, scene.mapData, isBlocked);
+}
+
+/**
+ * Sets up unit selection + path preview + movement
+ * (moved from WorldScene into UI layer)
+ */
+export function setupWorldInputUI(scene) {
+  // ensure arrays for preview are present
+  scene.pathPreviewTiles = scene.pathPreviewTiles || [];
+  scene.pathPreviewLabels = scene.pathPreviewLabels || [];
+
+  scene.input.on('pointerdown', pointer => {
+    if (scene.isDragging) return;
+
+    const worldPoint = pointer.positionToCamera(scene.cameras.main);
+    const rounded = scene.worldToAxial(worldPoint.x, worldPoint.y);
+
+    if (rounded.q < 0 || rounded.r < 0 || rounded.q >= scene.mapWidth || rounded.r >= scene.mapHeight) return;
+
+    // Select unit: look in players (red mobile base + others),
+    // plus haulers if present.
+    const clickedUnit =
+      (scene.players || []).find(u => u.q === rounded.q && u.r === rounded.r) ||
+      scene.haulers?.find?.(h => h.q === rounded.q && h.r === rounded.r);
+
+    if (clickedUnit) {
+      scene.selectedUnit = clickedUnit;
+      scene.showUnitPanel?.(clickedUnit);
+      scene.clearPathPreview?.();
+      scene.selectedHex = null;
+      scene.debugHex?.(rounded.q, rounded.r);
+      return;
+    }
+
+    const tile = getTile(scene, rounded.q, rounded.r);
+    if (tile && tile.isLocation) {
+      console.log(`[LOCATION] Clicked on location: ${tile.locationType || 'Unknown'} at (${rounded.q},${rounded.r})`);
+    }
+
+    scene.selectedHex = rounded;
+    scene.debugHex?.(rounded.q, rounded.r);
+
+    if (scene.selectedUnit) {
+      if (scene.selectedUnit.q === rounded.q && scene.selectedUnit.r === rounded.r) {
+        scene.selectedUnit = null;
+        scene.hideUnitPanel?.();
+        scene.clearPathPreview?.();
+      } else {
+        const blocked = t => !t || t.type === 'water' || t.type === 'mountain';
+        const fullPath = computePathWithAStar(scene, scene.selectedUnit, rounded, blocked);
+        if (fullPath && fullPath.length > 1) {
+          let movementPoints = scene.selectedUnit.movementPoints || 4;
+          const trimmedPath = [];
+          let costSum = 0;
+          for (let i = 0; i < fullPath.length; i++) {
+            const step = fullPath[i];
+            const tile2 = getTile(scene, step.q, step.r);
+            const cost = tile2?.movementCost || 1;
+            if (i > 0 && costSum + cost > movementPoints) break;
+            trimmedPath.push(step);
+            if (i > 0) costSum += cost;
+          }
+
+          if (trimmedPath.length > 1) {
+            console.log('[MOVE] Committing move along path:', trimmedPath);
+            scene.startStepMovement?.(scene.selectedUnit, trimmedPath, () => {
+              if (scene.checkCombat?.(scene.selectedUnit, trimmedPath[trimmedPath.length - 1])) {
+                scene.scene.start('CombatScene', {
+                  seed: scene.seed,
+                  playerUnit: scene.selectedUnit,
+                });
+              } else {
+                scene.syncPlayerMove?.(scene.selectedUnit);
+              }
+            });
+          }
+        }
+      }
+    }
+  });
+
+  scene.input.on('pointermove', pointer => {
+    if (scene.isDragging) return;
+    if (!scene.selectedUnit || scene.isUnitMoving) return;
+
+    const worldPoint = pointer.positionToCamera(scene.cameras.main);
+    const rounded = scene.worldToAxial(worldPoint.x, worldPoint.y);
+
+    if (rounded.q < 0 || rounded.r < 0 || rounded.q >= scene.mapWidth || rounded.r >= scene.mapHeight) {
+      scene.clearPathPreview?.();
+      return;
+    }
+
+    const blocked = t => !t || t.type === 'water' || t.type === 'mountain';
+    const path = computePathWithAStar(scene, scene.selectedUnit, rounded, blocked);
+
+    scene.clearPathPreview?.();
+    if (path && path.length > 1) {
+      let movementPoints = scene.selectedUnit.movementPoints || 4;
+      let costSum = 0;
+      const maxPath = [];
+
+      for (let i = 0; i < path.length; i++) {
+        const step = path[i];
+        const tile = getTile(scene, step.q, step.r);
+        const cost = tile?.movementCost || 1;
+
+        if (i > 0 && costSum + cost > movementPoints) break;
+        maxPath.push(step);
+        if (i > 0) costSum += cost;
+      }
+
+      const graphics = scene.add.graphics();
+      graphics.lineStyle(2, 0x64ffda, 0.9);
+      graphics.setDepth(50);
+
+      for (let i = 0; i < maxPath.length - 1; i++) {
+        const a = maxPath[i];
+        const b = maxPath[i + 1];
+        const wa = scene.axialToWorld(a.q, a.r);
+        const wb = scene.axialToWorld(b.q, b.r);
+        graphics.beginPath();
+        graphics.moveTo(wa.x, wa.y);
+        graphics.lineTo(wb.x, wb.y);
+        graphics.strokePath();
+      }
+
+      scene.pathPreviewTiles.push(graphics);
+
+      const baseColor = '#e8f6ff';
+      const outOfRangeColor = '#ff7b7b';
+      costSum = 0;
+      for (let i = 0; i < maxPath.length; i++) {
+        const step = maxPath[i];
+        const tile = getTile(scene, step.q, step.r);
+        const cost = tile?.movementCost || 1;
+        if (i > 0) costSum += cost;
+        const { x, y } = scene.axialToWorld(step.q, step.r);
+        const labelColor = costSum <= movementPoints ? baseColor : outOfRangeColor;
+        const label = scene.add.text(x, y, `${costSum}`, {
+          fontSize: '10px',
+          color: labelColor,
+          fontStyle: 'bold'
+        }).setOrigin(0.5).setDepth(51);
+        scene.pathPreviewLabels.push(label);
+      }
+    }
+  });
+
+  scene.input.on('pointerout', () => {
+    scene.clearPathPreview?.();
+  });
 }
