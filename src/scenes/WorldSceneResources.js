@@ -31,6 +31,9 @@ export function spawnFishResources() {
   // Shuffle candidates for variety
   const shuffled = [...waterTiles].sort(() => rnd() - 0.5);
 
+  const ox = scene.mapOffsetX || 0;
+  const oy = scene.mapOffsetY || 0;
+
   for (const tile of shuffled) {
     if (placed.length >= existingFish.length + need) break;
 
@@ -47,8 +50,15 @@ export function spawnFishResources() {
     if (already) continue;
 
     // Create visible emoji
-    const pos = scene.axialToWorld ? scene.axialToWorld(q, r) : _fallbackAxialToWorld(scene, q, r);
-    const obj = scene.add.text(pos.x, pos.y, '🐟', {
+    let basePos;
+    if (scene.axialToWorld) {
+      basePos = scene.axialToWorld(q, r);
+      basePos = { x: basePos.x + ox, y: basePos.y + oy };
+    } else {
+      basePos = _fallbackAxialToWorld(scene, q, r); // already includes offset
+    }
+
+    const obj = scene.add.text(basePos.x, basePos.y, '🐟', {
       fontSize: '18px',
       color: '#ffffff'
     }).setOrigin(0.5).setDepth(2050);
