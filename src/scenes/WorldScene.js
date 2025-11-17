@@ -174,7 +174,7 @@ export default class WorldScene extends Phaser.Scene {
     this.hexMap.mapInfo = mapInfo;
     this.mapData = mapInfo.tiles;
 
-    // expose helpers (no extra offset; WorldSceneMap already handles placement)
+    // expose helpers (no extra offset here; offset is handled in axialToWorld/worldToAxial)
     this.hexToPixel = (q, r, sizeOverride) =>
       hexToPixel(q, r, sizeOverride ?? this.hexSize);
     this.pixelToHex = (x, y, sizeOverride) =>
@@ -293,15 +293,24 @@ Biomes: ${biome}`;
     label.setDepth(101);
   }
 
+  // *** SINGLE SOURCE OF TRUTH FOR OFFSET ***
   axialToWorld(q, r) {
     const size = this.hexSize;
     const { x, y } = hexToPixel(q, r, size);
-    return { x, y };
+
+    const ox = this.mapOffsetX || 0;
+    const oy = this.mapOffsetY || 0;
+
+    return { x: x + ox, y: y + oy };
   }
 
   worldToAxial(x, y) {
     const size = this.hexSize;
-    const { q, r } = pixelToHex(x, y, size);
+
+    const ox = this.mapOffsetX || 0;
+    const oy = this.mapOffsetY || 0;
+
+    const { q, r } = pixelToHex(x - ox, y - oy, size);
     return roundHex(q, r);
   }
 
