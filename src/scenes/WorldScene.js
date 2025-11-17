@@ -205,7 +205,7 @@ export default class WorldScene extends Phaser.Scene {
 
     this.addWorldMetaBadge();
 
-    // Input (selection + path preview + movement) now comes from UI module
+    // Input (selection + path preview + movement) is handled via UI module
     setupWorldInputUI(this);
 
     if (this.supabase) {
@@ -439,7 +439,7 @@ Biomes: ${biome}`;
    Helpers defined outside the class
    ========================================================= */
 
-// Wrapper to use shared A* pathfinding logic
+// Wrapper to use shared A* pathfinding logic (kept for compatibility)
 function computePathWithAStar(unit, targetHex, mapData, blockedPred) {
   const start = { q: unit.q, r: unit.r };
   const goal = { q: targetHex.q, r: targetHex.r };
