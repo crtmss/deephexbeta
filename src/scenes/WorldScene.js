@@ -136,7 +136,7 @@ export default class WorldScene extends Phaser.Scene {
       roomCode,
       isHost,
       supabase,
-      lobbyState,        // <-- include lobbyState from scene data
+      lobbyState,
     } = this.scene.settings.data || {};
 
     this.seed = seed || 'default-seed';
@@ -144,7 +144,7 @@ export default class WorldScene extends Phaser.Scene {
     this.roomCode = roomCode;
     this.isHost = isHost;
     this.supabase = supabase;
-    this.lobbyState = lobbyState || { units: {}, enemies: [] }; // <-- ensure defined
+    this.lobbyState = lobbyState || { units: {}, enemies: [] };
 
     this.turnOwner = null;
     this.turnNumber = 1;
@@ -174,7 +174,7 @@ export default class WorldScene extends Phaser.Scene {
     this.hexMap.mapInfo = mapInfo;
     this.mapData = mapInfo.tiles;
 
-    // expose helpers (no extra offset here; offset is handled in axialToWorld/worldToAxial)
+    // expose helpers; offset handling is centralized in axialToWorld/worldToAxial
     this.hexToPixel = (q, r, sizeOverride) =>
       hexToPixel(q, r, sizeOverride ?? this.hexSize);
     this.pixelToHex = (x, y, sizeOverride) =>
@@ -293,7 +293,7 @@ Biomes: ${biome}`;
     label.setDepth(101);
   }
 
-  // *** SINGLE SOURCE OF TRUTH FOR OFFSET ***
+  // === Centralized offset-aware conversions ===
   axialToWorld(q, r) {
     const size = this.hexSize;
     const { x, y } = hexToPixel(q, r, size);
@@ -469,8 +469,9 @@ WorldScene.prototype.setupInputHandlers = function () {
 
     if (rounded.q < 0 || rounded.r < 0 || rounded.q >= scene.mapWidth || rounded.r >= scene.mapHeight) return;
 
+    // 🔴 FIX: select from players, not units, and don't require isPlayer flag
     const clickedUnit =
-      scene.units.find(u => u.q === rounded.q && u.r === rounded.r && u.isPlayer) ||
+      scene.players.find(u => u.q === rounded.q && u.r === rounded.r) ||
       scene.haulers?.find?.(h => h.q === rounded.q && h.r === rounded.r);
 
     if (clickedUnit) {
