@@ -9,11 +9,14 @@ export async function spawnUnitsAndEnemies() {
   this.players = this.players || [];
   this.enemies = this.enemies || [];
 
+  const ox = this.mapOffsetX || 0;
+  const oy = this.mapOffsetY || 0;
+
   // --- Spawn (or restore) my mobile base (red) ---
   if (!this.lobbyState.units?.[this.playerName]) {
     const tile = safeTiles.pop();
     const { x, y } = this.axialToWorld(tile.q, tile.r);
-    const unit = this.add.circle(x, y, 10, 0xff0000).setDepth(10); // mobile base
+    const unit = this.add.circle(x + ox, y + oy, 10, 0xff0000).setDepth(10); // mobile base
     unit.q = tile.q;
     unit.r = tile.r;
     unit.playerName = this.playerName;
@@ -30,7 +33,7 @@ export async function spawnUnitsAndEnemies() {
   } else {
     const pos = this.lobbyState.units[this.playerName];
     const { x, y } = this.axialToWorld(pos.q, pos.r);
-    const unit = this.add.circle(x, y, 10, 0xff0000).setDepth(10); // mobile base
+    const unit = this.add.circle(x + ox, y + oy, 10, 0xff0000).setDepth(10); // mobile base
     unit.q = pos.q;
     unit.r = pos.r;
     unit.playerName = this.playerName;
@@ -56,7 +59,7 @@ export async function spawnUnitsAndEnemies() {
     this.enemies.length = 0;
     for (const tile of enemyTiles) {
       const { x, y } = this.axialToWorld(tile.q, tile.r);
-      const enemy = this.add.circle(x, y, 8, 0x0000ff).setDepth(10);
+      const enemy = this.add.circle(x + ox, y + oy, 8, 0x0000ff).setDepth(10);
       enemy.q = tile.q;
       enemy.r = tile.r;
       this.enemies.push(enemy);
@@ -74,7 +77,7 @@ export async function spawnUnitsAndEnemies() {
     this.enemies.length = 0;
     for (const pos of list) {
       const { x, y } = this.axialToWorld(pos.q, pos.r);
-      const enemy = this.add.circle(x, y, 8, 0x0000ff).setDepth(10);
+      const enemy = this.add.circle(x + ox, y + oy, 8, 0x0000ff).setDepth(10);
       enemy.q = pos.q;
       enemy.r = pos.r;
       this.enemies.push(enemy);
@@ -88,18 +91,24 @@ export async function subscribeToGameUpdates() {
   subscribeToGame(this.roomCode, (newState) => {
     this.lobbyState = newState;
 
+    const ox = this.mapOffsetX || 0;
+    const oy = this.mapOffsetY || 0;
+
     // Units (players)
     if (newState.units) {
       for (const [name, pos] of Object.entries(newState.units)) {
         let unit = this.players.find(p => p.playerName === name);
         const { x, y } = this.axialToWorld(pos.q, pos.r);
+        const wx = x + ox;
+        const wy = y + oy;
+
         if (unit) {
-          unit.setPosition(x, y);
+          unit.setPosition(wx, wy);
           unit.q = pos.q;
           unit.r = pos.r;
         } else {
           const color = name === this.playerName ? 0xff0000 : 0x0000ff;
-          unit = this.add.circle(x, y, 10, color).setDepth(10);
+          unit = this.add.circle(wx, wy, 10, color).setDepth(10);
           unit.q = pos.q;
           unit.r = pos.r;
           unit.playerName = name;
@@ -130,7 +139,7 @@ export async function subscribeToGameUpdates() {
       list.forEach((pos, i) => {
         const enemy = this.enemies[i];
         const { x, y } = this.axialToWorld(pos.q, pos.r);
-        enemy.setPosition(x, y);
+        enemy.setPosition(x + ox, y + oy);
         enemy.q = pos.q;
         enemy.r = pos.r;
       });
