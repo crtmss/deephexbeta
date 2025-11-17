@@ -199,15 +199,14 @@ export default class WorldScene extends Phaser.Scene {
 
     // Turn UI
     setupTurnUI(this);
-    setupWorldInputUI(this);
     if (this.turnOwner) {
       updateTurnText(this, this.turnOwner);
     }
 
     this.addWorldMetaBadge();
 
-    // no camera pan/zoom
-    this.setupInputHandlers?.();
+    // Input (selection + path preview + movement) now comes from UI module
+    setupWorldInputUI(this);
 
     if (this.supabase) {
       this.syncPlayerMove = async unit => {
@@ -353,11 +352,13 @@ Biomes: ${biome}`;
 
     this.isUnitMoving = true;
 
-    const tweens = [];
+    // Use a Phaser timeline compatible with your build
+    const timeline = this.tweens.createTimeline();
+
     for (let i = 1; i < path.length; i++) {
       const step = path[i];
       const { x, y } = this.axialToWorld(step.q, step.r);
-      tweens.push({
+      timeline.add({
         targets: unit,
         x,
         y,
@@ -366,16 +367,15 @@ Biomes: ${biome}`;
       });
     }
 
-    this.tweens.timeline({
-      tweens,
-      onComplete: () => {
-        const last = path[path.length - 1];
-        unit.q = last.q;
-        unit.r = last.r;
-        this.isUnitMoving = false;
-        if (onComplete) onComplete();
-      },
+    timeline.setCallback('onComplete', () => {
+      const last = path[path.length - 1];
+      unit.q = last.q;
+      unit.r = last.r;
+      this.isUnitMoving = false;
+      if (onComplete) onComplete();
     });
+
+    timeline.play();
   }
 
   endTurn() {
@@ -455,154 +455,6 @@ function computePathWithAStar(unit, targetHex, mapData, blockedPred) {
 
   return aStarFindPath(start, goal, mapData, isBlocked);
 }
-
-/**
- * Hook up pointer input for selecting units, tiles, and plotting paths.
- */
-WorldScene.prototype.setupInputHandlers = function () {
-  const scene = this;
-
-  this.input.on('pointerdown', pointer => {
-    if (scene.isDragging) return;
-
-    const worldPoint = pointer.positionToCamera(scene.cameras.main);
-    const rounded = scene.worldToAxial(worldPoint.x, worldPoint.y);
-
-    if (rounded.q < 0 || rounded.r < 0 || rounded.q >= scene.mapWidth || rounded.r >= scene.mapHeight) return;
-
-    // 🔴 FIX: select from players, not units, and don't require isPlayer flag
-    const clickedUnit =
-      scene.players.find(u => u.q === rounded.q && u.r === rounded.r) ||
-      scene.haulers?.find?.(h => h.q === rounded.q && h.r === rounded.r);
-
-    if (clickedUnit) {
-      scene.selectedUnit = clickedUnit;
-      scene.showUnitPanel?.(clickedUnit);
-      scene.clearPathPreview();
-      scene.selectedHex = null;
-      scene.debugHex(rounded.q, rounded.r);
-      return;
-    }
-
-    const tile = getTile(scene, rounded.q, rounded.r);
-    if (tile && tile.isLocation) {
-      console.log(`[LOCATION] Clicked on location: ${tile.locationType || 'Unknown'} at (${rounded.q},${rounded.r})`);
-    }
-
-    scene.selectedHex = rounded;
-    scene.debugHex(rounded.q, rounded.r);
-
-    if (scene.selectedUnit) {
-      if (scene.selectedUnit.q === rounded.q && scene.selectedUnit.r === rounded.r) {
-        scene.selectedUnit = null;
-        scene.hideUnitPanel?.();
-        scene.clearPathPreview();
-      } else {
-        const blocked = t => !t || t.type === 'water' || t.type === 'mountain';
-        const fullPath = computePathWithAStar(scene.selectedUnit, rounded, scene.mapData, blocked);
-        if (fullPath && fullPath.length > 1) {
-          let movementPoints = scene.selectedUnit.movementPoints || 4;
-          const trimmedPath = [];
-          let costSum = 0;
-          for (let i = 0; i < fullPath.length; i++) {
-            const step = fullPath[i];
-            const tile2 = getTile(scene, step.q, step.r);
-            const cost = tile2?.movementCost || 1;
-            if (i > 0 && costSum + cost > movementPoints) break;
-            trimmedPath.push(step);
-            if (i > 0) costSum += cost;
-          }
-
-          if (trimmedPath.length > 1) {
-            console.log('[MOVE] Committing move along path:', trimmedPath);
-            scene.startStepMovement(scene.selectedUnit, trimmedPath, () => {
-              if (scene.checkCombat(scene.selectedUnit, trimmedPath[trimmedPath.length - 1])) {
-                scene.scene.start('CombatScene', {
-                  seed: scene.seed,
-                  playerUnit: scene.selectedUnit,
-                });
-              } else {
-                scene.syncPlayerMove?.(scene.selectedUnit);
-              }
-            });
-          }
-        }
-      }
-    }
-  });
-
-  this.input.on('pointermove', pointer => {
-    if (scene.isDragging) return;
-    if (!scene.selectedUnit || scene.isUnitMoving) return;
-
-    const worldPoint = pointer.positionToCamera(scene.cameras.main);
-    const rounded = scene.worldToAxial(worldPoint.x, worldPoint.y);
-
-    if (rounded.q < 0 || rounded.r < 0 || rounded.q >= scene.mapWidth || rounded.r >= scene.mapHeight) {
-      scene.clearPathPreview();
-      return;
-    }
-
-    const blocked = t => !t || t.type === 'water' || t.type === 'mountain';
-    const path = computePathWithAStar(scene.selectedUnit, rounded, scene.mapData, blocked);
-
-    scene.clearPathPreview();
-    if (path && path.length > 1) {
-      let movementPoints = scene.selectedUnit.movementPoints || 4;
-      let costSum = 0;
-      const maxPath = [];
-
-      for (let i = 0; i < path.length; i++) {
-        const step = path[i];
-        const tile = getTile(scene, step.q, step.r);
-        const cost = tile?.movementCost || 1;
-
-        if (i > 0 && costSum + cost > movementPoints) break;
-        maxPath.push(step);
-        if (i > 0) costSum += cost;
-      }
-
-      const graphics = scene.add.graphics();
-      graphics.lineStyle(2, 0x64ffda, 0.9);
-      graphics.setDepth(50);
-
-      for (let i = 0; i < maxPath.length - 1; i++) {
-        const a = maxPath[i];
-        const b = maxPath[i + 1];
-        const wa = scene.axialToWorld(a.q, a.r);
-        const wb = scene.axialToWorld(b.q, b.r);
-        graphics.beginPath();
-        graphics.moveTo(wa.x, wa.y);
-        graphics.lineTo(wb.x, wb.y);
-        graphics.strokePath();
-      }
-
-      scene.pathPreviewTiles.push(graphics);
-
-      const baseColor = '#e8f6ff';
-      const outOfRangeColor = '#ff7b7b';
-      costSum = 0;
-      for (let i = 0; i < maxPath.length; i++) {
-        const step = maxPath[i];
-        const tile = getTile(scene, step.q, step.r);
-        const cost = tile?.movementCost || 1;
-        if (i > 0) costSum += cost;
-        const { x, y } = scene.axialToWorld(step.q, step.r);
-        const labelColor = costSum <= movementPoints ? baseColor : outOfRangeColor;
-        const label = scene.add.text(x, y, `${costSum}`, {
-          fontSize: '10px',
-          color: labelColor,
-          fontStyle: 'bold'
-        }).setOrigin(0.5).setDepth(51);
-        scene.pathPreviewLabels.push(label);
-      }
-    }
-  });
-
-  this.input.on('pointerout', () => {
-    scene.clearPathPreview();
-  });
-};
 
 WorldScene.prototype.printTurnSummary = function () {
   console.log(`[WORLD] Turn ${this.turnNumber} – Current player: ${this.turnOwner}`);
