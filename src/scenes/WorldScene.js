@@ -498,14 +498,3 @@ WorldScene.prototype.printTurnSummary = function () {
   console.log(`[WORLD] Turn ${this.turnNumber} – Current player: ${this.turnOwner}`);
 };
 
-WorldScene.prototype.showUnitPanel = function () {
-  if (!this.unitPanel && !this.unitActionPanel) return;
-  if (this.unitPanel) this.unitPanel.setVisible(true);
-  if (this.unitActionPanel) this.unitActionPanel.visible = true;
-};
-
-WorldScene.prototype.hideUnitPanel = function () {
-  if (!this.unitPanel && !this.unitActionPanel) return;
-  if (this.unitPanel) this.unitPanel.setVisible(false);
-  if (this.unitActionPanel) this.unitActionPanel.visible = false;
-};
