@@ -465,6 +465,34 @@ function computePathWithAStar(unit, targetHex, mapData, blockedPred) {
   return aStarFindPath(start, goal, mapData, isBlocked);
 }
 
+WorldScene.prototype.setSelectedUnit = function (unit) {
+  this.selectedUnit = unit;
+  this.updateSelectionHighlight?.();
+
+  if (unit) {
+    // Open the root menu when a unit is selected
+    this.openRootUnitMenu?.(unit);
+  } else {
+    // Close menus when nothing is selected
+    this.closeAllMenus?.();
+  }
+};
+
+WorldScene.prototype.toggleSelectedUnitAtHex = function (q, r) {
+  // If the same unit is already selected – deselect it
+  if (this.selectedUnit && this.selectedUnit.q === q && this.selectedUnit.r === r) {
+    this.setSelectedUnit(null);
+    return;
+  }
+
+  // Find a unit/hauler on this hex
+  const unit =
+    (this.players || []).find(u => u.q === q && u.r === r) ||
+    (this.haulers || []).find(h => h.q === q && h.r === r);
+
+  this.setSelectedUnit(unit || null);
+};
+
 WorldScene.prototype.printTurnSummary = function () {
   console.log(`[WORLD] Turn ${this.turnNumber} – Current player: ${this.turnOwner}`);
 };
