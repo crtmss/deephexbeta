@@ -2,7 +2,7 @@
 import HexMap from '../engine/HexMap.js';
 import { findPath as aStarFindPath } from '../engine/AStar.js';
 import { drawLocationsAndRoads } from './WorldSceneMapLocations.js';
-
+import { setupWorldMenus, attachSelectionHighlight } from './WorldSceneMenus.js';
 import {
   startDocksPlacement,
   placeDocks,
