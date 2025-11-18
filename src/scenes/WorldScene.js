@@ -181,6 +181,7 @@ export default class WorldScene extends Phaser.Scene {
       pixelToHex(x, y, sizeOverride ?? this.hexSize);
 
     // draw map and world objects
+    // draw map and world objects
     drawHexMap.call(this);
     drawLocationsAndRoads.call(this);
     spawnFishResources.call(this);
@@ -197,7 +198,10 @@ export default class WorldScene extends Phaser.Scene {
       this.players[0]?.name ||
       null;
 
-    // Turn UI
+    // UI: selection highlight + build menu + top HUD
+    attachSelectionHighlight(this);
+    setupWorldMenus(this);
+
     setupTurnUI(this);
     if (this.turnOwner) {
       updateTurnText(this, this.turnOwner);
