@@ -3,7 +3,7 @@
 import { refreshUnits } from './WorldSceneActions.js';
 import { findPath as aStarFindPath } from '../engine/AStar.js';
 
-/* ---------------- Camera controls (unchanged) ---------------- */
+/* ---------------- Camera controls (unused unless called) ---------------- */
 export function setupCameraControls(scene) {
   scene.input.setDefaultCursor('grab');
   scene.isDragging = false;
@@ -88,8 +88,8 @@ export function setupTurnUI(scene) {
     refreshUnits(scene);
   });
 
-  // Unit Action Panel (2×2)
-  createUnitActionPanel(scene);
+  // NOTE: old 2×2 Unit Action Panel was removed.
+  // All build/unit/infra menus are now handled in WorldSceneMenus.js.
 }
 
 export function updateTurnText(scene, currentTurn) {
@@ -186,105 +186,6 @@ function bumpResource(scene, key) {
     });
   });
 }
-
-/* =========================
-   Unit Action Panel (2×2)
-   ========================= */
-function createUnitActionPanel(scene) {
-  const originX = 20;
-  const originY = 164;
-
-  const panel = scene.add.container(originX, originY).setScrollFactor(0).setDepth(2000);
-  panel.visible = false;
-
-  const W = 172, H = 172;
-  const bg = scene.add.graphics();
-  bg.fillStyle(0x0f2233, 0.92);
-  bg.fillRoundedRect(0, 0, W, H, 12);
-  bg.lineStyle(2, 0x3da9fc, 1);
-  bg.strokeRoundedRect(0, 0, W, H, 12);
-
-  const bezel = scene.add.graphics();
-  bezel.lineStyle(1, 0x9be4ff, 0.25);
-  for (let i = 1; i <= 2; i++) {
-    bezel.strokeRect(8*i, 8*i, W - 16*i, H - 16*i);
-  }
-
-  const btnSize = 70;
-  const pad = 8;
-  const startX = 12;
-  const startY = 12;
-
-  // Labels correspond to: [Build docks, Build hauler, Set route, Close]
-  const labels = ['Docks', 'Hauler', 'Set route', 'Close'];
-
-  const btns = [];
-  for (let r = 0; r < 2; r++) {
-    for (let c = 0; c < 2; c++) {
-      const x = startX + c * (btnSize + pad);
-      const y = startY + r * (btnSize + pad);
-
-      const g = scene.add.graphics();
-      g.fillStyle(0x173b52, 1);
-      g.fillRoundedRect(x, y, btnSize, btnSize, 8);
-      g.lineStyle(2, 0x6fe3ff, 0.7);
-      g.strokeRoundedRect(x, y, btnSize, btnSize, 8);
-      g.lineStyle(1, 0x6fe3ff, 0.15);
-      g.beginPath();
-      g.moveTo(x + btnSize/2, y + 6);
-      g.lineTo(x + btnSize/2, y + btnSize - 6);
-      g.moveTo(x + 6, y + btnSize/2);
-      g.lineTo(x + btnSize - 6, y + btnSize/2);
-      g.strokePath();
-
-      const label = scene.add.text(x + btnSize/2, y + btnSize/2, labels[r*2 + c], {
-        fontSize: '18px',
-        color: '#e8f6ff'
-      }).setOrigin(0.5).setDepth(1);
-
-      const hit = scene.add.rectangle(x, y, btnSize, btnSize, 0x000000, 0)
-        .setOrigin(0,0)
-        .setInteractive({ useHandCursor: true });
-
-      hit.on('pointerover', () => {
-        g.clear();
-        g.fillStyle(0x1a4764, 1);
-        g.fillRoundedRect(x, y, btnSize, btnSize, 8);
-        g.lineStyle(2, 0x9be4ff, 1);
-        g.strokeRoundedRect(x, y, btnSize, btnSize, 8);
-      });
-      hit.on('pointerout', () => {
-        g.clear();
-        g.fillStyle(0x173b52, 1);
-        g.fillRoundedRect(x, y, btnSize, btnSize, 8);
-        g.lineStyle(2, 0x6fe3ff, 0.7);
-        g.strokeRoundedRect(x, y, btnSize, btnSize, 8);
-        g.lineStyle(1, 0x6fe3ff, 0.15);
-        g.beginPath();
-        g.moveTo(x + btnSize/2, y + 6);
-        g.lineTo(x + btnSize/2, y + btnSize - 6);
-        g.moveTo(x + 6, y + btnSize/2);
-        g.lineTo(x + btnSize - 6, y + btnSize/2);
-        g.strokePath();
-      });
-
-      btns.push({ g, hit, label });
-      panel.add([g, label, hit]);
-    }
-  }
-
-  panel.add([bg, bezel]);
-  panel.sendToBack(bg);
-  panel.sendToBack(bezel);
-
-  // Expose simple API on the scene
-  scene.showUnitPanel = () => { panel.visible = true; };
-  scene.hideUnitPanel = () => { panel.visible = false; };
-
-  scene.unitActionPanel = panel;
-  scene.unitPanelButtons = btns; // [Docks, Hauler, Set route, Close]
-}
-
 /* =========================
    Path preview & selection UI
    ========================= */
@@ -292,6 +193,17 @@ function createUnitActionPanel(scene) {
 // local helper, same as in WorldScene
 function getTile(scene, q, r) {
   return (scene.mapData || []).find(h => h.q === q && h.r === r);
+}
+
+// helper: find any unit/hauler on given hex
+function getUnitAtHex(scene, q, r) {
+  const players = scene.players || [];
+  const haulers = scene.haulers || [];
+  return (
+    players.find(u => u.q === q && u.r === r) ||
+    haulers.find(h => h.q === q && h.r === r) ||
+    null
+  );
 }
 
 // wrapper around shared A* to keep logic here
@@ -313,7 +225,6 @@ function computePathWithAStar(scene, unit, targetHex, blockedPred) {
 
 /**
  * Sets up unit selection + path preview + movement
- * (moved from WorldScene into UI layer)
  */
 export function setupWorldInputUI(scene) {
   // ensure arrays for preview are present
@@ -322,69 +233,72 @@ export function setupWorldInputUI(scene) {
 
   scene.input.on('pointerdown', pointer => {
     if (scene.isDragging) return;
+    if (pointer.rightButtonDown && pointer.rightButtonDown()) return;
 
     const worldPoint = pointer.positionToCamera(scene.cameras.main);
     const rounded = scene.worldToAxial(worldPoint.x, worldPoint.y);
 
     if (rounded.q < 0 || rounded.r < 0 || rounded.q >= scene.mapWidth || rounded.r >= scene.mapHeight) return;
 
-    // Select unit: look in players (red mobile base + others),
-    // plus haulers if present.
-    const clickedUnit =
-      (scene.players || []).find(u => u.q === rounded.q && u.r === rounded.r) ||
-      scene.haulers?.find?.(h => h.q === rounded.q && h.r === rounded.r);
+    const { q, r } = rounded;
 
-    if (clickedUnit) {
-      scene.selectedUnit = clickedUnit;
-      scene.showUnitPanel?.(clickedUnit);
+    // First, check if there's a unit on this hex and toggle selection.
+    const unitAtHex = getUnitAtHex(scene, q, r);
+    if (unitAtHex) {
+      // toggleSelectedUnitAtHex handles:
+      // - select unit
+      // - deselect if same
+      // - update highlight
+      // - open/close menus
+      scene.toggleSelectedUnitAtHex?.(q, r);
       scene.clearPathPreview?.();
       scene.selectedHex = null;
-      scene.debugHex?.(rounded.q, rounded.r);
+      scene.debugHex?.(q, r);
       return;
     }
 
-    const tile = getTile(scene, rounded.q, rounded.r);
+    // No unit here: it's a ground/location click
+    const tile = getTile(scene, q, r);
     if (tile && tile.isLocation) {
-      console.log(`[LOCATION] Clicked on location: ${tile.locationType || 'Unknown'} at (${rounded.q},${rounded.r})`);
+      console.log(
+        `[LOCATION] Clicked on location: ${tile.locationType || 'Unknown'} at (${q},${r})`
+      );
     }
 
     scene.selectedHex = rounded;
-    scene.debugHex?.(rounded.q, rounded.r);
+    scene.debugHex?.(q, r);
 
+    // If we have a selected unit, treat this as a move order
     if (scene.selectedUnit) {
-      if (scene.selectedUnit.q === rounded.q && scene.selectedUnit.r === rounded.r) {
-        scene.selectedUnit = null;
-        scene.hideUnitPanel?.();
-        scene.clearPathPreview?.();
-      } else {
-        const blocked = t => !t || t.type === 'water' || t.type === 'mountain';
-        const fullPath = computePathWithAStar(scene, scene.selectedUnit, rounded, blocked);
-        if (fullPath && fullPath.length > 1) {
-          let movementPoints = scene.selectedUnit.movementPoints || 4;
-          const trimmedPath = [];
-          let costSum = 0;
-          for (let i = 0; i < fullPath.length; i++) {
-            const step = fullPath[i];
-            const tile2 = getTile(scene, step.q, step.r);
-            const cost = tile2?.movementCost || 1;
-            if (i > 0 && costSum + cost > movementPoints) break;
-            trimmedPath.push(step);
-            if (i > 0) costSum += cost;
-          }
+      const blocked = t => !t || t.type === 'water' || t.type === 'mountain';
+      const fullPath = computePathWithAStar(scene, scene.selectedUnit, rounded, blocked);
 
-          if (trimmedPath.length > 1) {
-            console.log('[MOVE] Committing move along path:', trimmedPath);
-            scene.startStepMovement?.(scene.selectedUnit, trimmedPath, () => {
-              if (scene.checkCombat?.(scene.selectedUnit, trimmedPath[trimmedPath.length - 1])) {
-                scene.scene.start('CombatScene', {
-                  seed: scene.seed,
-                  playerUnit: scene.selectedUnit,
-                });
-              } else {
-                scene.syncPlayerMove?.(scene.selectedUnit);
-              }
-            });
-          }
+      if (fullPath && fullPath.length > 1) {
+        let movementPoints = scene.selectedUnit.movementPoints || 4;
+        const trimmedPath = [];
+        let costSum = 0;
+
+        for (let i = 0; i < fullPath.length; i++) {
+          const step = fullPath[i];
+          const tile2 = getTile(scene, step.q, step.r);
+          const cost = tile2?.movementCost || 1;
+          if (i > 0 && costSum + cost > movementPoints) break;
+          trimmedPath.push(step);
+          if (i > 0) costSum += cost;
+        }
+
+        if (trimmedPath.length > 1) {
+          console.log('[MOVE] Committing move along path:', trimmedPath);
+          scene.startStepMovement?.(scene.selectedUnit, trimmedPath, () => {
+            if (scene.checkCombat?.(scene.selectedUnit, trimmedPath[trimmedPath.length - 1])) {
+              scene.scene.start('CombatScene', {
+                seed: scene.seed,
+                playerUnit: scene.selectedUnit,
+              });
+            } else {
+              scene.syncPlayerMove?.(scene.selectedUnit);
+            }
+          });
         }
       }
     }
