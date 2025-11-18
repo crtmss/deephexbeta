@@ -364,6 +364,7 @@ Biomes: ${biome}`;
         unit.q = last.q;
         unit.r = last.r;
         scene.isUnitMoving = false;
+        scene.updateSelectionHighlight?.();   // keep highlight on the new hex
         if (onComplete) onComplete();
         return;
       }
