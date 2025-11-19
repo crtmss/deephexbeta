@@ -353,44 +353,40 @@ function handleBuildAction(scene, kind) {
 
   switch (kind) {
     case 'docks': {
-      const tile = (scene.mapData || []).find(t => t.q === unit.q && t.r === unit.r);
+      const tile = (scene.mapData || []).find(
+        t => t.q === unit.q && t.r === unit.r
+      );
       if (!tile) return;
 
       if (!isCoastalTile(scene, tile)) {
-        // silently ignore or log
         console.log('[BUILD] Docks: current hex is not coastal, doing nothing.');
         return;
       }
 
-      // Make sure scene knows where we are
+      // Old building code expects to read this.selectedHex and this.playerResources
       scene.selectedHex = { q: unit.q, r: unit.r };
 
-      // Try to be compatible with existing signatures:
-      // (scene) or (scene, hex) or (scene, q,r)
       try {
-        startDocksPlacement?.(scene, { q: unit.q, r: unit.r });
+        // Bind `this` correctly; do NOT pass scene as an argument
+        startDocksPlacement?.call(scene);
       } catch (e) {
         console.warn('startDocksPlacement error:', e);
       }
 
       try {
-        placeDocks?.(scene, { q: unit.q, r: unit.r });
+        placeDocks?.call(scene);
       } catch (e) {
         console.warn('placeDocks error:', e);
       }
 
+      try {
+        cancelPlacement?.call(scene);
+      } catch (e) {
+        console.warn('cancelPlacement error:', e);
+      }
+
       break;
     }
-
-    case 'mine':
-    case 'factory':
-      // No-op for now, but kept for future implementation
-      console.log('[BUILD]', kind, 'not implemented yet.');
-      break;
-
-    default:
-      break;
-  }
 }
 
 function handleUnitAction(scene, kind) {
