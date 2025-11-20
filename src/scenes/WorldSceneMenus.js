@@ -40,25 +40,18 @@ export function attachSelectionHighlight(scene) {
    ========================================================= */
 
 const MENUS = {
-  // existing main/build/buildings/units/infra...
-
-  harbor: {
-    id: 'harbor',
-    title: 'Harbor',
+  root: {
     slots: [
-      { label: 'Build ship',    action: 'ship:build' },
-      { label: '',              action: null },
-      { label: 'Set route',     action: 'ship:setRoute' },
-      { label: 'Recall ships',  action: 'ship:recall' },
-      { label: 'Destroy',       action: 'ship:destroy' },
-      { label: 'Close',         action: 'close' },
+      { label: 'Build', action: 'open:build' },
+      { label: '',      action: null },
+      { label: '',      action: null },
+      { label: 'Close', action: 'close' },
+      { label: '',      action: null },
+      { label: '',      action: null },
     ],
   },
 
-  // Build category
   build: {
-    id: 'build',
-    title: 'Build',
     slots: [
       { label: 'Buildings',      action: 'open:buildings' },
       { label: 'Units',          action: 'open:units' },
@@ -69,24 +62,18 @@ const MENUS = {
     ],
   },
 
-  // Buildings
-buildings: {
-  id: 'buildings',
-  title: 'Buildings',
-  slots: [
-    { label: 'Docks',   action: 'build:docks' },
-    { label: 'Mine',    action: 'build:mine' },
-    { label: 'Factory', action: 'build:factory' },
-    { label: 'Bunker',  action: 'build:bunker' },
-    { label: '',        action: null },
-    { label: 'Back',    action: 'back' },
-  ],
-},
+  buildings: {
+    slots: [
+      { label: 'Docks',   action: 'build:docks' },
+      { label: 'Mine',    action: 'build:mine' },
+      { label: 'Factory', action: 'build:factory' },
+      { label: '',        action: null },
+      { label: '',        action: null },
+      { label: 'Back',    action: 'back' },
+    ],
+  },
 
-  // Units
   units: {
-    id: 'units',
-    title: 'Units',
     slots: [
       { label: 'Hauler', action: 'unit:hauler' },
       { label: '',       action: null },
@@ -97,10 +84,7 @@ buildings: {
     ],
   },
 
-  // Infrastructure
   infra: {
-    id: 'infra',
-    title: 'Infrastructure',
     slots: [
       { label: 'Road',   action: 'infra:road' },
       { label: 'Bridge', action: 'infra:bridge' },
