@@ -40,19 +40,21 @@ export function attachSelectionHighlight(scene) {
    ========================================================= */
 
 const MENUS = {
-  // Root menu when a unit is selected
-  main: {
-    id: 'main',
-    title: 'Unit actions',
+  // existing main/build/buildings/units/infra...
+
+  harbor: {
+    id: 'harbor',
+    title: 'Harbor',
     slots: [
-      { label: 'Build', action: 'open:build' },
-      { label: '',      action: null },
-      { label: '',      action: null },
-      { label: 'Close', action: 'close' },
-      { label: '',      action: null },
-      { label: '',      action: null },
+      { label: 'Build ship',    action: 'ship:build' },
+      { label: '',              action: null },
+      { label: 'Set route',     action: 'ship:setRoute' },
+      { label: 'Recall ships',  action: 'ship:recall' },
+      { label: 'Destroy',       action: 'ship:destroy' },
+      { label: 'Close',         action: 'close' },
     ],
   },
+};
 
   // Build category
   build: {
