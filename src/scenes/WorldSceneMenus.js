@@ -2,8 +2,6 @@
 
 import {
   startDocksPlacement,
-  // placeDocks,      // keep available if you wire it later
-  // cancelPlacement, // keep available if you wire it later
 } from './WorldSceneBuildings.js';
 
 import {
@@ -79,11 +77,32 @@ export function setupWorldMenus(scene) {
   const originX = 20;
   const originY = 164;
 
-  const container = scene.add.container(originX, originY)
-    .setDepth(2000);
+  // -------- Screen overlay to absorb clicks while menu is open --------
+  const overlay = scene.add.rectangle(
+    0, 0,
+    scene.scale.width,
+    scene.scale.height,
+    0x000000,
+    0.001
+  )
+    .setOrigin(0, 0)
+    .setScrollFactor(0)
+    .setDepth(3950)
+    .setInteractive({ useHandCursor: false });
 
-  // lock whole menu to screen
-  container.setScrollFactor(0);
+  overlay.visible = false;
+
+  overlay.on('pointerdown', (pointer, lx, ly, event) => {
+    // swallow clicks & close menu
+    event?.stopPropagation?.();
+    scene.closeAllMenus?.();
+  });
+
+  // -------- Menu container --------
+  const container = scene.add.container(originX, originY)
+    .setDepth(4000)
+    .setScrollFactor(0);
+
   container.visible = false;
 
   const W = 260;
@@ -152,7 +171,6 @@ export function setupWorldMenus(scene) {
 
     container.add([g, label, hit]);
 
-    // store baseX/baseY so hover redraw knows where to paint
     return { g, label, hit, baseX: sx, baseY: sy };
   };
 
@@ -185,11 +203,14 @@ export function setupWorldMenus(scene) {
   };
 
   buttons.forEach((btn, idx) => {
-    btn.hit.on('pointerdown', (pointer, lx, ly, event) => {
-      // prevent world click handler from also firing
+    const clickHandler = (pointer, lx, ly, event) => {
       event?.stopPropagation?.();
       handleButtonClick(idx);
-    });
+    };
+
+    btn.hit.on('pointerdown', clickHandler);
+    btn.label.setInteractive({ useHandCursor: true });
+    btn.label.on('pointerdown', clickHandler);
 
     btn.hit.on('pointerover', () => {
       btn.g.clear();
@@ -200,7 +221,7 @@ export function setupWorldMenus(scene) {
       btn.g.setScrollFactor(0);
     });
 
-    btn.hit.on('pointerout', () => {
+    const drawDefault = () => {
       btn.g.clear();
       btn.g.fillStyle(0x173b52, 1);
       btn.g.fillRoundedRect(btn.baseX, btn.baseY, btnWidth, btnHeight, 8);
@@ -214,7 +235,10 @@ export function setupWorldMenus(scene) {
       btn.g.lineTo(btn.baseX + btnWidth - 6, btn.baseY + btnHeight / 2);
       btn.g.strokePath();
       btn.g.setScrollFactor(0);
-    });
+    };
+
+    btn.hit.on('pointerout', drawDefault);
+    drawDefault(); // initial
   });
 
   // Helper to refresh visual state when menu or labels change
@@ -223,6 +247,8 @@ export function setupWorldMenus(scene) {
     const def = MENUS[menuKey];
     if (!def) {
       scene.unitMenu.container.visible = false;
+      overlay.visible = false;
+      overlay.disableInteractive();
       return;
     }
 
@@ -239,10 +265,10 @@ export function setupWorldMenus(scene) {
 
       if (enabled) {
         btn.hit.setInteractive({ useHandCursor: true });
+        btn.label.setInteractive({ useHandCursor: true });
       } else {
-        if (btn.hit.input) {
-          btn.hit.disableInteractive();
-        }
+        if (btn.hit.input) btn.hit.disableInteractive();
+        if (btn.label.input) btn.label.disableInteractive();
       }
     });
   };
@@ -253,14 +279,27 @@ export function setupWorldMenus(scene) {
     scene.unitMenu.stack = ['root'];
     scene.unitMenu.currentMenuKey = 'root';
     scene.unitMenu.container.visible = true;
+
+    overlay.visible = true;
+    overlay.setInteractive({ useHandCursor: false });
+
     scene.refreshUnitMenuView();
+    // bring menu above everything
+    scene.children.bringToTop(container);
   };
 
   scene.closeAllMenus = function () {
     if (scene.unitMenu) {
       scene.unitMenu.container.visible = false;
     }
+    overlay.visible = false;
+    if (overlay.input) {
+      overlay.disableInteractive();
+    }
   };
+
+  // expose overlay in case other modules need to tweak it
+  scene.unitMenuOverlay = overlay;
 }
 
 /**
@@ -276,7 +315,6 @@ function handleMenuAction(scene, action) {
   const [kind, arg] = action.split(':');
 
   if (kind === 'open') {
-    // push current key, then open new
     const current = scene.unitMenu.currentMenuKey;
     scene.unitMenu.stack.push(current);
     scene.unitMenu.currentMenuKey = arg;
@@ -308,7 +346,6 @@ function handleMenuAction(scene, action) {
     }
     switch (arg) {
       case 'docks':
-        // Docks placement is delegated to WorldSceneBuildings; uses scene + selectedUnit.
         startDocksPlacement.call(scene);
         break;
       case 'mine':
@@ -363,7 +400,7 @@ export function attachSelectionHighlight(scene) {
   const size = scene.hexSize || 24;
   const g = scene.add.graphics().setDepth(1900);
   g.visible = false;
-  g.setScrollFactor(0); // highlight is screen-space relative to world coords via axialToWorld
+  g.setScrollFactor(0);
 
   scene.selectionHighlight = g;
 
