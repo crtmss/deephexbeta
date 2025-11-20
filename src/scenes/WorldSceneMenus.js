@@ -54,7 +54,6 @@ const MENUS = {
       { label: 'Close',         action: 'close' },
     ],
   },
-};
 
   // Build category
   build: {
