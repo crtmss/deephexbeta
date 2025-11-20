@@ -69,18 +69,18 @@ const MENUS = {
   },
 
   // Buildings
-  buildings: {
-    id: 'buildings',
-    title: 'Buildings',
-    slots: [
-      { label: 'Docks',   action: 'build:docks' },
-      { label: 'Mine',    action: 'build:mine' },
-      { label: 'Factory', action: 'build:factory' },
-      { label: '',        action: null },
-      { label: '',        action: null },
-      { label: 'Back',    action: 'back' },
-    ],
-  },
+buildings: {
+  id: 'buildings',
+  title: 'Buildings',
+  slots: [
+    { label: 'Docks',   action: 'build:docks' },
+    { label: 'Mine',    action: 'build:mine' },
+    { label: 'Factory', action: 'build:factory' },
+    { label: 'Bunker',  action: 'build:bunker' },
+    { label: '',        action: null },
+    { label: 'Back',    action: 'back' },
+  ],
+},
 
   // Units
   units: {
@@ -404,21 +404,33 @@ function handleBuildAction(scene, kind) {
   }
 }
 
-function handleUnitAction(scene, kind) {
+function handleBuildAction(scene, kind) {
   const unit = scene.selectedUnit;
   if (!unit) return;
 
   switch (kind) {
-    case 'hauler':
-      try {
-        buildHaulerAtSelectedUnit?.(scene, unit);
-      } catch (e) {
-        console.warn('buildHaulerAtSelectedUnit error:', e);
-      }
+    case 'docks':
+      // (already wired as now; using .call(scene))
+      ...
+      break;
+
+    case 'mine':
+      scene.selectedHex = { q: unit.q, r: unit.r };
+      placeMine?.call(scene);
+      break;
+
+    case 'factory':
+      scene.selectedHex = { q: unit.q, r: unit.r };
+      placeFactory?.call(scene);
+      break;
+
+    case 'bunker':
+      scene.selectedHex = { q: unit.q, r: unit.r };
+      placeBunker?.call(scene);
       break;
 
     default:
-      console.log('[UNIT]', kind, 'not implemented yet.');
+      console.log('[BUILD] Unknown build kind:', kind);
       break;
   }
 }
