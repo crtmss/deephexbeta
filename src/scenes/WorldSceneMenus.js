@@ -2,8 +2,8 @@
 
 import {
   startDocksPlacement,
-  placeDocks,
-  cancelPlacement,
+  // placeDocks,      // keep available if you wire it later
+  // cancelPlacement, // keep available if you wire it later
 } from './WorldSceneBuildings.js';
 
 import {
@@ -80,9 +80,10 @@ export function setupWorldMenus(scene) {
   const originY = 164;
 
   const container = scene.add.container(originX, originY)
-    .setScrollFactor(0)
     .setDepth(2000);
 
+  // lock whole menu to screen
+  container.setScrollFactor(0);
   container.visible = false;
 
   const W = 260;
@@ -93,12 +94,14 @@ export function setupWorldMenus(scene) {
   bg.fillRoundedRect(0, 0, W, H, 12);
   bg.lineStyle(2, 0x3da9fc, 1);
   bg.strokeRoundedRect(0, 0, W, H, 12);
+  bg.setScrollFactor(0);
 
   const bezel = scene.add.graphics();
   bezel.lineStyle(1, 0x9be4ff, 0.25);
   for (let i = 1; i <= 2; i++) {
     bezel.strokeRect(8 * i, 8 * i, W - 16 * i, H - 16 * i);
   }
+  bezel.setScrollFactor(0);
 
   container.add([bg, bezel]);
   container.sendToBack(bg);
@@ -127,6 +130,7 @@ export function setupWorldMenus(scene) {
     g.moveTo(sx + 6, sy + btnHeight / 2);
     g.lineTo(sx + btnWidth - 6, sy + btnHeight / 2);
     g.strokePath();
+    g.setScrollFactor(0);
 
     const label = scene.add.text(
       sx + btnWidth / 2,
@@ -139,10 +143,12 @@ export function setupWorldMenus(scene) {
         wordWrap: { width: btnWidth - 10 },
       }
     ).setOrigin(0.5);
+    label.setScrollFactor(0);
 
     const hit = scene.add.rectangle(sx, sy, btnWidth, btnHeight, 0x000000, 0)
       .setOrigin(0, 0)
       .setInteractive({ useHandCursor: true });
+    hit.setScrollFactor(0);
 
     container.add([g, label, hit]);
 
@@ -180,6 +186,7 @@ export function setupWorldMenus(scene) {
 
   buttons.forEach((btn, idx) => {
     btn.hit.on('pointerdown', (pointer, lx, ly, event) => {
+      // prevent world click handler from also firing
       event?.stopPropagation?.();
       handleButtonClick(idx);
     });
@@ -190,6 +197,7 @@ export function setupWorldMenus(scene) {
       btn.g.fillRoundedRect(btn.baseX, btn.baseY, btnWidth, btnHeight, 8);
       btn.g.lineStyle(2, 0x9be4ff, 1);
       btn.g.strokeRoundedRect(btn.baseX, btn.baseY, btnWidth, btnHeight, 8);
+      btn.g.setScrollFactor(0);
     });
 
     btn.hit.on('pointerout', () => {
@@ -205,6 +213,7 @@ export function setupWorldMenus(scene) {
       btn.g.moveTo(btn.baseX + 6, btn.baseY + btnHeight / 2);
       btn.g.lineTo(btn.baseX + btnWidth - 6, btn.baseY + btnHeight / 2);
       btn.g.strokePath();
+      btn.g.setScrollFactor(0);
     });
   });
 
@@ -227,9 +236,13 @@ export function setupWorldMenus(scene) {
       btn.label.setText(label);
       btn.label.setAlpha(enabled ? 1 : 0.4);
       btn.g.setAlpha(enabled ? 1 : 0.3);
-      btn.hit.removeInteractive();
+
       if (enabled) {
         btn.hit.setInteractive({ useHandCursor: true });
+      } else {
+        if (btn.hit.input) {
+          btn.hit.disableInteractive();
+        }
       }
     });
   };
@@ -350,6 +363,7 @@ export function attachSelectionHighlight(scene) {
   const size = scene.hexSize || 24;
   const g = scene.add.graphics().setDepth(1900);
   g.visible = false;
+  g.setScrollFactor(0); // highlight is screen-space relative to world coords via axialToWorld
 
   scene.selectionHighlight = g;
 
