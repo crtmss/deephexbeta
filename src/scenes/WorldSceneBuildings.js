@@ -42,14 +42,11 @@ const UI = {
 // Costs
 ///////////////////////////////
 const COSTS = {
-  docks:   { scrap: 20, money: 50 },
-  mine:    { scrap: 15, money: 30 },
-  factory: { scrap: 30, money: 60 },
-  bunker:  { scrap: 25, money: 40 },
+  docks: { scrap: 20, money: 50 },
 };
 
 ///////////////////////////////
-// Buildings registry
+// Buildings registry (single-hex docks)
 ///////////////////////////////
 export const BUILDINGS = {
   docks: {
@@ -67,13 +64,13 @@ export const BUILDINGS = {
       const t = _tileAt(scene, q, r);
       if (!t) return false;
 
-      // docks must be on land (no water tiles)
+      // Docks must be on land (no water tiles)
       if (_isWater(scene, q, r)) return false;
 
       // Cannot place two docks on the same hex
       if ((scene.buildings || []).some(b => b.type === 'docks' && b.q === q && b.r === r)) return false;
 
-      // Still require at least one adjacent WATER and at least one adjacent LAND
+      // Require at least one adjacent WATER and at least one adjacent LAND
       const adj = _offsetNeighbors(q, r)
         .filter(h => h.q >= 0 && h.r >= 0 && h.q < scene.mapWidth && h.r < scene.mapHeight)
         .map(h => ({ ...h, water: _isWater(scene, h.q, h.r) }));
@@ -84,62 +81,20 @@ export const BUILDINGS = {
       return hasWaterAdj && hasLandAdj;
     },
   },
-
-  // New simple land buildings. Same framed style as docks, but no special menu/hauler logic yet.
-  mine: {
-    key: 'mine',
-    name: 'Mine',
-    emoji: '⛏️',
-    validateTile(scene, q, r) {
-      const t = _tileAt(scene, q, r);
-      if (!t) return false;
-      if (_isWater(scene, q, r)) return false;
-      // no stacking any building on same hex
-      if ((scene.buildings || []).some(b => b.q === q && b.r === r)) return false;
-      return true;
-    },
-  },
-
-  factory: {
-    key: 'factory',
-    name: 'Factory',
-    emoji: '🏭',
-    validateTile(scene, q, r) {
-      const t = _tileAt(scene, q, r);
-      if (!t) return false;
-      if (_isWater(scene, q, r)) return false;
-      if ((scene.buildings || []).some(b => b.q === q && b.r === r)) return false;
-      return true;
-    },
-  },
-
-  bunker: {
-    key: 'bunker',
-    name: 'Bunker',
-    emoji: '🛡️',
-    validateTile(scene, q, r) {
-      const t = _tileAt(scene, q, r);
-      if (!t) return false;
-      if (_isWater(scene, q, r)) return false;
-      if ((scene.buildings || []).some(b => b.q === q && b.r === r)) return false;
-      return true;
-    },
-  },
 };
 
 ///////////////////////////////
 // Public API
 ///////////////////////////////
 
-/**
- * Start docks placement: now locks to the selected unit's hex
- * (no longer searches neighbors) and does NOT spend resources.
- * `placeDocks()` does the actual spending + placement.
+/** Place docks on a target hex (limit 2 total).
+ *  If hexOverride is omitted, uses the selected unit's hex.
+ *  This version is explicit: it always receives the scene as first argument.
  */
-export function startDocksPlacement() {
-  const scene = /** @type {Phaser.Scene & any} */ (this);
+export function startDocksPlacement(scene, hexOverride) {
   _ensureResourceInit(scene);
 
+  // resource cost check
   if (!_canAfford(scene, COSTS.docks)) {
     console.warn('[BUILD] Not enough resources for Docks (need 🛠20 + 💰50).');
     return;
@@ -151,105 +106,65 @@ export function startDocksPlacement() {
     return;
   }
 
-  if (!scene.selectedUnit) {
-    console.warn('[BUILD] Docks: no unit selected.');
+  let target = null;
+  if (hexOverride && typeof hexOverride.q === 'number' && typeof hexOverride.r === 'number') {
+    target = { q: hexOverride.q, r: hexOverride.r };
+  } else if (scene.selectedUnit) {
+    target = { q: scene.selectedUnit.q, r: scene.selectedUnit.r };
+  }
+
+  if (!target) {
+    console.warn('[BUILD] Docks: no valid target hex (no unit selected?).');
     return;
   }
 
-  const u = scene.selectedUnit;
-  const q = u.q;
-  const r = u.r;
+  if (!BUILDINGS.docks.validateTile(scene, target.q, target.r)) {
+    console.warn(`[BUILD] Docks: invalid placement at (${target.q},${target.r}).`);
+    return;
+  }
+
+  if (!_spend(scene, COSTS.docks)) {
+    console.warn('[BUILD] Failed to spend resources for Docks.');
+    return;
+  }
+
+  _placeDocks(scene, target.q, target.r, 'placed via startDocksPlacement');
+}
+
+/** Direct placement (if you already have target q,r). */
+export function placeDocks(scene, qOrHex, rMaybe) {
+  _ensureResourceInit(scene);
+
+  if (!_canAfford(scene, COSTS.docks)) {
+    console.warn('[BUILD] Not enough resources for Docks (need 🛠20 + 💰50).');
+    return;
+  }
+
+  let q, r;
+  if (typeof qOrHex === 'object' && qOrHex !== null) {
+    q = qOrHex.q;
+    r = qOrHex.r;
+  } else {
+    q = qOrHex;
+    r = rMaybe;
+  }
+
+  if (typeof q !== 'number' || typeof r !== 'number') {
+    console.warn('[BUILD] placeDocks: invalid coordinates', qOrHex, rMaybe);
+    return;
+  }
 
   if (!BUILDINGS.docks.validateTile(scene, q, r)) {
-    console.warn(`[BUILD] Docks: selected unit hex (${q},${r}) is not a valid coastal land tile.`);
+    console.warn(`[BUILD] Docks: invalid placement at (${q},${r}).`);
     return;
   }
 
-  // Remember target for UI / follow-up call
-  scene._pendingDocksTarget = { q, r };
-  console.log(`[BUILD] Docks target locked to unit hex (${q},${r}). Call placeDocks() to confirm.`);
-}
-
-export function cancelPlacement() {
-  const scene = /** @type {Phaser.Scene & any} */ (this);
-  if (scene._pendingDocksTarget) scene._pendingDocksTarget = null;
-}
-
-/**
- * Direct Docks placement. If q,r are omitted, uses:
- *  - scene._pendingDocksTarget from startDocksPlacement(), or
- *  - the currently selected unit's hex.
- */
-export function placeDocks(q, r) {
-  const scene = /** @type {Phaser.Scene & any} */ (this);
-  _ensureResourceInit(scene);
-
-  // Resolve target hex
-  let tq = q;
-  let tr = r;
-
-  if (typeof tq !== 'number' || typeof tr !== 'number') {
-    if (scene._pendingDocksTarget) {
-      tq = scene._pendingDocksTarget.q;
-      tr = scene._pendingDocksTarget.r;
-    } else if (scene.selectedUnit) {
-      tq = scene.selectedUnit.q;
-      tr = scene.selectedUnit.r;
-    }
-  }
-
-  if (typeof tq !== 'number' || typeof tr !== 'number') {
-    console.warn('[BUILD] Docks: no target coordinates supplied and no selected unit.');
-    return;
-  }
-
-  const count = (scene.buildings || []).filter(b => b.type === 'docks').length;
-  if (count >= 2) {
-    console.warn('[BUILD] Docks: limit reached (2). New docks will not spawn.');
-    return;
-  }
-
-  if (!BUILDINGS.docks.validateTile(scene, tq, tr)) {
-    console.warn(`[BUILD] Docks: invalid placement at (${tq},${tr}).`);
-    return;
-  }
-
-  if (!_canAfford(scene, COSTS.docks)) {
-    console.warn('[BUILD] Not enough resources for Docks (need 🛠20 + 💰50).');
-    return;
-  }
   if (!_spend(scene, COSTS.docks)) return;
 
-  _placeDocks(scene, tq, tr, 'direct place');
-  scene._pendingDocksTarget = null;
+  _placeDocks(scene, q, r, 'direct place');
 }
 
-/**
- * Place a Mine on land (non-water). If q,r omitted, uses selected unit hex.
- */
-export function placeMine(q, r) {
-  const scene = /** @type {Phaser.Scene & any} */ (this);
-  _ensureResourceInit(scene);
-  _placeGenericLandBuilding(scene, BUILDINGS.mine, COSTS.mine, q, r);
-}
-
-/**
- * Place a Factory on land (non-water). If q,r omitted, uses selected unit hex.
- */
-export function placeFactory(q, r) {
-  const scene = /** @type {Phaser.Scene & any} */ (this);
-  _ensureResourceInit(scene);
-  _placeGenericLandBuilding(scene, BUILDINGS.factory, COSTS.factory, q, r);
-}
-
-/**
- * Place a Bunker on land (non-water). If q,r omitted, uses selected unit hex.
- */
-export function placeBunker(q, r) {
-  const scene = /** @type {Phaser.Scene & any} */ (this);
-  _ensureResourceInit(scene);
-  _placeGenericLandBuilding(scene, BUILDINGS.bunker, COSTS.bunker, q, r);
-}
+export function cancelPlacement() { /* reserved for future */ }
 
 ///////////////////////////////
 // Docks placement (single-hex; framed ⚓ + plain text under)
@@ -280,13 +195,13 @@ function _placeDocks(scene, q, r, reason = '') {
   plate.lineStyle(2, COLORS.stroke, UI.boxStrokeAlpha);
   plate.strokeRoundedRect(-plateW/2, -plateH/2, plateW, plateH, radius);
 
-  const anchor = scene.add.text(0, 0, BUILDINGS.docks.emoji, {
+  const anchor = scene.add.text(0, 0, '⚓', {
     fontSize: '22px',
     color: '#ffffff'
   }).setOrigin(0.5);
 
   // --- Plain label under the plate (no background)
-  const label = scene.add.text(0, plateH/2 + 10, BUILDINGS.docks.name, {
+  const label = scene.add.text(0, plateH/2 + 10, 'Docks', {
     fontSize: `${UI.labelFontSize}px`,
     color: COLORS.labelText
   }).setOrigin(0.5, 0);
@@ -324,76 +239,6 @@ function _placeDocks(scene, q, r, reason = '') {
   hit.on('pointerdown', openMenu);
 
   console.log(`[BUILD] Docks placed at (${q},${r}) — ${reason}`);
-}
-
-///////////////////////////////
-// Simple land buildings placement (Mine / Factory / Bunker)
-///////////////////////////////
-function _placeGenericLandBuilding(scene, def, cost, q, r, reason = 'direct place') {
-  if (!def) return;
-
-  // resolve target hex
-  let tq = q;
-  let tr = r;
-  if (typeof tq !== 'number' || typeof tr !== 'number') {
-    if (scene.selectedUnit) {
-      tq = scene.selectedUnit.q;
-      tr = scene.selectedUnit.r;
-    }
-  }
-  if (typeof tq !== 'number' || typeof tr !== 'number') {
-    console.warn(`[BUILD] ${def.name}: no target coordinates supplied and no selected unit.`);
-    return;
-  }
-
-  if (!def.validateTile(scene, tq, tr)) {
-    console.warn(`[BUILD] ${def.name}: invalid placement at (${tq},${tr}).`);
-    return;
-  }
-
-  if (!_canAfford(scene, cost)) {
-    console.warn(`[BUILD] Not enough resources for ${def.name}.`);
-    return;
-  }
-  if (!_spend(scene, cost)) return;
-
-  scene.buildings = scene.buildings || [];
-  scene._buildingIdSeq = (scene._buildingIdSeq || 1) + 1;
-  const id = scene._buildingIdSeq;
-
-  const pos = scene.axialToWorld(tq, tr);
-  const cont = scene.add.container(pos.x, pos.y).setDepth(UI.zBuilding);
-
-  const plate = scene.add.graphics();
-  const plateW = 36, plateH = 36, radius = 8;
-  plate.fillStyle(COLORS.plate, 0.92);
-  plate.fillRoundedRect(-plateW/2, -plateH/2, plateW, plateH, radius);
-  plate.lineStyle(2, COLORS.stroke, UI.boxStrokeAlpha);
-  plate.strokeRoundedRect(-plateW/2, -plateH/2, plateW, plateH, radius);
-
-  const icon = scene.add.text(0, 0, def.emoji || '?', {
-    fontSize: '22px',
-    color: '#ffffff'
-  }).setOrigin(0.5);
-
-  const label = scene.add.text(0, plateH/2 + 10, def.name || 'Building', {
-    fontSize: `${UI.labelFontSize}px`,
-    color: COLORS.labelText
-  }).setOrigin(0.5, 0);
-
-  cont.add([plate, icon, label]);
-
-  const building = {
-    id,
-    type: def.key,
-    name: def.name,
-    q: tq,
-    r: tr,
-    container: cont,
-  };
-
-  scene.buildings.push(building);
-  console.log(`[BUILD] ${def.name} placed at (${tq},${tr}) — ${reason}`);
 }
 
 ///////////////////////////////
@@ -615,7 +460,7 @@ function _rand(scene) {
   // Use HexMap RNG if available for determinism, else fallback
   return (scene?.hexMap && typeof scene.hexMap.rand === 'function')
     ? scene.hexMap.rand()
-    : Math.random();
+    : Math.random;
 }
 
 function _getRandom(list, scene) {
@@ -624,13 +469,9 @@ function _getRandom(list, scene) {
   return list[i];
 }
 
-
 export default {
   BUILDINGS,
   startDocksPlacement,
   placeDocks,
   cancelPlacement,
-  placeMine,
-  placeFactory,
-  placeBunker,
 };
