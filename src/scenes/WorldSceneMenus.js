@@ -10,35 +10,10 @@ import {
   buildHaulerAtSelectedUnit,
 } from './WorldSceneHaulers.js';
 
-/* =========================================================
-   Selection highlight
-   ========================================================= */
-
 /**
- * Draws a yellow ring under the currently selected unit.
- * Exposes scene.updateSelectionHighlight().
+ * Data-driven menu definitions.
+ * Each menu has 6 slots (3 x 2). Empty label = disabled button.
  */
-export function attachSelectionHighlight(scene) {
-  const g = scene.add.graphics().setDepth(1500);
-  scene.selectionHighlight = g;
-
-  scene.updateSelectionHighlight = () => {
-    g.clear();
-    const u = scene.selectedUnit;
-    if (!u) return;
-
-    const pos = scene.axialToWorld(u.q, u.r);
-    const size = scene.hexSize || 24;
-
-    g.lineStyle(3, 0xffff00, 1);
-    g.strokeCircle(pos.x, pos.y, size * 0.9);
-  };
-}
-
-/* =========================================================
-   Menu layout definition (6 slots: 3x2)
-   ========================================================= */
-
 const MENUS = {
   root: {
     slots: [
@@ -96,374 +71,320 @@ const MENUS = {
   },
 };
 
-/* =========================================================
-   Menu creation & wiring
-   ========================================================= */
-
 /**
- * Creates the 6-button menu panel and exposes:
- *  - scene.menuPanel
- *  - scene.menuButtons
- *  - scene.currentMenuId
- *  - scene.menuStack
- *  - scene.openRootUnitMenu(unit)
- *  - scene.closeAllMenus()
+ * Creates the unit build menu (3x2 buttons) and wires up behaviour.
+ * Called once from WorldScene.create().
  */
 export function setupWorldMenus(scene) {
-  const panel = scene.add.container(20, 164).setScrollFactor(0).setDepth(2000);
-  panel.visible = false;
+  const originX = 20;
+  const originY = 164;
+
+  const container = scene.add.container(originX, originY)
+    .setScrollFactor(0)
+    .setDepth(2000);
+
+  container.visible = false;
 
   const W = 260;
-  const H = 200;
+  const H = 172;
 
-  // Background
   const bg = scene.add.graphics();
-  bg.fillStyle(0x0f2233, 0.95);
+  bg.fillStyle(0x0f2233, 0.92);
   bg.fillRoundedRect(0, 0, W, H, 12);
   bg.lineStyle(2, 0x3da9fc, 1);
   bg.strokeRoundedRect(0, 0, W, H, 12);
-  panel.add(bg);
 
-  // Title label
-  const titleText = scene.add.text(W / 2, 18, 'Menu', {
-    fontSize: '16px',
-    color: '#e8f6ff',
-  }).setOrigin(0.5, 0.5);
-  panel.add(titleText);
+  const bezel = scene.add.graphics();
+  bezel.lineStyle(1, 0x9be4ff, 0.25);
+  for (let i = 1; i <= 2; i++) {
+    bezel.strokeRect(8 * i, 8 * i, W - 16 * i, H - 16 * i);
+  }
 
-  // 3x2 grid of buttons
-  const btns = [];
-  const cols = 3;
-  const rows = 2;
+  container.add([bg, bezel]);
+  container.sendToBack(bg);
+  container.sendToBack(bezel);
 
   const btnWidth = 70;
-  const btnHeight = 52;
+  const btnHeight = 70;
+  const pad = 8;
+  const cols = 3;
+  const rows = 2;
+  const startX = 12;
+  const startY = 12;
 
-  const padX = 12;
-  const padY = 10;
+  const buttons = [];
 
-  const gridOriginX = 16;
-  const gridOriginY = 40;
+  const makeButton = (sx, sy) => {
+    const g = scene.add.graphics();
+    g.fillStyle(0x173b52, 1);
+    g.fillRoundedRect(sx, sy, btnWidth, btnHeight, 8);
+    g.lineStyle(2, 0x6fe3ff, 0.7);
+    g.strokeRoundedRect(sx, sy, btnWidth, btnHeight, 8);
+    g.lineStyle(1, 0x6fe3ff, 0.15);
+    g.beginPath();
+    g.moveTo(sx + btnWidth / 2, sy + 6);
+    g.lineTo(sx + btnWidth / 2, sy + btnHeight - 6);
+    g.moveTo(sx + 6, sy + btnHeight / 2);
+    g.lineTo(sx + btnWidth - 6, sy + btnHeight / 2);
+    g.strokePath();
+
+    const label = scene.add.text(
+      sx + btnWidth / 2,
+      sy + btnHeight / 2,
+      '',
+      {
+        fontSize: '16px',
+        color: '#e8f6ff',
+        align: 'center',
+        wordWrap: { width: btnWidth - 10 },
+      }
+    ).setOrigin(0.5);
+
+    const hit = scene.add.rectangle(sx, sy, btnWidth, btnHeight, 0x000000, 0)
+      .setOrigin(0, 0)
+      .setInteractive({ useHandCursor: true });
+
+    container.add([g, label, hit]);
+
+    // store baseX/baseY so hover redraw knows where to paint
+    return { g, label, hit, baseX: sx, baseY: sy };
+  };
 
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
-      const idx = r * cols + c;
-      const x = gridOriginX + c * (btnWidth + padX);
-      const y = gridOriginY + r * (btnHeight + padY);
-
-      const g = scene.add.graphics();
-      g.fillStyle(0x173b52, 1);
-      g.fillRoundedRect(x, y, btnWidth, btnHeight, 8);
-      g.lineStyle(2, 0x6fe3ff, 0.7);
-      g.strokeRoundedRect(x, y, btnWidth, btnHeight, 8);
-
-      const label = scene.add.text(
-        x + btnWidth / 2,
-        y + btnHeight / 2,
-        '',
-        {
-          fontSize: '15px',
-          color: '#e8f6ff',
-          align: 'center',
-          wordWrap: { width: btnWidth - 8 },
-        }
-      ).setOrigin(0.5);
-
-      const hit = scene.add.rectangle(
-        x + btnWidth / 2,
-        y + btnHeight / 2,
-        btnWidth,
-        btnHeight,
-        0x000000,
-        0
-      ).setInteractive({ useHandCursor: true });
-
-      // Hover effects
-      hit.on('pointerover', () => {
-        g.clear();
-        g.fillStyle(0x1a4764, 1);
-        g.fillRoundedRect(x, y, btnWidth, btnHeight, 8);
-        g.lineStyle(2, 0x9be4ff, 1);
-        g.strokeRoundedRect(x, y, btnWidth, btnHeight, 8);
-      });
-
-      hit.on('pointerout', () => {
-        g.clear();
-        g.fillStyle(0x173b52, 1);
-        g.fillRoundedRect(x, y, btnWidth, btnHeight, 8);
-        g.lineStyle(2, 0x6fe3ff, 0.7);
-        g.strokeRoundedRect(x, y, btnWidth, btnHeight, 8);
-      });
-
-      // Click handler – action will be resolved via menu data
-      hit.on('pointerdown', () => {
-        const slot = btns[idx];
-        if (!slot || !slot.action) return;
-        handleMenuAction(scene, slot.action);
-      });
-
-      panel.add(g);
-      panel.add(label);
-      panel.add(hit);
-
-      btns[idx] = {
-        bg: g,
-        label,
-        hit,
-        action: null,
-      };
+      const x = startX + c * (btnWidth + pad);
+      const y = startY + r * (btnHeight + pad);
+      const btn = makeButton(x, y);
+      buttons.push(btn);
     }
   }
 
-  // Expose on scene
-  scene.menuPanel = panel;
-  scene.menuButtons = btns;
-  scene.menuTitleText = titleText;
-  scene.currentMenuId = null;
-  scene.menuStack = [];
-
-  /**
-   * Called by WorldScene.setSelectedUnit(unit)
-   */
-  scene.openRootUnitMenu = (unit) => {
-    if (!unit) return;
-    scene.menuStack = [];
-    openMenu(scene, 'main');
+  // Menu state stored on the scene
+  scene.unitMenu = {
+    container,
+    buttons,
+    currentMenuKey: 'root',
+    stack: [],
   };
 
-  scene.closeAllMenus = () => {
-    panel.visible = false;
-    scene.currentMenuId = null;
-    scene.menuStack = [];
+  const handleButtonClick = (index) => {
+    const menuKey = scene.unitMenu.currentMenuKey;
+    const def = MENUS[menuKey];
+    if (!def) return;
+
+    const slot = def.slots[index];
+    if (!slot || !slot.action) return;
+
+    handleMenuAction(scene, slot.action);
   };
-}
 
-/* =========================================================
-   Menu state helpers
-   ========================================================= */
+  buttons.forEach((btn, idx) => {
+    btn.hit.on('pointerdown', (pointer, lx, ly, event) => {
+      event?.stopPropagation?.();
+      handleButtonClick(idx);
+    });
 
-function openMenu(scene, menuId) {
-  const def = MENUS[menuId];
-  if (!def) return;
+    btn.hit.on('pointerover', () => {
+      btn.g.clear();
+      btn.g.fillStyle(0x1a4764, 1);
+      btn.g.fillRoundedRect(btn.baseX, btn.baseY, btnWidth, btnHeight, 8);
+      btn.g.lineStyle(2, 0x9be4ff, 1);
+      btn.g.strokeRoundedRect(btn.baseX, btn.baseY, btnWidth, btnHeight, 8);
+    });
 
-  scene.currentMenuId = menuId;
-  scene.menuPanel.visible = true;
+    btn.hit.on('pointerout', () => {
+      btn.g.clear();
+      btn.g.fillStyle(0x173b52, 1);
+      btn.g.fillRoundedRect(btn.baseX, btn.baseY, btnWidth, btnHeight, 8);
+      btn.g.lineStyle(2, 0x6fe3ff, 0.7);
+      btn.g.strokeRoundedRect(btn.baseX, btn.baseY, btnWidth, btnHeight, 8);
+      btn.g.lineStyle(1, 0x6fe3ff, 0.15);
+      btn.g.beginPath();
+      btn.g.moveTo(btn.baseX + btnWidth / 2, btn.baseY + 6);
+      btn.g.lineTo(btn.baseX + btnWidth / 2, btn.baseY + btnHeight - 6);
+      btn.g.moveTo(btn.baseX + 6, btn.baseY + btnHeight / 2);
+      btn.g.lineTo(btn.baseX + btnWidth - 6, btn.baseY + btnHeight / 2);
+      btn.g.strokePath();
+    });
+  });
 
-  if (scene.menuTitleText) {
-    scene.menuTitleText.setText(def.title || '');
-  }
-
-  applyMenuLayout(scene, def);
-}
-
-function applyMenuLayout(scene, def) {
-  const btns = scene.menuButtons || [];
-  const slots = def.slots || [];
-
-  for (let i = 0; i < btns.length; i++) {
-    const btn = btns[i];
-    const slot = slots[i];
-
-    if (!slot || !slot.label) {
-      btn.label.setText('');
-      btn.action = null;
-      btn.hit.disableInteractive();
-      continue;
+  // Helper to refresh visual state when menu or labels change
+  scene.refreshUnitMenuView = function () {
+    const menuKey = scene.unitMenu.currentMenuKey;
+    const def = MENUS[menuKey];
+    if (!def) {
+      scene.unitMenu.container.visible = false;
+      return;
     }
 
-    btn.label.setText(slot.label);
-    btn.action = slot.action || null;
-    btn.hit.setInteractive({ useHandCursor: true });
-  }
+    def.slots.forEach((slot, i) => {
+      const btn = scene.unitMenu.buttons[i];
+      if (!btn) return;
+
+      const label = slot?.label || '';
+      const enabled = !!slot?.action && label !== '';
+
+      btn.label.setText(label);
+      btn.label.setAlpha(enabled ? 1 : 0.4);
+      btn.g.setAlpha(enabled ? 1 : 0.3);
+      btn.hit.removeInteractive();
+      if (enabled) {
+        btn.hit.setInteractive({ useHandCursor: true });
+      }
+    });
+  };
+
+  // Public helpers used by WorldScene.setSelectedUnit
+  scene.openRootUnitMenu = function (unit) {
+    scene.menuContextUnit = unit || null;
+    scene.unitMenu.stack = ['root'];
+    scene.unitMenu.currentMenuKey = 'root';
+    scene.unitMenu.container.visible = true;
+    scene.refreshUnitMenuView();
+  };
+
+  scene.closeAllMenus = function () {
+    if (scene.unitMenu) {
+      scene.unitMenu.container.visible = false;
+    }
+  };
 }
 
-/* =========================================================
-   Action dispatcher
-   ========================================================= */
-
+/**
+ * Handle a menu action string like:
+ *  - "open:build"
+ *  - "build:docks"
+ *  - "unit:hauler"
+ *  - "infra:road"
+ */
 function handleMenuAction(scene, action) {
   if (!action) return;
 
-  // Navigation
-  if (action === 'close') {
-    scene.closeAllMenus?.();
+  const [kind, arg] = action.split(':');
+
+  if (kind === 'open') {
+    // push current key, then open new
+    const current = scene.unitMenu.currentMenuKey;
+    scene.unitMenu.stack.push(current);
+    scene.unitMenu.currentMenuKey = arg;
+    scene.refreshUnitMenuView?.();
     return;
   }
 
-  if (action === 'back') {
-    if (scene.menuStack.length > 0) {
-      const prev = scene.menuStack.pop();
-      openMenu(scene, prev);
+  if (kind === 'back') {
+    if (scene.unitMenu.stack.length > 0) {
+      scene.unitMenu.currentMenuKey = scene.unitMenu.stack.pop();
+      scene.refreshUnitMenuView?.();
     } else {
       scene.closeAllMenus?.();
     }
     return;
   }
 
-  if (action.startsWith('open:')) {
-    const target = action.split(':')[1];
-    if (MENUS[target]) {
-      if (scene.currentMenuId) {
-        scene.menuStack.push(scene.currentMenuId);
-      }
-      openMenu(scene, target);
+  if (kind === 'close') {
+    scene.closeAllMenus?.();
+    return;
+  }
+
+  const unit = scene.selectedUnit || scene.menuContextUnit || null;
+
+  if (kind === 'build') {
+    if (!unit) {
+      console.warn('[MENU] No unit selected for build action:', arg);
+      return;
+    }
+    switch (arg) {
+      case 'docks':
+        // Docks placement is delegated to WorldSceneBuildings; uses scene + selectedUnit.
+        startDocksPlacement.call(scene);
+        break;
+      case 'mine':
+        console.log('[MENU] Build Mine (not yet implemented).');
+        break;
+      case 'factory':
+        console.log('[MENU] Build Factory (not yet implemented).');
+        break;
+      default:
+        console.warn('[MENU] Unknown build target:', arg);
+        break;
     }
     return;
   }
 
-  // Build actions
-  if (action.startsWith('build:')) {
-    const kind = action.split(':')[1];
-    handleBuildAction(scene, kind);
+  if (kind === 'unit') {
+    if (!unit) {
+      console.warn('[MENU] No unit selected for unit action:', arg);
+      return;
+    }
+    switch (arg) {
+      case 'hauler':
+        buildHaulerAtSelectedUnit.call(scene);
+        break;
+      default:
+        console.warn('[MENU] Unknown unit action:', arg);
+        break;
+    }
     return;
   }
 
-  // Unit actions
-  if (action.startsWith('unit:')) {
-    const kind = action.split(':')[1];
-    handleUnitAction(scene, kind);
-    return;
-  }
-
-  // Infrastructure actions
-  if (action.startsWith('infra:')) {
-    const kind = action.split(':')[1];
-    handleInfraAction(scene, kind);
-    return;
+  if (kind === 'infra') {
+    switch (arg) {
+      case 'road':
+      case 'bridge':
+      case 'canal':
+        console.log('[MENU] Infrastructure action (not yet implemented):', arg);
+        break;
+      default:
+        console.warn('[MENU] Unknown infrastructure action:', arg);
+        break;
+    }
   }
 }
 
-/* =========================================================
-   Build / Unit / Infra action handlers
-   ========================================================= */
+/**
+ * Selection highlight attached to the scene.
+ * WorldScene calls attachSelectionHighlight(this) during create(),
+ * and then uses this.updateSelectionHighlight() whenever selection changes.
+ */
+export function attachSelectionHighlight(scene) {
+  const size = scene.hexSize || 24;
+  const g = scene.add.graphics().setDepth(1900);
+  g.visible = false;
 
-function handleBuildAction(scene, kind) {
-  const unit = scene.selectedUnit;
-  if (!unit) return;
+  scene.selectionHighlight = g;
 
-  switch (kind) {
-    case 'docks': {
-      const tile = (scene.mapData || []).find(
-        t => t.q === unit.q && t.r === unit.r
-      );
-      if (!tile) return;
-
-      if (!isCoastalTile(scene, tile)) {
-        console.log('[BUILD] Docks: current hex is not coastal, doing nothing.');
-        return;
-      }
-
-      // Old building code expects to read this.selectedHex and this.playerResources
-      scene.selectedHex = { q: unit.q, r: unit.r };
-
-      try {
-        // IMPORTANT: bind `this` correctly so _ensureResourceInit can read this.playerResources
-        startDocksPlacement?.call(scene);
-      } catch (e) {
-        console.warn('startDocksPlacement error:', e);
-      }
-
-      try {
-        placeDocks?.call(scene);
-      } catch (e) {
-        console.warn('placeDocks error:', e);
-      }
-
-      try {
-        cancelPlacement?.call(scene);
-      } catch (e) {
-        console.warn('cancelPlacement error:', e);
-      }
-
-      break;
+  scene.updateSelectionHighlight = function () {
+    const unit = scene.selectedUnit;
+    if (!unit) {
+      g.clear();
+      g.visible = false;
+      return;
     }
 
-    case 'mine':
-    case 'factory':
-      console.log('[BUILD]', kind, 'not implemented yet.');
-      break;
+    const pos = scene.axialToWorld(unit.q, unit.r);
+    const x = pos.x;
+    const y = pos.y;
 
-    default:
-      console.log('[BUILD] Unknown build kind:', kind);
-      break;
-  }
+    g.clear();
+    g.lineStyle(3, 0xffff00, 1);
+
+    const radius = size * 0.9;
+    g.beginPath();
+    for (let i = 0; i < 6; i++) {
+      const angle = Math.PI / 3 * i + Math.PI / 6; // 60° steps, rotated 30°
+      const px = x + radius * Math.cos(angle);
+      const py = y + radius * Math.sin(angle);
+      if (i === 0) g.moveTo(px, py);
+      else g.lineTo(px, py);
+    }
+    g.closePath();
+    g.strokePath();
+
+    g.visible = true;
+  };
 }
 
-function handleBuildAction(scene, kind) {
-  const unit = scene.selectedUnit;
-  if (!unit) return;
-
-  switch (kind) {
-    case 'docks':
-      // (already wired as now; using .call(scene))
-      ...
-      break;
-
-    case 'mine':
-      scene.selectedHex = { q: unit.q, r: unit.r };
-      placeMine?.call(scene);
-      break;
-
-    case 'factory':
-      scene.selectedHex = { q: unit.q, r: unit.r };
-      placeFactory?.call(scene);
-      break;
-
-    case 'bunker':
-      scene.selectedHex = { q: unit.q, r: unit.r };
-      placeBunker?.call(scene);
-      break;
-
-    default:
-      console.log('[BUILD] Unknown build kind:', kind);
-      break;
-  }
-}
-
-function handleInfraAction(scene, kind) {
-  // Placeholder: you can wire actual road/bridge/canal placement later
-  console.log('[INFRA] Requested', kind, 'at unit hex – not implemented yet.');
-}
-
-/* =========================================================
-   Map helpers (coastal check etc.)
-   ========================================================= */
-
-function getNeighborsAxial(q, r, width, height) {
-  const dirsEven = [
-    { dq: +1, dr: 0 }, { dq: 0, dr: -1 }, { dq: -1, dr: -1 },
-    { dq: -1, dr: 0 }, { dq: -1, dr: +1 }, { dq: 0, dr: +1 },
-  ];
-  const dirsOdd = [
-    { dq: +1, dr: 0 }, { dq: +1, dr: -1 }, { dq: 0, dr: -1 },
-    { dq: -1, dr: 0 }, { dq: 0, dr: +1 }, { dq: +1, dr: +1 },
-  ];
-  const dirs = (r & 1) ? dirsOdd : dirsEven;
-
-  const result = [];
-  for (const d of dirs) {
-    const nq = q + d.dq;
-    const nr = r + d.dr;
-    if (nq < 0 || nr < 0 || nq >= width || nr >= height) continue;
-    result.push({ q: nq, r: nr });
-  }
-  return result;
-}
-
-function isCoastalTile(scene, tile) {
-  if (!tile) return false;
-  if (!scene.mapData) return false;
-
-  // If tile itself is water, we don't build docks "on the sea".
-  if (tile.type === 'water') return false;
-
-  const W = scene.mapWidth ?? 25;
-  const H = scene.mapHeight ?? 25;
-
-  const { q, r } = tile;
-  const neighbors = getNeighborsAxial(q, r, W, H);
-  return neighbors.some(n => {
-    const t = scene.mapData.find(h => h.q === n.q && h.r === n.r);
-    return t && t.type === 'water';
-  });
-}
+export default {
+  setupWorldMenus,
+  attachSelectionHighlight,
+};
