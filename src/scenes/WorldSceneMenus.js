@@ -11,6 +11,10 @@ import {
 /**
  * Data-driven menu definitions.
  * Each menu has 6 slots (3 x 2). Empty label = disabled button.
+ *
+ * NOTE: labels for implemented items include their costs:
+ *  - Docks:  🛠20, 💰50
+ *  - Hauler: 🍖10
  */
 const MENUS = {
   root: {
@@ -37,23 +41,25 @@ const MENUS = {
 
   buildings: {
     slots: [
-      { label: 'Docks',   action: 'build:docks' },
-      { label: 'Mine',    action: 'build:mine' },
-      { label: 'Factory', action: 'build:factory' },
-      { label: '',        action: null },
-      { label: '',        action: null },
-      { label: 'Back',    action: 'back' },
+      // Costs in label
+      { label: 'Docks\n🛠20 💰50', action: 'build:docks' },
+      { label: 'Mine',            action: 'build:mine' },      // no cost yet (not implemented)
+      { label: 'Factory',         action: 'build:factory' },   // no cost yet (not implemented)
+      { label: '',                action: null },
+      { label: '',                action: null },
+      { label: 'Back',            action: 'back' },
     ],
   },
 
   units: {
     slots: [
-      { label: 'Hauler', action: 'unit:hauler' },
-      { label: '',       action: null },
-      { label: '',       action: null },
-      { label: '',       action: null },
-      { label: '',       action: null },
-      { label: 'Back',   action: 'back' },
+      // Hauler costs 10 food (see buildHaulerAtSelectedUnit)
+      { label: 'Hauler\n🍖10', action: 'unit:hauler' },
+      { label: '',             action: null },
+      { label: '',             action: null },
+      { label: '',             action: null },
+      { label: '',             action: null },
+      { label: 'Back',         action: 'back' },
     ],
   },
 
@@ -70,7 +76,7 @@ const MENUS = {
 };
 
 /**
- * Creates the build menu (3x2 buttons) and wires up behaviour.
+ * Creates the unit build menu (3x2 buttons) and wires up behaviour.
  * Called once from WorldScene.create().
  */
 export function setupWorldMenus(scene) {
@@ -79,8 +85,7 @@ export function setupWorldMenus(scene) {
 
   // -------- Screen overlay to absorb clicks while menu is open --------
   const overlay = scene.add.rectangle(
-    0,
-    0,
+    0, 0,
     scene.scale.width,
     scene.scale.height,
     0x000000,
@@ -205,7 +210,7 @@ export function setupWorldMenus(scene) {
 
   buttons.forEach((btn, idx) => {
     const clickHandler = (pointer, lx, ly, event) => {
-      event?.stopPropagation?.();   // prevent overlay click
+      event?.stopPropagation?.();
       handleButtonClick(idx);
     };
 
@@ -249,9 +254,7 @@ export function setupWorldMenus(scene) {
     if (!def) {
       scene.unitMenu.container.visible = false;
       overlay.visible = false;
-      if (overlay.input) {
-        overlay.disableInteractive();
-      }
+      overlay.disableInteractive();
       return;
     }
 
@@ -276,17 +279,10 @@ export function setupWorldMenus(scene) {
     });
   };
 
-  /**
-   * Unified entry point for opening the menu.
-   * Accepts either a unit or a building as "selection".
-   * (Old calls that pass only a unit still work.)
-   */
-  scene.openRootUnitMenu = function (selection) {
-    // Keep for backwards compatibility: if caller didn't pass anything, fall back to selectedUnit.
-    const sel = selection || scene.selectedUnit || scene.selectedBuilding || null;
-
-    scene.menuContextSelection = sel;
-    scene.unitMenu.stack = [];
+  // Public helpers used by WorldScene.setSelectedUnit
+  scene.openRootUnitMenu = function (unit) {
+    scene.menuContextUnit = unit || null;
+    scene.unitMenu.stack = ['root'];
     scene.unitMenu.currentMenuKey = 'root';
     scene.unitMenu.container.visible = true;
 
@@ -294,7 +290,7 @@ export function setupWorldMenus(scene) {
     overlay.setInteractive({ useHandCursor: false });
 
     scene.refreshUnitMenuView();
-    // Make sure the menu is above other game objects but still above the overlay (depth handles order)
+    // bring menu above everything
     scene.children.bringToTop(container);
   };
 
@@ -347,16 +343,15 @@ function handleMenuAction(scene, action) {
     return;
   }
 
-  const unitOrBuilding = scene.selectedUnit || scene.menuContextSelection || null;
+  const unit = scene.selectedUnit || scene.menuContextUnit || null;
 
   if (kind === 'build') {
-    if (!unitOrBuilding) {
-      console.warn('[MENU] No selection for build action:', arg);
+    if (!unit) {
+      console.warn('[MENU] No unit selected for build action:', arg);
       return;
     }
     switch (arg) {
       case 'docks':
-        // Uses selected unit as anchor for placement (nearby coastal hex)
         startDocksPlacement.call(scene);
         break;
       case 'mine':
@@ -373,8 +368,8 @@ function handleMenuAction(scene, action) {
   }
 
   if (kind === 'unit') {
-    if (!unitOrBuilding) {
-      console.warn('[MENU] No selection for unit action:', arg);
+    if (!unit) {
+      console.warn('[MENU] No unit selected for unit action:', arg);
       return;
     }
     switch (arg) {
@@ -411,22 +406,19 @@ export function attachSelectionHighlight(scene) {
   const size = scene.hexSize || 24;
   const g = scene.add.graphics().setDepth(1900);
   g.visible = false;
-
-  // IMPORTANT: draw in world space so it tracks the hex grid with the camera
-  g.setScrollFactor(1);
+  g.setScrollFactor(0);
 
   scene.selectionHighlight = g;
 
   scene.updateSelectionHighlight = function () {
-    const sel = scene.selectedUnit || scene.selectedBuilding || null;
-
-    if (!sel || typeof sel.q !== 'number' || typeof sel.r !== 'number') {
+    const unit = scene.selectedUnit;
+    if (!unit) {
       g.clear();
       g.visible = false;
       return;
     }
 
-    const pos = scene.axialToWorld(sel.q, sel.r);
+    const pos = scene.axialToWorld(unit.q, unit.r);
     const x = pos.x;
     const y = pos.y;
 
