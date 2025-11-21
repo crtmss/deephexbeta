@@ -18,26 +18,33 @@ function classifyBiomeFromTiles(tiles) {
   const total = land.length || 1;
   const cnt = tiles.reduce((a, t) => (a[t.type] = (a[t.type] || 0) + 1, a), {});
   const pct = n => (cnt[n] || 0) / total;
-  const icy  = pct('ice') + pct('snow');
-  const ash  = pct('volcano_ash');
+
+  const icy = pct('ice') + pct('snow');
+  const ash = pct('volcano_ash');
   const sand = pct('sand');
   const swampy = pct('swamp') + pct('mud');
+
   if (icy >= 0.50) return 'Icy Biome';
   if (ash >= 0.50) return 'Volcanic Biome';
   if (sand >= 0.50) return 'Desert Biome';
   if (swampy >= 0.45 && icy < 0.05 && ash < 0.05) return 'Swamp Biome';
+
   return 'Temperate Biome';
 }
 function classifyGeographyFromTiles(tiles, width, height) {
   const byKey = new Map(tiles.map(t => [keyOf(t.q, t.r), t]));
   const seen = new Set();
   let comps = 0;
+
   for (const t of tiles) {
     if (t.type === 'water') continue;
     const k = keyOf(t.q, t.r);
     if (seen.has(k)) continue;
+
     comps++;
-    const qd = [t]; seen.add(k);
+    const qd = [t];
+    seen.add(k);
+
     while (qd.length) {
       const cur = qd.pop();
       for (const [dq, dr] of neighborsOddR(cur.q, cur.r)) {
@@ -45,25 +52,33 @@ function classifyGeographyFromTiles(tiles, width, height) {
         if (!inBounds(nq, nr, width, height) || seen.has(nk)) continue;
         const nt = byKey.get(nk);
         if (!nt || nt.type === 'water') continue;
-        seen.add(nk); qd.push(nt);
+        seen.add(nk);
+        qd.push(nt);
       }
     }
   }
+
   if (comps >= 2) return 'Multiple Islands';
 
-  // inner-water heuristic for lagoon/lake
+  // inner-water heuristic
   const innerQ0 = Math.floor(width * 0.2),  innerQ1 = Math.ceil(width * 0.8);
   const innerR0 = Math.floor(height * 0.2), innerR1 = Math.ceil(height * 0.8);
   let innerWater = 0, innerTot = 0;
-  for (let r = innerR0; r < innerR1; r++) for (let q = innerQ0; q < innerQ1; q++) {
-    const t = byKey.get(keyOf(q, r)); if (!t) continue;
-    innerTot++; if (t.type === 'water') innerWater++;
-  }
+
+  for (let r = innerR0; r < innerR1; r++)
+    for (let q = innerQ0; q < innerQ1; q++) {
+      const t = byKey.get(keyOf(q, r));
+      if (!t) continue;
+      innerTot++;
+      if (t.type === 'water') innerWater++;
+    }
+
   const innerRatio = innerTot ? innerWater / innerTot : 0;
   if (innerRatio >= 0.12) return innerRatio >= 0.18 ? 'Big Lagoon' : 'Central Lake';
 
   // riveriness
-  let riverEdges = 0; let landCount = 0;
+  let riverEdges = 0;
+  let landCount = 0;
   for (const t of tiles) {
     if (t.type === 'water') continue;
     landCount++;
@@ -72,30 +87,41 @@ function classifyGeographyFromTiles(tiles, width, height) {
       if (n && n.type === 'water') riverEdges++;
     }
   }
+
   if ((riverEdges / Math.max(1, landCount)) >= 1.2) return 'Scattered Terrain';
 
-  // diagonal check (simple PCA)
+  // diagonal PCA check
   const land = tiles.filter(t => t.type !== 'water');
   const cx = land.reduce((s, t) => s + t.q, 0) / Math.max(1, land.length);
   const cy = land.reduce((s, t) => s + t.r, 0) / Math.max(1, land.length);
-  let Sxx=0,Syy=0,Sxy=0;
-  for (const t of land) { const dx=t.q-cx, dy=t.r-cy; Sxx+=dx*dx; Syy+=dy*dy; Sxy+=dx*dy; }
-  const tr=Sxx+Syy, det=Sxx*Syy-Sxy*Sxy, disc=Math.max(0,tr*tr-4*det);
-  const lambda1=(tr+Math.sqrt(disc))/2, lambda2=(tr-Math.sqrt(disc))/2;
-  const ratio = lambda2>0 ? lambda1/lambda2 : 99;
-  const angle = Math.abs(0.5 * Math.atan2(2*Sxy, Sxx-Syy) * 180/Math.PI);
-  if (ratio>=1.6 && angle>=20 && angle<=70) return 'Diagonal Island';
+
+  let Sxx = 0, Syy = 0, Sxy = 0;
+  for (const t of land) {
+    const dx = t.q - cx, dy = t.r - cy;
+    Sxx += dx * dx; Syy += dy * dy; Sxy += dx * dy;
+  }
+
+  const tr = Sxx + Syy;
+  const det = Sxx * Syy - Sxy * Sxy;
+  const disc = Math.max(0, tr * tr - 4 * det);
+  const lambda1 = (tr + Math.sqrt(disc)) / 2;
+  const lambda2 = (tr - Math.sqrt(disc)) / 2;
+
+  const ratio = lambda2 > 0 ? lambda1 / lambda2 : 99;
+  const angle = Math.abs(0.5 * Math.atan2(2 * Sxy, Sxx - Syy) * 180 / Math.PI);
+
+  if (ratio >= 1.6 && angle >= 20 && angle <= 70) return 'Diagonal Island';
 
   return 'Small Bays';
 }
 
-/* -------------------------------- Lobby Scene -------------------------------- */
+/* ------------------------------ LOBBY SCENE -------------------------------- */
 
 export default class LobbyScene extends Phaser.Scene {
   constructor() { super('LobbyScene'); }
 
   async create() {
-    // DOM overlay ignores events except on controls; map stays hover/clickable
+    // DOM overlay non-blocking
     if (this.game && this.game.domContainer) {
       const dc = this.game.domContainer;
       dc.style.pointerEvents = 'none';
@@ -104,76 +130,115 @@ export default class LobbyScene extends Phaser.Scene {
     }
 
     // Title
-    this.add.text(500, 60, 'DeepHex Multiplayer Lobby', { fontSize: '28px', fill: '#ffffff' }).setScrollFactor(0);
+    this.add.text(500, 60, 'DeepHex Multiplayer Lobby', {
+      fontSize: '28px', fill: '#ffffff'
+    }).setScrollFactor(0);
 
     try {
-      const { error: pingError } = await supabase.from('lobbies').select('id').limit(1);
-      if (pingError) console.error('[Supabase ERROR] Cannot connect:', pingError.message);
+      const { error: pingError } =
+        await supabase.from('lobbies').select('id').limit(1);
+      if (pingError)
+        console.error('[Supabase ERROR] Cannot connect:', pingError.message);
       else console.log('[Supabase OK] Connection active.');
-    } catch (err) { console.error('[Supabase EXCEPTION] Connection check failed:', err.message); }
+    } catch (err) {
+      console.error('[Supabase EXCEPTION] Connection check failed:', err.message);
+    }
 
-    // Labels + Inputs
-    this.add.text(460, 130, 'Your Name:', { fontSize: '18px', fill: '#ffffff' }).setScrollFactor(0);
+    /* --- Input fields --- */
+    this.add.text(460, 130, 'Your Name:', { fontSize: '18px', fill: '#ffffff' });
     const nameInput = this.add.dom(640, 160, 'input')
-      .setOrigin(0.5).setDepth(1200).setScrollFactor(0);
-    nameInput.node.placeholder = 'Your name';
-    nameInput.node.maxLength = 16;
+      .setOrigin(0.5).setDepth(1200);
+
     Object.assign(nameInput.node.style, {
       pointerEvents: 'auto',
-      width: '260px', height: '36px', fontSize: '18px',
-      padding: '4px 10px', borderRadius: '8px',
-      border: '1px solid #88a', background: '#0b0f1a',
-      color: '#e7f1ff', outline: 'none'
+      width: '260px',
+      height: '36px',
+      fontSize: '18px',
+      padding: '4px 10px',
+      borderRadius: '8px',
+      border: '1px solid #88a',
+      background: '#0b0f1a',
+      color: '#e7f1ff',
+      outline: 'none'
     });
 
-    this.add.text(400, 220, 'Map Seed (6 digits):', { fontSize: '18px', fill: '#ffffff' }).setScrollFactor(0);
+    this.add.text(400, 220, 'Map Seed (6 digits):', {
+      fontSize: '18px', fill: '#ffffff'
+    });
+
     const codeInput = this.add.dom(640, 250, 'input')
-      .setOrigin(0.5).setDepth(1200).setScrollFactor(0);
-    codeInput.node.placeholder = '000000';
-    codeInput.node.maxLength = 6;
+      .setOrigin(0.5).setDepth(1200);
+
     Object.assign(codeInput.node.style, {
       pointerEvents: 'auto',
-      width: '110px', height: '36px', fontSize: '18px',
-      textAlign: 'center', padding: '4px 10px', borderRadius: '8px',
-      border: '1px solid #88a', background: '#0b0f1a',
-      color: '#e7f1ff', outline: 'none'
+      width: '110px',
+      height: '36px',
+      fontSize: '18px',
+      textAlign: 'center',
+      padding: '4px 10px',
+      borderRadius: '8px',
+      border: '1px solid #88a',
+      background: '#0b0f1a',
+      color: '#e7f1ff',
+      outline: 'none'
     });
 
-    // 🎲 Random Seed button
-    const randomBtn = this.add.dom(640, 290, 'button', {
-      backgroundColor: '#555', color: '#fff', fontSize: '14px',
-      padding: '8px 14px', border: '1px solid #888', borderRadius: '6px', cursor: 'pointer',
-      pointerEvents: 'auto'
-    }, '🎲 Random Seed').setOrigin(0.5).setDepth(1250).setScrollFactor(0);
+    /* --- Random Seed --- */
+    const randomBtn = this.add.dom(
+      640,
+      290,
+      'button',
+      {
+        backgroundColor: '#555',
+        color: '#fff',
+        fontSize: '14px',
+        padding: '8px 14px',
+        border: '1px solid #888',
+        borderRadius: '6px',
+        cursor: 'pointer',
+        pointerEvents: 'auto'
+      },
+      '🎲 Random Seed'
+    ).setOrigin(0.5).setDepth(1250);
 
-    // Preview
-    this.add.text(870, 130, 'Map Preview', { fontSize: '18px', fill: '#ffffff' }).setScrollFactor(0);
+    /* --- Preview panel --- */
+    this.add.text(870, 130, 'Map Preview', {
+      fontSize: '18px', fill: '#ffffff'
+    });
+
     this.previewSize = 80;
-    this.previewWidth  = 25;
+    this.previewWidth = 25;
     this.previewHeight = 25;
-    this.previewContainer = this.add.container(900, 200).setScrollFactor(0);
+
+    this.previewContainer = this.add.container(900, 200);
     this.previewGraphics = this.add.graphics();
     this.previewContainer.add(this.previewGraphics);
 
-    this.geographyText = this.add.text(820, 380, '', { fontSize: '18px', fill: '#aadfff' }).setScrollFactor(0);
-    this.biomeText     = this.add.text(820, 410, '', { fontSize: '18px', fill: '#aadfff' }).setScrollFactor(0);
+    this.geographyText = this.add.text(820, 380, '', {
+      fontSize: '18px', fill: '#aadfff'
+    });
+    this.biomeText = this.add.text(820, 410, '', {
+      fontSize: '18px', fill: '#aadfff'
+    });
 
-    // Keep last generated map/tiles
-    this.currentHexMap = null;
-    this.currentTiles  = null;
-
-    // Seed init + events
+    /* --- Seed Init --- */
     const firstSeed = String(Math.floor(Math.random() * 1_000_000)).padStart(6, '0');
     codeInput.node.value = firstSeed;
 
     const regenerateAndPreview = (seed) => {
       this.currentHexMap = new HexMap(this.previewWidth, this.previewHeight, seed);
-      this.currentTiles  = this.currentHexMap.getMap();
+      this.currentTiles = this.currentHexMap.getMap();
       this.drawPreviewFromTiles(this.currentTiles);
 
-      const meta = this.currentHexMap.worldMeta || this.currentTiles.__worldMeta || null;
-      const geography = meta?.geography || classifyGeographyFromTiles(this.currentTiles, this.previewWidth, this.previewHeight);
-      const biome     = meta?.biome      || classifyBiomeFromTiles(this.currentTiles);
+      const meta = this.currentHexMap.worldMeta
+        || this.currentTiles.__worldMeta
+        || null;
+
+      const geography = meta?.geography
+        || classifyGeographyFromTiles(this.currentTiles, this.previewWidth, this.previewHeight);
+
+      const biome = meta?.biome
+        || classifyBiomeFromTiles(this.currentTiles);
 
       this.geographyText.setText(`🌍 Geography: ${geography}`);
       this.biomeText.setText(`🌿 Biome: ${biome}`);
@@ -181,61 +246,113 @@ export default class LobbyScene extends Phaser.Scene {
 
     codeInput.node.addEventListener('input', () => {
       let v = codeInput.node.value.replace(/\D/g, '');
-      if (v.length > 6) v = v.slice(0, 6);
+      v = v.slice(0, 6);
       codeInput.node.value = v;
       regenerateAndPreview(v.padStart(6, '0'));
     });
+
     codeInput.node.addEventListener('blur', () => {
       let v = codeInput.node.value.trim();
       if (!v) v = '000000';
       codeInput.node.value = v.padStart(6, '0');
       regenerateAndPreview(codeInput.node.value);
     });
-    randomBtn.addListener('click');
+
     randomBtn.on('click', () => {
       const seed = String(Math.floor(Math.random() * 1_000_000)).padStart(6, '0');
       codeInput.node.value = seed;
       regenerateAndPreview(seed);
     });
 
-    // First run
     regenerateAndPreview(firstSeed);
 
-    // Host / Join buttons
-    const hostBtn = this.add.dom(540, 330, 'button', {
-      backgroundColor: '#006400', color: '#fff', fontSize: '18px',
-      padding: '10px 20px', border: 'none', borderRadius: '6px', cursor: 'pointer',
-      pointerEvents: 'auto'
-    }, 'Host Game').setDepth(1200).setScrollFactor(0);
+    /* --- Host / Join Buttons --- */
 
-    const joinBtn = this.add.dom(720, 330, 'button', {
-      backgroundColor: '#1E90FF', color: '#fff', fontSize: '18px',
-      padding: '10px 20px', border: 'none', borderRadius: '6px', cursor: 'pointer',
-      pointerEvents: 'auto'
-    }, 'Join Game').setDepth(1200).setScrollFactor(0);
+    const hostBtn = this.add.dom(
+      540,
+      330,
+      'button',
+      {
+        backgroundColor: '#006400',
+        color: '#fff',
+        fontSize: '18px',
+        padding: '10px 20px',
+        border: 'none',
+        borderRadius: '6px',
+        cursor: 'pointer',
+        pointerEvents: 'auto'
+      },
+      'Host Game'
+    ).setDepth(1200);
 
-    hostBtn.addListener('click');
+    const joinBtn = this.add.dom(
+      720,
+      330,
+      'button',
+      {
+        backgroundColor: '#1E90FF',
+        color: '#fff',
+        fontSize: '18px',
+        padding: '10px 20px',
+        border: 'none',
+        borderRadius: '6px',
+        cursor: 'pointer',
+        pointerEvents: 'auto'
+      },
+      'Join Game'
+    ).setDepth(1200);
+
+    /* --- FIXED: seed now passed to WorldScene --- */
+
     hostBtn.on('click', async () => {
       const name = nameInput.node.value.trim();
       const code = codeInput.node.value.trim().padStart(6, '0');
-      if (!name || !/^\d{6}$/.test(code)) { alert('Enter your name and a 6-digit numeric seed.'); return; }
+
+      if (!name || !/^\d{6}$/.test(code)) {
+        alert('Enter your name and a 6-digit numeric seed.');
+        return;
+      }
+
       const { error } = await createLobby(name, code);
-      if (error) { console.error('[Supabase ERROR] Create lobby:', error.message); alert('Failed to create lobby.'); return; }
-      this.scene.start('WorldScene', { playerName: name, roomCode: code, isHost: true });
+      if (error) {
+        console.error('[Supabase ERROR] Create lobby:', error.message);
+        alert('Failed to create lobby.');
+        return;
+      }
+
+      this.scene.start('WorldScene', {
+        seed: code,          // <-- FIXED
+        playerName: name,
+        roomCode: code,
+        isHost: true
+      });
     });
 
-    joinBtn.addListener('click');
     joinBtn.on('click', async () => {
       const name = nameInput.node.value.trim();
       const code = codeInput.node.value.trim().padStart(6, '0');
-      if (!name || !/^\d{6}$/.test(code)) { alert('Enter your name and a 6-digit numeric seed.'); return; }
+
+      if (!name || !/^\d{6}$/.test(code)) {
+        alert('Enter your name and a 6-digit numeric seed.');
+        return;
+      }
+
       const { error } = await joinLobby(name, code);
-      if (error) { console.error('[Supabase ERROR] Join lobby:', error.message); alert('Failed to join lobby.'); return; }
-      this.scene.start('WorldScene', { playerName: name, roomCode: code, isHost: false });
+      if (error) {
+        console.error('[Supabase ERROR] Join lobby:', error.message);
+        alert('Failed to join lobby.');
+        return;
+      }
+
+      this.scene.start('WorldScene', {
+        seed: code,          // <-- FIXED
+        playerName: name,
+        roomCode: code,
+        isHost: false
+      });
     });
   }
 
-  // --- draw preview strictly from an already-generated tiles array ---
   drawPreviewFromTiles(tiles) {
     this.previewGraphics.clear();
     const size = 6;
@@ -246,7 +363,6 @@ export default class LobbyScene extends Phaser.Scene {
       return { x, y };
     };
 
-    // Center the preview content
     const gridW = size * Math.sqrt(3) * (this.previewWidth + 0.5);
     const gridH = size * 1.5 * (this.previewHeight + 0.5);
     const offsetX = -gridW * 0.45;
@@ -254,7 +370,10 @@ export default class LobbyScene extends Phaser.Scene {
 
     for (const t of tiles) {
       const { x, y } = hexToPixel(t.q, t.r, size);
-      const color = getColorForTerrain ? getColorForTerrain(t.type, t.elevation) : 0x999999;
+      const color = getColorForTerrain
+        ? getColorForTerrain(t.type, t.elevation)
+        : 0x999999;
+
       this.drawHex(this.previewGraphics, x + offsetX, y + offsetY, size, color);
     }
   }
@@ -263,12 +382,15 @@ export default class LobbyScene extends Phaser.Scene {
     const corners = [];
     for (let i = 0; i < 6; i++) {
       const a = Phaser.Math.DegToRad(60 * i - 30);
-      corners.push({ x: x + size * Math.cos(a), y: y + size * Math.sin(a) });
+      corners.push({
+        x: x + size * Math.cos(a),
+        y: y + size * Math.sin(a)
+      });
     }
     g.fillStyle(color, 1);
     g.beginPath();
     g.moveTo(corners[0].x, corners[0].y);
-    for (let i = 1; i < 6; i++) g.lineTo(corners[i].x, corners[i].y); // <-- FIXED: include y
+    for (let i = 1; i < 6; i++) g.lineTo(corners[i].x, corners[i].y);
     g.closePath();
     g.fillPath();
   }
