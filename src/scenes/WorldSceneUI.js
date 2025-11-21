@@ -43,7 +43,7 @@ export function setupCameraControls(scene) {
   });
 }
 
-/* ---------------- Turn UI ---------------- */
+/* ---------------- Turn UI + top tabs ---------------- */
 export function setupTurnUI(scene) {
   // Ensure resource state exists BEFORE drawing HUD
   if (!scene.playerResources) {
@@ -88,8 +88,9 @@ export function setupTurnUI(scene) {
     refreshUnits(scene);
   });
 
-  // NOTE: old 2×2 Unit Action Panel was removed.
-  // All build/unit/infra menus are now handled in WorldSceneMenus.js.
+  // Top-right tabs (Resources / Logistics) + Resources panel
+  createTopTabs(scene);
+  createResourcesPanel(scene);
 }
 
 export function updateTurnText(scene, currentTurn) {
@@ -188,6 +189,218 @@ function bumpResource(scene, key) {
 }
 
 /* =========================
+   Top-right tab bar (Resources / Logistics)
+   ========================= */
+
+function createTopTabs(scene) {
+  const margin = 16;
+  const tabWidth = 140;
+  const tabHeight = 40;
+  const spacing = 12;
+
+  const totalWidth = tabWidth * 2 + spacing;
+  const x = scene.scale.width - totalWidth - margin;
+  const y = 16;
+
+  const bar = scene.add.container(x, y).setScrollFactor(0).setDepth(2100);
+
+  // Green strip background
+  const bg = scene.add.graphics();
+  bg.fillStyle(0x2e7d32, 1);
+  bg.fillRoundedRect(0, 0, totalWidth, tabHeight + 8, 8);
+  bar.add(bg);
+
+  const makeTab = (label, index, onClick) => {
+    const tx = index * (tabWidth + spacing);
+    const ty = 4;
+
+    const outer = scene.add.graphics();
+    outer.fillStyle(0x000000, 1);
+    outer.fillRoundedRect(tx, ty, tabWidth, tabHeight, 6);
+
+    const text = scene.add.text(
+      tx + tabWidth / 2,
+      ty + tabHeight / 2,
+      label,
+      {
+        fontSize: '16px',
+        color: '#ffffff',
+      }
+    ).setOrigin(0.5);
+
+    const hit = scene.add.rectangle(tx, ty, tabWidth, tabHeight, 0x000000, 0)
+      .setOrigin(0, 0)
+      .setInteractive({ useHandCursor: true });
+
+    hit.on('pointerdown', (pointer, lx, ly, event) => {
+      event?.stopPropagation?.();
+      onClick?.();
+    });
+
+    bar.add([outer, text, hit]);
+
+    return { outer, text, hit };
+  };
+
+  const tabs = {};
+
+  tabs.resources = makeTab('Resources', 0, () => {
+    scene.openResourcesPanel?.();
+  });
+
+  tabs.logistics = makeTab('Logistics', 1, () => {
+    // For now, just show a small notice
+    scene.openLogisticsPanel?.();
+  });
+
+  scene.topTabs = { container: bar, tabs };
+}
+
+/* =========================
+   Resources Panel (table-style)
+   ========================= */
+
+function createResourcesPanel(scene) {
+  // Positioned under the top tabs, on the right side
+  const panelX = scene.scale.width - 520;   // width 500 + margin
+  const panelY = 70;
+
+  const container = scene.add.container(panelX, panelY)
+    .setScrollFactor(0)
+    .setDepth(2050);
+
+  container.visible = false;
+
+  const WIDTH = 500;
+  const HEIGHT = 220; // fixed for now; enough for several rows
+
+  const bg = scene.add.graphics();
+  bg.fillStyle(0x0f2233, 0.96);
+  bg.fillRoundedRect(0, 0, WIDTH, HEIGHT, 12);
+  bg.lineStyle(2, 0x3da9fc, 1);
+  bg.strokeRoundedRect(0, 0, WIDTH, HEIGHT, 12);
+
+  const bezel = scene.add.graphics();
+  bezel.lineStyle(1, 0x9be4ff, 0.25);
+  bezel.strokeRect(10, 10, WIDTH - 20, HEIGHT - 20);
+  bezel.strokeRect(18, 18, WIDTH - 36, HEIGHT - 36);
+
+  container.add([bg, bezel]);
+
+  // Column definitions
+  // Building | Food | Scrap | Energy | Metal plates | Components | Currency
+  const cols = [
+    { key: 'name',       label: 'Building',    width: 130 },
+    { key: 'food',       label: 'Food',        width: 55 },
+    { key: 'scrap',      label: 'Scrap',       width: 55 },
+    { key: 'energy',     label: 'Energy',      width: 65 },
+    { key: 'metal',      label: 'Metal',       width: 70 }, // "Metal plates"
+    { key: 'components', label: 'Components',  width: 85 },
+    { key: 'currency',   label: 'Currency',    width: 70 },
+  ];
+
+  const startX = 20;
+  const startY = 24;
+  const rowHeight = 20;
+
+  let xCursor = startX;
+  cols.forEach(col => {
+    col.x = xCursor;
+    const header = scene.add.text(
+      xCursor,
+      startY,
+      col.label,
+      {
+        fontFamily: 'monospace',
+        fontSize: '12px',
+        color: '#e8f6ff',
+      }
+    ).setOrigin(0, 0);
+    header.setScrollFactor(0);
+    container.add(header);
+    xCursor += col.width;
+  });
+
+  // We keep created row texts so they can be destroyed on refresh
+  const meta = {
+    container,
+    columns: cols,
+    rowTexts: [],
+    headerY: startY,
+    rowHeight,
+  };
+
+  scene.resourcesPanel = container;
+  scene.resourcesPanelMeta = meta;
+
+  // Public helpers on scene:
+
+  scene.refreshResourcesPanel = function () {
+    const m = scene.resourcesPanelMeta;
+    if (!m) return;
+
+    // Clear previous row texts
+    m.rowTexts.forEach(t => t.destroy());
+    m.rowTexts.length = 0;
+
+    const buildings = scene.buildings || [];
+    buildings.forEach((b, idx) => {
+      const y = m.headerY + m.rowHeight * (idx + 1);
+
+      // derive a display name
+      const baseName = b.displayName || b.name || (b.type ? b.type[0].toUpperCase() + b.type.slice(1) : 'Building');
+      const suffix = typeof b.id !== 'undefined' ? ` ${b.id}` : ` ${idx + 1}`;
+      const dispName = baseName + suffix;
+
+      const res = b.resources || {};
+      const rowValues = {
+        name: dispName,
+        food:       res.food       ?? b.storageFood ?? 0,
+        scrap:      res.scrap      ?? 0,
+        energy:     res.energy     ?? 0,
+        metal:      res.metal      ?? res.metalPlates ?? 0,
+        components: res.components ?? 0,
+        currency:   res.currency   ?? 0,
+      };
+
+      m.columns.forEach(col => {
+        const val = rowValues[col.key] ?? 0;
+        const txt = scene.add.text(
+          col.x,
+          y,
+          String(val),
+          {
+            fontFamily: 'monospace',
+            fontSize: '12px',
+            color: '#e8f6ff',
+          }
+        ).setOrigin(0, 0);
+        txt.setScrollFactor(0);
+        m.container.add(txt);
+        m.rowTexts.push(txt);
+      });
+    });
+  };
+
+  scene.openResourcesPanel = function () {
+    scene.resourcesPanel.visible = true;
+    scene.refreshResourcesPanel?.();
+  };
+
+  scene.closeResourcesPanel = function () {
+    if (scene.resourcesPanel) scene.resourcesPanel.visible = false;
+  };
+
+  // For now Logistics is just a stub: show a small "Not implemented" text
+  scene.openLogisticsPanel = function () {
+    // You can later replace this with a proper Logistics UI.
+    // For now, we just close Resources and log a message.
+    scene.closeResourcesPanel?.();
+    console.log('[UI] Logistics tab clicked (not implemented yet).');
+  };
+}
+
+/* =========================
    Path preview & selection UI
    ========================= */
 
@@ -196,7 +409,7 @@ function getTile(scene, q, r) {
   return (scene.mapData || []).find(h => h.q === q && h.r === r);
 }
 
-// Find unit on (q,r)
+// helper: find any unit/hauler on given hex
 function getUnitAtHex(scene, q, r) {
   const players = scene.players || [];
   const haulers = scene.haulers || [];
@@ -205,12 +418,6 @@ function getUnitAtHex(scene, q, r) {
     haulers.find(h => h.q === q && h.r === r) ||
     null
   );
-}
-
-// Find building on (q,r)
-function getBuildingAtHex(scene, q, r) {
-  const buildings = scene.buildings || [];
-  return buildings.find(b => b.q === q && b.r === r) || null;
 }
 
 // wrapper around shared A* to keep logic here
@@ -231,7 +438,7 @@ function computePathWithAStar(scene, unit, targetHex, blockedPred) {
 }
 
 /**
- * Sets up unit/building selection + path preview + movement
+ * Sets up unit selection + path preview + movement
  */
 export function setupWorldInputUI(scene) {
   // ensure arrays for preview are present
@@ -245,43 +452,21 @@ export function setupWorldInputUI(scene) {
     const worldPoint = pointer.positionToCamera(scene.cameras.main);
     const rounded = scene.worldToAxial(worldPoint.x, worldPoint.y);
 
-    if (
-      rounded.q < 0 ||
-      rounded.r < 0 ||
-      rounded.q >= scene.mapWidth ||
-      rounded.r >= scene.mapHeight
-    ) return;
+    if (rounded.q < 0 || rounded.r < 0 || rounded.q >= scene.mapWidth || rounded.r >= scene.mapHeight) return;
 
     const { q, r } = rounded;
 
-    // ---------- 1) Click on unit? → select/deselect unit, no movement ----------
-    const unitHere = getUnitAtHex(scene, q, r);
-    if (unitHere) {
-      scene.setSelectedBuilding?.(null);         // clear building selection
-      scene.toggleSelectedUnitAtHex?.(q, r);     // handles select / deselect
+    // First, check if there's a unit on this hex and toggle selection.
+    const unitAtHex = getUnitAtHex(scene, q, r);
+    if (unitAtHex) {
+      scene.toggleSelectedUnitAtHex?.(q, r);
       scene.clearPathPreview?.();
       scene.selectedHex = null;
       scene.debugHex?.(q, r);
       return;
     }
 
-    // ---------- 2) Click on building? → select/deselect building, no movement ----------
-    const buildingHere = getBuildingAtHex(scene, q, r);
-    if (buildingHere) {
-      const prev = scene.selectedBuilding;
-      if (prev && prev.q === buildingHere.q && prev.r === buildingHere.r) {
-        scene.setSelectedBuilding?.(null);       // toggle off
-      } else {
-        scene.setSelectedUnit?.(null);           // only one selection at a time
-        scene.setSelectedBuilding?.(buildingHere);
-      }
-      scene.clearPathPreview?.();
-      scene.selectedHex = null;
-      scene.debugHex?.(q, r);
-      return;
-    }
-
-    // ---------- 3) Empty ground click ----------
+    // No unit here: it's a ground/location click
     const tile = getTile(scene, q, r);
     if (tile && tile.isLocation) {
       console.log(
@@ -335,12 +520,7 @@ export function setupWorldInputUI(scene) {
     const worldPoint = pointer.positionToCamera(scene.cameras.main);
     const rounded = scene.worldToAxial(worldPoint.x, worldPoint.y);
 
-    if (
-      rounded.q < 0 ||
-      rounded.r < 0 ||
-      rounded.q >= scene.mapWidth ||
-      rounded.r >= scene.mapHeight
-    ) {
+    if (rounded.q < 0 || rounded.r < 0 || rounded.q >= scene.mapWidth || rounded.r >= scene.mapHeight) {
       scene.clearPathPreview?.();
       return;
     }
