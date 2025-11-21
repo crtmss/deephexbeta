@@ -83,27 +83,26 @@ export function openDocksRoutePicker(scene, building) {
 
   overlay.once('pointerdown', (pointer, lx, ly, event) => {
     event?.stopPropagation?.();
-    const approx = scene.pixelToHex(
-      pointer.worldX - (scene.mapOffsetX || 0),
-      pointer.worldY - (scene.mapOffsetY || 0),
-      scene.hexSize
-    );
-    const rounded = scene.roundHex(approx.q, approx.r);
 
-    if (rounded.q < 0 || rounded.r < 0 || rounded.q >= scene.mapWidth || rounded.r >= scene.mapHeight) {
+    // === use worldToAxial instead of roundHex+pixelToHex ===
+    const worldPoint = pointer.positionToCamera(scene.cameras.main);
+    const { q, r } = scene.worldToAxial(worldPoint.x, worldPoint.y);
+    // =======================================================
+
+    if (q < 0 || r < 0 || q >= scene.mapWidth || r >= scene.mapHeight) {
       console.warn('[DOCKS] Route pick out of bounds — cancelled');
       overlay.destroy(); return;
     }
-    if (!_isWater(scene, rounded.q, rounded.r)) {
+    if (!_isWater(scene, q, r)) {
       console.warn('[DOCKS] Route must be on water.');
       overlay.destroy(); return;
     }
     // Reachability for ships: allow path from docks hex (even if land) by treating docks as water-passable
-    if (!_reachableForShips(scene, building.q, building.r, rounded.q, rounded.r)) {
+    if (!_reachableForShips(scene, building.q, building.r, q, r)) {
       console.warn('[DOCKS] Route water hex is not reachable by water from the docks.');
       overlay.destroy(); return;
     }
-    _setRouteMarker(scene, building, rounded.q, rounded.r);
+    _setRouteMarker(scene, building, q, r);
     overlay.destroy();
   });
 }
@@ -397,21 +396,20 @@ export function enterHaulerRoutePicker() {
 
   overlay.once('pointerdown', (pointer, _lx, _ly, event) => {
     event?.stopPropagation?.();
-    const approx = scene.pixelToHex(
-      pointer.worldX - (scene.mapOffsetX || 0),
-      pointer.worldY - (scene.mapOffsetY || 0),
-      scene.hexSize
-    );
-    const rounded = scene.roundHex(approx.q, approx.r);
 
-    if (rounded.q < 0 || rounded.r < 0 || rounded.q >= scene.mapWidth || rounded.r >= scene.mapHeight) {
+    // === use worldToAxial instead of roundHex+pixelToHex ===
+    const worldPoint = pointer.positionToCamera(scene.cameras.main);
+    const { q, r } = scene.worldToAxial(worldPoint.x, worldPoint.y);
+    // =======================================================
+
+    if (q < 0 || r < 0 || q >= scene.mapWidth || r >= scene.mapHeight) {
       console.warn('[HAULER] Route pick out of bounds.');
       overlay.destroy();
       return;
     }
 
     const docks = (scene.buildings || []).find(b =>
-      b.type === 'docks' && (b.q === rounded.q && b.r === rounded.r)
+      b.type === 'docks' && (b.q === q && b.r === r)
     );
 
     if (!docks) {
