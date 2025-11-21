@@ -2,6 +2,9 @@
 
 import {
   startDocksPlacement,
+  placeMineAtSelectedHex,
+  placeFactoryAtSelectedHex,
+  placeBunkerAtSelectedHex,
 } from './WorldSceneBuildings.js';
 
 import {
@@ -12,9 +15,7 @@ import {
  * Data-driven menu definitions.
  * Each menu has 6 slots (3 x 2). Empty label = disabled button.
  *
- * NOTE: labels for implemented items include their costs:
- *  - Docks:  🛠20, 💰50
- *  - Hauler: 🍖10
+ * NOTE: labels now include emojis + costs where applicable.
  */
 const MENUS = {
   root: {
@@ -39,27 +40,50 @@ const MENUS = {
     ],
   },
 
+  /**
+   * Buildings submenu: 3×2
+   *  [0] Docks (⚓)
+   *  [1] Mine (⛏️)
+   *  [2] Factory (🏭)
+   *  [3] Bunker (🛡️)
+   *  [4] —
+   *  [5] Back
+   *
+   * Costs are shown in the label text:
+   *  - Docks:   🛠20 💰50
+   *  - Mine:    🛠30 💰40
+   *  - Factory: 🛠50 💰80
+   *  - Bunker:  🛠40 💰60
+   *
+   * These must match the COSTS in WorldSceneBuildings.js.
+   */
   buildings: {
     slots: [
-      // Costs in label
-      { label: 'Docks\n🛠20 💰50', action: 'build:docks' },
-      { label: 'Mine',            action: 'build:mine' },      // no cost yet (not implemented)
-      { label: 'Factory',         action: 'build:factory' },   // no cost yet (not implemented)
-      { label: '',                action: null },
-      { label: '',                action: null },
-      { label: 'Back',            action: 'back' },
+      { label: '⚓ Docks\n🛠20 💰50',      action: 'build:docks'   },
+      { label: '⛏️ Mine\n🛠30 💰40',      action: 'build:mine'    },
+      { label: '🏭 Factory\n🛠50 💰80',    action: 'build:factory' },
+      { label: '🛡️ Bunker\n🛠40 💰60',    action: 'build:bunker'  },
+      { label: '',                         action: null           },
+      { label: 'Back',                     action: 'back'         },
     ],
   },
 
+  /**
+   * Units submenu: 3×2
+   *  [0] Hauler
+   *  [5] Back
+   *
+   * Hauler cost:
+   *  - 🍖10 (matches buildHaulerAtSelectedUnit in WorldSceneHaulers.js)
+   */
   units: {
     slots: [
-      // Hauler costs 10 food (see buildHaulerAtSelectedUnit)
-      { label: 'Hauler\n🍖10', action: 'unit:hauler' },
-      { label: '',             action: null },
-      { label: '',             action: null },
-      { label: '',             action: null },
-      { label: '',             action: null },
-      { label: 'Back',         action: 'back' },
+      { label: '🚚 Hauler\n🍖10', action: 'unit:hauler' },
+      { label: '',                action: null          },
+      { label: '',                action: null          },
+      { label: '',                action: null          },
+      { label: '',                action: null          },
+      { label: 'Back',            action: 'back'        },
     ],
   },
 
@@ -76,7 +100,7 @@ const MENUS = {
 };
 
 /**
- * Creates the unit build menu (3x2 buttons) and wires up behaviour.
+ * Creates the unit/build menu (3x2 buttons) and wires up behaviour.
  * Called once from WorldScene.create().
  */
 export function setupWorldMenus(scene) {
@@ -279,9 +303,10 @@ export function setupWorldMenus(scene) {
     });
   };
 
-  // Public helpers used by WorldScene.setSelectedUnit
-  scene.openRootUnitMenu = function (unit) {
-    scene.menuContextUnit = unit || null;
+  // Public helpers used by WorldScene.setSelectedUnit / setSelectedBuilding
+  scene.openRootUnitMenu = function (selection) {
+    // selection can be a unit OR a building
+    scene.menuContextSelection = selection || null;
     scene.unitMenu.stack = ['root'];
     scene.unitMenu.currentMenuKey = 'root';
     scene.unitMenu.container.visible = true;
@@ -312,6 +337,9 @@ export function setupWorldMenus(scene) {
  * Handle a menu action string like:
  *  - "open:build"
  *  - "build:docks"
+ *  - "build:mine"
+ *  - "build:factory"
+ *  - "build:bunker"
  *  - "unit:hauler"
  *  - "infra:road"
  */
@@ -343,22 +371,27 @@ function handleMenuAction(scene, action) {
     return;
   }
 
-  const unit = scene.selectedUnit || scene.menuContextUnit || null;
+  // Selected context can be a unit *or* a building
+  const selection = scene.menuContextSelection || scene.selectedUnit || null;
 
   if (kind === 'build') {
-    if (!unit) {
-      console.warn('[MENU] No unit selected for build action:', arg);
+    if (!selection) {
+      console.warn('[MENU] No selection for build action:', arg);
       return;
     }
     switch (arg) {
       case 'docks':
+        // place docks, usually at selected unit hex or override logic in WorldSceneBuildings
         startDocksPlacement.call(scene);
         break;
       case 'mine':
-        console.log('[MENU] Build Mine (not yet implemented).');
+        placeMineAtSelectedHex?.call(scene);
         break;
       case 'factory':
-        console.log('[MENU] Build Factory (not yet implemented).');
+        placeFactoryAtSelectedHex?.call(scene);
+        break;
+      case 'bunker':
+        placeBunkerAtSelectedHex?.call(scene);
         break;
       default:
         console.warn('[MENU] Unknown build target:', arg);
@@ -368,8 +401,8 @@ function handleMenuAction(scene, action) {
   }
 
   if (kind === 'unit') {
-    if (!unit) {
-      console.warn('[MENU] No unit selected for unit action:', arg);
+    if (!selection) {
+      console.warn('[MENU] No selection for unit action:', arg);
       return;
     }
     switch (arg) {
@@ -401,6 +434,9 @@ function handleMenuAction(scene, action) {
  * Selection highlight attached to the scene.
  * WorldScene calls attachSelectionHighlight(this) during create(),
  * and then uses this.updateSelectionHighlight() whenever selection changes.
+ *
+ * Currently highlights the *selected unit* hex. If you want buildings
+ * to be highlighted too, extend this to consider scene.selectedBuilding.
  */
 export function attachSelectionHighlight(scene) {
   const size = scene.hexSize || 24;
@@ -411,14 +447,19 @@ export function attachSelectionHighlight(scene) {
   scene.selectionHighlight = g;
 
   scene.updateSelectionHighlight = function () {
+    // Prefer unit; could be extended to buildings as well
     const unit = scene.selectedUnit;
-    if (!unit) {
+    const building = scene.selectedBuilding;
+
+    const target = unit || building || null;
+
+    if (!target) {
       g.clear();
       g.visible = false;
       return;
     }
 
-    const pos = scene.axialToWorld(unit.q, unit.r);
+    const pos = scene.axialToWorld(target.q, target.r);
     const x = pos.x;
     const y = pos.y;
 
