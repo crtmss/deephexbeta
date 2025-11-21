@@ -147,7 +147,10 @@ export default class LobbyScene extends Phaser.Scene {
     /* --- Input fields --- */
     this.add.text(460, 130, 'Your Name:', { fontSize: '18px', fill: '#ffffff' });
     const nameInput = this.add.dom(640, 160, 'input')
-      .setOrigin(0.5).setDepth(1200);
+      .setOrigin(0.5).setDepth(1200).setScrollFactor(0);
+
+    nameInput.node.placeholder = 'Your name';
+    nameInput.node.maxLength = 16;
 
     Object.assign(nameInput.node.style, {
       pointerEvents: 'auto',
@@ -164,10 +167,13 @@ export default class LobbyScene extends Phaser.Scene {
 
     this.add.text(400, 220, 'Map Seed (6 digits):', {
       fontSize: '18px', fill: '#ffffff'
-    });
+    }).setScrollFactor(0);
 
     const codeInput = this.add.dom(640, 250, 'input')
-      .setOrigin(0.5).setDepth(1200);
+      .setOrigin(0.5).setDepth(1200).setScrollFactor(0);
+
+    codeInput.node.placeholder = '000000';
+    codeInput.node.maxLength = 6;
 
     Object.assign(codeInput.node.style, {
       pointerEvents: 'auto',
@@ -199,29 +205,32 @@ export default class LobbyScene extends Phaser.Scene {
         pointerEvents: 'auto'
       },
       '🎲 Random Seed'
-    ).setOrigin(0.5).setDepth(1250);
+    ).setOrigin(0.5).setDepth(1250).setScrollFactor(0);
 
     /* --- Preview panel --- */
     this.add.text(870, 130, 'Map Preview', {
       fontSize: '18px', fill: '#ffffff'
-    });
+    }).setScrollFactor(0);
 
     this.previewSize = 80;
     this.previewWidth = 25;
     this.previewHeight = 25;
 
-    this.previewContainer = this.add.container(900, 200);
+    this.previewContainer = this.add.container(900, 200).setScrollFactor(0);
     this.previewGraphics = this.add.graphics();
     this.previewContainer.add(this.previewGraphics);
 
     this.geographyText = this.add.text(820, 380, '', {
       fontSize: '18px', fill: '#aadfff'
-    });
+    }).setScrollFactor(0);
     this.biomeText = this.add.text(820, 410, '', {
       fontSize: '18px', fill: '#aadfff'
-    });
+    }).setScrollFactor(0);
 
     /* --- Seed Init --- */
+    this.currentHexMap = null;
+    this.currentTiles = null;
+
     const firstSeed = String(Math.floor(Math.random() * 1_000_000)).padStart(6, '0');
     codeInput.node.value = firstSeed;
 
@@ -258,12 +267,15 @@ export default class LobbyScene extends Phaser.Scene {
       regenerateAndPreview(codeInput.node.value);
     });
 
+    // 🔧 IMPORTANT: register click listener before .on
+    randomBtn.addListener('click');
     randomBtn.on('click', () => {
       const seed = String(Math.floor(Math.random() * 1_000_000)).padStart(6, '0');
       codeInput.node.value = seed;
       regenerateAndPreview(seed);
     });
 
+    // First run
     regenerateAndPreview(firstSeed);
 
     /* --- Host / Join Buttons --- */
@@ -283,7 +295,7 @@ export default class LobbyScene extends Phaser.Scene {
         pointerEvents: 'auto'
       },
       'Host Game'
-    ).setDepth(1200);
+    ).setDepth(1200).setScrollFactor(0);
 
     const joinBtn = this.add.dom(
       720,
@@ -300,9 +312,11 @@ export default class LobbyScene extends Phaser.Scene {
         pointerEvents: 'auto'
       },
       'Join Game'
-    ).setDepth(1200);
+    ).setDepth(1200).setScrollFactor(0);
 
-    /* --- FIXED: seed now passed to WorldScene --- */
+    // 🔧 IMPORTANT: register click listeners
+    hostBtn.addListener('click');
+    joinBtn.addListener('click');
 
     hostBtn.on('click', async () => {
       const name = nameInput.node.value.trim();
@@ -321,7 +335,7 @@ export default class LobbyScene extends Phaser.Scene {
       }
 
       this.scene.start('WorldScene', {
-        seed: code,          // <-- FIXED
+        seed: code,
         playerName: name,
         roomCode: code,
         isHost: true
@@ -345,7 +359,7 @@ export default class LobbyScene extends Phaser.Scene {
       }
 
       this.scene.start('WorldScene', {
-        seed: code,          // <-- FIXED
+        seed: code,
         playerName: name,
         roomCode: code,
         isHost: false
