@@ -196,6 +196,23 @@ function getTile(scene, q, r) {
   return (scene.mapData || []).find(h => h.q === q && h.r === r);
 }
 
+// Find unit on (q,r)
+function getUnitAtHex(scene, q, r) {
+  const players = scene.players || [];
+  const haulers = scene.haulers || [];
+  return (
+    players.find(u => u.q === q && u.r === r) ||
+    haulers.find(h => h.q === q && h.r === r) ||
+    null
+  );
+}
+
+// Find building on (q,r)
+function getBuildingAtHex(scene, q, r) {
+  const buildings = scene.buildings || [];
+  return buildings.find(b => b.q === q && b.r === r) || null;
+}
+
 // wrapper around shared A* to keep logic here
 function computePathWithAStar(scene, unit, targetHex, blockedPred) {
   const start = { q: unit.q, r: unit.r };
@@ -237,32 +254,34 @@ export function setupWorldInputUI(scene) {
 
     const { q, r } = rounded;
 
-    // --- Unified selection for units *and* buildings ---
-    const prevUnit = scene.selectedUnit;
-    const prevBuilding = scene.selectedBuilding;
-
-    // This will:
-    // - select unit or building on (q,r)
-    // - deselect if clicking the same again
-    // - clear when nothing there
-    scene.toggleSelectedUnitAtHex?.(q, r);
-
-    const selChanged =
-      scene.selectedUnit !== prevUnit ||
-      scene.selectedBuilding !== prevBuilding;
-
-    if (selChanged) {
-      // selection changed ⇒ don't treat as move order
+    // ---------- 1) Click on unit? → select/deselect unit, no movement ----------
+    const unitHere = getUnitAtHex(scene, q, r);
+    if (unitHere) {
+      scene.setSelectedBuilding?.(null);         // clear building selection
+      scene.toggleSelectedUnitAtHex?.(q, r);     // handles select / deselect
       scene.clearPathPreview?.();
       scene.selectedHex = null;
-
-      if (scene.selectedUnit || scene.selectedBuilding) {
-        scene.debugHex?.(q, r);
-      }
+      scene.debugHex?.(q, r);
       return;
     }
 
-    // --- No selection change: treat as ground click / move target ---
+    // ---------- 2) Click on building? → select/deselect building, no movement ----------
+    const buildingHere = getBuildingAtHex(scene, q, r);
+    if (buildingHere) {
+      const prev = scene.selectedBuilding;
+      if (prev && prev.q === buildingHere.q && prev.r === buildingHere.r) {
+        scene.setSelectedBuilding?.(null);       // toggle off
+      } else {
+        scene.setSelectedUnit?.(null);           // only one selection at a time
+        scene.setSelectedBuilding?.(buildingHere);
+      }
+      scene.clearPathPreview?.();
+      scene.selectedHex = null;
+      scene.debugHex?.(q, r);
+      return;
+    }
+
+    // ---------- 3) Empty ground click ----------
     const tile = getTile(scene, q, r);
     if (tile && tile.isLocation) {
       console.log(
