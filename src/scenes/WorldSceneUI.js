@@ -186,6 +186,7 @@ function bumpResource(scene, key) {
     });
   });
 }
+
 /* =========================
    Path preview & selection UI
    ========================= */
@@ -193,17 +194,6 @@ function bumpResource(scene, key) {
 // local helper, same as in WorldScene
 function getTile(scene, q, r) {
   return (scene.mapData || []).find(h => h.q === q && h.r === r);
-}
-
-// helper: find any unit/hauler on given hex
-function getUnitAtHex(scene, q, r) {
-  const players = scene.players || [];
-  const haulers = scene.haulers || [];
-  return (
-    players.find(u => u.q === q && u.r === r) ||
-    haulers.find(h => h.q === q && h.r === r) ||
-    null
-  );
 }
 
 // wrapper around shared A* to keep logic here
@@ -224,7 +214,7 @@ function computePathWithAStar(scene, unit, targetHex, blockedPred) {
 }
 
 /**
- * Sets up unit selection + path preview + movement
+ * Sets up unit/building selection + path preview + movement
  */
 export function setupWorldInputUI(scene) {
   // ensure arrays for preview are present
@@ -238,26 +228,41 @@ export function setupWorldInputUI(scene) {
     const worldPoint = pointer.positionToCamera(scene.cameras.main);
     const rounded = scene.worldToAxial(worldPoint.x, worldPoint.y);
 
-    if (rounded.q < 0 || rounded.r < 0 || rounded.q >= scene.mapWidth || rounded.r >= scene.mapHeight) return;
+    if (
+      rounded.q < 0 ||
+      rounded.r < 0 ||
+      rounded.q >= scene.mapWidth ||
+      rounded.r >= scene.mapHeight
+    ) return;
 
     const { q, r } = rounded;
 
-    // First, check if there's a unit on this hex and toggle selection.
-    const unitAtHex = getUnitAtHex(scene, q, r);
-    if (unitAtHex) {
-      // toggleSelectedUnitAtHex handles:
-      // - select unit
-      // - deselect if same
-      // - update highlight
-      // - open/close menus
-      scene.toggleSelectedUnitAtHex?.(q, r);
+    // --- Unified selection for units *and* buildings ---
+    const prevUnit = scene.selectedUnit;
+    const prevBuilding = scene.selectedBuilding;
+
+    // This will:
+    // - select unit or building on (q,r)
+    // - deselect if clicking the same again
+    // - clear when nothing there
+    scene.toggleSelectedUnitAtHex?.(q, r);
+
+    const selChanged =
+      scene.selectedUnit !== prevUnit ||
+      scene.selectedBuilding !== prevBuilding;
+
+    if (selChanged) {
+      // selection changed ⇒ don't treat as move order
       scene.clearPathPreview?.();
       scene.selectedHex = null;
-      scene.debugHex?.(q, r);
+
+      if (scene.selectedUnit || scene.selectedBuilding) {
+        scene.debugHex?.(q, r);
+      }
       return;
     }
 
-    // No unit here: it's a ground/location click
+    // --- No selection change: treat as ground click / move target ---
     const tile = getTile(scene, q, r);
     if (tile && tile.isLocation) {
       console.log(
@@ -311,7 +316,12 @@ export function setupWorldInputUI(scene) {
     const worldPoint = pointer.positionToCamera(scene.cameras.main);
     const rounded = scene.worldToAxial(worldPoint.x, worldPoint.y);
 
-    if (rounded.q < 0 || rounded.r < 0 || rounded.q >= scene.mapWidth || rounded.r >= scene.mapHeight) {
+    if (
+      rounded.q < 0 ||
+      rounded.r < 0 ||
+      rounded.q >= scene.mapWidth ||
+      rounded.r >= scene.mapHeight
+    ) {
       scene.clearPathPreview?.();
       return;
     }
