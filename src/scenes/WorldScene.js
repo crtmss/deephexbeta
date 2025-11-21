@@ -3,6 +3,7 @@ import HexMap from '../engine/HexMap.js';
 import { findPath as aStarFindPath } from '../engine/AStar.js';
 import { drawLocationsAndRoads } from './WorldSceneMapLocations.js';
 import { setupWorldMenus, attachSelectionHighlight } from './WorldSceneMenus.js';
+
 import {
   startDocksPlacement,
   placeDocks,
@@ -124,6 +125,7 @@ export default class WorldScene extends Phaser.Scene {
 
     // selection state
     this.selectedUnit = null;
+    this.selectedBuilding = null;   // NEW: building selection
     this.selectedHex = null;
     this.pathPreviewTiles = [];
     this.pathPreviewLabels = [];
@@ -180,7 +182,6 @@ export default class WorldScene extends Phaser.Scene {
     this.pixelToHex = (x, y, sizeOverride) =>
       pixelToHex(x, y, sizeOverride ?? this.hexSize);
 
-    // draw map and world objects
     // draw map and world objects
     drawHexMap.call(this);
     drawLocationsAndRoads.call(this);
@@ -466,19 +467,53 @@ function computePathWithAStar(unit, targetHex, mapData, blockedPred) {
   return aStarFindPath(start, goal, mapData, isBlocked);
 }
 
+/**
+ * Select / deselect a unit. Ensures only one thing (unit or building)
+ * is selected at a time, opens/closes the global menu, and refreshes highlight.
+ */
 WorldScene.prototype.setSelectedUnit = function (unit) {
-  this.selectedUnit = unit;
-  this.updateSelectionHighlight?.();
-
+  this.selectedUnit = unit || null;
   if (unit) {
-    // Open the root menu when a unit is selected
+    // deselect any building
+    this.selectedBuilding = null;
+    this.menuContextSelection = unit;
     this.openRootUnitMenu?.(unit);
   } else {
-    // Close menus when nothing is selected
-    this.closeAllMenus?.();
+    // only close menu if we don't have a building selected
+    if (!this.selectedBuilding) {
+      this.menuContextSelection = null;
+      this.closeAllMenus?.();
+    }
   }
+  this.updateSelectionHighlight?.();
 };
 
+/**
+ * Select / deselect a building (docks, mine, factory, bunker, etc.).
+ * Mirrors setSelectedUnit and uses the same global menu.
+ */
+WorldScene.prototype.setSelectedBuilding = function (building) {
+  this.selectedBuilding = building || null;
+  if (building) {
+    // deselect any unit
+    this.selectedUnit = null;
+    this.menuContextSelection = building;
+    this.openRootUnitMenu?.(building);
+  } else {
+    // only close menu if we don't have a unit selected
+    if (!this.selectedUnit) {
+      this.menuContextSelection = null;
+      this.closeAllMenus?.();
+    }
+  }
+  this.updateSelectionHighlight?.();
+};
+
+/**
+ * Toggle selection at a given hex.
+ * - If clicked again on the same selected unit/building → deselect.
+ * - Else select unit on that hex, or building if no unit.
+ */
 WorldScene.prototype.toggleSelectedUnitAtHex = function (q, r) {
   // If the same unit is already selected – deselect it
   if (this.selectedUnit && this.selectedUnit.q === q && this.selectedUnit.r === r) {
@@ -486,15 +521,34 @@ WorldScene.prototype.toggleSelectedUnitAtHex = function (q, r) {
     return;
   }
 
-  // Find a unit/hauler on this hex
+  // If the same building is already selected – deselect it
+  if (this.selectedBuilding && this.selectedBuilding.q === q && this.selectedBuilding.r === r) {
+    this.setSelectedBuilding(null);
+    return;
+  }
+
+  // Try to select a unit or hauler on this hex
   const unit =
     (this.players || []).find(u => u.q === q && u.r === r) ||
     (this.haulers || []).find(h => h.q === q && h.r === r);
 
-  this.setSelectedUnit(unit || null);
+  if (unit) {
+    this.setSelectedUnit(unit);
+    return;
+  }
+
+  // Otherwise, try to select a building on this hex
+  const building = (this.buildings || []).find(b => b.q === q && b.r === r);
+  if (building) {
+    this.setSelectedBuilding(building);
+    return;
+  }
+
+  // Nothing here: clear selection
+  this.setSelectedUnit(null);
+  this.setSelectedBuilding(null);
 };
 
 WorldScene.prototype.printTurnSummary = function () {
   console.log(`[WORLD] Turn ${this.turnNumber} – Current player: ${this.turnOwner}`);
 };
-
