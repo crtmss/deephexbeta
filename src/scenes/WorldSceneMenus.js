@@ -1,455 +1,587 @@
-// src/scenes/WorldSceneMenus.js
+// deephexbeta/src/scenes/WorldSceneUI.js
 
-import {
-  startDocksPlacement,
-} from './WorldSceneBuildings.js';
+import { refreshUnits } from './WorldSceneActions.js';
+import { findPath as aStarFindPath } from '../engine/AStar.js';
 
-import {
-  buildHaulerAtSelectedUnit,
-} from './WorldSceneHaulers.js';
+/* ---------------- Camera controls (unused unless called) ---------------- */
+export function setupCameraControls(scene) {
+  scene.input.setDefaultCursor('grab');
+  scene.isDragging = false;
 
-/**
- * Data-driven menu definitions.
- * Each menu has 6 slots (3 x 2). Empty label = disabled button.
- */
-const MENUS = {
-  root: {
-    slots: [
-      { label: 'Build', action: 'open:build' },
-      { label: '',      action: null },
-      { label: '',      action: null },
-      { label: 'Close', action: 'close' },
-      { label: '',      action: null },
-      { label: '',      action: null },
-    ],
-  },
-
-  build: {
-    slots: [
-      { label: 'Buildings',      action: 'open:buildings' },
-      { label: 'Units',          action: 'open:units' },
-      { label: 'Infrastructure', action: 'open:infra' },
-      { label: 'Back',           action: 'back' },
-      { label: '',               action: null },
-      { label: '',               action: null },
-    ],
-  },
-
-  buildings: {
-    slots: [
-      { label: 'Docks',   action: 'build:docks' },
-      { label: 'Mine',    action: 'build:mine' },
-      { label: 'Factory', action: 'build:factory' },
-      { label: '',        action: null },
-      { label: '',        action: null },
-      { label: 'Back',    action: 'back' },
-    ],
-  },
-
-  units: {
-    slots: [
-      { label: 'Hauler', action: 'unit:hauler' },
-      { label: '',       action: null },
-      { label: '',       action: null },
-      { label: '',       action: null },
-      { label: '',       action: null },
-      { label: 'Back',   action: 'back' },
-    ],
-  },
-
-  infra: {
-    slots: [
-      { label: 'Road',   action: 'infra:road' },
-      { label: 'Bridge', action: 'infra:bridge' },
-      { label: 'Canal',  action: 'infra:canal' },
-      { label: '',       action: null },
-      { label: '',       action: null },
-      { label: 'Back',   action: 'back' },
-    ],
-  },
-};
-
-/**
- * Creates the build menu (3x2 buttons) and wires up behaviour.
- * Called once from WorldScene.create().
- */
-export function setupWorldMenus(scene) {
-  const originX = 20;
-  const originY = 164;
-
-  // -------- Screen overlay to absorb clicks while menu is open --------
-  const overlay = scene.add.rectangle(
-    0,
-    0,
-    scene.scale.width,
-    scene.scale.height,
-    0x000000,
-    0.001
-  )
-    .setOrigin(0, 0)
-    .setScrollFactor(0)
-    .setDepth(3950)
-    .setInteractive({ useHandCursor: false });
-
-  overlay.visible = false;
-
-  overlay.on('pointerdown', (pointer, lx, ly, event) => {
-    // swallow clicks & close menu
-    event?.stopPropagation?.();
-    scene.closeAllMenus?.();
+  scene.input.on('pointerdown', pointer => {
+    if (pointer.rightButtonDown()) {
+      scene.isDragging = true;
+      scene.input.setDefaultCursor('grabbing');
+      scene.dragStartX = pointer.x;
+      scene.dragStartY = pointer.y;
+      scene.cameraStartX = scene.cameras.main.scrollX;
+      scene.cameraStartY = scene.cameras.main.scrollY;
+    }
   });
 
-  // -------- Menu container --------
-  const container = scene.add.container(originX, originY)
-    .setDepth(4000)
-    .setScrollFactor(0);
+  scene.input.on('pointerup', () => {
+    if (scene.isDragging) {
+      scene.isDragging = false;
+      scene.input.setDefaultCursor('grab');
+    }
+  });
+
+  scene.input.on('pointermove', pointer => {
+    if (scene.isDragging) {
+      const dx = pointer.x - scene.dragStartX;
+      const dy = pointer.y - scene.dragStartY;
+      scene.cameras.main.scrollX = scene.cameraStartX - dx / scene.cameras.main.zoom;
+      scene.cameras.main.scrollY = scene.cameraStartY - dy / scene.cameras.main.zoom;
+    }
+  });
+
+  scene.input.on('wheel', (pointer, _, __, deltaY) => {
+    const cam = scene.cameras.main;
+    let z = cam.zoom - deltaY * 0.001;
+    z = Phaser.Math.Clamp(z, 0.5, 2.5);
+    cam.setZoom(z);
+  });
+}
+
+/* ---------------- Turn UI + top tabs ---------------- */
+export function setupTurnUI(scene) {
+  // Ensure resource state exists BEFORE drawing HUD
+  if (!scene.playerResources) {
+    scene.playerResources = { food: 20, scrap: 20, money: 100, influence: 0 };
+  }
+
+  // Resource HUD (top-left, fixed)
+  createResourceHUD(scene);
+  scene.updateResourceUI = () => updateResourceUI(scene);
+  scene.bumpResource = (key) => bumpResource(scene, key);
+  updateResourceUI(scene);
+
+  // Turn label
+  scene.turnText = scene.add.text(20, 58, 'Player Turn: ...', {
+    fontSize: '18px',
+    fill: '#e8f6ff',
+    backgroundColor: '#133046',
+    padding: { x: 10, y: 5 }
+  }).setScrollFactor(0).setDepth(100).setInteractive();
+
+  // End Turn button
+  scene.endTurnButton = scene.add.text(20, 88, 'End Turn', {
+    fontSize: '18px',
+    fill: '#fff',
+    backgroundColor: '#3da9fc',
+    padding: { x: 10, y: 5 }
+  }).setScrollFactor(0).setDepth(100).setInteractive();
+
+  scene.endTurnButton.on('pointerdown', () => {
+    scene.endTurn();
+  });
+
+  // Refresh button
+  scene.refreshButton = scene.add.text(20, 121, 'Refresh', {
+    fontSize: '18px',
+    fill: '#fff',
+    backgroundColor: '#444',
+    padding: { x: 10, y: 5 }
+  }).setScrollFactor(0).setDepth(100).setInteractive();
+
+  scene.refreshButton.on('pointerdown', () => {
+    refreshUnits(scene);
+  });
+
+  // Top-right tabs (Resources / Logistics) + Resources panel
+  createTopTabs(scene);
+  createResourcesPanel(scene);
+}
+
+export function updateTurnText(scene, currentTurn) {
+  if (scene.turnText) {
+    scene.turnText.setText('Player Turn: ' + currentTurn);
+  }
+}
+
+/* =========================
+   RESOURCE HUD (top-left)
+   ========================= */
+function createResourceHUD(scene) {
+  const plateColor = 0x0f2233;
+  const strokeColor = 0x3da9fc;
+
+  const originX = 20;
+  const originY = 16;
+
+  const panel = scene.add.container(originX, originY).setScrollFactor(0).setDepth(2000);
+
+  const W = 280, H = 34;
+  const bg = scene.add.graphics();
+  bg.fillStyle(plateColor, 0.92);
+  bg.fillRoundedRect(0, 0, W, H, 10);
+  bg.lineStyle(2, strokeColor, 0.9);
+  bg.strokeRoundedRect(0, 0, W, H, 10);
+
+  panel.add(bg);
+
+  const items = [
+    { key: 'food',      emoji: '🍖', label: 'Food' },
+    { key: 'scrap',     emoji: '🛠', label: 'Scrap' },
+    { key: 'money',     emoji: '💰', label: 'Money' },
+    { key: 'influence', emoji: '⭐', label: 'Inf' },
+  ];
+
+  const gap = 66;
+  const startX = 12;
+  const yMid = H / 2;
+
+  const entries = {};
+
+  items.forEach((it, i) => {
+    const x = startX + i * gap;
+
+    const icon = scene.add.text(x, yMid, it.emoji, {
+      fontSize: '18px',
+      color: '#ffffff'
+    }).setOrigin(0, 0.5).setDepth(2001);
+
+    const txt = scene.add.text(x + 22, yMid, '0', {
+      fontSize: '16px',
+      color: '#e8f6ff'
+    }).setOrigin(0, 0.5).setDepth(2001);
+
+    panel.add(icon);
+    panel.add(txt);
+
+    entries[it.key] = { icon, txt };
+  });
+
+  scene.resourceHUD = {
+    container: panel,
+    bg,
+    entries
+  };
+}
+
+function updateResourceUI(scene) {
+  if (!scene.resourceHUD || !scene.resourceHUD.entries) return;
+  const r = scene.playerResources || { food: 0, scrap: 0, money: 0, influence: 0 };
+  const { entries } = scene.resourceHUD;
+
+  if (entries.food)      entries.food.txt.setText(String(r.food ?? 0));
+  if (entries.scrap)     entries.scrap.txt.setText(String(r.scrap ?? 0));
+  if (entries.money)     entries.money.txt.setText(String(r.money ?? 0));
+  if (entries.influence) entries.influence.txt.setText(String(r.influence ?? 0));
+}
+
+function bumpResource(scene, key) {
+  if (!scene.resourceHUD || !scene.resourceHUD.entries) return;
+  const entry = scene.resourceHUD.entries[key];
+  if (!entry) return;
+
+  const targets = [entry.icon, entry.txt];
+  targets.forEach(obj => {
+    obj.setScale(1);
+    scene.tweens.add({
+      targets: obj,
+      scale: 1.15,
+      duration: 120,
+      yoyo: true,
+      ease: 'Quad.easeOut'
+    });
+  });
+}
+
+/* =========================
+   Top-right tab bar (Resources / Logistics)
+   ========================= */
+
+function createTopTabs(scene) {
+  const margin = 16;
+  const tabWidth = 140;
+  const tabHeight = 40;
+  const spacing = 12;
+
+  const totalWidth = tabWidth * 2 + spacing;
+  const x = scene.scale.width - totalWidth - margin;
+  const y = 16;
+
+  const bar = scene.add.container(x, y).setScrollFactor(0).setDepth(2100);
+
+  // Green strip background
+  const bg = scene.add.graphics();
+  bg.fillStyle(0x2e7d32, 1);
+  bg.fillRoundedRect(0, 0, totalWidth, tabHeight + 8, 8);
+  bar.add(bg);
+
+  const makeTab = (label, index, onClick) => {
+    const tx = index * (tabWidth + spacing);
+    const ty = 4;
+
+    const outer = scene.add.graphics();
+    outer.fillStyle(0x000000, 1);
+    outer.fillRoundedRect(tx, ty, tabWidth, tabHeight, 6);
+
+    const text = scene.add.text(
+      tx + tabWidth / 2,
+      ty + tabHeight / 2,
+      label,
+      {
+        fontSize: '16px',
+        color: '#ffffff',
+      }
+    ).setOrigin(0.5);
+
+    const hit = scene.add.rectangle(tx, ty, tabWidth, tabHeight, 0x000000, 0)
+      .setOrigin(0, 0)
+      .setInteractive({ useHandCursor: true });
+
+    hit.on('pointerdown', (pointer, lx, ly, event) => {
+      event?.stopPropagation?.();
+      onClick?.();
+    });
+
+    bar.add([outer, text, hit]);
+
+    return { outer, text, hit };
+  };
+
+  const tabs = {};
+
+  tabs.resources = makeTab('Resources', 0, () => {
+    scene.openResourcesPanel?.();
+  });
+
+  tabs.logistics = makeTab('Logistics', 1, () => {
+    // For now, just show a small notice
+    scene.openLogisticsPanel?.();
+  });
+
+  scene.topTabs = { container: bar, tabs };
+}
+
+/* =========================
+   Resources Panel (table-style)
+   ========================= */
+
+function createResourcesPanel(scene) {
+  // Positioned under the top tabs, on the right side
+  const panelX = scene.scale.width - 520;   // width 500 + margin
+  const panelY = 70;
+
+  const container = scene.add.container(panelX, panelY)
+    .setScrollFactor(0)
+    .setDepth(2050);
 
   container.visible = false;
 
-  const W = 260;
-  const H = 172;
+  const WIDTH = 500;
+  const HEIGHT = 220; // fixed for now; enough for several rows
 
   const bg = scene.add.graphics();
-  bg.fillStyle(0x0f2233, 0.92);
-  bg.fillRoundedRect(0, 0, W, H, 12);
+  bg.fillStyle(0x0f2233, 0.96);
+  bg.fillRoundedRect(0, 0, WIDTH, HEIGHT, 12);
   bg.lineStyle(2, 0x3da9fc, 1);
-  bg.strokeRoundedRect(0, 0, W, H, 12);
-  bg.setScrollFactor(0);
+  bg.strokeRoundedRect(0, 0, WIDTH, HEIGHT, 12);
 
   const bezel = scene.add.graphics();
   bezel.lineStyle(1, 0x9be4ff, 0.25);
-  for (let i = 1; i <= 2; i++) {
-    bezel.strokeRect(8 * i, 8 * i, W - 16 * i, H - 16 * i);
-  }
-  bezel.setScrollFactor(0);
+  bezel.strokeRect(10, 10, WIDTH - 20, HEIGHT - 20);
+  bezel.strokeRect(18, 18, WIDTH - 36, HEIGHT - 36);
 
   container.add([bg, bezel]);
-  container.sendToBack(bg);
-  container.sendToBack(bezel);
 
-  const btnWidth = 70;
-  const btnHeight = 70;
-  const pad = 8;
-  const cols = 3;
-  const rows = 2;
-  const startX = 12;
-  const startY = 12;
+  // Column definitions
+  // Building | Food | Scrap | Energy | Metal plates | Components | Currency
+  const cols = [
+    { key: 'name',       label: 'Building',    width: 130 },
+    { key: 'food',       label: 'Food',        width: 55 },
+    { key: 'scrap',      label: 'Scrap',       width: 55 },
+    { key: 'energy',     label: 'Energy',      width: 65 },
+    { key: 'metal',      label: 'Metal',       width: 70 }, // "Metal plates"
+    { key: 'components', label: 'Components',  width: 85 },
+    { key: 'currency',   label: 'Currency',    width: 70 },
+  ];
 
-  const buttons = [];
+  const startX = 20;
+  const startY = 24;
+  const rowHeight = 20;
 
-  const makeButton = (sx, sy) => {
-    const g = scene.add.graphics();
-    g.fillStyle(0x173b52, 1);
-    g.fillRoundedRect(sx, sy, btnWidth, btnHeight, 8);
-    g.lineStyle(2, 0x6fe3ff, 0.7);
-    g.strokeRoundedRect(sx, sy, btnWidth, btnHeight, 8);
-    g.lineStyle(1, 0x6fe3ff, 0.15);
-    g.beginPath();
-    g.moveTo(sx + btnWidth / 2, sy + 6);
-    g.lineTo(sx + btnWidth / 2, sy + btnHeight - 6);
-    g.moveTo(sx + 6, sy + btnHeight / 2);
-    g.lineTo(sx + btnWidth - 6, sy + btnHeight / 2);
-    g.strokePath();
-    g.setScrollFactor(0);
-
-    const label = scene.add.text(
-      sx + btnWidth / 2,
-      sy + btnHeight / 2,
-      '',
+  let xCursor = startX;
+  cols.forEach(col => {
+    col.x = xCursor;
+    const header = scene.add.text(
+      xCursor,
+      startY,
+      col.label,
       {
-        fontSize: '16px',
+        fontFamily: 'monospace',
+        fontSize: '12px',
         color: '#e8f6ff',
-        align: 'center',
-        wordWrap: { width: btnWidth - 10 },
       }
-    ).setOrigin(0.5);
-    label.setScrollFactor(0);
-
-    const hit = scene.add.rectangle(sx, sy, btnWidth, btnHeight, 0x000000, 0)
-      .setOrigin(0, 0)
-      .setInteractive({ useHandCursor: true });
-    hit.setScrollFactor(0);
-
-    container.add([g, label, hit]);
-
-    return { g, label, hit, baseX: sx, baseY: sy };
-  };
-
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      const x = startX + c * (btnWidth + pad);
-      const y = startY + r * (btnHeight + pad);
-      const btn = makeButton(x, y);
-      buttons.push(btn);
-    }
-  }
-
-  // Menu state stored on the scene
-  scene.unitMenu = {
-    container,
-    buttons,
-    currentMenuKey: 'root',
-    stack: [],
-  };
-
-  const handleButtonClick = (index) => {
-    const menuKey = scene.unitMenu.currentMenuKey;
-    const def = MENUS[menuKey];
-    if (!def) return;
-
-    const slot = def.slots[index];
-    if (!slot || !slot.action) return;
-
-    handleMenuAction(scene, slot.action);
-  };
-
-  buttons.forEach((btn, idx) => {
-    const clickHandler = (pointer, lx, ly, event) => {
-      event?.stopPropagation?.();   // prevent overlay click
-      handleButtonClick(idx);
-    };
-
-    btn.hit.on('pointerdown', clickHandler);
-    btn.label.setInteractive({ useHandCursor: true });
-    btn.label.on('pointerdown', clickHandler);
-
-    btn.hit.on('pointerover', () => {
-      btn.g.clear();
-      btn.g.fillStyle(0x1a4764, 1);
-      btn.g.fillRoundedRect(btn.baseX, btn.baseY, btnWidth, btnHeight, 8);
-      btn.g.lineStyle(2, 0x9be4ff, 1);
-      btn.g.strokeRoundedRect(btn.baseX, btn.baseY, btnWidth, btnHeight, 8);
-      btn.g.setScrollFactor(0);
-    });
-
-    const drawDefault = () => {
-      btn.g.clear();
-      btn.g.fillStyle(0x173b52, 1);
-      btn.g.fillRoundedRect(btn.baseX, btn.baseY, btnWidth, btnHeight, 8);
-      btn.g.lineStyle(2, 0x6fe3ff, 0.7);
-      btn.g.strokeRoundedRect(btn.baseX, btn.baseY, btnWidth, btnHeight, 8);
-      btn.g.lineStyle(1, 0x6fe3ff, 0.15);
-      btn.g.beginPath();
-      btn.g.moveTo(btn.baseX + btnWidth / 2, btn.baseY + 6);
-      btn.g.lineTo(btn.baseX + btnWidth / 2, btn.baseY + btnHeight - 6);
-      btn.g.moveTo(btn.baseX + 6, btn.baseY + btnHeight / 2);
-      btn.g.lineTo(btn.baseX + btnWidth - 6, btn.baseY + btnHeight / 2);
-      btn.g.strokePath();
-      btn.g.setScrollFactor(0);
-    };
-
-    btn.hit.on('pointerout', drawDefault);
-    drawDefault(); // initial
+    ).setOrigin(0, 0);
+    header.setScrollFactor(0);
+    container.add(header);
+    xCursor += col.width;
   });
 
-  // Helper to refresh visual state when menu or labels change
-  scene.refreshUnitMenuView = function () {
-    const menuKey = scene.unitMenu.currentMenuKey;
-    const def = MENUS[menuKey];
-    if (!def) {
-      scene.unitMenu.container.visible = false;
-      overlay.visible = false;
-      if (overlay.input) {
-        overlay.disableInteractive();
-      }
-      return;
-    }
+  // We keep created row texts so they can be destroyed on refresh
+  const meta = {
+    container,
+    columns: cols,
+    rowTexts: [],
+    headerY: startY,
+    rowHeight,
+  };
 
-    def.slots.forEach((slot, i) => {
-      const btn = scene.unitMenu.buttons[i];
-      if (!btn) return;
+  scene.resourcesPanel = container;
+  scene.resourcesPanelMeta = meta;
 
-      const label = slot?.label || '';
-      const enabled = !!slot?.action && label !== '';
+  // Public helpers on scene:
 
-      btn.label.setText(label);
-      btn.label.setAlpha(enabled ? 1 : 0.4);
-      btn.g.setAlpha(enabled ? 1 : 0.3);
+  scene.refreshResourcesPanel = function () {
+    const m = scene.resourcesPanelMeta;
+    if (!m) return;
 
-      if (enabled) {
-        btn.hit.setInteractive({ useHandCursor: true });
-        btn.label.setInteractive({ useHandCursor: true });
-      } else {
-        if (btn.hit.input) btn.hit.disableInteractive();
-        if (btn.label.input) btn.label.disableInteractive();
-      }
+    // Clear previous row texts
+    m.rowTexts.forEach(t => t.destroy());
+    m.rowTexts.length = 0;
+
+    const buildings = scene.buildings || [];
+    buildings.forEach((b, idx) => {
+      const y = m.headerY + m.rowHeight * (idx + 1);
+
+      // derive a display name
+      const baseName = b.displayName || b.name || (b.type ? b.type[0].toUpperCase() + b.type.slice(1) : 'Building');
+      const suffix = typeof b.id !== 'undefined' ? ` ${b.id}` : ` ${idx + 1}`;
+      const dispName = baseName + suffix;
+
+      const res = b.resources || {};
+      const rowValues = {
+        name: dispName,
+        food:       res.food       ?? b.storageFood ?? 0,
+        scrap:      res.scrap      ?? 0,
+        energy:     res.energy     ?? 0,
+        metal:      res.metal      ?? res.metalPlates ?? 0,
+        components: res.components ?? 0,
+        currency:   res.currency   ?? 0,
+      };
+
+      m.columns.forEach(col => {
+        const val = rowValues[col.key] ?? 0;
+        const txt = scene.add.text(
+          col.x,
+          y,
+          String(val),
+          {
+            fontFamily: 'monospace',
+            fontSize: '12px',
+            color: '#e8f6ff',
+          }
+        ).setOrigin(0, 0);
+        txt.setScrollFactor(0);
+        m.container.add(txt);
+        m.rowTexts.push(txt);
+      });
     });
   };
 
-  /**
-   * Unified entry point for opening the menu.
-   * Accepts either a unit or a building as "selection".
-   * (Old calls that pass only a unit still work.)
-   */
-  scene.openRootUnitMenu = function (selection) {
-    // Keep for backwards compatibility: if caller didn't pass anything, fall back to selectedUnit.
-    const sel = selection || scene.selectedUnit || scene.selectedBuilding || null;
-
-    scene.menuContextSelection = sel;
-    scene.unitMenu.stack = [];
-    scene.unitMenu.currentMenuKey = 'root';
-    scene.unitMenu.container.visible = true;
-
-    overlay.visible = true;
-    overlay.setInteractive({ useHandCursor: false });
-
-    scene.refreshUnitMenuView();
-    // Make sure the menu is above other game objects but still above the overlay (depth handles order)
-    scene.children.bringToTop(container);
+  scene.openResourcesPanel = function () {
+    scene.resourcesPanel.visible = true;
+    scene.refreshResourcesPanel?.();
   };
 
-  scene.closeAllMenus = function () {
-    if (scene.unitMenu) {
-      scene.unitMenu.container.visible = false;
-    }
-    overlay.visible = false;
-    if (overlay.input) {
-      overlay.disableInteractive();
-    }
+  scene.closeResourcesPanel = function () {
+    if (scene.resourcesPanel) scene.resourcesPanel.visible = false;
   };
 
-  // expose overlay in case other modules need to tweak it
-  scene.unitMenuOverlay = overlay;
+  // For now Logistics is just a stub: show a small "Not implemented" text
+  scene.openLogisticsPanel = function () {
+    // You can later replace this with a proper Logistics UI.
+    // For now, we just close Resources and log a message.
+    scene.closeResourcesPanel?.();
+    console.log('[UI] Logistics tab clicked (not implemented yet).');
+  };
+}
+
+/* =========================
+   Path preview & selection UI
+   ========================= */
+
+// local helper, same as in WorldScene
+function getTile(scene, q, r) {
+  return (scene.mapData || []).find(h => h.q === q && h.r === r);
+}
+
+// helper: find any unit/hauler on given hex
+function getUnitAtHex(scene, q, r) {
+  const players = scene.players || [];
+  const haulers = scene.haulers || [];
+  return (
+    players.find(u => u.q === q && u.r === r) ||
+    haulers.find(h => h.q === q && h.r === r) ||
+    null
+  );
+}
+
+// wrapper around shared A* to keep logic here
+function computePathWithAStar(scene, unit, targetHex, blockedPred) {
+  const start = { q: unit.q, r: unit.r };
+  const goal = { q: targetHex.q, r: targetHex.r };
+
+  if (start.q === goal.q && start.r === goal.r) {
+    return [start];
+  }
+
+  const isBlocked = tile => {
+    if (!tile) return true;
+    return blockedPred ? blockedPred(tile) : false;
+  };
+
+  return aStarFindPath(start, goal, scene.mapData, isBlocked);
 }
 
 /**
- * Handle a menu action string like:
- *  - "open:build"
- *  - "build:docks"
- *  - "unit:hauler"
- *  - "infra:road"
+ * Sets up unit selection + path preview + movement
  */
-function handleMenuAction(scene, action) {
-  if (!action) return;
+export function setupWorldInputUI(scene) {
+  // ensure arrays for preview are present
+  scene.pathPreviewTiles = scene.pathPreviewTiles || [];
+  scene.pathPreviewLabels = scene.pathPreviewLabels || [];
 
-  const [kind, arg] = action.split(':');
+  scene.input.on('pointerdown', pointer => {
+    if (scene.isDragging) return;
+    if (pointer.rightButtonDown && pointer.rightButtonDown()) return;
 
-  if (kind === 'open') {
-    const current = scene.unitMenu.currentMenuKey;
-    scene.unitMenu.stack.push(current);
-    scene.unitMenu.currentMenuKey = arg;
-    scene.refreshUnitMenuView?.();
-    return;
-  }
+    const worldPoint = pointer.positionToCamera(scene.cameras.main);
+    const rounded = scene.worldToAxial(worldPoint.x, worldPoint.y);
 
-  if (kind === 'back') {
-    if (scene.unitMenu.stack.length > 0) {
-      scene.unitMenu.currentMenuKey = scene.unitMenu.stack.pop();
-      scene.refreshUnitMenuView?.();
-    } else {
-      scene.closeAllMenus?.();
-    }
-    return;
-  }
+    if (rounded.q < 0 || rounded.r < 0 || rounded.q >= scene.mapWidth || rounded.r >= scene.mapHeight) return;
 
-  if (kind === 'close') {
-    scene.closeAllMenus?.();
-    return;
-  }
+    const { q, r } = rounded;
 
-  const unitOrBuilding = scene.selectedUnit || scene.menuContextSelection || null;
-
-  if (kind === 'build') {
-    if (!unitOrBuilding) {
-      console.warn('[MENU] No selection for build action:', arg);
+    // First, check if there's a unit on this hex and toggle selection.
+    const unitAtHex = getUnitAtHex(scene, q, r);
+    if (unitAtHex) {
+      scene.toggleSelectedUnitAtHex?.(q, r);
+      scene.clearPathPreview?.();
+      scene.selectedHex = null;
+      scene.debugHex?.(q, r);
       return;
     }
-    switch (arg) {
-      case 'docks':
-        // Uses selected unit as anchor for placement (nearby coastal hex)
-        startDocksPlacement.call(scene);
-        break;
-      case 'mine':
-        console.log('[MENU] Build Mine (not yet implemented).');
-        break;
-      case 'factory':
-        console.log('[MENU] Build Factory (not yet implemented).');
-        break;
-      default:
-        console.warn('[MENU] Unknown build target:', arg);
-        break;
-    }
-    return;
-  }
 
-  if (kind === 'unit') {
-    if (!unitOrBuilding) {
-      console.warn('[MENU] No selection for unit action:', arg);
+    // No unit here: it's a ground/location click
+    const tile = getTile(scene, q, r);
+    if (tile && tile.isLocation) {
+      console.log(
+        `[LOCATION] Clicked on location: ${tile.locationType || 'Unknown'} at (${q},${r})`
+      );
+    }
+
+    scene.selectedHex = rounded;
+    scene.debugHex?.(q, r);
+
+    // If we have a selected unit, treat this as a move order
+    if (scene.selectedUnit) {
+      const blocked = t => !t || t.type === 'water' || t.type === 'mountain';
+      const fullPath = computePathWithAStar(scene, scene.selectedUnit, rounded, blocked);
+
+      if (fullPath && fullPath.length > 1) {
+        let movementPoints = scene.selectedUnit.movementPoints || 4;
+        const trimmedPath = [];
+        let costSum = 0;
+
+        for (let i = 0; i < fullPath.length; i++) {
+          const step = fullPath[i];
+          const tile2 = getTile(scene, step.q, step.r);
+          const cost = tile2?.movementCost || 1;
+          if (i > 0 && costSum + cost > movementPoints) break;
+          trimmedPath.push(step);
+          if (i > 0) costSum += cost;
+        }
+
+        if (trimmedPath.length > 1) {
+          console.log('[MOVE] Committing move along path:', trimmedPath);
+          scene.startStepMovement?.(scene.selectedUnit, trimmedPath, () => {
+            if (scene.checkCombat?.(scene.selectedUnit, trimmedPath[trimmedPath.length - 1])) {
+              scene.scene.start('CombatScene', {
+                seed: scene.seed,
+                playerUnit: scene.selectedUnit,
+              });
+            } else {
+              scene.syncPlayerMove?.(scene.selectedUnit);
+            }
+          });
+        }
+      }
+    }
+  });
+
+  scene.input.on('pointermove', pointer => {
+    if (scene.isDragging) return;
+    if (!scene.selectedUnit || scene.isUnitMoving) return;
+
+    const worldPoint = pointer.positionToCamera(scene.cameras.main);
+    const rounded = scene.worldToAxial(worldPoint.x, worldPoint.y);
+
+    if (rounded.q < 0 || rounded.r < 0 || rounded.q >= scene.mapWidth || rounded.r >= scene.mapHeight) {
+      scene.clearPathPreview?.();
       return;
     }
-    switch (arg) {
-      case 'hauler':
-        buildHaulerAtSelectedUnit.call(scene);
-        break;
-      default:
-        console.warn('[MENU] Unknown unit action:', arg);
-        break;
-    }
-    return;
-  }
 
-  if (kind === 'infra') {
-    switch (arg) {
-      case 'road':
-      case 'bridge':
-      case 'canal':
-        console.log('[MENU] Infrastructure action (not yet implemented):', arg);
-        break;
-      default:
-        console.warn('[MENU] Unknown infrastructure action:', arg);
-        break;
+    const blocked = t => !t || t.type === 'water' || t.type === 'mountain';
+    const path = computePathWithAStar(scene, scene.selectedUnit, rounded, blocked);
+
+    scene.clearPathPreview?.();
+    if (path && path.length > 1) {
+      let movementPoints = scene.selectedUnit.movementPoints || 4;
+      let costSum = 0;
+      const maxPath = [];
+
+      for (let i = 0; i < path.length; i++) {
+        const step = path[i];
+        const tile = getTile(scene, step.q, step.r);
+        const cost = tile?.movementCost || 1;
+
+        if (i > 0 && costSum + cost > movementPoints) break;
+        maxPath.push(step);
+        if (i > 0) costSum += cost;
+      }
+
+      const graphics = scene.add.graphics();
+      graphics.lineStyle(2, 0x64ffda, 0.9);
+      graphics.setDepth(50);
+
+      for (let i = 0; i < maxPath.length - 1; i++) {
+        const a = maxPath[i];
+        const b = maxPath[i + 1];
+        const wa = scene.axialToWorld(a.q, a.r);
+        const wb = scene.axialToWorld(b.q, b.r);
+        graphics.beginPath();
+        graphics.moveTo(wa.x, wa.y);
+        graphics.lineTo(wb.x, wb.y);
+        graphics.strokePath();
+      }
+
+      scene.pathPreviewTiles.push(graphics);
+
+      const baseColor = '#e8f6ff';
+      const outOfRangeColor = '#ff7b7b';
+      costSum = 0;
+      for (let i = 0; i < maxPath.length; i++) {
+        const step = maxPath[i];
+        const tile = getTile(scene, step.q, step.r);
+        const cost = tile?.movementCost || 1;
+        if (i > 0) costSum += cost;
+        const { x, y } = scene.axialToWorld(step.q, step.r);
+        const labelColor = costSum <= movementPoints ? baseColor : outOfRangeColor;
+        const label = scene.add.text(x, y, `${costSum}`, {
+          fontSize: '10px',
+          color: labelColor,
+          fontStyle: 'bold'
+        }).setOrigin(0.5).setDepth(51);
+        scene.pathPreviewLabels.push(label);
+      }
     }
-  }
+  });
+
+  scene.input.on('pointerout', () => {
+    scene.clearPathPreview?.();
+  });
 }
-
-/**
- * Selection highlight attached to the scene.
- * WorldScene calls attachSelectionHighlight(this) during create(),
- * and then uses this.updateSelectionHighlight() whenever selection changes.
- */
-export function attachSelectionHighlight(scene) {
-  const size = scene.hexSize || 24;
-  const g = scene.add.graphics().setDepth(1900);
-  g.visible = false;
-
-  // IMPORTANT: draw in world space so it tracks the hex grid with the camera
-  g.setScrollFactor(1);
-
-  scene.selectionHighlight = g;
-
-  scene.updateSelectionHighlight = function () {
-    const sel = scene.selectedUnit || scene.selectedBuilding || null;
-
-    if (!sel || typeof sel.q !== 'number' || typeof sel.r !== 'number') {
-      g.clear();
-      g.visible = false;
-      return;
-    }
-
-    const pos = scene.axialToWorld(sel.q, sel.r);
-    const x = pos.x;
-    const y = pos.y;
-
-    g.clear();
-    g.lineStyle(3, 0xffff00, 1);
-
-    const radius = size * 0.9;
-    g.beginPath();
-    for (let i = 0; i < 6; i++) {
-      const angle = Math.PI / 3 * i + Math.PI / 6; // 60° steps, rotated 30°
-      const px = x + radius * Math.cos(angle);
-      const py = y + radius * Math.sin(angle);
-      if (i === 0) g.moveTo(px, py);
-      else g.lineTo(px, py);
-    }
-    g.closePath();
-    g.strokePath();
-
-    g.visible = true;
-  };
-}
-
-export default {
-  setupWorldMenus,
-  attachSelectionHighlight,
-};
