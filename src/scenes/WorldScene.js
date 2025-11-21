@@ -407,7 +407,8 @@ Biomes: ${biome}`;
 
     applyShipRoutesOnEndTurn(this);
     applyHaulerRoutesOnEndTurn(this);
-
+    applyBuildingProductionOnEndTurn(this);
+    
     this.moveEnemies();
 
     const idx = this.players.findIndex(p => p.name === this.turnOwner);
