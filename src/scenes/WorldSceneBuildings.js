@@ -424,62 +424,77 @@ function _placeDocks(scene, q, r, reason = '') {
  * Generic single-hex building placement (frame + emoji + label).
  * Used by Mine, Factory, Bunker and Docks.
  */
-function _placeGenericBuilding(scene, def, q, r) {
+function _placeGenericBuilding(scene, type, q, r) {
+  const pos = scene.axialToWorld(q, r);
+
+  const info = {
+    mine:   { emoji: '⛏️', name: 'Mine' },
+    factory:{ emoji: '🏭', name: 'Factory' },
+    bunker: { emoji: '🛡️', name: 'Bunker' }
+  }[type];
+
+  if (!info) {
+    console.warn('[BUILD] Unknown building type:', type);
+    return false;
+  }
+
   scene.buildings = scene.buildings || [];
-  scene._buildingIdSeq = (scene._buildingIdSeq || 1) + 1;
+  scene._buildingIdSeq = (scene._buildingIdSeq || 100) + 1;
   const id = scene._buildingIdSeq;
 
-  const pos = scene.axialToWorld(q, r);
-  const cont = scene.add.container(pos.x, pos.y).setDepth(UI.zBuilding);
+  const cont = scene.add.container(pos.x, pos.y).setDepth(2100);
 
-  const plate = scene.add.graphics();
-  const plateW = 36, plateH = 36, radius = 8;
-  plate.fillStyle(COLORS.plate, 0.92);
-  plate.fillRoundedRect(-plateW / 2, -plateH / 2, plateW, plateH, radius);
-  plate.lineStyle(2, COLORS.stroke, UI.boxStrokeAlpha);
-  plate.strokeRoundedRect(-plateW / 2, -plateH / 2, plateW, plateH, radius);
+  const bg = scene.add.graphics();
+  bg.fillStyle(0x0f2233, 0.92);
+  bg.fillRoundedRect(-18, -18, 36, 36, 8);
+  bg.lineStyle(2, 0x3da9fc, 1);
+  bg.strokeRoundedRect(-18, -18, 36, 36, 8);
 
-  const icon = scene.add.text(0, 0, def.emoji || '❓', {
+  const icon = scene.add.text(0, 0, info.emoji, {
     fontSize: '22px',
-    color: '#ffffff',
+    color: '#ffffff'
   }).setOrigin(0.5);
 
-  const label = scene.add.text(0, plateH / 2 + 10, def.name, {
-    fontSize: `${UI.labelFontSize}px`,
-    color: COLORS.labelText,
-  }).setOrigin(0.5, 0);
+  const label = scene.add.text(0, 24, info.name, {
+    fontSize: '14px',
+    color: '#e8f6ff'
+  }).setOrigin(0.5);
 
-  const hit = scene.add.rectangle(0, 0, plateW, plateH + 26, 0x000000, 0)
+  const hit = scene.add.rectangle(0, 0, 36, 60, 0x000000, 0)
     .setOrigin(0.5)
     .setInteractive({ useHandCursor: true });
 
-  cont.add([plate, icon, label, hit]);
+  hit.on('pointerdown', (p, lx, ly, e) => {
+    e?.stopPropagation?.();
+    scene.setSelectedBuilding?.({
+      id,
+      type,
+      name: info.name,
+      q,
+      r,
+      container: cont,
+      storage: 0,
+      storageCap: type === 'mine' ? 10 : 0,
+      isMine: type === 'mine'
+    });
+    scene.openRootUnitMenu?.(scene.selectedBuilding);
+  });
+
+  cont.add([bg, icon, label, hit]);
 
   const building = {
     id,
-    type: def.key,
-    name: def.name,
-    emoji: def.emoji || '',
     q, r,
+    type,
+    name: info.name,
     container: cont,
-    hitArea: hit,
-    routeMarker: null,
+    storage: 0,
+    storageCap: type === 'mine' ? 10 : 0,
+    isMine: type === 'mine',
     menu: null,
-    overlay: null,
-    route: null,
-    storageFood: 0,
-    storageObj: null,
-    storageScrap: 0,
   };
 
   scene.buildings.push(building);
-
-  // Mines get their own scrap storage labels
-  if (def.production && def.production.storageKey === 'storageScrap') {
-    _ensureMineStoreLabel(scene, building, def.production.labelEmoji);
-    _updateMineStoreLabel(scene, building, def.production);
-  }
-
   return building;
 }
 
