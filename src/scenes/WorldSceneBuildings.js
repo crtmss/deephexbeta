@@ -87,11 +87,36 @@ export const BUILDINGS = {
 // Public API
 ///////////////////////////////
 
-/** Place docks on a target hex (limit 2 total).
- *  If hexOverride is omitted, uses the selected unit's hex.
- *  This version is explicit: it always receives the scene as first argument.
+/**
+ * Start docks placement.
+ *
+ * Supports BOTH call styles:
+ *   startDocksPlacement.call(scene, hexOverride?)
+ *   startDocksPlacement(scene, hexOverride?)
  */
-export function startDocksPlacement(scene, hexOverride) {
+export function startDocksPlacement(sceneOrHex, maybeHex) {
+  let scene = null;
+  let hexOverride = null;
+
+  // Called as method / via .call(scene, ...)
+  if (this && this.sys && this.add) {
+    scene = this;
+    if (sceneOrHex && typeof sceneOrHex.q === 'number' && typeof sceneOrHex.r === 'number') {
+      hexOverride = sceneOrHex;
+    }
+  } else if (sceneOrHex && sceneOrHex.sys && sceneOrHex.add) {
+    // Called as function: startDocksPlacement(scene, hexOverride?)
+    scene = sceneOrHex;
+    if (maybeHex && typeof maybeHex.q === 'number' && typeof maybeHex.r === 'number') {
+      hexOverride = maybeHex;
+    }
+  }
+
+  if (!scene) {
+    console.warn('[BUILD] startDocksPlacement: no scene provided.');
+    return;
+  }
+
   _ensureResourceInit(scene);
 
   // resource cost check
@@ -110,6 +135,7 @@ export function startDocksPlacement(scene, hexOverride) {
   if (hexOverride && typeof hexOverride.q === 'number' && typeof hexOverride.r === 'number') {
     target = { q: hexOverride.q, r: hexOverride.r };
   } else if (scene.selectedUnit) {
+    // place exactly on the selected unit’s hex
     target = { q: scene.selectedUnit.q, r: scene.selectedUnit.r };
   }
 
@@ -131,22 +157,49 @@ export function startDocksPlacement(scene, hexOverride) {
   _placeDocks(scene, target.q, target.r, 'placed via startDocksPlacement');
 }
 
-/** Direct placement (if you already have target q,r). */
-export function placeDocks(scene, qOrHex, rMaybe) {
+/**
+ * Direct placement (if you already have target q,r).
+ *
+ * Supports BOTH:
+ *   placeDocks.call(scene, qOrHex, r?)
+ *   placeDocks(scene, qOrHex, r?)
+ */
+export function placeDocks(sceneOrQ, qOrHex, rMaybe) {
+  let scene = null;
+  let q, r;
+
+  // Method style: placeDocks.call(scene, qOrHex, r?)
+  if (this && this.sys && this.add) {
+    scene = this;
+    if (typeof sceneOrQ === 'object' && sceneOrQ !== null) {
+      q = sceneOrQ.q;
+      r = sceneOrQ.r;
+    } else {
+      q = sceneOrQ;
+      r = qOrHex;
+    }
+  } else if (sceneOrQ && sceneOrQ.sys && sceneOrQ.add) {
+    // Function style: placeDocks(scene, qOrHex, r?)
+    scene = sceneOrQ;
+    if (typeof qOrHex === 'object' && qOrHex !== null) {
+      q = qOrHex.q;
+      r = qOrHex.r;
+    } else {
+      q = qOrHex;
+      r = rMaybe;
+    }
+  }
+
+  if (!scene) {
+    console.warn('[BUILD] placeDocks: no scene provided.');
+    return;
+  }
+
   _ensureResourceInit(scene);
 
   if (!_canAfford(scene, COSTS.docks)) {
     console.warn('[BUILD] Not enough resources for Docks (need 🛠20 + 💰50).');
     return;
-  }
-
-  let q, r;
-  if (typeof qOrHex === 'object' && qOrHex !== null) {
-    q = qOrHex.q;
-    r = qOrHex.r;
-  } else {
-    q = qOrHex;
-    r = rMaybe;
   }
 
   if (typeof q !== 'number' || typeof r !== 'number') {
@@ -458,9 +511,10 @@ function _nearestValidWithin(scene, uq, ur, maxRadius, isValid) {
 /////////////////////////////////
 function _rand(scene) {
   // Use HexMap RNG if available for determinism, else fallback
-  return (scene?.hexMap && typeof scene.hexMap.rand === 'function')
-    ? scene.hexMap.rand()
-    : Math.random;
+  if (scene?.hexMap && typeof scene.hexMap.rand === 'function') {
+    return scene.hexMap.rand();
+  }
+  return Math.random();
 }
 
 function _getRandom(list, scene) {
