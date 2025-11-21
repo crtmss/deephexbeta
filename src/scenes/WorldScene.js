@@ -5,9 +5,10 @@ import { drawLocationsAndRoads } from './WorldSceneMapLocations.js';
 import { setupWorldMenus, attachSelectionHighlight } from './WorldSceneMenus.js';
 
 import {
-  startDocksPlacement,
-  placeDocks,
-  cancelPlacement,
+  applyBuildingProductionOnEndTurn,
+  placeMineAtSelectedHex,
+  placeFactoryAtSelectedHex,
+  placeBunkerAtSelectedHex
 } from './WorldSceneBuildings.js';
 
 import {
