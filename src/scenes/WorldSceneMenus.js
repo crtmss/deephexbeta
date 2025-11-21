@@ -4,7 +4,7 @@ import {
   startDocksPlacement,
   placeMineAtSelectedHex,
   placeFactoryAtSelectedHex,
-  placeBunkerAtSelectedHex,
+  placeBuildingUnderMobileBase,
 } from './WorldSceneBuildings.js';
 
 import {
