@@ -402,6 +402,11 @@ Biomes: ${biome}`;
   endTurn() {
     if (this.uiLocked) return;
     this.uiLocked = true;
+    this.buildings.forEach(b => {
+      if (b.type === 'mine' && b.storage < b.storageCap) {
+        b.storage += 1;
+      }
+    });
 
     console.log(`[TURN] Ending turn for ${this.turnOwner} (Turn ${this.turnNumber})`);
 
