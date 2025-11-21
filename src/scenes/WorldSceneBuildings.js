@@ -1,15 +1,16 @@
 // src/scenes/WorldSceneBuildings.js
 //
-// Buildings module (single-hex Docks + menu)
+// Buildings module (single-hex Docks + extra buildings: Mine, Factory, Bunker)
 //
-// This file only handles:
-// - Docks registry + validation (single hex, must be coastal)
-// - Docks placement (framed ⚓ + plain "Docks" label underneath)
-// - Docks context menu + overlay
+// This file handles:
+// - Buildings registry + validation
+// - Placement of single-hex buildings (docks, mine, factory, bunker)
+// - Docks context menu + overlay (build ship, set route, recall, destroy)
 // - Minimal resource helpers used for build costs
 // - Destroy building cleanup
+// - Per-turn production for mines (1 scrap / turn, cap 10 if on ruins)
 //
-// Ship/Hauler logic, storage labels, route picking, cyan paths, etc. live in:
+// Ship/Hauler logic, docks food storage labels, route picking, cyan paths, etc. live in:
 //   src/scenes/WorldSceneHaulers.js
 //
 // Required imports from Haulers module:
@@ -42,11 +43,14 @@ const UI = {
 // Costs
 ///////////////////////////////
 const COSTS = {
-  docks: { scrap: 20, money: 50 },
+  docks:   { scrap: 20, money: 50 },
+  mine:    { scrap: 30, money: 40 },
+  factory: { scrap: 50, money: 80 },
+  bunker:  { scrap: 40, money: 60 },
 };
 
 ///////////////////////////////
-// Buildings registry (single-hex docks)
+// Buildings registry
 ///////////////////////////////
 export const BUILDINGS = {
   docks: {
@@ -81,6 +85,71 @@ export const BUILDINGS = {
       return hasWaterAdj && hasLandAdj;
     },
   },
+
+  mine: {
+    key: 'mine',
+    name: 'Mine',
+    emoji: '⛏️',
+    /**
+     * Mine rule:
+     * - Can only be placed on a Ruins POI hex: tile.hasRuin === true
+     * - No other building already on that hex.
+     */
+    validateTile(scene, q, r) {
+      const t = _tileAt(scene, q, r);
+      if (!t) return false;
+      if (!t.hasRuin) return false; // must be ruins
+      if ((scene.buildings || []).some(b => b.q === q && b.r === r)) return false;
+      return true;
+    },
+    // production: 1 scrap / turn, cap 10, only if on ruins
+    production: {
+      resource: 'scrap',
+      rate: 1,
+      cap: 10,
+      requireRuin: true,
+      storageKey: 'storageScrap',
+      labelEmoji: '🛠',
+    },
+  },
+
+  factory: {
+    key: 'factory',
+    name: 'Factory',
+    emoji: '🏭',
+    /**
+     * Factory rule:
+     * - Can be placed on any land tile (no water, no mountains).
+     * - No other building already on that hex.
+     */
+    validateTile(scene, q, r) {
+      const t = _tileAt(scene, q, r);
+      if (!t) return false;
+      if (_isWater(scene, q, r)) return false;
+      if (t.type === 'mountain') return false;
+      if ((scene.buildings || []).some(b => b.q === q && b.r === r)) return false;
+      return true;
+    },
+  },
+
+  bunker: {
+    key: 'bunker',
+    name: 'Bunker',
+    emoji: '🛡️',
+    /**
+     * Bunker rule:
+     * - Can be placed on any land tile (no water, no mountains).
+     * - No other building already on that hex.
+     */
+    validateTile(scene, q, r) {
+      const t = _tileAt(scene, q, r);
+      if (!t) return false;
+      if (_isWater(scene, q, r)) return false;
+      if (t.type === 'mountain') return false;
+      if ((scene.buildings || []).some(b => b.q === q && b.r === r)) return false;
+      return true;
+    },
+  },
 };
 
 ///////////////////////////////
@@ -93,6 +162,9 @@ export const BUILDINGS = {
  * Supports BOTH call styles:
  *   startDocksPlacement.call(scene, hexOverride?)
  *   startDocksPlacement(scene, hexOverride?)
+ *
+ * Docks are placed exactly on the selected unit's hex
+ * (or on hexOverride if passed), not around it.
  */
 export function startDocksPlacement(sceneOrHex, maybeHex) {
   let scene = null;
@@ -100,13 +172,13 @@ export function startDocksPlacement(sceneOrHex, maybeHex) {
 
   // Called as method / via .call(scene, ...)
   if (this && this.sys && this.add) {
-    scene = this;
+    scene = /** @type {any} */ (this);
     if (sceneOrHex && typeof sceneOrHex.q === 'number' && typeof sceneOrHex.r === 'number') {
       hexOverride = sceneOrHex;
     }
   } else if (sceneOrHex && sceneOrHex.sys && sceneOrHex.add) {
     // Called as function: startDocksPlacement(scene, hexOverride?)
-    scene = sceneOrHex;
+    scene = /** @type {any} */ (sceneOrHex);
     if (maybeHex && typeof maybeHex.q === 'number' && typeof maybeHex.r === 'number') {
       hexOverride = maybeHex;
     }
@@ -158,7 +230,7 @@ export function startDocksPlacement(sceneOrHex, maybeHex) {
 }
 
 /**
- * Direct placement (if you already have target q,r).
+ * Direct docks placement (if you already have target q,r).
  *
  * Supports BOTH:
  *   placeDocks.call(scene, qOrHex, r?)
@@ -170,7 +242,7 @@ export function placeDocks(sceneOrQ, qOrHex, rMaybe) {
 
   // Method style: placeDocks.call(scene, qOrHex, r?)
   if (this && this.sys && this.add) {
-    scene = this;
+    scene = /** @type {any} */ (this);
     if (typeof sceneOrQ === 'object' && sceneOrQ !== null) {
       q = sceneOrQ.q;
       r = sceneOrQ.r;
@@ -180,7 +252,7 @@ export function placeDocks(sceneOrQ, qOrHex, rMaybe) {
     }
   } else if (sceneOrQ && sceneOrQ.sys && sceneOrQ.add) {
     // Function style: placeDocks(scene, qOrHex, r?)
-    scene = sceneOrQ;
+    scene = /** @type {any} */ (sceneOrQ);
     if (typeof qOrHex === 'object' && qOrHex !== null) {
       q = qOrHex.q;
       r = qOrHex.r;
@@ -219,6 +291,97 @@ export function placeDocks(sceneOrQ, qOrHex, rMaybe) {
 
 export function cancelPlacement() { /* reserved for future */ }
 
+/**
+ * Place a Mine on the currently selected hex.
+ * Requirements:
+ * - There must be a selected unit (mobile base).
+ * - There must be a selectedHex on the map.
+ * - Tile must be Ruins (tile.hasRuin === true).
+ */
+export function placeMineAtSelectedHex() {
+  const scene = /** @type {Phaser.Scene & any} */ (this);
+  _ensureResourceInit(scene);
+
+  const def = BUILDINGS.mine;
+  if (!scene.selectedUnit) {
+    console.warn('[BUILD] Mine: no unit selected.');
+    return;
+  }
+  if (!scene.selectedHex) {
+    console.warn('[BUILD] Mine: no target hex selected.');
+    return;
+  }
+
+  const { q, r } = scene.selectedHex;
+  if (!def.validateTile(scene, q, r)) {
+    console.warn('[BUILD] Mine: invalid placement (must be on Ruins POI with no other building).');
+    return;
+  }
+
+  if (!_canAfford(scene, COSTS.mine) || !_spend(scene, COSTS.mine)) return;
+
+  _placeGenericBuilding(scene, def, q, r);
+  console.log(`[BUILD] Mine placed at (${q},${r}).`);
+}
+
+/**
+ * Place a Factory on the selected hex (any land, no mountain).
+ */
+export function placeFactoryAtSelectedHex() {
+  const scene = /** @type {Phaser.Scene & any} */ (this);
+  _ensureResourceInit(scene);
+
+  const def = BUILDINGS.factory;
+  if (!scene.selectedUnit) {
+    console.warn('[BUILD] Factory: no unit selected.');
+    return;
+  }
+  if (!scene.selectedHex) {
+    console.warn('[BUILD] Factory: no target hex selected.');
+    return;
+  }
+
+  const { q, r } = scene.selectedHex;
+  if (!def.validateTile(scene, q, r)) {
+    console.warn('[BUILD] Factory: invalid placement (land only, no mountain, no other building).');
+    return;
+  }
+
+  if (!_canAfford(scene, COSTS.factory) || !_spend(scene, COSTS.factory)) return;
+
+  _placeGenericBuilding(scene, def, q, r);
+  console.log(`[BUILD] Factory placed at (${q},${r}).`);
+}
+
+/**
+ * Place a Bunker on the selected hex (any land, no mountain).
+ */
+export function placeBunkerAtSelectedHex() {
+  const scene = /** @type {Phaser.Scene & any} */ (this);
+  _ensureResourceInit(scene);
+
+  const def = BUILDINGS.bunker;
+  if (!scene.selectedUnit) {
+    console.warn('[BUILD] Bunker: no unit selected.');
+    return;
+  }
+  if (!scene.selectedHex) {
+    console.warn('[BUILD] Bunker: no target hex selected.');
+    return;
+  }
+
+  const { q, r } = scene.selectedHex;
+  if (!def.validateTile(scene, q, r)) {
+    console.warn('[BUILD] Bunker: invalid placement (land only, no mountain, no other building).');
+    return;
+  }
+
+  if (!_canAfford(scene, COSTS.bunker) || !_spend(scene, COSTS.bunker)) return;
+
+  _placeGenericBuilding(scene, def, q, r);
+  console.log(`[BUILD] Bunker placed at (${q},${r}).`);
+}
+
 ///////////////////////////////
 // Docks placement (single-hex; framed ⚓ + plain text under)
 ///////////////////////////////
@@ -233,6 +396,30 @@ function _placeDocks(scene, q, r, reason = '') {
     return;
   }
 
+  const building = _placeGenericBuilding(scene, BUILDINGS.docks, q, r);
+
+  // storage label near this hex (delegated to Haulers module, for food)
+  ensureDocksStoreLabel(scene, building);
+  updateDocksStoreLabel(scene, building);
+
+  // For now, docks still have their own context menu when clicked
+  const hit = building.hitArea;
+  if (hit) {
+    const openMenu = (pointer, lx, ly, event) => {
+      event?.stopPropagation?.();
+      _openBuildingMenu(scene, building);
+    };
+    hit.on('pointerdown', openMenu);
+  }
+
+  console.log(`[BUILD] Docks placed at (${q},${r}) — ${reason}`);
+}
+
+/**
+ * Generic single-hex building placement (frame + emoji + label).
+ * Used by Mine, Factory, Bunker and Docks.
+ */
+function _placeGenericBuilding(scene, def, q, r) {
   scene.buildings = scene.buildings || [];
   scene._buildingIdSeq = (scene._buildingIdSeq || 1) + 1;
   const id = scene._buildingIdSeq;
@@ -240,62 +427,59 @@ function _placeDocks(scene, q, r, reason = '') {
   const pos = scene.axialToWorld(q, r);
   const cont = scene.add.container(pos.x, pos.y).setDepth(UI.zBuilding);
 
-  // --- Framed anchor (background plate + ⚓ on top)
   const plate = scene.add.graphics();
   const plateW = 36, plateH = 36, radius = 8;
   plate.fillStyle(COLORS.plate, 0.92);
-  plate.fillRoundedRect(-plateW/2, -plateH/2, plateW, plateH, radius);
+  plate.fillRoundedRect(-plateW / 2, -plateH / 2, plateW, plateH, radius);
   plate.lineStyle(2, COLORS.stroke, UI.boxStrokeAlpha);
-  plate.strokeRoundedRect(-plateW/2, -plateH/2, plateW, plateH, radius);
+  plate.strokeRoundedRect(-plateW / 2, -plateH / 2, plateW, plateH, radius);
 
-  const anchor = scene.add.text(0, 0, '⚓', {
+  const icon = scene.add.text(0, 0, def.emoji || '❓', {
     fontSize: '22px',
-    color: '#ffffff'
+    color: '#ffffff',
   }).setOrigin(0.5);
 
-  // --- Plain label under the plate (no background)
-  const label = scene.add.text(0, plateH/2 + 10, 'Docks', {
+  const label = scene.add.text(0, plateH / 2 + 10, def.name, {
     fontSize: `${UI.labelFontSize}px`,
-    color: COLORS.labelText
+    color: COLORS.labelText,
   }).setOrigin(0.5, 0);
 
-  // Single hit area (for the building menu)
   const hit = scene.add.rectangle(0, 0, plateW, plateH + 26, 0x000000, 0)
-    .setOrigin(0.5).setInteractive({ useHandCursor: true });
+    .setOrigin(0.5)
+    .setInteractive({ useHandCursor: true });
 
-  cont.add([plate, anchor, label, hit]);
+  cont.add([plate, icon, label, hit]);
 
   const building = {
     id,
-    type: BUILDINGS.docks.key,
-    name: BUILDINGS.docks.name,
+    type: def.key,
+    name: def.name,
+    emoji: def.emoji || '',
     q, r,
     container: cont,
+    hitArea: hit,
     routeMarker: null,
     menu: null,
     overlay: null,
     route: null,
     storageFood: 0,
     storageObj: null,
+    storageScrap: 0,
   };
 
   scene.buildings.push(building);
 
-  // storage label near this hex (delegated to Haulers module)
-  ensureDocksStoreLabel(scene, building);
-  updateDocksStoreLabel(scene, building);
+  // Mines get their own scrap storage labels
+  if (def.production && def.production.storageKey === 'storageScrap') {
+    _ensureMineStoreLabel(scene, building, def.production.labelEmoji);
+    _updateMineStoreLabel(scene, building, def.production);
+  }
 
-  const openMenu = (pointer, lx, ly, event) => {
-    event?.stopPropagation?.();
-    _openBuildingMenu(scene, building);
-  };
-  hit.on('pointerdown', openMenu);
-
-  console.log(`[BUILD] Docks placed at (${q},${r}) — ${reason}`);
+  return building;
 }
 
 ///////////////////////////////
-// Menu (created above the building; overlay disables hex-inspect)
+// Menu (docks context menu; overlay disables hex-inspect)
 ///////////////////////////////
 function _openBuildingMenu(scene, building) {
   _closeAnyBuildingMenu(scene, building.id);
@@ -328,16 +512,16 @@ function _openBuildingMenu(scene, building) {
 
   const bg = scene.add.graphics();
   bg.fillStyle(0x0f2233, 0.96);
-  bg.fillRoundedRect(-W/2, -H/2, W, H, 12);
+  bg.fillRoundedRect(-W / 2, -H / 2, W, H, 12);
   bg.lineStyle(2, 0x3da9fc, 1);
-  bg.strokeRoundedRect(-W/2, -H/2, W, H, 12);
+  bg.strokeRoundedRect(-W / 2, -H / 2, W, H, 12);
 
   const bezel = scene.add.graphics();
   bezel.lineStyle(1, 0x9be4ff, 0.25);
-  bezel.strokeRect(-W/2 + 16, -H/2 + 16, W - 32, H - 32);
-  bezel.strokeRect(-W/2 + 8,  -H/2 + 8,  W - 16, H - 16);
+  bezel.strokeRect(-W / 2 + 16, -H / 2 + 16, W - 32, H - 32);
+  bezel.strokeRect(-W / 2 + 8,  -H / 2 + 8,  W - 16, H - 16);
 
-  const btnSize = 70, pad = 8, startX = -W/2 + 12, startY = -H/2 + 12;
+  const btnSize = 70, pad = 8, startX = -W / 2 + 12, startY = -H / 2 + 12;
 
   const drawButton = (x, y, label, onClick) => {
     const g = scene.add.graphics();
@@ -347,13 +531,13 @@ function _openBuildingMenu(scene, building) {
     g.strokeRoundedRect(x, y, btnSize, btnSize, 8);
     g.lineStyle(1, 0x6fe3ff, 0.15);
     g.beginPath();
-    g.moveTo(x + btnSize/2, y + 6);
-    g.lineTo(x + btnSize/2, y + btnSize - 6);
-    g.moveTo(x + 6, y + btnSize/2);
-    g.lineTo(x + btnSize - 6, y + btnSize/2);
+    g.moveTo(x + btnSize / 2, y + 6);
+    g.lineTo(x + btnSize / 2, y + btnSize - 6);
+    g.moveTo(x + 6, y + btnSize / 2);
+    g.lineTo(x + btnSize - 6, y + btnSize / 2);
     g.strokePath();
 
-    const t = scene.add.text(x + btnSize/2, y + btnSize/2, label, {
+    const t = scene.add.text(x + btnSize / 2, y + btnSize / 2, label, {
       fontSize: '14px',
       color: '#e8f6ff',
       align: 'center',
@@ -379,10 +563,10 @@ function _openBuildingMenu(scene, building) {
       g.strokeRoundedRect(x, y, btnSize, btnSize, 8);
       g.lineStyle(1, 0x6fe3ff, 0.15);
       g.beginPath();
-      g.moveTo(x + btnSize/2, y + 6);
-      g.lineTo(x + btnSize/2, y + btnSize - 6);
-      g.moveTo(x + 6, y + btnSize/2);
-      g.lineTo(x + btnSize - 6, y + btnSize/2);
+      g.moveTo(x + btnSize / 2, y + 6);
+      g.lineTo(x + btnSize / 2, y + btnSize - 6);
+      g.moveTo(x + 6, y + btnSize / 2);
+      g.lineTo(x + btnSize - 6, y + btnSize / 2);
       g.strokePath();
     });
 
@@ -440,7 +624,42 @@ function _destroyBuilding(scene, building) {
 
   scene.buildings = (scene.buildings || []).filter(b => b !== building);
   if (scene.uiLock === 'buildingMenu') scene.uiLock = null;
-  console.log(`[BUILD] Docks destroyed (id=${building.id}).`);
+  console.log(`[BUILD] Building destroyed (id=${building.id}, type=${building.type}).`);
+}
+
+///////////////////////////////
+// Per-turn production (mines)
+///////////////////////////////
+export function applyBuildingProductionOnEndTurn(sceneArg) {
+  const scene = sceneArg || /** @type {any} */ (this);
+  if (!scene) return;
+  _ensureResourceInit(scene);
+
+  (scene.buildings || []).forEach(b => {
+    const def = BUILDINGS[b.type];
+    if (!def || !def.production) return;
+
+    const prod = def.production;
+    const key  = prod.storageKey || (prod.resource === 'scrap' ? 'storageScrap' : null);
+    if (!key) return;
+
+    // Require ruins if configured
+    if (prod.requireRuin) {
+      const t = _tileAt(scene, b.q, b.r);
+      if (!t || !t.hasRuin) return;
+    }
+
+    const current = b[key] || 0;
+    if (current >= prod.cap) return;
+
+    b[key] = Math.min(prod.cap, current + prod.rate);
+
+    // Only mines currently use this system, but keep it generic-ish
+    if (b.type === 'mine') {
+      _ensureMineStoreLabel(scene, b, prod.labelEmoji);
+      _updateMineStoreLabel(scene, b, prod);
+    }
+  });
 }
 
 ///////////////////////////////
@@ -448,7 +667,8 @@ function _destroyBuilding(scene, building) {
 ///////////////////////////////
 function _ensureResourceInit(scene) {
   if (!scene.playerResources) {
-    scene.playerResources = { food: 20, scrap: 20, money: 100, influence: 0 };
+    // Fallback default if nothing set elsewhere
+    scene.playerResources = { food: 200, scrap: 200, money: 200, influence: 200 };
   }
   scene.updateResourceUI?.();
 }
@@ -507,6 +727,25 @@ function _nearestValidWithin(scene, uq, ur, maxRadius, isValid) {
 }
 
 ///////////////////////////////
+// Mine storage label helpers
+///////////////////////////////
+function _ensureMineStoreLabel(scene, mine, emoji = '🛠') {
+  if (mine.storageObj && !mine.storageObj.destroyed) return;
+  const pos = scene.axialToWorld(mine.q, mine.r);
+  mine.storageObj = scene.add.text(pos.x + 16, pos.y - 14, '', {
+    fontSize: '14px',
+    color: COLORS.labelText,
+  }).setOrigin(0, 1).setDepth(UI.zBuilding + 1);
+}
+function _updateMineStoreLabel(scene, mine, prodDef) {
+  if (!mine.storageObj) return;
+  const key = prodDef.storageKey || 'storageScrap';
+  const emoji = prodDef.labelEmoji || '🛠';
+  const n = Math.min(prodDef.cap, mine[key] || 0);
+  mine.storageObj.setText(n > 0 ? `${emoji}×${n}` : '');
+}
+
+///////////////////////////////
 // RNG helpers (local to buildings)
 /////////////////////////////////
 function _rand(scene) {
@@ -528,4 +767,8 @@ export default {
   startDocksPlacement,
   placeDocks,
   cancelPlacement,
+  placeMineAtSelectedHex,
+  placeFactoryAtSelectedHex,
+  placeBunkerAtSelectedHex,
+  applyBuildingProductionOnEndTurn,
 };
