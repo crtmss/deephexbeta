@@ -299,87 +299,92 @@ export function cancelPlacement() { /* reserved for future */ }
  * - Tile must be Ruins (tile.hasRuin === true).
  */
 export function placeMineAtSelectedHex() {
-  const scene = /** @type {Phaser.Scene & any} */ (this);
+  const scene = this;
+
   _ensureResourceInit(scene);
 
-  const def = BUILDINGS.mine;
-  if (!scene.selectedUnit) {
+  // require selected unit, just like docks
+  const u = scene.selectedUnit;
+  if (!u) {
     console.warn('[BUILD] Mine: no unit selected.');
-    return;
-  }
-  if (!scene.selectedHex) {
-    console.warn('[BUILD] Mine: no target hex selected.');
-    return;
+    return false;
   }
 
-  const { q, r } = scene.selectedHex;
-  if (!def.validateTile(scene, q, r)) {
-    console.warn('[BUILD] Mine: invalid placement (must be on Ruins POI with no other building).');
-    return;
+  const q = u.q;
+  const r = u.r;
+
+  const tile = scene.mapData.find(t => t.q === q && t.r === r);
+  if (!tile || tile.feature !== 'ruins') {
+    console.warn('[BUILD] Mine: can only be placed on Ruins POIs.');
+    return false;
   }
 
-  if (!_canAfford(scene, COSTS.mine) || !_spend(scene, COSTS.mine)) return;
+  const cost = { scrap: 30, money: 40 };
+  if (!_canAfford(scene, cost)) {
+    console.warn('[BUILD] Mine: not enough resources.');
+    return false;
+  }
 
-  _placeGenericBuilding(scene, def, q, r);
-  console.log(`[BUILD] Mine placed at (${q},${r}).`);
+  if (!_spend(scene, cost)) return false;
+
+  // actual placement
+  return _placeGenericBuilding(scene, 'mine', q, r);
 }
 
 /**
  * Place a Factory on the selected hex (any land, no mountain).
  */
 export function placeFactoryAtSelectedHex() {
-  const scene = /** @type {Phaser.Scene & any} */ (this);
+  const scene = this;
+
   _ensureResourceInit(scene);
 
-  const def = BUILDINGS.factory;
-  if (!scene.selectedUnit) {
+  const u = scene.selectedUnit;
+  if (!u) {
     console.warn('[BUILD] Factory: no unit selected.');
-    return;
-  }
-  if (!scene.selectedHex) {
-    console.warn('[BUILD] Factory: no target hex selected.');
-    return;
+    return false;
   }
 
-  const { q, r } = scene.selectedHex;
-  if (!def.validateTile(scene, q, r)) {
-    console.warn('[BUILD] Factory: invalid placement (land only, no mountain, no other building).');
-    return;
+  const q = u.q;
+  const r = u.r;
+
+  const cost = { scrap: 50, money: 80 };
+  if (!_canAfford(scene, cost)) {
+    console.warn('[BUILD] Factory: not enough resources.');
+    return false;
   }
 
-  if (!_canAfford(scene, COSTS.factory) || !_spend(scene, COSTS.factory)) return;
+  if (!_spend(scene, cost)) return false;
 
-  _placeGenericBuilding(scene, def, q, r);
-  console.log(`[BUILD] Factory placed at (${q},${r}).`);
+  return _placeGenericBuilding(scene, 'factory', q, r);
 }
 
 /**
  * Place a Bunker on the selected hex (any land, no mountain).
  */
 export function placeBunkerAtSelectedHex() {
-  const scene = /** @type {Phaser.Scene & any} */ (this);
+  const scene = this;
+
   _ensureResourceInit(scene);
 
-  const def = BUILDINGS.bunker;
-  if (!scene.selectedUnit) {
+  const u = scene.selectedUnit;
+  if (!u) {
     console.warn('[BUILD] Bunker: no unit selected.');
-    return;
-  }
-  if (!scene.selectedHex) {
-    console.warn('[BUILD] Bunker: no target hex selected.');
-    return;
+    return false;
   }
 
-  const { q, r } = scene.selectedHex;
-  if (!def.validateTile(scene, q, r)) {
-    console.warn('[BUILD] Bunker: invalid placement (land only, no mountain, no other building).');
-    return;
+  const q = u.q;
+  const r = u.r;
+
+  const cost = { scrap: 40, money: 60 };
+  if (!_canAfford(scene, cost)) {
+    console.warn('[BUILD] Bunker: not enough resources.');
+    return false;
   }
 
-  if (!_canAfford(scene, COSTS.bunker) || !_spend(scene, COSTS.bunker)) return;
+  if (!_spend(scene, cost)) return false;
 
-  _placeGenericBuilding(scene, def, q, r);
-  console.log(`[BUILD] Bunker placed at (${q},${r}).`);
+  return _placeGenericBuilding(scene, 'bunker', q, r);
 }
 
 ///////////////////////////////
