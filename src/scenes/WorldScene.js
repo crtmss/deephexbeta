@@ -3,19 +3,25 @@ import HexMap from '../engine/HexMap.js';
 import { findPath as aStarFindPath } from '../engine/AStar.js';
 import { drawLocationsAndRoads } from './WorldSceneMapLocations.js';
 import { setupWorldMenus, attachSelectionHighlight } from './WorldSceneMenus.js';
-import { setupWorldLogisticsUI } from './WorldSceneLogistics.js';
-import { applyLogisticsRoutesOnEndTurn } from './WorldSceneLogisticsRuntime.js';
-// Buildings module is now used only via menus / other files, no direct imports needed here.
 
+// Logistics: building-side production + advanced hauler routes
+import { applyLogisticsOnEndTurn } from './WorldSceneLogistics.js';
+import { applyLogisticsRoutesOnEndTurn } from './WorldSceneLogisticsRuntime.js';
+
+// Haulers & ships
 import {
   applyShipRoutesOnEndTurn,
   applyHaulerBehaviorOnEndTurn as applyHaulerRoutesOnEndTurn,
 } from './WorldSceneHaulers.js';
 
+// UI & input
 import { setupTurnUI, updateTurnText, setupWorldInputUI } from './WorldSceneUI.js';
+
+// Units / resources
 import { spawnUnitsAndEnemies } from './WorldSceneUnits.js';
 import { spawnFishResources } from './WorldSceneResources.js';
 
+// Map rendering & helpers
 import {
   drawHexMap,
   hexToPixel,
@@ -26,11 +32,6 @@ import {
   isoOffset,
   LIFT_PER_LVL
 } from './WorldSceneMap.js';
-
-import {
-  setupLogisticsPanel,
-  applyLogisticsOnEndTurn,
-} from './WorldSceneLogistics.js';
 
 /* =========================
    Deterministic world summary
@@ -213,21 +214,6 @@ export default class WorldScene extends Phaser.Scene {
     if (this.turnOwner) {
       updateTurnText(this, this.turnOwner);
     }
-
-    this.addWorldMetaBadge();
-
-    // NEW: logistics tab + panel wiring
-    setupWorldLogisticsUI(this);
-
-    // Input (selection + path preview + movement)
-    setupWorldInputUI(this);
-    setupTurnUI(this);
-    if (this.turnOwner) {
-      updateTurnText(this, this.turnOwner);
-    }
-
-    // Logistics panel (Factorio-style hauler management)
-    setupLogisticsPanel(this);
 
     this.addWorldMetaBadge();
 
@@ -420,12 +406,12 @@ Biomes: ${biome}`;
 
     // 1) Ships (fish → docks)
     applyShipRoutesOnEndTurn(this);
-    // 2) Ground haulers (docks ↔ mobile base, etc.)
+    // 2) Ground haulers (basic docks ↔ base behavior)
     applyHaulerRoutesOnEndTurn(this);
-    // 3) Buildings logistics (e.g. Mines produce scrap)
+    // 3) Buildings logistics (e.g. Mines produce scrap into local storage)
     applyLogisticsOnEndTurn(this);
-
-    applyLogisticsRoutesOnEndTurn(this);   
+    // 4) Factorio-style logistics routes (haulers with custom logisticsRoute)
+    applyLogisticsRoutesOnEndTurn(this);
 
     this.moveEnemies();
 
