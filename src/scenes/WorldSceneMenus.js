@@ -2,9 +2,9 @@
 
 import {
   startDocksPlacement,
-  placeMineAtSelectedHex,
-  placeFactoryAtSelectedHex,
-  placeBuildingUnderMobileBase,
+  startMinePlacement,
+  startFactoryPlacement,
+  startBunkerPlacement,
 } from './WorldSceneBuildings.js';
 
 import {
@@ -12,10 +12,28 @@ import {
 } from './WorldSceneHaulers.js';
 
 /**
+ * Optional: hard-coded cost labels for display.
+ * Keep these in sync with COSTS in WorldSceneBuildings.js / WorldSceneHaulers.js.
+ */
+const COST_LABELS = {
+  docks:   '20🛠 / 50💰',
+  mine:    '40🛠',
+  factory: '60🛠 / 100💰',
+  bunker:  '30🛠 / 50💰',
+  hauler:  '10🍖',
+};
+
+/**
+ * Returns button label + cost line if known.
+ */
+function labelWithCost(base, key) {
+  const cost = COST_LABELS[key];
+  return cost ? `${base}\n(${cost})` : base;
+}
+
+/**
  * Data-driven menu definitions.
  * Each menu has 6 slots (3 x 2). Empty label = disabled button.
- *
- * NOTE: labels now include emojis + costs where applicable.
  */
 const MENUS = {
   root: {
@@ -40,50 +58,25 @@ const MENUS = {
     ],
   },
 
-  /**
-   * Buildings submenu: 3×2
-   *  [0] Docks (⚓)
-   *  [1] Mine (⛏️)
-   *  [2] Factory (🏭)
-   *  [3] Bunker (🛡️)
-   *  [4] —
-   *  [5] Back
-   *
-   * Costs are shown in the label text:
-   *  - Docks:   🛠20 💰50
-   *  - Mine:    🛠30 💰40
-   *  - Factory: 🛠50 💰80
-   *  - Bunker:  🛠40 💰60
-   *
-   * These must match the COSTS in WorldSceneBuildings.js.
-   */
   buildings: {
     slots: [
-      { label: '⚓ Docks\n🛠20 💰50',      action: 'build:docks'   },
-      { label: '⛏️ Mine\n🛠30 💰40',      action: 'build:mine'    },
-      { label: '🏭 Factory\n🛠50 💰80',    action: 'build:factory' },
-      { label: '🛡️ Bunker\n🛠40 💰60',    action: 'build:bunker'  },
-      { label: '',                         action: null           },
-      { label: 'Back',                     action: 'back'         },
+      { label: labelWithCost('Docks',   'docks'),   action: 'build:docks' },
+      { label: labelWithCost('Mine',    'mine'),    action: 'build:mine' },
+      { label: labelWithCost('Factory', 'factory'), action: 'build:factory' },
+      { label: labelWithCost('Bunker',  'bunker'),  action: 'build:bunker' },
+      { label: '',                                 action: null },
+      { label: 'Back',                             action: 'back' },
     ],
   },
 
-  /**
-   * Units submenu: 3×2
-   *  [0] Hauler
-   *  [5] Back
-   *
-   * Hauler cost:
-   *  - 🍖10 (matches buildHaulerAtSelectedUnit in WorldSceneHaulers.js)
-   */
   units: {
     slots: [
-      { label: '🚚 Hauler\n🍖10', action: 'unit:hauler' },
-      { label: '',                action: null          },
-      { label: '',                action: null          },
-      { label: '',                action: null          },
-      { label: '',                action: null          },
-      { label: 'Back',            action: 'back'        },
+      { label: labelWithCost('Hauler', 'hauler'), action: 'unit:hauler' },
+      { label: '',                               action: null },
+      { label: '',                               action: null },
+      { label: '',                               action: null },
+      { label: '',                               action: null },
+      { label: 'Back',                           action: 'back' },
     ],
   },
 
@@ -186,10 +179,10 @@ export function setupWorldMenus(scene) {
       sy + btnHeight / 2,
       '',
       {
-        fontSize: '16px',
+        fontSize: '14px',
         color: '#e8f6ff',
         align: 'center',
-        wordWrap: { width: btnWidth - 10 },
+        wordWrap: { width: btnWidth - 12 },
       }
     ).setOrigin(0.5);
     label.setScrollFactor(0);
@@ -305,7 +298,6 @@ export function setupWorldMenus(scene) {
 
   // Public helpers used by WorldScene.setSelectedUnit / setSelectedBuilding
   scene.openRootUnitMenu = function (selection) {
-    // selection can be a unit OR a building
     scene.menuContextSelection = selection || null;
     scene.unitMenu.stack = ['root'];
     scene.unitMenu.currentMenuKey = 'root';
@@ -337,9 +329,6 @@ export function setupWorldMenus(scene) {
  * Handle a menu action string like:
  *  - "open:build"
  *  - "build:docks"
- *  - "build:mine"
- *  - "build:factory"
- *  - "build:bunker"
  *  - "unit:hauler"
  *  - "infra:road"
  */
@@ -371,8 +360,8 @@ function handleMenuAction(scene, action) {
     return;
   }
 
-  // Selected context can be a unit *or* a building
-  const selection = scene.menuContextSelection || scene.selectedUnit || null;
+  // unified selection: unit OR building
+  const selection = scene.menuContextSelection || scene.selectedUnit || scene.selectedBuilding || null;
 
   if (kind === 'build') {
     if (!selection) {
@@ -381,17 +370,17 @@ function handleMenuAction(scene, action) {
     }
     switch (arg) {
       case 'docks':
-        // place docks, usually at selected unit hex or override logic in WorldSceneBuildings
+        // placed under the currently selected mobile base / unit
         startDocksPlacement.call(scene);
         break;
       case 'mine':
-        placeMineAtSelectedHex?.call(scene);
+        startMinePlacement.call(scene);
         break;
       case 'factory':
-        placeFactoryAtSelectedHex?.call(scene);
+        startFactoryPlacement.call(scene);
         break;
       case 'bunker':
-        placeBunkerAtSelectedHex?.call(scene);
+        startBunkerPlacement.call(scene);
         break;
       default:
         console.warn('[MENU] Unknown build target:', arg);
@@ -434,25 +423,19 @@ function handleMenuAction(scene, action) {
  * Selection highlight attached to the scene.
  * WorldScene calls attachSelectionHighlight(this) during create(),
  * and then uses this.updateSelectionHighlight() whenever selection changes.
- *
- * Currently highlights the *selected unit* hex. If you want buildings
- * to be highlighted too, extend this to consider scene.selectedBuilding.
  */
 export function attachSelectionHighlight(scene) {
   const size = scene.hexSize || 24;
   const g = scene.add.graphics().setDepth(1900);
   g.visible = false;
-  g.setScrollFactor(0);
 
   scene.selectionHighlight = g;
 
   scene.updateSelectionHighlight = function () {
-    // Prefer unit; could be extended to buildings as well
+    // highlight unit OR building
     const unit = scene.selectedUnit;
     const building = scene.selectedBuilding;
-
-    const target = unit || building || null;
-
+    const target = unit || building;
     if (!target) {
       g.clear();
       g.visible = false;
