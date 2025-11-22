@@ -254,6 +254,9 @@ export function buildHaulerAtSelectedUnit() {
   const t = scene.add.text(pos.x, pos.y, '🚚', { fontSize: '20px', color: '#ffffff' })
     .setOrigin(0.5).setDepth(UI.zBuilding);
 
+
+  scene._haulerIdSeq = (scene._haulerIdSeq || 0) + 1;
+  const id = scene._haulerIdSeq;
   const hauler = {
     type: 'hauler',
     name: 'Hauler',
@@ -267,6 +270,8 @@ export function buildHaulerAtSelectedUnit() {
     mode: 'idle',
     baseRef: u, baseQ: u.q, baseR: u.r,
     targetDocksId: null,
+    logisticsRoute: [],
+    routeIndex: 0,
   };
 
   // Auto-assign nearest docks (by distance to docks hex)
@@ -298,6 +303,12 @@ export function applyHaulerBehaviorOnEndTurn(sceneArg) {
 
   let movedAny = false;
 
+  for (const h of haulers) {
+  // NEW: if this hauler has a logistics route, let LogisticsRuntime handle it
+  if (Array.isArray(h.logisticsRoute) && h.logisticsRoute.length > 0) {
+    continue;
+  }
+  
   for (const h of haulers) {
     if (typeof h.maxMovePoints !== 'number') h.maxMovePoints = 8;
     if (typeof h.movePoints !== 'number') h.movePoints = h.maxMovePoints;
