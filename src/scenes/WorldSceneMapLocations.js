@@ -1,508 +1,329 @@
-// src/scenes/WorldSceneLogistics.js
-//
-// Factorio-style logistics backend + basic UI.
-//
-// Responsibilities:
-// - Define a shared model for "stations" (Mobile Base + buildings).
-// - Define a shared model for "logistics routes" attached to haulers/ships.
-// - Provide a Logistics panel UI: list of haulers, details for selected hauler.
-// - Provide applyLogisticsOnEndTurn() for building-side logistics (mines, etc.).
-//
-// Movement logic for haulers/ships still lives in WorldSceneHaulers.js.
-// Later we will make that logic consume hauler.logisticsRoute.
+// src/scenes/WorldSceneMapLocations.js
+// Roads + POIs rendering. Geography (landmarks + UI/overlay) is delegated
+// to WorldSceneGeography.js.
 
-///////////////////////////////
-// Visual constants
-///////////////////////////////
-const LOGI_COLORS = {
-  panelBg: 0x0f2233,
-  panelStroke: 0x3da9fc,
-  textMain: '#e8f6ff',
-  textDim: '#9bb6cc',
-  listHighlight: '#ffffff',
-};
+import Geography, {
+  resolveBiome,
+  effectiveElevationLocal,
+  initOrUpdateGeography,
+  drawGeographyOverlay,
+  getNoPOISet,
+} from './WorldSceneGeography.js';
 
-const LOGI_Z = {
-  panel: 4100,
-  overlay: 4090,
-};
-
-///////////////////////////////
-// Public API
-///////////////////////////////
-
-/**
- * Called from WorldScene.create().
- * Builds the Logistics panel (hidden by default) and attaches helpers:
- *  - scene.openLogisticsPanel()
- *  - scene.closeLogisticsPanel()
- *  - scene.refreshLogisticsPanel()
- */
-export function setupLogisticsPanel(scene) {
-  const originX = 300;   // we can reposition later if needed
-  const originY = 120;
-
-  const container = scene.add.container(originX, originY)
-    .setDepth(LOGI_Z.panel)
-    .setScrollFactor(0);
-
-  container.visible = false;
-
-  // panel background
-  const W = 460;
-  const H = 260;
-
-  const bg = scene.add.graphics();
-  bg.fillStyle(LOGI_COLORS.panelBg, 0.96);
-  bg.fillRoundedRect(0, 0, W, H, 12);
-  bg.lineStyle(2, LOGI_COLORS.panelStroke, 1);
-  bg.strokeRoundedRect(0, 0, W, H, 12);
-
-  // inner bezel
-  const bezel = scene.add.graphics();
-  bezel.lineStyle(1, 0x9be4ff, 0.25);
-  bezel.strokeRect(10, 10, W - 20, H - 20);
-
-  container.add([bg, bezel]);
-
-  // Titles
-  const title = scene.add.text(
-    16, 12,
-    'Logistics – Haulers & Ships',
-    {
-      fontSize: '16px',
-      color: LOGI_COLORS.textMain,
-      fontStyle: 'bold',
-    }
-  ).setOrigin(0, 0);
-
-  const subtitle = scene.add.text(
-    16, 32,
-    'Select a hauler on the left to inspect its route.',
-    {
-      fontSize: '12px',
-      color: LOGI_COLORS.textDim,
-    }
-  ).setOrigin(0, 0);
-
-  container.add([title, subtitle]);
-
-  // Close button (top-right X)
-  const closeText = scene.add.text(
-    W - 18, 10,
-    '✕',
-    {
-      fontSize: '16px',
-      color: LOGI_COLORS.textMain,
-    }
-  ).setOrigin(1, 0).setInteractive({ useHandCursor: true });
-
-  closeText.on('pointerdown', () => {
-    scene.closeLogisticsPanel?.();
-  });
-
-  container.add(closeText);
-
-  // Left column: hauler list
-  const listLabel = scene.add.text(
-    16, 56,
-    'Haulers & Ships',
-    {
-      fontSize: '14px',
-      color: LOGI_COLORS.textMain,
-      fontStyle: 'bold',
-    }
-  ).setOrigin(0, 0);
-
-  const listContainer = scene.add.container(16, 76);
-  container.add([listLabel, listContainer]);
-
-  // Right column: selected hauler details
-  const detailLabel = scene.add.text(
-    200, 56,
-    'Selected Route',
-    {
-      fontSize: '14px',
-      color: LOGI_COLORS.textMain,
-      fontStyle: 'bold',
-    }
-  ).setOrigin(0, 0);
-
-  const detailContainer = scene.add.container(200, 76);
-  container.add([detailLabel, detailContainer]);
-
-  // Store UI handles on the scene
-  scene.logisticsUI = {
-    container,
-    listContainer,
-    detailContainer,
-    listEntries: [],
-    selectedHaulerId: null,
+function mulberry32(a) {
+  let t = a >>> 0;
+  return function () {
+    t += 0x6D2B79F5;
+    let r = Math.imul(t ^ (t >>> 15), 1 | t);
+    r ^= r + Math.imul(r ^ (r >>> 7), 61 | r);
+    return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
   };
+}
+const rndInt = (rnd, min, max) => Math.floor(rnd() * (max - min + 1)) + min;
+const chance = (rnd, p) => rnd() < p;
+const keyOf = (q, r) => `${q},${r}`;
 
-  ///////////////////////////////
-  // Scene helper methods
-  ///////////////////////////////
+function inBounds(q, r, w, h) { return q >= 0 && q < w && r >= 0 && r < h; }
+function neighborsOddR(q, r) {
+  const even = (r % 2 === 0);
+  return even
+    ? [[+1,0],[0,-1],[-1,-1],[-1,0],[-1,+1],[0,+1]]
+    : [[+1,0],[+1,-1],[0,-1],[-1,0],[0,+1],[+1,+1]];
+}
+function neighborTiles(byKey, width, height, q, r, skipWater = true) {
+  const out = [];
+  for (const [dq, dr] of neighborsOddR(q, r)) {
+    const nq = q + dq, nr = r + dr;
+    if (!inBounds(nq, nr, width, height)) continue;
+    const t = byKey.get(keyOf(nq, nr));
+    if (!t) continue;
+    if (skipWater && t.type === 'water') continue;
+    out.push(t);
+  }
+  return out;
+}
 
-  scene.openLogisticsPanel = function () {
-    if (!this.logisticsUI) return;
-    this.logisticsUI.container.visible = true;
-    this.refreshLogisticsPanel?.();
+/* --------------------- Biome + POI helpers --------------------- */
+function treeEmojiFor(biome, tileType) {
+  if (tileType === 'volcano_ash') return '🌴';
+  if (tileType === 'sand')        return '🌴';
+  if (tileType === 'swamp')       return '🌳';
+  if (tileType === 'ice' || tileType === 'snow') return '🌲';
+  const b = (biome || '').toLowerCase();
+  if (b.includes('volcan'))  return '🌴';
+  if (b.includes('desert'))  return '🌴';
+  if (b.includes('icy'))     return '🌲';
+  if (b.includes('swamp'))   return '🌳';
+  return '🌳';
+}
+
+/* ================= Placement & flags (POIs) ================= */
+function placeLocations(mapData, width, height, rnd) {
+  for (const t of mapData) {
+    if (t.type === 'water') {
+      t.hasForest = t.hasRuin = t.hasCrashSite = t.hasVehicle = false;
+      t.hasMountainIcon = false;
+      continue;
+    }
+    const elev = typeof t.elevation === 'number' ? t.elevation : 0;
+    t.hasMountainIcon = (elev === 4);
+
+    if (t.type === 'forest') t.hasForest = true;
+    else if (!t.hasForest && chance(rnd, 0.06)) t.hasForest = true;
+
+    if (!t.hasRuin && t.type !== 'mountain' && chance(rnd, 0.010)) t.hasRuin = true;
+    if (!t.hasCrashSite && chance(rnd, 0.006)) t.hasCrashSite = true;
+
+    if (!t.hasVehicle &&
+        (t.type === 'plains' || t.type === 'desert' || t.type === 'sand' || t.type === 'grassland' || t.type === '') &&
+        chance(rnd, 0.008)) {
+      t.hasVehicle = true;
+    }
+  }
+
+  // forest spreading
+  const byKey = new Map(mapData.map(tt => [keyOf(tt.q, tt.r), tt]));
+  for (const t of mapData) {
+    if (!t.hasForest) continue;
+    const localRnd = mulberry32((t.q * 73856093) ^ (t.r * 19349663));
+    for (const n of neighborTiles(byKey, width, height, t.q, t.r, true)) {
+      if (!n.hasForest && chance(localRnd, 0.15)) n.hasForest = true;
+    }
+  }
+}
+
+/* ================= Roads (graph-based, with A*) ================= */
+function markRoadEdge(a, b, type = 'countryside') {
+  if (!a || !b) return;
+  if (a.type === 'water' || b.type === 'water') return;
+  a.hasRoad = b.hasRoad = true;
+  a.roadType = a.roadType === 'asphalt' || type === 'asphalt' ? 'asphalt' : (a.roadType || 'countryside');
+  b.roadType = b.roadType === 'asphalt' || type === 'asphalt' ? 'asphalt' : (b.roadType || 'countryside');
+  a.roadLinks = a.roadLinks || new Set();
+  b.roadLinks = b.roadLinks || new Set();
+  a.roadLinks.add(keyOf(b.q, b.r));
+  b.roadLinks.add(keyOf(a.q, a.r));
+}
+function astar(byKey, width, height, start, goal) {
+  const startK = keyOf(start.q, start.r);
+  const goalK  = keyOf(goal.q, goal.r);
+  const open = new Map([[startK, {k:startK,q:start.q,r:start.r,g:0,f:0,parent:null}]]);
+  const closed = new Set();
+  const h = (q, r) => Math.abs(q - goal.q) + Math.abs(r - goal.r);
+  while (open.size) {
+    let cur = null;
+    for (const n of open.values()) if (!cur || n.f < cur.f) cur = n;
+    open.delete(cur.k);
+    if (cur.k === goalK) {
+      const path = [];
+      for (let n = cur; n; n = n.parent) path.push(byKey.get(keyOf(n.q, n.r)));
+      path.reverse();
+      return path;
+    }
+    closed.add(cur.k);
+    for (const [dq, dr] of neighborsOddR(0, 0)) {
+      const nq = cur.q + dq, nr = cur.r + dr;
+      const nk = keyOf(nq, nr);
+      if (!byKey.has(nk) || closed.has(nk)) continue;
+      const t = byKey.get(nk);
+      if (!t || t.type === 'water') continue;
+      const g = cur.g + 1;
+      const f = g + h(nq, nr);
+      const ex = open.get(nk);
+      if (!ex || g < ex.g) open.set(nk, {k:nk,q:nq,r:nr,g,f,parent:cur});
+    }
+  }
+  return null;
+}
+function generateRoads(mapData, width, height, seed) {
+  const rnd = mulberry32(seed >>> 0);
+  const byKey = new Map(mapData.map(t => [keyOf(t.q, t.r), t]));
+  const at = (q, r) => byKey.get(keyOf(q, r));
+
+  const numTrunks = rndInt(rnd, 0, 2);
+  const maxLen    = Math.floor(Math.max(width, height) * 1.1);
+
+  function stepDir(cur, prevDir) {
+    const dirs = neighborsOddR(0, 0);
+    let best = null, bestScore = -Infinity;
+    for (let i = 0; i < 6; i++) {
+      if (prevDir !== null && i === ((prevDir + 3) % 6)) continue;
+      const [dq, dr] = dirs[i];
+      const n = at(cur.q + dq, cur.r + dr);
+      if (!n || n.type === 'water') continue;
+      const eastish = (i === 0 || i === 1 || i === 5) ? 0.6 : 0;
+      const score = eastish + (rnd() - 0.5) * 0.2;
+      if (score > bestScore) { best = { n, dir: i }; bestScore = score; }
+    }
+    return best;
+  }
+
+  for (let t = 0; t < numTrunks; t++) {
+    let start = null, guard = 200;
+    while (!start && guard-- > 0) {
+      const q = rndInt(rnd, 1, Math.max(1, Math.floor(width / 3)));
+      const r = rndInt(rnd, 1, height - 2);
+      const cand = at(q, r);
+      if (cand && cand.type !== 'water') start = cand;
+    }
+    if (!start) continue;
+
+    let cur = start, prevDir = null, steps = 0;
+    while (steps++ < maxLen) {
+      const nxt = stepDir(cur, prevDir);
+      if (!nxt) break;
+      markRoadEdge(cur, nxt.n, 'asphalt');
+      prevDir = nxt.dir;
+      cur = nxt.n;
+      if (rnd() < 0.08) break;
+    }
+  }
+
+  const pois = mapData.filter(t => t.type !== 'water' && (t.hasRuin || t.hasCrashSite || t.hasVehicle));
+  const pairs = Math.min(2, Math.floor(pois.length / 2));
+  for (let i = 0; i < pairs; i++) {
+    const a = pois[rndInt(rnd, 0, pois.length - 1)];
+    const b = pois[rndInt(rnd, 0, pois.length - 1)];
+    if (!a || !b || a === b) continue;
+    const path = astar(byKey, width, height, a, b);
+    if (path && path.length > 1) {
+      for (let j = 0; j + 1 < path.length; j++) {
+        markRoadEdge(path[j], path[j + 1], 'countryside');
+      }
+    }
+  }
+}
+
+/* Public: apply POI flags + roads */
+export function applyLocationFlags(mapData, width, height, seed = 1337) {
+  const rnd = mulberry32(seed >>> 0);
+  placeLocations(mapData, width, height, rnd);
+  generateRoads(mapData, width, height, seed ^ 0xA5A5A5A5);
+  return mapData;
+}
+
+/* ------------------------- rendering core ------------------------- */
+export function drawLocationsAndRoads() {
+  const scene = this;
+  const map = this.mapData;
+  const size = this.hexSize || 24;
+  if (!Array.isArray(map) || !map.length) return;
+
+  // Apply POIs/roads once per map build
+  if (!map.__locationsApplied) {
+    try { applyLocationFlags(map, this.mapWidth, this.mapHeight, this.seed ?? 1337); } catch {}
+    Object.defineProperty(map, '__locationsApplied', { value: true, enumerable: false });
+  }
+
+  // (Re)build geography once and keep metadata on map
+  initOrUpdateGeography(scene, map);
+
+  // Reset layers
+  if (scene.roadsGraphics) scene.roadsGraphics.destroy();
+  if (scene.locationsLayer) scene.locationsLayer.destroy();
+  if (scene.geoOutlineGraphics) scene.geoOutlineGraphics.destroy();
+
+  const roads = scene.add.graphics({ x: 0, y: 0 }).setDepth(30);
+  const layer = scene.add.container(0, 0).setDepth(40);
+  const geoOutline = scene.add.graphics({ x: 0, y: 0 }).setDepth(120);
+
+  scene.roadsGraphics = roads;
+  scene.locationsLayer = layer;
+  scene.geoOutlineGraphics = geoOutline;
+
+  const byKey = new Map(map.map(t => [keyOf(t.q, t.r), t]));
+
+  const offsetX = this.mapOffsetX || 0;
+  const offsetY = this.mapOffsetY || 0;
+  const LIFT    = this?.LIFT_PER_LVL ?? 4;
+
+  // ---- Roads
+  for (const t of map) {
+    if (!t.roadLinks || !t.roadLinks.size) continue;
+    const c1 = scene.hexToPixel(t.q, t.r, size);
+    const y1 = c1.y - LIFT * effectiveElevationLocal(t);
+    for (const target of t.roadLinks) {
+      if (target <= keyOf(t.q, t.r)) continue;
+      const n = byKey.get(target);
+      if (!n) continue;
+      const c2 = scene.hexToPixel(n.q, n.r, size);
+      const y2 = c2.y - LIFT * effectiveElevationLocal(n);
+      const asphalt = (t.roadType === 'asphalt' && n.roadType === 'asphalt');
+      const width   = asphalt ? 5 : 3;
+      const color   = asphalt ? 0x4a4a4a : 0x8b6b39;
+      roads.lineStyle(width, color, 0.95);
+      roads.beginPath();
+      roads.moveTo(c1.x + offsetX, y1 + offsetY);
+      roads.lineTo(c2.x + offsetX, y2 + offsetY);
+      roads.strokePath();
+    }
+  }
+
+  // ---- Geography overlay (emoji+label once, outlines every draw)
+  drawGeographyOverlay(scene);
+
+  // ---- POIs (skip geo-bound tiles)
+  const addEmoji = (x, y, char, fontPx, depth = 42) => {
+    const t = scene.add.text(x, y, char, {
+      fontSize: `${fontPx}px`,
+      fontFamily: 'Arial, "Segoe UI Emoji", "Noto Color Emoji", sans-serif'
+    }).setOrigin(0.5).setDepth(depth);
+    layer.add(t);
+    return t;
   };
+  const biomeName = resolveBiome(scene, map);
+  const noPOISet = getNoPOISet(map);
 
-  scene.closeLogisticsPanel = function () {
-    if (!this.logisticsUI) return;
-    this.logisticsUI.container.visible = false;
-  };
+  for (const t of map) {
+    if (t.type === 'water') continue;
+    if (noPOISet && noPOISet.has(keyOf(t.q, t.r))) continue;
 
-  scene.refreshLogisticsPanel = function () {
-    if (!this.logisticsUI) return;
+    const c = scene.hexToPixel(t.q, t.r, size);
+    const cx = c.x + offsetX;
+    const cy = c.y + offsetY - (this?.LIFT_PER_LVL ?? 4) * effectiveElevationLocal(t);
 
-    _ensureLogisticsIds(this);
+    if (!t.hasMountainIcon) {
+      const elev = typeof t.elevation === 'number' ? t.elevation : 0;
+      if (elev === 4) t.hasMountainIcon = true;
+    }
+    if (t.hasMountainIcon) {
+      addEmoji(cx, cy, '⛰️', size * 0.9, 110);
+      continue;
+    }
 
-    const ui = this.logisticsUI;
-    const haulers = _getAllLogisticsHaulers(this);
-
-    // --- rebuild list ---
-    ui.listEntries.forEach(e => e.text.destroy());
-    ui.listEntries = [];
-    ui.listContainer.removeAll(true); // remove children from container
-
-    let y = 0;
-    const lineH = 20;
-
-    if (haulers.length === 0) {
-      const txt = this.add.text(
-        0, 0,
-        'No haulers or ships yet.',
-        { fontSize: '12px', color: LOGI_COLORS.textDim }
-      ).setOrigin(0, 0);
-      ui.listContainer.add(txt);
-      ui.listEntries.push({ text: txt, haulerId: null });
-    } else {
-      haulers.forEach(h => {
-        const label = _formatHaulerLabel(h);
-        const isSelected = (h._logiId === ui.selectedHaulerId);
-        const txt = this.add.text(
-          0, y,
-          label,
-          {
-            fontSize: '13px',
-            color: isSelected ? LOGI_COLORS.listHighlight : LOGI_COLORS.textMain,
-          }
-        ).setOrigin(0, 0).setInteractive({ useHandCursor: true });
-
-        txt.on('pointerdown', () => {
-          ui.selectedHaulerId = h._logiId;
-          this.refreshLogisticsPanel?.();
+    if (t.hasForest) {
+      const treeGlyph = treeEmojiFor(biomeName, t.type);
+      const treeCount = Phaser.Math.Between(2, 4);
+      const placed = [];
+      let tries = 0;
+      while (placed.length < treeCount && tries++ < 40) {
+        const ang = Phaser.Math.FloatBetween(0, Math.PI * 2);
+        const rad = Phaser.Math.FloatBetween(size * 0.35, size * 0.65);
+        const posX = cx + Math.cos(ang) * rad;
+        const posY = cy + Math.sin(ang) * rad;
+        if (placed.some(p => Phaser.Math.Distance.Between(posX, posY, p.x, p.y) < size * 0.3)) continue;
+        const fontPx = size * (0.45 + Phaser.Math.FloatBetween(-0.05, 0.05));
+        const tree = addEmoji(posX, posY, treeGlyph, fontPx, 105);
+        scene.tweens.add({
+          targets: tree,
+          angle: { from: -1.5, to: 1.5 },
+          duration: Phaser.Math.Between(2500, 4000),
+          yoyo: true,
+          repeat: -1,
+          ease: 'Sine.easeInOut',
+          delay: Phaser.Math.Between(0, 1000)
         });
-
-        ui.listContainer.add(txt);
-        ui.listEntries.push({ text: txt, haulerId: h._logiId });
-        y += lineH;
-      });
+        placed.push({ x: posX, y: posY });
+      }
     }
 
-    // --- rebuild detail pane for selected hauler ---
-    ui.detailContainer.removeAll(true);
-
-    const selected = haulers.find(h => h._logiId === ui.selectedHaulerId) || haulers[0] || null;
-    if (selected && !ui.selectedHaulerId) {
-      ui.selectedHaulerId = selected._logiId;
-    }
-
-    if (!selected) {
-      const t = this.add.text(
-        0, 0,
-        'No hauler selected.',
-        { fontSize: '12px', color: LOGI_COLORS.textDim }
-      ).setOrigin(0, 0);
-      ui.detailContainer.add(t);
-      return;
-    }
-
-    _renderHaulerDetails(this, selected);
-  };
-}
-
-/**
- * Convenience helper if you ever want to open from outside the scene helper.
- */
-export function openLogisticsPanel(scene) {
-  scene.openLogisticsPanel?.();
-}
-
-/**
- * Called from WorldScene.endTurn().
- * Handles building-side logistics, e.g. Mines producing scrap each turn.
- *
- * Hauler movement and cargo transfers will be wired here later
- * once we migrate logic from WorldSceneHaulers.js.
- */
-export function applyLogisticsOnEndTurn(sceneArg) {
-  const scene = sceneArg || /** @type {any} */ (this);
-  if (!scene) return;
-
-  const buildings = scene.buildings || [];
-  if (!buildings.length) return;
-
-  // --- Mine production: +1 scrap per mine per turn, capped at maxScrap (default 10) ---
-  buildings.forEach(b => {
-    if (b.type !== 'mine') return;
-    const maxScrap = typeof b.maxScrap === 'number' ? b.maxScrap : 10;
-    const cur = typeof b.storageScrap === 'number' ? b.storageScrap : 0;
-    const next = Math.min(maxScrap, cur + 1);
-    b.storageScrap = next;
-  });
+    if (t.hasRuin)      addEmoji(cx, cy, '🏚️', size * 0.8, 106);
+    if (t.hasCrashSite) addEmoji(cx, cy, '🚀', size * 0.8, 106);
+    if (t.hasVehicle)   addEmoji(cx, cy, '🚙', size * 0.8, 106);
+  }
 }
 
 export default {
-  setupLogisticsPanel,
-  openLogisticsPanel,
-  applyLogisticsOnEndTurn,
+  applyLocationFlags,
+  drawLocationsAndRoads,
 };
-
-///////////////////////////////
-// Internal helpers – model
-///////////////////////////////
-
-/**
- * Collect all units that participate in logistics:
- * - Land haulers (🚚)
- * - Ships (🚢) created at docks
- */
-function _getAllLogisticsHaulers(scene) {
-  const haulers = Array.isArray(scene.haulers) ? scene.haulers : [];
-  const ships   = Array.isArray(scene.ships)   ? scene.ships   : [];
-
-  // For now we treat ships as haulers as well.
-  return [...haulers, ...ships];
-}
-
-/**
- * Ensure every hauler/ship has a unique _logiId and a logisticsRoute array.
- * This is purely internal to the Logistics system and does not affect movement yet.
- */
-function _ensureLogisticsIds(scene) {
-  const all = _getAllLogisticsHaulers(scene);
-  let nextId = 1;
-
-  // Reserve existing ids and find max
-  all.forEach(h => {
-    if (typeof h._logiId === 'number') {
-      nextId = Math.max(nextId, h._logiId + 1);
-    }
-  });
-
-  all.forEach(h => {
-    if (typeof h._logiId !== 'number') {
-      h._logiId = nextId++;
-    }
-    if (!Array.isArray(h.logisticsRoute)) {
-      h.logisticsRoute = [];
-    }
-  });
-}
-
-/**
- * Format a short label for the hauler list.
- */
-function _formatHaulerLabel(h) {
-  const emoji = h.emoji || (h.isNaval ? '🚢' : '🚚');
-  let base = `${emoji} ${h.name || 'Hauler'} #${h._logiId}`;
-
-  if (h.type === 'ship') {
-    base += ' (Ship)';
-  }
-
-  if (typeof h.q === 'number' && typeof h.r === 'number') {
-    base += `  @(${h.q},${h.r})`;
-  }
-  return base;
-}
-
-/**
- * Render the right-side details for a single hauler:
- * - basic info
- * - list of route stops (if any)
- * For now, route editing is not yet implemented – read-only preview.
- */
-function _renderHaulerDetails(scene, hauler) {
-  const ui = scene.logisticsUI;
-  if (!ui) return;
-
-  const c = ui.detailContainer;
-  c.removeAll(true);
-
-  const isShip = (hauler.type === 'ship' || hauler.isNaval);
-  const emoji = hauler.emoji || (isShip ? '🚢' : '🚚');
-
-  let y = 0;
-
-  const title = scene.add.text(
-    0, y,
-    `${emoji} ${hauler.name || (isShip ? 'Ship' : 'Hauler')} #${hauler._logiId}`,
-    {
-      fontSize: '14px',
-      color: LOGI_COLORS.textMain,
-      fontStyle: 'bold',
-    }
-  ).setOrigin(0, 0);
-  c.add(title);
-  y += 20;
-
-  const posLine = scene.add.text(
-    0, y,
-    `Position: (${hauler.q ?? '?'}, ${hauler.r ?? '?'})`,
-    { fontSize: '12px', color: LOGI_COLORS.textDim }
-  ).setOrigin(0, 0);
-  c.add(posLine);
-  y += 16;
-
-  // Show simple cargo info (currently only 🍖 is implemented)
-  const cargoFood = hauler.cargoFood ?? 0;
-  const cargoLine = scene.add.text(
-    0, y,
-    `Cargo: 🍖 ${cargoFood}`,
-    { fontSize: '12px', color: LOGI_COLORS.textDim }
-  ).setOrigin(0, 0);
-  c.add(cargoLine);
-  y += 18;
-
-  // Divider
-  const divider = scene.add.graphics();
-  divider.lineStyle(1, 0x9bb6cc, 0.4);
-  divider.strokeLineShape(new Phaser.Geom.Line(0, y, 240, y));
-  c.add(divider);
-  y += 8;
-
-  // Route preview
-  const route = Array.isArray(hauler.logisticsRoute) ? hauler.logisticsRoute : [];
-  if (route.length === 0) {
-    const note = scene.add.text(
-      0, y,
-      'No custom logistics route.\n\n' +
-      'This hauler currently uses\n' +
-      'its default hardcoded behavior.\n\n' +
-      'Later we will add:\n' +
-      '  • Add station (click on map)\n' +
-      '  • Load / Unload / Load All / Unload All\n' +
-      '  • Resource selection (🍖 / 🛠 / etc.)',
-      {
-        fontSize: '11px',
-        color: LOGI_COLORS.textDim,
-      }
-    ).setOrigin(0, 0);
-    c.add(note);
-    return;
-  }
-
-  const routeTitle = scene.add.text(
-    0, y,
-    'Route:',
-    {
-      fontSize: '13px',
-      color: LOGI_COLORS.textMain,
-      fontStyle: 'bold',
-    }
-  ).setOrigin(0, 0);
-  c.add(routeTitle);
-  y += 18;
-
-  route.forEach((step, idx) => {
-    const stepText = _formatRouteStep(scene, step, idx);
-    const t = scene.add.text(
-      0, y,
-      stepText,
-      {
-        fontSize: '12px',
-        color: LOGI_COLORS.textMain,
-      }
-    ).setOrigin(0, 0);
-    c.add(t);
-    y += 16;
-  });
-
-  // Placeholder: future buttons for editing
-  y += 8;
-  const stub = scene.add.text(
-    0, y,
-    '[Editing of route steps\nwill be added in next patch.]',
-    { fontSize: '11px', color: LOGI_COLORS.textDim }
-  ).setOrigin(0, 0);
-  c.add(stub);
-}
-
-/**
- * Convert a single route step into a readable string.
- * step shape (planned):
- * {
- *   stationType: 'mobileBase' | 'docks' | 'mine' | 'factory' | 'bunker',
- *   stationId: number,
- *   action: 'load' | 'loadAll' | 'unload' | 'unloadAll',
- *   resource: 'food' | 'scrap' | 'money' | 'influence', // etc.
- * }
- */
-function _formatRouteStep(scene, step, idx) {
-  const n = idx + 1;
-
-  const stationName = _resolveStationName(scene, step);
-  const actionLabel = _formatActionLabel(step.action, step.resource);
-
-  return `${n}. ${stationName} (${actionLabel})`;
-}
-
-/**
- * Resolve "Mine #2", "Docks #1", "Mobile Base", etc. from a step.
- */
-function _resolveStationName(scene, step) {
-  if (!step) return 'Unknown Station';
-
-  const type = step.stationType;
-  const id   = step.stationId;
-
-  if (type === 'mobileBase') {
-    return 'Mobile Base';
-  }
-
-  const buildings = scene.buildings || [];
-  const b = buildings.find(x => x.id === id && x.type === type);
-  if (!b) {
-    return `${type || 'Station'} #${id ?? '?'}`;
-  }
-
-  const emoji = b.emoji || _stationEmojiFallback(type);
-  const indexStr = (typeof id === 'number') ? `#${id}` : '';
-  return `${emoji} ${b.name || type} ${indexStr}`;
-}
-
-function _stationEmojiFallback(type) {
-  switch (type) {
-    case 'docks':   return '⚓';
-    case 'mine':    return '⛏️';
-    case 'factory': return '🏭';
-    case 'bunker':  return '🛡️';
-    default:        return '🏗️';
-  }
-}
-
-function _formatActionLabel(action, resource) {
-  const resEmoji = _resourceEmoji(resource);
-  switch (action) {
-    case 'load':      return `Load ${resEmoji}`;
-    case 'loadAll':   return 'Load all';
-    case 'unload':    return `Unload ${resEmoji}`;
-    case 'unloadAll': return 'Unload all';
-    default:          return 'No action';
-  }
-}
-
-function _resourceEmoji(resKey) {
-  switch (resKey) {
-    case 'food':      return '🍖';
-    case 'scrap':     return '🛠';
-    case 'money':     return '💰';
-    case 'influence': return '⭐';
-    default:          return '❓';
-  }
-}
