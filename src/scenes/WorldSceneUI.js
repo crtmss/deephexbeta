@@ -2,6 +2,7 @@
 
 import { refreshUnits } from './WorldSceneActions.js';
 import { findPath as aStarFindPath } from '../engine/AStar.js';
+import { setupLogisticsUI } from './WorldSceneLogistics.js';
 
 /* ---------------- Camera controls (unused unless called) ---------------- */
 export function setupCameraControls(scene) {
@@ -88,9 +89,10 @@ export function setupTurnUI(scene) {
     refreshUnits(scene);
   });
 
-  // Top-right tabs (Resources / Logistics) + Resources panel
+  // Top-right tabs (Resources / Logistics) + panels
   createTopTabs(scene);
   createResourcesPanel(scene);
+  setupLogisticsUI(scene); // hook up logistics panel + helpers
 }
 
 export function updateTurnText(scene, currentTurn) {
@@ -215,9 +217,6 @@ function createTopTabs(scene) {
     const ty = 4;
 
     const outer = scene.add.graphics();
-    outer.fillStyle(0x000000, 1);
-    outer.fillRoundedRect(tx, ty, tabWidth, tabHeight, 6);
-
     const text = scene.add.text(
       tx + tabWidth / 2,
       ty + tabHeight / 2,
@@ -232,6 +231,15 @@ function createTopTabs(scene) {
       .setOrigin(0, 0)
       .setInteractive({ useHandCursor: true });
 
+    const drawState = (active) => {
+      outer.clear();
+      outer.fillStyle(active ? 0x3da9fc : 0x000000, 1);
+      outer.fillRoundedRect(tx, ty, tabWidth, tabHeight, 6);
+      text.setColor(active ? '#ffffff' : '#dddddd');
+    };
+
+    drawState(false);
+
     hit.on('pointerdown', (pointer, lx, ly, event) => {
       event?.stopPropagation?.();
       onClick?.();
@@ -239,21 +247,33 @@ function createTopTabs(scene) {
 
     bar.add([outer, text, hit]);
 
-    return { outer, text, hit };
+    return { outer, text, hit, drawState };
   };
 
   const tabs = {};
 
   tabs.resources = makeTab('Resources', 0, () => {
     scene.openResourcesPanel?.();
+    scene.closeLogisticsPanel?.();
+    scene.setActiveTopTab?.('resources');
   });
 
   tabs.logistics = makeTab('Logistics', 1, () => {
-    // For now, just show a small notice
     scene.openLogisticsPanel?.();
+    scene.closeResourcesPanel?.();
+    scene.setActiveTopTab?.('logistics');
   });
 
   scene.topTabs = { container: bar, tabs };
+
+  // Helper to update active/inactive visuals
+  scene.setActiveTopTab = function (which) {
+    const t = scene.topTabs?.tabs;
+    if (!t) return;
+    Object.entries(t).forEach(([key, tab]) => {
+      tab.drawState?.(key === which);
+    });
+  };
 }
 
 /* =========================
@@ -385,18 +405,11 @@ function createResourcesPanel(scene) {
   scene.openResourcesPanel = function () {
     scene.resourcesPanel.visible = true;
     scene.refreshResourcesPanel?.();
+    scene.closeLogisticsPanel?.();
   };
 
   scene.closeResourcesPanel = function () {
     if (scene.resourcesPanel) scene.resourcesPanel.visible = false;
-  };
-
-  // For now Logistics is just a stub: show a small "Not implemented" text
-  scene.openLogisticsPanel = function () {
-    // You can later replace this with a proper Logistics UI.
-    // For now, we just close Resources and log a message.
-    scene.closeResourcesPanel?.();
-    console.log('[UI] Logistics tab clicked (not implemented yet).');
   };
 }
 
