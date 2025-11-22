@@ -4,18 +4,11 @@ import { findPath as aStarFindPath } from '../engine/AStar.js';
 import { drawLocationsAndRoads } from './WorldSceneMapLocations.js';
 import { setupWorldMenus, attachSelectionHighlight } from './WorldSceneMenus.js';
 
-import {
-  startDocksPlacement,
-  placeDocks,
-  cancelPlacement,
-  applyBuildingProductionOnEndTurn,
-} from './WorldSceneBuildings.js';
+// Buildings module is now used only via menus / other files, no direct imports needed here.
 
 import {
   applyShipRoutesOnEndTurn,
   applyHaulerBehaviorOnEndTurn as applyHaulerRoutesOnEndTurn,
-  buildHaulerAtSelectedUnit,
-  enterHaulerRoutePicker,
 } from './WorldSceneHaulers.js';
 
 import { setupTurnUI, updateTurnText, setupWorldInputUI } from './WorldSceneUI.js';
@@ -32,6 +25,11 @@ import {
   isoOffset,
   LIFT_PER_LVL
 } from './WorldSceneMap.js';
+
+import {
+  setupLogisticsPanel,
+  applyLogisticsOnEndTurn,
+} from './WorldSceneLogistics.js';
 
 /* =========================
    Deterministic world summary
@@ -215,6 +213,9 @@ export default class WorldScene extends Phaser.Scene {
     if (this.turnOwner) {
       updateTurnText(this, this.turnOwner);
     }
+
+    // Logistics panel (Factorio-style hauler management)
+    setupLogisticsPanel(this);
 
     this.addWorldMetaBadge();
 
@@ -402,18 +403,16 @@ Biomes: ${biome}`;
   endTurn() {
     if (this.uiLocked) return;
     this.uiLocked = true;
-    this.buildings.forEach(b => {
-      if (b.type === 'mine' && b.storage < b.storageCap) {
-        b.storage += 1;
-      }
-    });
 
     console.log(`[TURN] Ending turn for ${this.turnOwner} (Turn ${this.turnNumber})`);
 
+    // 1) Ships (fish → docks)
     applyShipRoutesOnEndTurn(this);
+    // 2) Ground haulers (docks ↔ mobile base, etc.)
     applyHaulerRoutesOnEndTurn(this);
-    applyBuildingProductionOnEndTurn(this);
-    
+    // 3) Buildings logistics (e.g. Mines produce scrap)
+    applyLogisticsOnEndTurn(this);
+
     this.moveEnemies();
 
     const idx = this.players.findIndex(p => p.name === this.turnOwner);
