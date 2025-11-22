@@ -209,7 +209,18 @@ export default class WorldScene extends Phaser.Scene {
     // UI: selection highlight + build menu + top HUD
     attachSelectionHighlight(this);
     setupWorldMenus(this);
+    setupTurnUI(this);
+    if (this.turnOwner) {
+      updateTurnText(this, this.turnOwner);
+    }
 
+    this.addWorldMetaBadge();
+
+    // NEW: logistics tab + panel wiring
+    setupWorldLogisticsUI(this);
+
+    // Input (selection + path preview + movement)
+    setupWorldInputUI(this);
     setupTurnUI(this);
     if (this.turnOwner) {
       updateTurnText(this, this.turnOwner);
