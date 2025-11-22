@@ -254,10 +254,12 @@ export function buildHaulerAtSelectedUnit() {
   const t = scene.add.text(pos.x, pos.y, '🚚', { fontSize: '20px', color: '#ffffff' })
     .setOrigin(0.5).setDepth(UI.zBuilding);
 
-
+  // ID for logistics UI
   scene._haulerIdSeq = (scene._haulerIdSeq || 0) + 1;
   const id = scene._haulerIdSeq;
+
   const hauler = {
+    id,                          // NEW: unique id
     type: 'hauler',
     name: 'Hauler',
     emoji: '🚚',
@@ -270,6 +272,8 @@ export function buildHaulerAtSelectedUnit() {
     mode: 'idle',
     baseRef: u, baseQ: u.q, baseR: u.r,
     targetDocksId: null,
+
+    // Factorio-style logistics
     logisticsRoute: [],
     routeIndex: 0,
   };
@@ -304,12 +308,11 @@ export function applyHaulerBehaviorOnEndTurn(sceneArg) {
   let movedAny = false;
 
   for (const h of haulers) {
-  // NEW: if this hauler has a logistics route, let LogisticsRuntime handle it
-  if (Array.isArray(h.logisticsRoute) && h.logisticsRoute.length > 0) {
-    continue;
-  }
-  
-  for (const h of haulers) {
+    // If this hauler has a logistics route, let LogisticsRuntime handle it.
+    if (Array.isArray(h.logisticsRoute) && h.logisticsRoute.length > 0) {
+      continue;
+    }
+
     if (typeof h.maxMovePoints !== 'number') h.maxMovePoints = 8;
     if (typeof h.movePoints !== 'number') h.movePoints = h.maxMovePoints;
     if (!h.cargoObj || h.cargoObj.destroyed) _ensureCargoLabel(scene, h);
@@ -464,17 +467,13 @@ export function updateDocksStoreLabel(scene, docks) {
  * Move a carrier (ship or hauler) toward (targetQ, targetR) using
  * the existing BFS pathfinders, consume its movePoints, animate,
  * and return true if it is now exactly on the target hex.
- *
- * Used by WorldSceneLogistics.applyLogisticsOnEndTurn.
  */
 export function moveCarrierOneLeg(scene, carrier, targetQ, targetR) {
   if (!scene || !carrier) return false;
 
-  // Ensure MPs have some sane default
   if (typeof carrier.maxMovePoints !== 'number') carrier.maxMovePoints = 8;
   if (typeof carrier.movePoints !== 'number') carrier.movePoints = carrier.maxMovePoints;
 
-  // Already there
   if (carrier.q === targetQ && carrier.r === targetR) {
     return true;
   }
@@ -488,7 +487,6 @@ export function moveCarrierOneLeg(scene, carrier, targetQ, targetR) {
   } else if (isHauler) {
     path = _haulerPath(scene, carrier.q, carrier.r, targetQ, targetR);
   } else {
-    // Fallback to land rules
     path = _haulerPath(scene, carrier.q, carrier.r, targetQ, targetR);
   }
 
@@ -501,7 +499,6 @@ export function moveCarrierOneLeg(scene, carrier, targetQ, targetR) {
     return carrier.q === targetQ && carrier.r === targetR;
   }
 
-  // Draw cyan path for debug/feedback (only the segment we will travel)
   _drawCyanPath(scene, path.slice(0, steps + 1));
 
   const nx = path[steps];
@@ -542,7 +539,7 @@ function _setRouteMarker(scene, building, q, r) {
 
 // ----- Resource system -----
 function _ensureResourceInit(scene) {
-  // Start the player with 200 of each (synced with Buildings module)
+  // Start the player with 200 of each (synced with Buildings & WorldScene)
   if (!scene.playerResources) {
     scene.playerResources = { food: 200, scrap: 200, money: 200, influence: 200 };
   }
@@ -571,7 +568,10 @@ function _isWater(scene, q, r) {
   const t = _tileAt(scene, q, r);
   return !!t && (t.type === 'water' || t.type === 'ocean' || t.type === 'sea');
 }
-function _isLand(scene, q, r) { const t = _tileAt(scene, q, r); return !!t && !_isWater(scene, q, r); }
+function _isLand(scene, q, r) {
+  const t = _tileAt(scene, q, r);
+  return !!t && !_isWater(scene, q, r);
+}
 
 // Single-hex docks presence check
 function _hasDocksAt(scene, q, r) {
@@ -587,7 +587,9 @@ function _offsetNeighbors(q, r) {
   return d.map(([dq, dr]) => ({ q: q + dq, r: r + dr }));
 }
 
-function _hexManhattan(q1,r1,q2,r2){return Math.abs(q1-q2)+Math.abs(r1-r2);}
+function _hexManhattan(q1, r1, q2, r2) {
+  return Math.abs(q1 - q2) + Math.abs(r1 - r2);
+}
 
 // ----- Passability rules with single-hex docks -----
 // For ships (water domain): water tiles are passable; docks hex is also passable (even if underlying tile is land)
@@ -610,9 +612,9 @@ function _reachableForHaulers(scene, fromQ, fromR, toQ, toR) {
 // ----- Path builders (domain-aware BFS) -----
 function _bfsPath(scene, fromQ, fromR, toQ, toR, passableFn) {
   if (fromQ === toQ && fromR === toR) return [{ q: fromQ, r: fromR }];
-  const inb = (q,r)=> q>=0 && r>=0 && q<scene.mapWidth && r<scene.mapHeight;
-  const key = (q,r)=>`${q},${r}`;
-  if (!inb(fromQ,fromR) || !inb(toQ,toR)) return null;
+  const inb = (q, r) => q >= 0 && r >= 0 && q < scene.mapWidth && r < scene.mapHeight;
+  const key = (q, r) => `${q},${r}`;
+  if (!inb(fromQ, fromR) || !inb(toQ, toR)) return null;
 
   // Both start and target must be passable
   if (!passableFn(scene, fromQ, fromR) || !passableFn(scene, toQ, toR)) return null;
@@ -658,40 +660,40 @@ function _haulerPath(scene, fromQ, fromR, toQ, toR) {
 }
 
 // ----- Visual cyan path (shared for both) -----
-function _drawCyanPath(scene, path){
-  try{
-    if(!path||path.length<2)return;
-    if(scene._cyanPathGfx)scene._cyanPathGfx.destroy();
-    const g=scene.add.graphics().setDepth(2400);
-    scene._cyanPathGfx=g; g.lineStyle(2,0x6fe3ff,0.9);
-    let p0=scene.axialToWorld(path[0].q,path[0].r);
-    for(let i=1;i<path.length;i++){
-      const p1=scene.axialToWorld(path[i].q,path[i].r);
-      g.strokeLineShape(new Phaser.Geom.Line(p0.x,p0.y,p1.x,p1.y)); p0=p1;
+function _drawCyanPath(scene, path) {
+  try {
+    if (!path || path.length < 2) return;
+    if (scene._cyanPathGfx) scene._cyanPathGfx.destroy();
+    const g = scene.add.graphics().setDepth(2400);
+    scene._cyanPathGfx = g; g.lineStyle(2, 0x6fe3ff, 0.9);
+    let p0 = scene.axialToWorld(path[0].q, path[0].r);
+    for (let i = 1; i < path.length; i++) {
+      const p1 = scene.axialToWorld(path[i].q, path[i].r);
+      g.strokeLineShape(new Phaser.Geom.Line(p0.x, p0.y, p1.x, p1.y)); p0 = p1;
     }
-    scene.tweens.add({targets:g,alpha:0,duration:900,delay:600,onComplete:()=>g.destroy()});
-  }catch{}
+    scene.tweens.add({ targets: g, alpha: 0, duration: 900, delay: 600, onComplete: () => g.destroy() });
+  } catch { /* ignore */ }
 }
 
 // ----- Misc helpers -----
-function _fishAt(scene,q,r){
-  return !!(scene.resources||[]).find(o=>o.type==='fish'&&o.q===q&&o.r===r);
+function _fishAt(scene, q, r) {
+  return !!(scene.resources || []).find(o => o.type === 'fish' && o.q === q && o.r === r);
 }
-function _ensureCargoLabel(scene,unit){
-  if(unit.cargoObj && !unit.cargoObj.destroyed)return;
-  unit.cargoObj=scene.add.text(0,0,'',{fontSize:'14px',color:COLORS.cargoText})
-    .setOrigin(0,1).setDepth(UI.zCargo);
-  _updateCargoLabel(scene,unit); _repositionCargoLabel(scene,unit);
+function _ensureCargoLabel(scene, unit) {
+  if (unit.cargoObj && !unit.cargoObj.destroyed) return;
+  unit.cargoObj = scene.add.text(0, 0, '', { fontSize: '14px', color: COLORS.cargoText })
+    .setOrigin(0, 1).setDepth(UI.zCargo);
+  _updateCargoLabel(scene, unit); _repositionCargoLabel(scene, unit);
 }
-function _updateCargoLabel(scene,unit){
-  if(!unit.cargoObj)return;
-  const n=unit.cargoFood||0;
-  unit.cargoObj.setText(n>0?`🍖×${n}`:'');
+function _updateCargoLabel(scene, unit) {
+  if (!unit.cargoObj) return;
+  const n = unit.cargoFood || 0;
+  unit.cargoObj.setText(n > 0 ? `🍖×${n}` : '');
 }
-function _repositionCargoLabel(scene,unit){
-  if(!unit.cargoObj)return;
-  const p=scene.axialToWorld(unit.q,unit.r);
-  unit.cargoObj.setPosition(p.x+10,p.y-6);
+function _repositionCargoLabel(scene, unit) {
+  if (!unit.cargoObj) return;
+  const p = scene.axialToWorld(unit.q, unit.r);
+  unit.cargoObj.setPosition(p.x + 10, p.y - 6);
 }
 
 function _getMobileBaseCoords(scene, hauler) {
