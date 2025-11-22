@@ -413,6 +413,8 @@ Biomes: ${biome}`;
     // 3) Buildings logistics (e.g. Mines produce scrap)
     applyLogisticsOnEndTurn(this);
 
+    applyLogisticsRoutesOnEndTurn(this);   
+
     this.moveEnemies();
 
     const idx = this.players.findIndex(p => p.name === this.turnOwner);
