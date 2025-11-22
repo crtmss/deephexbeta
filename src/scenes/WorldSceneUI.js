@@ -2,7 +2,7 @@
 
 import { refreshUnits } from './WorldSceneActions.js';
 import { findPath as aStarFindPath } from '../engine/AStar.js';
-import { setupLogisticsUI } from './WorldSceneLogistics.js';
+import { setupLogisticsPanel } from './WorldSceneLogistics.js';
 
 /* ---------------- Camera controls (unused unless called) ---------------- */
 export function setupCameraControls(scene) {
@@ -92,7 +92,7 @@ export function setupTurnUI(scene) {
   // Top-right tabs (Resources / Logistics) + panels
   createTopTabs(scene);
   createResourcesPanel(scene);
-  setupLogisticsUI(scene); // hook up logistics panel + helpers
+  setupLogisticsPanel(scene); // hook up logistics panel + helpers
 }
 
 export function updateTurnText(scene, currentTurn) {
