@@ -1,486 +1,508 @@
 // src/scenes/WorldSceneLogistics.js
 //
-// Logistics UI (Factorio-style routes for haulers/ships)
-// - Right-side panel under "Logistics" tab
-// - Shows list of haulers (and later ships) on the left
-// - Shows selected hauler's route on the right
-// - Minimal editing: clear route + click-to-add stop from map
+// Factorio-style logistics backend + basic UI.
 //
-// Runtime execution of these routes is handled by:
-//   src/scenes/WorldSceneLogisticsRuntime.js
-// which reads per-carrier `logisticsRoute` + `routeIndex`.
+// Responsibilities:
+// - Define a shared model for "stations" (Mobile Base + buildings).
+// - Define a shared model for "logistics routes" attached to haulers/ships.
+// - Provide a Logistics panel UI: list of haulers, details for selected hauler.
+// - Provide applyLogisticsOnEndTurn() for building-side logistics (mines, etc.).
 //
+// Movement logic for haulers/ships still lives in WorldSceneHaulers.js.
+// Later we will make that logic consume hauler.logisticsRoute.
 
-/**
- * Shape of a single logistics route stop (informal JSdoc only):
- *
- * {
- *   id: number,                    // local stop id
- *   targetKind: 'building' | 'mobileBase',
- *   buildingId?: number | null,    // for targetKind === 'building'
- *   targetQ: number,
- *   targetR: number,
- *   op: 'loadAll' | 'unloadAll' | 'loadResource' | 'unloadResource',
- *   resourceKey?: string | null,   // e.g. 'food', 'scrap', ...
- * }
- *
- * LogisticsRuntime only really needs: targetQ, targetR, op, resourceKey, targetKind, buildingId.
- * UI adds `label` etc. for display as needed.
- */
-
-const PANEL = {
-  width: 520,
-  height: 260,
+///////////////////////////////
+// Visual constants
+///////////////////////////////
+const LOGI_COLORS = {
+  panelBg: 0x0f2233,
+  panelStroke: 0x3da9fc,
+  textMain: '#e8f6ff',
+  textDim: '#9bb6cc',
+  listHighlight: '#ffffff',
 };
 
-const COLORS = {
-  plate: 0x0f2233,
-  stroke: 0x3da9fc,
-  text: '#e8f6ff',
-  header: '#9be4ff',
-  accent: 0x3da9fc,
-  btnBg: 0x173b52,
-  btnBgHover: 0x1d5473,
-  btnText: '#ffffff',
+const LOGI_Z = {
+  panel: 4100,
+  overlay: 4090,
 };
 
-/**
- * Entry point, called from WorldSceneUI.setupTurnUI(scene)
- */
-export function setupLogisticsUI(scene) {
-  const panelX = scene.scale.width - PANEL.width; // same anchor as resources panel
-  const panelY = 70;
+///////////////////////////////
+// Public API
+///////////////////////////////
 
-  const container = scene.add.container(panelX, panelY)
-    .setScrollFactor(0)
-    .setDepth(2055);
+/**
+ * Called from WorldScene.create().
+ * Builds the Logistics panel (hidden by default) and attaches helpers:
+ *  - scene.openLogisticsPanel()
+ *  - scene.closeLogisticsPanel()
+ *  - scene.refreshLogisticsPanel()
+ */
+export function setupLogisticsPanel(scene) {
+  const originX = 300;   // we can reposition later if needed
+  const originY = 120;
+
+  const container = scene.add.container(originX, originY)
+    .setDepth(LOGI_Z.panel)
+    .setScrollFactor(0);
 
   container.visible = false;
 
-  // ---- Background frame ----
-  const bg = scene.add.graphics();
-  bg.fillStyle(COLORS.plate, 0.96);
-  bg.fillRoundedRect(0, 0, PANEL.width - 20, PANEL.height, 12);
-  bg.lineStyle(2, COLORS.stroke, 1);
-  bg.strokeRoundedRect(0, 0, PANEL.width - 20, PANEL.height, 12);
+  // panel background
+  const W = 460;
+  const H = 260;
 
+  const bg = scene.add.graphics();
+  bg.fillStyle(LOGI_COLORS.panelBg, 0.96);
+  bg.fillRoundedRect(0, 0, W, H, 12);
+  bg.lineStyle(2, LOGI_COLORS.panelStroke, 1);
+  bg.strokeRoundedRect(0, 0, W, H, 12);
+
+  // inner bezel
   const bezel = scene.add.graphics();
   bezel.lineStyle(1, 0x9be4ff, 0.25);
-  bezel.strokeRect(10, 10, PANEL.width - 40, PANEL.height - 20);
-  bezel.strokeRect(18, 18, PANEL.width - 56, PANEL.height - 36);
+  bezel.strokeRect(10, 10, W - 20, H - 20);
 
   container.add([bg, bezel]);
 
-  // Slight inset so we don't stick to the left edge
-  container.x = panelX + 20;
-
-  // ---- Titles / columns ----
+  // Titles
   const title = scene.add.text(
-    24,
-    18,
-    'Logistics',
+    16, 12,
+    'Logistics – Haulers & Ships',
     {
-      fontFamily: 'monospace',
-      fontSize: '14px',
-      color: COLORS.header,
+      fontSize: '16px',
+      color: LOGI_COLORS.textMain,
       fontStyle: 'bold',
     }
   ).setOrigin(0, 0);
 
-  const haulerHeader = scene.add.text(
-    24,
-    42,
-    'Haulers',
+  const subtitle = scene.add.text(
+    16, 32,
+    'Select a hauler on the left to inspect its route.',
     {
-      fontFamily: 'monospace',
       fontSize: '12px',
-      color: COLORS.header,
+      color: LOGI_COLORS.textDim,
     }
   ).setOrigin(0, 0);
 
-  const routeHeader = scene.add.text(
-    220,
-    42,
-    'Route',
+  container.add([title, subtitle]);
+
+  // Close button (top-right X)
+  const closeText = scene.add.text(
+    W - 18, 10,
+    '✕',
     {
-      fontFamily: 'monospace',
-      fontSize: '12px',
-      color: COLORS.header,
+      fontSize: '16px',
+      color: LOGI_COLORS.textMain,
+    }
+  ).setOrigin(1, 0).setInteractive({ useHandCursor: true });
+
+  closeText.on('pointerdown', () => {
+    scene.closeLogisticsPanel?.();
+  });
+
+  container.add(closeText);
+
+  // Left column: hauler list
+  const listLabel = scene.add.text(
+    16, 56,
+    'Haulers & Ships',
+    {
+      fontSize: '14px',
+      color: LOGI_COLORS.textMain,
+      fontStyle: 'bold',
     }
   ).setOrigin(0, 0);
 
-  container.add([title, haulerHeader, routeHeader]);
+  const listContainer = scene.add.container(16, 76);
+  container.add([listLabel, listContainer]);
 
-  // ---- Buttons for route operations ----
-  const buttons = {};
+  // Right column: selected hauler details
+  const detailLabel = scene.add.text(
+    200, 56,
+    'Selected Route',
+    {
+      fontSize: '14px',
+      color: LOGI_COLORS.textMain,
+      fontStyle: 'bold',
+    }
+  ).setOrigin(0, 0);
 
-  buttons.addStop = makeSmallButton(
-    scene,
-    220,
-    60,
-    'Add stop',
-    () => _startAddStopMode(scene)
-  );
-  buttons.clearRoute = makeSmallButton(
-    scene,
-    320,
-    60,
-    'Clear',
-    () => _clearSelectedHaulerRoute(scene)
-  );
+  const detailContainer = scene.add.container(200, 76);
+  container.add([detailLabel, detailContainer]);
 
-  container.add([buttons.addStop.container, buttons.clearRoute.container]);
-
-  // ---- Dynamic areas: hauler list + route list ----
-  const meta = {
+  // Store UI handles on the scene
+  scene.logisticsUI = {
     container,
-    buttons,
-    haulerRows: [],   // text objects for left side
-    routeRows: [],    // text objects for right side
+    listContainer,
+    detailContainer,
+    listEntries: [],
     selectedHaulerId: null,
-    nextStopId: 1,
   };
 
-  scene.logisticsPanel = container;
-  scene.logisticsMeta = meta;
-
-  // Public methods on scene:
-
-  scene.refreshLogisticsPanel = function () {
-    _refreshLogisticsPanel(scene);
-  };
+  ///////////////////////////////
+  // Scene helper methods
+  ///////////////////////////////
 
   scene.openLogisticsPanel = function () {
-    scene.logisticsPanel.visible = true;
-    scene.refreshLogisticsPanel?.();
-    scene.closeResourcesPanel?.();
-    scene.setActiveTopTab?.('logistics');
+    if (!this.logisticsUI) return;
+    this.logisticsUI.container.visible = true;
+    this.refreshLogisticsPanel?.();
   };
 
   scene.closeLogisticsPanel = function () {
-    if (scene.logisticsPanel) scene.logisticsPanel.visible = false;
+    if (!this.logisticsUI) return;
+    this.logisticsUI.container.visible = false;
+  };
+
+  scene.refreshLogisticsPanel = function () {
+    if (!this.logisticsUI) return;
+
+    _ensureLogisticsIds(this);
+
+    const ui = this.logisticsUI;
+    const haulers = _getAllLogisticsHaulers(this);
+
+    // --- rebuild list ---
+    ui.listEntries.forEach(e => e.text.destroy());
+    ui.listEntries = [];
+    ui.listContainer.removeAll(true); // remove children from container
+
+    let y = 0;
+    const lineH = 20;
+
+    if (haulers.length === 0) {
+      const txt = this.add.text(
+        0, 0,
+        'No haulers or ships yet.',
+        { fontSize: '12px', color: LOGI_COLORS.textDim }
+      ).setOrigin(0, 0);
+      ui.listContainer.add(txt);
+      ui.listEntries.push({ text: txt, haulerId: null });
+    } else {
+      haulers.forEach(h => {
+        const label = _formatHaulerLabel(h);
+        const isSelected = (h._logiId === ui.selectedHaulerId);
+        const txt = this.add.text(
+          0, y,
+          label,
+          {
+            fontSize: '13px',
+            color: isSelected ? LOGI_COLORS.listHighlight : LOGI_COLORS.textMain,
+          }
+        ).setOrigin(0, 0).setInteractive({ useHandCursor: true });
+
+        txt.on('pointerdown', () => {
+          ui.selectedHaulerId = h._logiId;
+          this.refreshLogisticsPanel?.();
+        });
+
+        ui.listContainer.add(txt);
+        ui.listEntries.push({ text: txt, haulerId: h._logiId });
+        y += lineH;
+      });
+    }
+
+    // --- rebuild detail pane for selected hauler ---
+    ui.detailContainer.removeAll(true);
+
+    const selected = haulers.find(h => h._logiId === ui.selectedHaulerId) || haulers[0] || null;
+    if (selected && !ui.selectedHaulerId) {
+      ui.selectedHaulerId = selected._logiId;
+    }
+
+    if (!selected) {
+      const t = this.add.text(
+        0, 0,
+        'No hauler selected.',
+        { fontSize: '12px', color: LOGI_COLORS.textDim }
+      ).setOrigin(0, 0);
+      ui.detailContainer.add(t);
+      return;
+    }
+
+    _renderHaulerDetails(this, selected);
   };
 }
 
-/* ----------------------------------------------------
- * Small helper: create a rectangular text button
- * -------------------------------------------------- */
-function makeSmallButton(scene, x, y, label, onClick) {
-  const W = 80;
-  const H = 24;
-
-  const g = scene.add.graphics();
-  g.fillStyle(COLORS.btnBg, 1);
-  g.fillRoundedRect(x, y, W, H, 6);
-  g.lineStyle(1, COLORS.stroke, 0.9);
-  g.strokeRoundedRect(x, y, W, H, 6);
-
-  const t = scene.add.text(
-    x + W / 2,
-    y + H / 2,
-    label,
-    {
-      fontSize: '12px',
-      color: COLORS.btnText,
-    }
-  ).setOrigin(0.5);
-
-  const hit = scene.add.rectangle(x, y, W, H, 0x000000, 0)
-    .setOrigin(0, 0)
-    .setInteractive({ useHandCursor: true });
-
-  hit.on('pointerover', () => {
-    g.clear();
-    g.fillStyle(COLORS.btnBgHover, 1);
-    g.fillRoundedRect(x, y, W, H, 6);
-    g.lineStyle(1, COLORS.stroke, 0.9);
-    g.strokeRoundedRect(x, y, W, H, 6);
-  });
-
-  hit.on('pointerout', () => {
-    g.clear();
-    g.fillStyle(COLORS.btnBg, 1);
-    g.fillRoundedRect(x, y, W, H, 6);
-    g.lineStyle(1, COLORS.stroke, 0.9);
-    g.strokeRoundedRect(x, y, W, H, 6);
-  });
-
-  hit.on('pointerdown', (pointer, lx, ly, event) => {
-    event?.stopPropagation?.();
-    onClick?.();
-  });
-
-  return { container: scene.add.container(0, 0, [g, t, hit]), g, t, hit };
+/**
+ * Convenience helper if you ever want to open from outside the scene helper.
+ */
+export function openLogisticsPanel(scene) {
+  scene.openLogisticsPanel?.();
 }
 
-/* ----------------------------------------------------
- * Main refresh function
- * -------------------------------------------------- */
-function _refreshLogisticsPanel(scene) {
-  const meta = scene.logisticsMeta;
-  if (!meta) return;
+/**
+ * Called from WorldScene.endTurn().
+ * Handles building-side logistics, e.g. Mines producing scrap each turn.
+ *
+ * Hauler movement and cargo transfers will be wired here later
+ * once we migrate logic from WorldSceneHaulers.js.
+ */
+export function applyLogisticsOnEndTurn(sceneArg) {
+  const scene = sceneArg || /** @type {any} */ (this);
+  if (!scene) return;
 
-  const haulers = scene.haulers || [];
+  const buildings = scene.buildings || [];
+  if (!buildings.length) return;
 
-  // ---- ensure selected hauler ----
-  if (!meta.selectedHaulerId && haulers.length > 0) {
-    const first = haulers[0];
-    meta.selectedHaulerId = first.id ?? first._uid ?? 1;
-  }
-
-  // Destroy old row texts
-  meta.haulerRows.forEach(r => r.destroy());
-  meta.routeRows.forEach(r => r.destroy());
-  meta.haulerRows.length = 0;
-  meta.routeRows.length = 0;
-
-  // ---- Left side: hauler list ----
-  const baseX = 24;
-  const baseY = 60;
-  const rowH  = 18;
-
-  haulers.forEach((h, idx) => {
-    const lineY = baseY + idx * rowH;
-    const id = (typeof h.id === 'number') ? h.id : (idx + 1);
-    const posLabel = `(${h.q},${h.r})`;
-    const label = `${h.emoji || '🚚'} Hauler #${id} ${posLabel}`;
-
-    const text = scene.add.text(
-      baseX,
-      lineY,
-      label,
-      {
-        fontFamily: 'monospace',
-        fontSize: '12px',
-        color: meta.selectedHaulerId === (h.id ?? id) ? '#ffffff' : '#c0d8ff',
-      }
-    ).setOrigin(0, 0);
-
-    text.setInteractive({ useHandCursor: true });
-    text.on('pointerdown', (pointer, lx, ly, event) => {
-      event?.stopPropagation?.();
-      meta.selectedHaulerId = h.id ?? id;
-      _refreshLogisticsPanel(scene);
-    });
-
-    meta.haulerRows.push(text);
-  });
-
-  // ---- Right side: route for selected hauler ----
-  const selected = (() => {
-    if (haulers.length === 0) return null;
-    return haulers.find(h => (h.id ?? 0) === meta.selectedHaulerId) || haulers[0];
-  })();
-
-  if (!selected) return;
-
-  if (!Array.isArray(selected.logisticsRoute)) {
-    selected.logisticsRoute = [];
-  }
-  if (typeof selected.routeIndex !== 'number') {
-    selected.routeIndex = 0;
-  }
-
-  const route = selected.logisticsRoute;
-
-  const routeBaseX = 220;
-  const routeBaseY = 88;
-
-  if (route.length === 0) {
-    const t = scene.add.text(
-      routeBaseX,
-      routeBaseY,
-      'No route yet. Click "Add stop" and then click a building or the mobile base on the map.',
-      {
-        fontFamily: 'monospace',
-        fontSize: '11px',
-        color: '#9bb3d8',
-        wordWrap: { width: PANEL.width - 260 },
-      }
-    ).setOrigin(0, 0);
-    meta.routeRows.push(t);
-    return;
-  }
-
-  route.forEach((stop, idx) => {
-    const y = routeBaseY + idx * rowH;
-
-    const prefix = (idx === selected.routeIndex)
-      ? `► ${idx + 1}. `
-      : `   ${idx + 1}. `;
-
-    const label = prefix + _describeStop(scene, stop);
-
-    const t = scene.add.text(
-      routeBaseX,
-      y,
-      label,
-      {
-        fontFamily: 'monospace',
-        fontSize: '12px',
-        color: idx === selected.routeIndex ? '#ffffff' : COLORS.text,
-      }
-    ).setOrigin(0, 0);
-
-    meta.routeRows.push(t);
-  });
-}
-
-/* ----------------------------------------------------
- * Stop description for UI
- * -------------------------------------------------- */
-function _describeStop(scene, stop) {
-  // Target name
-  let targetName = 'Unknown target';
-
-  if (stop.targetKind === 'mobileBase') {
-    targetName = 'Mobile Base';
-  } else if (stop.targetKind === 'building' && typeof stop.buildingId === 'number') {
-    const b = (scene.buildings || []).find(bb => bb.id === stop.buildingId);
-    if (b) {
-      const baseName = b.displayName || b.name || (b.type ? b.type[0].toUpperCase() + b.type.slice(1) : 'Building');
-      targetName = `${baseName} #${b.id ?? '?'}`;
-    }
-  } else if (typeof stop.targetQ === 'number' && typeof stop.targetR === 'number') {
-    targetName = `Hex (${stop.targetQ},${stop.targetR})`;
-  }
-
-  // Operation
-  const resEmoji = _resourceEmoji(stop.resourceKey);
-  let opText = '';
-  switch (stop.op) {
-    case 'loadAll':
-      opText = 'Load all';
-      break;
-    case 'unloadAll':
-      opText = 'Unload all';
-      break;
-    case 'loadResource':
-      opText = `Load ${resEmoji}`;
-      break;
-    case 'unloadResource':
-      opText = `Unload ${resEmoji}`;
-      break;
-    default:
-      opText = 'Idle';
-      break;
-  }
-
-  return `${targetName} (${opText})`;
-}
-
-function _resourceEmoji(key) {
-  switch (key) {
-    case 'food':  return '🍖';
-    case 'scrap': return '🛠';
-    case 'money': return '💰';
-    default:      return key || '…';
-  }
-}
-
-/* ----------------------------------------------------
- * Clear route for current hauler
- * -------------------------------------------------- */
-function _clearSelectedHaulerRoute(scene) {
-  const meta = scene.logisticsMeta;
-  if (!meta) return;
-
-  const haulers = scene.haulers || [];
-  const selected = haulers.find(h => (h.id ?? 0) === meta.selectedHaulerId) || haulers[0];
-  if (!selected) return;
-
-  selected.logisticsRoute = [];
-  selected.routeIndex = 0;
-  console.log('[LOGI] Cleared route for hauler', selected.id);
-  _refreshLogisticsPanel(scene);
-}
-
-/* ----------------------------------------------------
- * Add stop: click-to-pick building or mobile base on map
- * -------------------------------------------------- */
-function _startAddStopMode(scene) {
-  const meta = scene.logisticsMeta;
-  if (!meta) return;
-
-  const haulers = scene.haulers || [];
-  const selected = haulers.find(h => (h.id ?? 0) === meta.selectedHaulerId) || haulers[0];
-  if (!selected) return;
-
-  const cam = scene.cameras.main;
-  const overlay = scene.add.rectangle(
-    cam.worldView.x + cam.worldView.width / 2,
-    cam.worldView.y + cam.worldView.height / 2,
-    cam.worldView.width,
-    cam.worldView.height,
-    0x000000,
-    0.001
-  )
-    .setInteractive({ useHandCursor: true })
-    .setScrollFactor(0)
-    .setDepth(2500);
-
-  console.log('[LOGI] Add stop: click a building or the mobile base on the map…');
-
-  overlay.once('pointerdown', (pointer, lx, ly, event) => {
-    event?.stopPropagation?.();
-    overlay.destroy();
-
-    const worldPoint = pointer.positionToCamera(scene.cameras.main);
-    const { q, r } = scene.worldToAxial(worldPoint.x, worldPoint.y);
-
-    if (q < 0 || r < 0 || q >= scene.mapWidth || r >= scene.mapHeight) {
-      console.warn('[LOGI] Click out of bounds, cancelled.');
-      return;
-    }
-
-    const buildings = scene.buildings || [];
-    const building = buildings.find(b => b.q === q && b.r === r) || null;
-
-    // Try to detect mobile base
-    let mobileBase = null;
-    if (!building && Array.isArray(scene.players)) {
-      mobileBase = scene.players.find(u =>
-        u.q === q && u.r === r &&
-        (u.type === 'mobileBase' || u.isMobileBase === true ||
-         u.name === 'Mobile Base' || u.emoji === '🏕️' || u.emoji === '🚚')
-      ) || null;
-    }
-
-    if (!building && !mobileBase) {
-      console.warn('[LOGI] No building or mobile base on clicked hex — stop not added.');
-      return;
-    }
-
-    const targetKind = building ? 'building' : 'mobileBase';
-    const buildingId = building ? building.id ?? null : null;
-
-    // Simple heuristic: first stop => loadAll, second => unloadAll, then alternate
-    const route = selected.logisticsRoute || (selected.logisticsRoute = []);
-    const index = route.length;
-    let op = 'loadAll';
-    if (index === 1) {
-      op = 'unloadAll';
-    } else if (index >= 2) {
-      op = (route[index - 1]?.op === 'loadAll') ? 'unloadAll' : 'loadAll';
-    }
-
-    const stop = {
-      id: meta.nextStopId++,
-      targetKind,
-      buildingId,
-      targetQ: q,
-      targetR: r,
-      op,
-      resourceKey: 'food', // default; can be expanded later in UI
-    };
-
-    route.push(stop);
-    selected.routeIndex = 0;
-    console.log('[LOGI] Added stop to hauler route:', stop);
-    _refreshLogisticsPanel(scene);
+  // --- Mine production: +1 scrap per mine per turn, capped at maxScrap (default 10) ---
+  buildings.forEach(b => {
+    if (b.type !== 'mine') return;
+    const maxScrap = typeof b.maxScrap === 'number' ? b.maxScrap : 10;
+    const cur = typeof b.storageScrap === 'number' ? b.storageScrap : 0;
+    const next = Math.min(maxScrap, cur + 1);
+    b.storageScrap = next;
   });
 }
 
 export default {
-  setupLogisticsUI,
+  setupLogisticsPanel,
+  openLogisticsPanel,
+  applyLogisticsOnEndTurn,
 };
+
+///////////////////////////////
+// Internal helpers – model
+///////////////////////////////
+
+/**
+ * Collect all units that participate in logistics:
+ * - Land haulers (🚚)
+ * - Ships (🚢) created at docks
+ */
+function _getAllLogisticsHaulers(scene) {
+  const haulers = Array.isArray(scene.haulers) ? scene.haulers : [];
+  const ships   = Array.isArray(scene.ships)   ? scene.ships   : [];
+
+  // For now we treat ships as haulers as well.
+  return [...haulers, ...ships];
+}
+
+/**
+ * Ensure every hauler/ship has a unique _logiId and a logisticsRoute array.
+ * This is purely internal to the Logistics system and does not affect movement yet.
+ */
+function _ensureLogisticsIds(scene) {
+  const all = _getAllLogisticsHaulers(scene);
+  let nextId = 1;
+
+  // Reserve existing ids and find max
+  all.forEach(h => {
+    if (typeof h._logiId === 'number') {
+      nextId = Math.max(nextId, h._logiId + 1);
+    }
+  });
+
+  all.forEach(h => {
+    if (typeof h._logiId !== 'number') {
+      h._logiId = nextId++;
+    }
+    if (!Array.isArray(h.logisticsRoute)) {
+      h.logisticsRoute = [];
+    }
+  });
+}
+
+/**
+ * Format a short label for the hauler list.
+ */
+function _formatHaulerLabel(h) {
+  const emoji = h.emoji || (h.isNaval ? '🚢' : '🚚');
+  let base = `${emoji} ${h.name || 'Hauler'} #${h._logiId}`;
+
+  if (h.type === 'ship') {
+    base += ' (Ship)';
+  }
+
+  if (typeof h.q === 'number' && typeof h.r === 'number') {
+    base += `  @(${h.q},${h.r})`;
+  }
+  return base;
+}
+
+/**
+ * Render the right-side details for a single hauler:
+ * - basic info
+ * - list of route stops (if any)
+ * For now, route editing is not yet implemented – read-only preview.
+ */
+function _renderHaulerDetails(scene, hauler) {
+  const ui = scene.logisticsUI;
+  if (!ui) return;
+
+  const c = ui.detailContainer;
+  c.removeAll(true);
+
+  const isShip = (hauler.type === 'ship' || hauler.isNaval);
+  const emoji = hauler.emoji || (isShip ? '🚢' : '🚚');
+
+  let y = 0;
+
+  const title = scene.add.text(
+    0, y,
+    `${emoji} ${hauler.name || (isShip ? 'Ship' : 'Hauler')} #${hauler._logiId}`,
+    {
+      fontSize: '14px',
+      color: LOGI_COLORS.textMain,
+      fontStyle: 'bold',
+    }
+  ).setOrigin(0, 0);
+  c.add(title);
+  y += 20;
+
+  const posLine = scene.add.text(
+    0, y,
+    `Position: (${hauler.q ?? '?'}, ${hauler.r ?? '?'})`,
+    { fontSize: '12px', color: LOGI_COLORS.textDim }
+  ).setOrigin(0, 0);
+  c.add(posLine);
+  y += 16;
+
+  // Show simple cargo info (currently only 🍖 is implemented)
+  const cargoFood = hauler.cargoFood ?? 0;
+  const cargoLine = scene.add.text(
+    0, y,
+    `Cargo: 🍖 ${cargoFood}`,
+    { fontSize: '12px', color: LOGI_COLORS.textDim }
+  ).setOrigin(0, 0);
+  c.add(cargoLine);
+  y += 18;
+
+  // Divider
+  const divider = scene.add.graphics();
+  divider.lineStyle(1, 0x9bb6cc, 0.4);
+  divider.strokeLineShape(new Phaser.Geom.Line(0, y, 240, y));
+  c.add(divider);
+  y += 8;
+
+  // Route preview
+  const route = Array.isArray(hauler.logisticsRoute) ? hauler.logisticsRoute : [];
+  if (route.length === 0) {
+    const note = scene.add.text(
+      0, y,
+      'No custom logistics route.\n\n' +
+      'This hauler currently uses\n' +
+      'its default hardcoded behavior.\n\n' +
+      'Later we will add:\n' +
+      '  • Add station (click on map)\n' +
+      '  • Load / Unload / Load All / Unload All\n' +
+      '  • Resource selection (🍖 / 🛠 / etc.)',
+      {
+        fontSize: '11px',
+        color: LOGI_COLORS.textDim,
+      }
+    ).setOrigin(0, 0);
+    c.add(note);
+    return;
+  }
+
+  const routeTitle = scene.add.text(
+    0, y,
+    'Route:',
+    {
+      fontSize: '13px',
+      color: LOGI_COLORS.textMain,
+      fontStyle: 'bold',
+    }
+  ).setOrigin(0, 0);
+  c.add(routeTitle);
+  y += 18;
+
+  route.forEach((step, idx) => {
+    const stepText = _formatRouteStep(scene, step, idx);
+    const t = scene.add.text(
+      0, y,
+      stepText,
+      {
+        fontSize: '12px',
+        color: LOGI_COLORS.textMain,
+      }
+    ).setOrigin(0, 0);
+    c.add(t);
+    y += 16;
+  });
+
+  // Placeholder: future buttons for editing
+  y += 8;
+  const stub = scene.add.text(
+    0, y,
+    '[Editing of route steps\nwill be added in next patch.]',
+    { fontSize: '11px', color: LOGI_COLORS.textDim }
+  ).setOrigin(0, 0);
+  c.add(stub);
+}
+
+/**
+ * Convert a single route step into a readable string.
+ * step shape (planned):
+ * {
+ *   stationType: 'mobileBase' | 'docks' | 'mine' | 'factory' | 'bunker',
+ *   stationId: number,
+ *   action: 'load' | 'loadAll' | 'unload' | 'unloadAll',
+ *   resource: 'food' | 'scrap' | 'money' | 'influence', // etc.
+ * }
+ */
+function _formatRouteStep(scene, step, idx) {
+  const n = idx + 1;
+
+  const stationName = _resolveStationName(scene, step);
+  const actionLabel = _formatActionLabel(step.action, step.resource);
+
+  return `${n}. ${stationName} (${actionLabel})`;
+}
+
+/**
+ * Resolve "Mine #2", "Docks #1", "Mobile Base", etc. from a step.
+ */
+function _resolveStationName(scene, step) {
+  if (!step) return 'Unknown Station';
+
+  const type = step.stationType;
+  const id   = step.stationId;
+
+  if (type === 'mobileBase') {
+    return 'Mobile Base';
+  }
+
+  const buildings = scene.buildings || [];
+  const b = buildings.find(x => x.id === id && x.type === type);
+  if (!b) {
+    return `${type || 'Station'} #${id ?? '?'}`;
+  }
+
+  const emoji = b.emoji || _stationEmojiFallback(type);
+  const indexStr = (typeof id === 'number') ? `#${id}` : '';
+  return `${emoji} ${b.name || type} ${indexStr}`;
+}
+
+function _stationEmojiFallback(type) {
+  switch (type) {
+    case 'docks':   return '⚓';
+    case 'mine':    return '⛏️';
+    case 'factory': return '🏭';
+    case 'bunker':  return '🛡️';
+    default:        return '🏗️';
+  }
+}
+
+function _formatActionLabel(action, resource) {
+  const resEmoji = _resourceEmoji(resource);
+  switch (action) {
+    case 'load':      return `Load ${resEmoji}`;
+    case 'loadAll':   return 'Load all';
+    case 'unload':    return `Unload ${resEmoji}`;
+    case 'unloadAll': return 'Unload all';
+    default:          return 'No action';
+  }
+}
+
+function _resourceEmoji(resKey) {
+  switch (resKey) {
+    case 'food':      return '🍖';
+    case 'scrap':     return '🛠';
+    case 'money':     return '💰';
+    case 'influence': return '⭐';
+    default:          return '❓';
+  }
+}
