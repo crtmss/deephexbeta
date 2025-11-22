@@ -14,12 +14,21 @@ import {
 /**
  * Optional: hard-coded cost labels for display.
  * Keep these in sync with COSTS in WorldSceneBuildings.js / WorldSceneHaulers.js.
+ *
+ * WorldSceneBuildings.js:
+ *   docks:   { scrap: 20, money: 50 }
+ *   mine:    { scrap: 30, money: 20 }
+ *   factory: { scrap: 40, money: 60 }
+ *   bunker:  { scrap: 25, money: 40 }
+ *
+ * WorldSceneHaulers.js:
+ *   hauler:  { food: 10 }
  */
 const COST_LABELS = {
   docks:   '20🛠 / 50💰',
-  mine:    '40🛠',
-  factory: '60🛠 / 100💰',
-  bunker:  '30🛠 / 50💰',
+  mine:    '30🛠 / 20💰',
+  factory: '40🛠 / 60💰',
+  bunker:  '25🛠 / 40💰',
   hauler:  '10🍖',
 };
 
