@@ -84,10 +84,9 @@ export function openDocksRoutePicker(scene, building) {
   overlay.once('pointerdown', (pointer, lx, ly, event) => {
     event?.stopPropagation?.();
 
-    // === use worldToAxial instead of roundHex+pixelToHex ===
+    // Use scene.worldToAxial (centralized offset logic)
     const worldPoint = pointer.positionToCamera(scene.cameras.main);
     const { q, r } = scene.worldToAxial(worldPoint.x, worldPoint.y);
-    // =======================================================
 
     if (q < 0 || r < 0 || q >= scene.mapWidth || r >= scene.mapHeight) {
       console.warn('[DOCKS] Route pick out of bounds — cancelled');
@@ -397,10 +396,9 @@ export function enterHaulerRoutePicker() {
   overlay.once('pointerdown', (pointer, _lx, _ly, event) => {
     event?.stopPropagation?.();
 
-    // === use worldToAxial instead of roundHex+pixelToHex ===
+    // Use worldToAxial here as well
     const worldPoint = pointer.positionToCamera(scene.cameras.main);
     const { q, r } = scene.worldToAxial(worldPoint.x, worldPoint.y);
-    // =======================================================
 
     if (q < 0 || r < 0 || q >= scene.mapWidth || r >= scene.mapHeight) {
       console.warn('[HAULER] Route pick out of bounds.');
@@ -447,6 +445,67 @@ export function updateDocksStoreLabel(scene, docks) {
 }
 
 ///////////////////////////////
+// Shared logistics helper: move one leg toward a target hex
+///////////////////////////////
+
+/**
+ * Shared helper for logistics:
+ * Move a carrier (ship or hauler) toward (targetQ, targetR) using
+ * the existing BFS pathfinders, consume its movePoints, animate,
+ * and return true if it is now exactly on the target hex.
+ *
+ * Used by WorldSceneLogistics.applyLogisticsOnEndTurn.
+ */
+export function moveCarrierOneLeg(scene, carrier, targetQ, targetR) {
+  if (!scene || !carrier) return false;
+
+  // Ensure MPs have some sane default
+  if (typeof carrier.maxMovePoints !== 'number') carrier.maxMovePoints = 8;
+  if (typeof carrier.movePoints !== 'number') carrier.movePoints = carrier.maxMovePoints;
+
+  // Already there
+  if (carrier.q === targetQ && carrier.r === targetR) {
+    return true;
+  }
+
+  const isShip = carrier.type === 'ship' || carrier.isNaval;
+  const isHauler = carrier.type === 'hauler';
+
+  let path = null;
+  if (isShip) {
+    path = _shipPath(scene, carrier.q, carrier.r, targetQ, targetR);
+  } else if (isHauler) {
+    path = _haulerPath(scene, carrier.q, carrier.r, targetQ, targetR);
+  } else {
+    // Fallback to land rules
+    path = _haulerPath(scene, carrier.q, carrier.r, targetQ, targetR);
+  }
+
+  if (!path || path.length <= 1) {
+    return carrier.q === targetQ && carrier.r === targetR;
+  }
+
+  const steps = Math.min(carrier.movePoints, path.length - 1);
+  if (steps <= 0) {
+    return carrier.q === targetQ && carrier.r === targetR;
+  }
+
+  // Draw cyan path for debug/feedback (only the segment we will travel)
+  _drawCyanPath(scene, path.slice(0, steps + 1));
+
+  const nx = path[steps];
+  carrier.q = nx.q;
+  carrier.r = nx.r;
+  carrier.movePoints -= steps;
+
+  const p = scene.axialToWorld(carrier.q, carrier.r);
+  carrier.obj?.setPosition(p.x, p.y);
+  _repositionCargoLabel(scene, carrier);
+
+  return carrier.q === targetQ && carrier.r === targetR;
+}
+
+///////////////////////////////
 // Internal helpers (movement, paths, labels, resources, etc.)
 ///////////////////////////////
 
@@ -472,8 +531,9 @@ function _setRouteMarker(scene, building, q, r) {
 
 // ----- Resource system -----
 function _ensureResourceInit(scene) {
+  // Start the player with 200 of each (synced with Buildings module)
   if (!scene.playerResources) {
-    scene.playerResources = { food: 20, scrap: 20, money: 100, influence: 0 };
+    scene.playerResources = { food: 200, scrap: 200, money: 200, influence: 200 };
   }
   scene.updateResourceUI?.();
 }
@@ -651,4 +711,5 @@ export default {
   buildHaulerAtSelectedUnit,
   applyHaulerBehaviorOnEndTurn,
   enterHaulerRoutePicker,
+  moveCarrierOneLeg,
 };
