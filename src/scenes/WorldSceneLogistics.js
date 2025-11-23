@@ -147,19 +147,12 @@ export function setupLogisticsPanel(scene) {
   scene.openLogisticsPanel = function () {
     if (!this.logisticsUI) return;
     this.logisticsUI.container.visible = true;
-
-    // Block normal unit movement while logistics panel is open
-    this.disableUnitMovementForLogistics = true;
-
     this.refreshLogisticsPanel?.();
   };
 
   scene.closeLogisticsPanel = function () {
     if (!this.logisticsUI) return;
     this.logisticsUI.container.visible = false;
-
-    // Re-enable movement
-    this.disableUnitMovementForLogistics = false;
   };
 
   scene.refreshLogisticsPanel = function () {
@@ -233,15 +226,11 @@ export function setupLogisticsPanel(scene) {
 }
 
 /**
- * Helper if you ever want to open from outside the scene helper.
- */
-export function openLogisticsPanel(scene) {
-  scene.openLogisticsPanel?.();
-}
-
-/**
  * Called from WorldScene.endTurn().
  * Handles building-side logistics, e.g. Mines producing scrap each turn.
+ *
+ * Hauler movement and cargo transfers are handled in WorldSceneLogisticsRuntime.js
+ * based on hauler.logisticsRoute.
  */
 export function applyLogisticsOnEndTurn(sceneArg) {
   const scene = sceneArg || /** @type {any} */ (this);
@@ -266,7 +255,6 @@ export function applyLogisticsOnEndTurn(sceneArg) {
 
     // Keep compatibility with both fields by using the higher of the two
     const cur = Math.max(currentFromResources, currentFromStorage);
-
     const next = Math.min(maxScrap, cur + 1);
 
     // Write back to BOTH fields so everyone sees the same value
@@ -277,7 +265,6 @@ export function applyLogisticsOnEndTurn(sceneArg) {
 
 export default {
   setupLogisticsPanel,
-  openLogisticsPanel,
   applyLogisticsOnEndTurn,
 };
 
@@ -300,7 +287,6 @@ function _getAllLogisticsHaulers(scene) {
 
 /**
  * Ensure every hauler/ship has a unique _logiId and a logisticsRoute array.
- * This is purely internal to the Logistics system and does not affect movement yet.
  */
 function _ensureLogisticsIds(scene) {
   const all = _getAllLogisticsHaulers(scene);
@@ -344,8 +330,8 @@ function _formatHaulerLabel(h) {
  * Render the right-side details for a single hauler:
  * - basic info
  * - list of route stops (if any)
- * - "＋ Add station…" button
- * - "Reset routes" button
+ * - "＋ Add station…" button to append a new step
+ * - "Reset routes" button to clear all steps
  */
 function _renderHaulerDetails(scene, hauler) {
   const ui = scene.logisticsUI;
@@ -402,7 +388,8 @@ function _renderHaulerDetails(scene, hauler) {
     const note = scene.add.text(
       0, y,
       'No custom logistics route.\n\n' +
-      'This hauler currently does nothing.\n\n' +
+      'This hauler currently uses\n' +
+      'its default hardcoded behavior.\n\n' +
       'Click "＋ Add station…" below,\n' +
       'then left-click a station on the map\n' +
       'and choose an action.',
@@ -415,8 +402,7 @@ function _renderHaulerDetails(scene, hauler) {
     y += note.height + 8;
 
     _addAddStationButton(scene, hauler, c, y);
-    y += 22;
-    _addResetRoutesButton(scene, hauler, c, y);
+    _addResetRoutesButton(scene, hauler, c, y + 22);
     return;
   }
 
@@ -449,16 +435,14 @@ function _renderHaulerDetails(scene, hauler) {
   y += 6;
   const stub = scene.add.text(
     0, y,
-    'Use "＋ Add station…" to extend this route\n' +
-    'or "Reset routes" to clear it.',
+    'Use "＋ Add station…" to extend this route.',
     { fontSize: '11px', color: LOGI_COLORS.textDim }
   ).setOrigin(0, 0);
   c.add(stub);
   y += stub.height + 4;
 
   _addAddStationButton(scene, hauler, c, y);
-  y += 22;
-  _addResetRoutesButton(scene, hauler, c, y);
+  _addResetRoutesButton(scene, hauler, c, y + 22);
 }
 
 /**
@@ -483,15 +467,16 @@ function _addAddStationButton(scene, hauler, container, y) {
 }
 
 /**
- * Helper to create "Reset routes" button.
+ * "Reset routes" button – clears the logisticsRoute for this hauler.
  */
 function _addResetRoutesButton(scene, hauler, container, y) {
   const btn = scene.add.text(
     0, y,
     'Reset routes',
     {
-      fontSize: '12px',
-      color: '#ff7b7b',
+      fontSize: '11px',
+      color: LOGI_COLORS.textDim,
+      fontStyle: 'italic',
     }
   ).setOrigin(0, 0).setInteractive({ useHandCursor: true });
 
@@ -499,7 +484,8 @@ function _addResetRoutesButton(scene, hauler, container, y) {
     hauler.logisticsRoute = [];
     hauler.routeIndex = 0;
     hauler.pinnedToBase = false;
-    console.log('[LOGI] Reset routes for hauler#', hauler._logiId);
+    hauler.baseRef = hauler.baseRef; // keep original baseRef for legacy code
+    console.log('[LOGI] Routes reset for hauler#', hauler._logiId);
     scene.refreshLogisticsPanel?.();
   });
 
@@ -530,6 +516,9 @@ function _startAddStationFlow(scene, hauler) {
     .setScrollFactor(0)
     .setDepth(LOGI_Z.overlay);
 
+  // flag so WorldSceneUI input won't treat this click as move order
+  scene.isLogisticsPickingStation = true;
+
   overlay.once('pointerdown', (pointer, _lx, _ly, event) => {
     event?.stopPropagation?.();
 
@@ -540,10 +529,12 @@ function _startAddStationFlow(scene, hauler) {
     if (!station) {
       console.warn('[LOGI] No station (mobile base or building) on that hex.', { q, r });
       overlay.destroy();
+      scene.isLogisticsPickingStation = false;
       return;
     }
 
     overlay.destroy();
+    scene.isLogisticsPickingStation = false;
     _showActionPicker(scene, hauler, station);
   });
 }
@@ -717,39 +708,35 @@ function _resourceEmoji(resKey) {
 
 /**
  * Find a "station" on the given hex:
- * - Mobile Base unit (very robust heuristics)
+ * - Mobile Base unit (or main player unit)
  * - Any building at that coordinate
+ *
+ * This is now more forgiving: it looks in both scene.players and scene.units,
+ * and treats player / mobile-base-ish units as a mobileBase station.
  */
 function _findStationAt(scene, q, r) {
   if (q == null || r == null) return null;
 
-  // Collect units from multiple arrays – some setups keep the base only in units, some in players
+  // Gather all units we know about
   const players = Array.isArray(scene.players) ? scene.players : [];
   const units   = Array.isArray(scene.units)   ? scene.units   : [];
   const allUnits = [...players, ...units];
 
-  // First: explicitly flagged mobile base on this hex
-  let base = allUnits.find(u =>
+  const base = allUnits.find(u =>
     u &&
-    u.q === q && u.r === r &&
+    typeof u.q === 'number' &&
+    typeof u.r === 'number' &&
+    u.q === q &&
+    u.r === r &&
     (
       u.type === 'mobileBase' ||
       u.isMobileBase === true ||
       u.name === 'Mobile Base' ||
+      u.isPlayer === true ||          // main player unit
       u.emoji === '🏕️' ||
       u.emoji === '🚚'
     )
   );
-
-  // Fallback: any player unit on that hex counts as Mobile Base station
-  if (!base) {
-    const anyPlayerOnHex = allUnits.find(u =>
-      u && u.q === q && u.r === r && (u.isPlayer === true || u.isBase === true)
-    );
-    if (anyPlayerOnHex) {
-      base = anyPlayerOnHex;
-    }
-  }
 
   if (base) {
     return {
