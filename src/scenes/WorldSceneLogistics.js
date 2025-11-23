@@ -226,7 +226,17 @@ export function setupLogisticsPanel(scene) {
 }
 
 /**
- * Convenience helper if you ever want to open from outside the scene helper.
+ * Convenience helper if you ever want to open from outside with a scene ref.
+ */
+export function openLogisticsPanel(scene) {
+  scene?.openLogisticsPanel?.();
+}
+
+/**
+ * Called from WorldScene.endTurn().
+ * Handles building-side logistics, e.g. Mines producing scrap each turn.
+ *
+ * Hauler movement and cargo transfers are handled in WorldSceneLogisticsRuntime.
  */
 export function applyLogisticsOnEndTurn(sceneArg) {
   const scene = sceneArg || /** @type {any} */ (this);
