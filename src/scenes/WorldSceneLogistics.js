@@ -228,9 +228,6 @@ export function setupLogisticsPanel(scene) {
 /**
  * Called from WorldScene.endTurn().
  * Handles building-side logistics, e.g. Mines producing scrap each turn.
- *
- * Hauler movement and cargo transfers are handled in WorldSceneLogisticsRuntime.js
- * based on hauler.logisticsRoute.
  */
 export function applyLogisticsOnEndTurn(sceneArg) {
   const scene = sceneArg || /** @type {any} */ (this);
@@ -484,7 +481,6 @@ function _addResetRoutesButton(scene, hauler, container, y) {
     hauler.logisticsRoute = [];
     hauler.routeIndex = 0;
     hauler.pinnedToBase = false;
-    hauler.baseRef = hauler.baseRef; // keep original baseRef for legacy code
     console.log('[LOGI] Routes reset for hauler#', hauler._logiId);
     scene.refreshLogisticsPanel?.();
   });
@@ -493,11 +489,7 @@ function _addResetRoutesButton(scene, hauler, container, y) {
 }
 
 /**
- * Begin "add station" interaction:
- * - User clicks button in Logistics panel.
- * - We show a faint full-screen overlay.
- * - Next left-click on the map selects a station (mobile base or building).
- * - Then an action picker (Load all / Unload all / Idle) appears in the panel.
+ * Begin "add station" interaction.
  */
 function _startAddStationFlow(scene, hauler) {
   if (!scene || !hauler) return;
@@ -633,13 +625,6 @@ function _showActionPicker(scene, hauler, station) {
 
 /**
  * Convert a single route step into a readable string.
- * step shape:
- * {
- *   stationType: 'mobileBase' | 'docks' | 'mine' | 'factory' | 'bunker',
- *   stationId: number | null,
- *   action: 'load' | 'loadAll' | 'unload' | 'unloadAll' | 'idle',
- *   resource: 'food' | 'scrap' | 'money' | 'influence', // etc.
- * }
  */
 function _formatRouteStep(scene, step, idx) {
   const n = idx + 1;
@@ -708,35 +693,31 @@ function _resourceEmoji(resKey) {
 
 /**
  * Find a "station" on the given hex:
- * - Mobile Base unit (or main player unit)
+ * - Mobile Base unit (your big red circle, type 'mobile_base')
  * - Any building at that coordinate
- *
- * This is now more forgiving: it looks in both scene.players and scene.units,
- * and treats player / mobile-base-ish units as a mobileBase station.
  */
 function _findStationAt(scene, q, r) {
   if (q == null || r == null) return null;
 
-  // Gather all units we know about
   const players = Array.isArray(scene.players) ? scene.players : [];
   const units   = Array.isArray(scene.units)   ? scene.units   : [];
   const allUnits = [...players, ...units];
 
-  const base = allUnits.find(u =>
-    u &&
-    typeof u.q === 'number' &&
-    typeof u.r === 'number' &&
-    u.q === q &&
-    u.r === r &&
-    (
-      u.type === 'mobileBase' ||
-      u.isMobileBase === true ||
-      u.name === 'Mobile Base' ||
-      u.isPlayer === true ||          // main player unit
-      u.emoji === '🏕️' ||
-      u.emoji === '🚚'
-    )
-  );
+  const base = allUnits.find(u => {
+    if (!u || typeof u.q !== 'number' || typeof u.r !== 'number') return false;
+    if (u.q !== q || u.r !== r) return false;
+
+    // Your mobile base from WorldSceneUnits.js:
+    // unit.type = 'mobile_base', color red, playerName === scene.playerName
+    const isMobileBaseType =
+      u.type === 'mobile_base' ||   // <- important for your code
+      u.type === 'mobileBase';
+
+    const isLocalPlayer =
+      !!scene.playerName && u.playerName === scene.playerName;
+
+    return isMobileBaseType || isLocalPlayer;
+  });
 
   if (base) {
     return {
