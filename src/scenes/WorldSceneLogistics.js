@@ -9,7 +9,7 @@
 // - Provide applyLogisticsOnEndTurn() for building-side logistics (mines, etc.).
 //
 // Movement logic for haulers/ships still lives in WorldSceneHaulers.js.
-// Later we will make that logic consume hauler.logisticsRoute.
+// WorldSceneLogisticsRuntime.js consumes hauler.logisticsRoute on end turn.
 
 ///////////////////////////////
 // Visual constants
@@ -78,7 +78,7 @@ export function setupLogisticsPanel(scene) {
 
   const subtitle = scene.add.text(
     16, 32,
-    'Select a hauler on the left to inspect its route.',
+    'Select a hauler on the left to inspect or edit its route.',
     {
       fontSize: '12px',
       color: LOGI_COLORS.textDim,
@@ -236,8 +236,8 @@ export function openLogisticsPanel(scene) {
  * Called from WorldScene.endTurn().
  * Handles building-side logistics, e.g. Mines producing scrap each turn.
  *
- * Hauler movement and cargo transfers will be wired here later
- * once we migrate logic from WorldSceneHaulers.js.
+ * Hauler movement and cargo transfers are handled in
+ * WorldSceneLogisticsRuntime.js using hauler.logisticsRoute.
  */
 export function applyLogisticsOnEndTurn(sceneArg) {
   const scene = sceneArg || /** @type {any} */ (this);
@@ -325,7 +325,7 @@ function _formatHaulerLabel(h) {
  * Render the right-side details for a single hauler:
  * - basic info
  * - list of route stops (if any)
- * For now, route editing is not yet implemented – read-only preview.
+ * - "＋ Add station…" button to append a new step
  */
 function _renderHaulerDetails(scene, hauler) {
   const ui = scene.logisticsUI;
@@ -384,16 +384,18 @@ function _renderHaulerDetails(scene, hauler) {
       'No custom logistics route.\n\n' +
       'This hauler currently uses\n' +
       'its default hardcoded behavior.\n\n' +
-      'Later we will add:\n' +
-      '  • Add station (click on map)\n' +
-      '  • Load / Unload / Load All / Unload All\n' +
-      '  • Resource selection (🍖 / 🛠 / etc.)',
+      'Click "＋ Add station…" below,\n' +
+      'then left-click a station on the map\n' +
+      'and choose an action.',
       {
         fontSize: '11px',
         color: LOGI_COLORS.textDim,
       }
     ).setOrigin(0, 0);
     c.add(note);
+    y += note.height + 8;
+
+    _addAddStationButton(scene, hauler, c, y);
     return;
   }
 
@@ -423,23 +425,180 @@ function _renderHaulerDetails(scene, hauler) {
     y += 16;
   });
 
-  // Placeholder: future buttons for editing
-  y += 8;
+  y += 6;
   const stub = scene.add.text(
     0, y,
-    '[Editing of route steps\nwill be added in next patch.]',
+    'Use "＋ Add station…" to extend this route.',
     { fontSize: '11px', color: LOGI_COLORS.textDim }
   ).setOrigin(0, 0);
   c.add(stub);
+  y += stub.height + 4;
+
+  _addAddStationButton(scene, hauler, c, y);
+}
+
+/**
+ * Small helper to create the "＋ Add station…" button.
+ */
+function _addAddStationButton(scene, hauler, container, y) {
+  const btn = scene.add.text(
+    0, y,
+    '＋ Add station…',
+    {
+      fontSize: '12px',
+      color: LOGI_COLORS.listHighlight,
+      fontStyle: 'bold',
+    }
+  ).setOrigin(0, 0).setInteractive({ useHandCursor: true });
+
+  btn.on('pointerdown', () => {
+    _startAddStationFlow(scene, hauler);
+  });
+
+  container.add(btn);
+}
+
+/**
+ * Begin "add station" interaction:
+ * - User clicks button in Logistics panel.
+ * - We show a faint full-screen overlay.
+ * - Next left-click on the map selects a station (mobile base or building).
+ * - Then an action picker (Load all / Unload all / Idle) appears in the panel.
+ */
+function _startAddStationFlow(scene, hauler) {
+  if (!scene || !hauler) return;
+  console.log('[LOGI] Add station: left-click a Mobile Base or building hex.');
+
+  const cam = scene.cameras.main;
+  const overlay = scene.add.rectangle(
+    cam.worldView.x + cam.worldView.width / 2,
+    cam.worldView.y + cam.worldView.height / 2,
+    cam.worldView.width,
+    cam.worldView.height,
+    0x000000,
+    0.001
+  )
+    .setInteractive({ useHandCursor: true })
+    .setScrollFactor(0)
+    .setDepth(LOGI_Z.overlay);
+
+  overlay.once('pointerdown', (pointer, _lx, _ly, event) => {
+    event?.stopPropagation?.();
+
+    const worldPoint = pointer.positionToCamera(scene.cameras.main);
+    const { q, r } = scene.worldToAxial(worldPoint.x, worldPoint.y);
+
+    const station = _findStationAt(scene, q, r);
+    if (!station) {
+      console.warn('[LOGI] No station (mobile base or building) on that hex.');
+      overlay.destroy();
+      return;
+    }
+
+    overlay.destroy();
+    _showActionPicker(scene, hauler, station);
+  });
+}
+
+/**
+ * After picking a station on the map, present action options
+ * (Load all / Unload all / Idle) in the Logistics panel.
+ */
+function _showActionPicker(scene, hauler, station) {
+  const ui = scene.logisticsUI;
+  if (!ui) return;
+
+  const c = ui.detailContainer;
+  c.removeAll(true);
+
+  let y = 0;
+
+  const stationStepLike = {
+    stationType: station.stationType,
+    stationId: station.stationId,
+  };
+  const stationName = _resolveStationName(scene, stationStepLike);
+
+  const title = scene.add.text(
+    0, y,
+    `Add station: ${stationName}`,
+    {
+      fontSize: '14px',
+      color: LOGI_COLORS.textMain,
+      fontStyle: 'bold',
+    }
+  ).setOrigin(0, 0);
+  c.add(title);
+  y += 22;
+
+  const hint = scene.add.text(
+    0, y,
+    'Choose what this hauler should do at this stop:',
+    { fontSize: '12px', color: LOGI_COLORS.textDim }
+  ).setOrigin(0, 0);
+  c.add(hint);
+  y += 18;
+
+  const makeBtn = (label, actionKey) => {
+    const b = scene.add.text(
+      0, y,
+      label,
+      {
+        fontSize: '12px',
+        color: LOGI_COLORS.listHighlight,
+      }
+    ).setOrigin(0, 0).setInteractive({ useHandCursor: true });
+
+    b.on('pointerdown', () => {
+      const step = {
+        stationType: station.stationType,
+        stationId: station.stationId,
+        action: actionKey,
+        resource: 'food',  // current implemented cargo
+      };
+
+      hauler.logisticsRoute = hauler.logisticsRoute || [];
+      hauler.logisticsRoute.push(step);
+
+      // Idle at Mobile Base: pin hauler to the base so it rides along
+      if (actionKey === 'idle' && station.stationType === 'mobileBase') {
+        if (station.unitRef) {
+          hauler.baseRef = station.unitRef;
+          hauler.baseQ = station.unitRef.q;
+          hauler.baseR = station.unitRef.r;
+        }
+        hauler.pinnedToBase = true;
+      }
+
+      console.log('[LOGI] Added route step', step, 'for hauler#', hauler._logiId);
+      scene.refreshLogisticsPanel?.();
+    });
+
+    c.add(b);
+    y += 18;
+  };
+
+  makeBtn('Load all (🍖)', 'loadAll');
+  makeBtn('Unload all (🍖)', 'unloadAll');
+  makeBtn('Idle at station', 'idle');
+
+  y += 10;
+  const note = scene.add.text(
+    0, y,
+    'Idle at a Mobile Base will pin the hauler\n' +
+    'so it stays inside when the base moves.',
+    { fontSize: '11px', color: LOGI_COLORS.textDim }
+  ).setOrigin(0, 0);
+  c.add(note);
 }
 
 /**
  * Convert a single route step into a readable string.
- * step shape (planned):
+ * step shape:
  * {
  *   stationType: 'mobileBase' | 'docks' | 'mine' | 'factory' | 'bunker',
- *   stationId: number,
- *   action: 'load' | 'loadAll' | 'unload' | 'unloadAll',
+ *   stationId: number | null,
+ *   action: 'load' | 'loadAll' | 'unload' | 'unloadAll' | 'idle',
  *   resource: 'food' | 'scrap' | 'money' | 'influence', // etc.
  * }
  */
@@ -493,6 +652,7 @@ function _formatActionLabel(action, resource) {
     case 'loadAll':   return 'Load all';
     case 'unload':    return `Unload ${resEmoji}`;
     case 'unloadAll': return 'Unload all';
+    case 'idle':      return 'Idle';
     default:          return 'No action';
   }
 }
@@ -505,4 +665,42 @@ function _resourceEmoji(resKey) {
     case 'influence': return '⭐';
     default:          return '❓';
   }
+}
+
+/**
+ * Find a "station" on the given hex:
+ * - Mobile Base unit
+ * - Any building at that coordinate
+ */
+function _findStationAt(scene, q, r) {
+  if (q == null || r == null) return null;
+
+  // Mobile base (we treat any flagged as mobile base and on that hex)
+  const players = scene.players || [];
+  const base = players.find(u =>
+    (u.type === 'mobileBase' ||
+     u.isMobileBase === true ||
+     u.name === 'Mobile Base') &&
+    u.q === q && u.r === r
+  );
+  if (base) {
+    return {
+      stationType: 'mobileBase',
+      stationId: base.id ?? null,
+      unitRef: base,
+    };
+  }
+
+  // Buildings
+  const buildings = scene.buildings || [];
+  const b = buildings.find(x => x.q === q && x.r === r);
+  if (b) {
+    return {
+      stationType: b.type,
+      stationId: b.id,
+      buildingRef: b,
+    };
+  }
+
+  return null;
 }
