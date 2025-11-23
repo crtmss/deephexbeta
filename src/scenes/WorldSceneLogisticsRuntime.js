@@ -1,313 +1,278 @@
 // src/scenes/WorldSceneLogisticsRuntime.js
 //
-// Executes logistics routes (Factorio-style) on end turn.
-// Consumes hauler.logisticsRoute populated by WorldSceneLogistics.js.
+// Executes Factorio-style logistics routes for haulers & ships on end turn.
+// This file is *pure runtime*: it doesn’t draw UI, it just reads
+// hauler.logisticsRoute (built by WorldSceneLogistics.js) and moves cargo.
 //
-// A "route step" has shape:
-//
+// A "route step" looks like:
 // {
-//   stationType: 'mobileBase' | 'docks' | 'mine' | 'factory' | 'bunker' | ...,
+//   stationType: 'mobileBase' | 'docks' | 'mine' | 'factory' | 'bunker',
 //   stationId: number | null,
 //   action: 'load' | 'loadAll' | 'unload' | 'unloadAll' | 'idle',
 //   resource: 'food' | 'scrap' | 'money' | 'influence',
 // }
-//
-// Currently only 'food' is actively moved for docks <-> buildings,
-// but the helpers are ready for more resources.
 
-import {
-  moveCarrierOneLeg,
-  ensureDocksStoreLabel,
-  updateDocksStoreLabel,
-} from './WorldSceneHaulers.js';
+import { moveCarrierOneLeg, ensureDocksStoreLabel, updateDocksStoreLabel } from './WorldSceneHaulers.js';
+
+// These mirror the caps in WorldSceneHaulers.js
+const HAULER_CARGO_CAP = 5;
+const SHIP_CARGO_CAP = 2;
 
 /**
- * Main entry: called from WorldScene.endTurn().
- * Moves haulers with logisticsRoute and performs load/unload/idle at stations.
+ * Apply logistics routes for all carriers that have them.
+ * Called from WorldScene.endTurn().
  */
 export function applyLogisticsRoutesOnEndTurn(sceneArg) {
   const scene = sceneArg || /** @type {any} */ (this);
   if (!scene) return;
 
   const haulers = Array.isArray(scene.haulers) ? scene.haulers : [];
-  if (!haulers.length) return;
+  const ships   = Array.isArray(scene.ships)   ? scene.ships   : [];
+  const carriers = [...haulers, ...ships];
 
-  // Keep "pinned" haulers snapped to their mobile base position
-  _syncPinnedHaulersToMobileBase(scene);
+  for (const carrier of carriers) {
+    if (!Array.isArray(carrier.logisticsRoute) || carrier.logisticsRoute.length === 0) {
+      continue; // legacy behaviour in WorldSceneHaulers handles non-route haulers
+    }
 
-  const routeHaulers = haulers.filter(
-    h => Array.isArray(h.logisticsRoute) && h.logisticsRoute.length > 0
-  );
-  if (!routeHaulers.length) {
+    const steps = carrier.logisticsRoute;
+    if (!steps.length) continue;
+
+    if (typeof carrier.routeIndex !== 'number' || carrier.routeIndex < 0 || carrier.routeIndex >= steps.length) {
+      carrier.routeIndex = 0;
+    }
+
+    const step = steps[carrier.routeIndex];
+    const station = _resolveStationForStep(scene, step);
+
+    if (!station) {
+      console.warn('[LOGI] Station not found for step', step);
+      carrier.routeIndex = (carrier.routeIndex + 1) % steps.length;
+      continue;
+    }
+
+    // 1) Move toward station
+    const reached = moveCarrierOneLeg(scene, carrier, station.q, station.r);
+
+    // If we haven't arrived yet, we stop here this turn.
+    if (!reached) {
+      continue;
+    }
+
+    // 2) Execute action at station when standing on it
+    _executeStepAtStation(scene, carrier, station, step);
+
+    // 3) Advance to the next step in route
+    const len = steps.length;
+    carrier.routeIndex = len > 0 ? (carrier.routeIndex + 1) % len : 0;
+
+    // Reset move points for the next step/turn
+    if (typeof carrier.maxMovePoints !== 'number') carrier.maxMovePoints = 8;
+    carrier.movePoints = carrier.maxMovePoints;
+  }
+}
+
+/* =========================
+   Station resolution
+   ========================= */
+
+function _resolveStationForStep(scene, step) {
+  if (!step) return null;
+  const type = step.stationType;
+
+  if (type === 'mobileBase') {
+    const players = scene.players || [];
+
+    // Prefer my own mobile base
+    let base = players.find(u =>
+      u &&
+      u.type === 'mobile_base' &&
+      u.playerName === scene.playerName
+    );
+
+    // Fallback: any mobile_base
+    if (!base) {
+      base = players.find(u => u && u.type === 'mobile_base');
+    }
+
+    if (!base) {
+      console.warn('[LOGI] No mobile_base unit found for logistics step', step);
+      return null;
+    }
+
+    return {
+      kind: 'mobileBase',
+      unitRef: base,
+      q: base.q,
+      r: base.r,
+    };
+  }
+
+  // Buildings (docks, mine, factory, etc.)
+  const buildings = scene.buildings || [];
+  let b = null;
+
+  if (typeof step.stationId === 'number') {
+    b = buildings.find(x => x.id === step.stationId);
+  }
+
+  if (!b && type) {
+    const candidates = buildings.filter(x => x.type === type);
+    if (candidates.length > 0) {
+      b = candidates[0];
+    }
+  }
+
+  if (!b) {
+    return null;
+  }
+
+  return {
+    kind: 'building',
+    buildingRef: b,
+    q: b.q,
+    r: b.r,
+  };
+}
+
+/* =========================
+   Step execution
+   ========================= */
+
+function _executeStepAtStation(scene, carrier, station, step) {
+  const action = step.action || 'idle';
+  const resource = step.resource || 'food';
+
+  switch (action) {
+    case 'load':
+    case 'loadAll':
+      _performLoad(scene, carrier, station, resource);
+      break;
+    case 'unload':
+    case 'unloadAll':
+      _performUnload(scene, carrier, station, resource);
+      break;
+    case 'idle':
+    default:
+      // Idle at mobile base: pin so it "rides along" when base moves
+      if (station.kind === 'mobileBase') {
+        carrier.pinnedToBase = true;
+        carrier.baseRef = station.unitRef;
+        carrier.baseQ = station.unitRef.q;
+        carrier.baseR = station.unitRef.r;
+      }
+      break;
+  }
+}
+
+function _getCargoCapacity(carrier) {
+  if (carrier.type === 'ship' || carrier.isNaval) return SHIP_CARGO_CAP;
+  return HAULER_CARGO_CAP;
+}
+
+/* =========================
+   Load / Unload helpers
+   ========================= */
+
+function _performLoad(scene, carrier, station, resource) {
+  if (resource !== 'food') {
+    // For now we only implement food; other resources can be added later.
     return;
   }
 
-  for (const h of routeHaulers) {
-    // ensure basic movement stats
-    if (typeof h.maxMovePoints !== 'number') h.maxMovePoints = 8;
-    if (typeof h.movePoints !== 'number') h.movePoints = h.maxMovePoints;
+  const cap = _getCargoCapacity(carrier);
+  const current = carrier.cargoFood || 0;
+  const room = Math.max(0, cap - current);
+  if (room <= 0) return;
 
-    const route = h.logisticsRoute;
-    if (!route || route.length === 0) continue;
+  if (station.kind === 'building') {
+    const b = station.buildingRef;
+    b.resources = b.resources || {};
 
-    if (typeof h.routeIndex !== 'number' || h.routeIndex < 0) {
-      h.routeIndex = 0;
-    }
-    if (h.routeIndex >= route.length) {
-      h.routeIndex = 0;
-    }
+    const fromResources = typeof b.resources.food === 'number' ? b.resources.food : 0;
+    const fromStorage   = typeof b.storageFood === 'number' ? b.storageFood : 0;
+    const available = Math.max(fromResources, fromStorage);
 
-    const step = route[h.routeIndex];
-    if (!step) {
-      h.routeIndex = 0;
-      continue;
-    }
+    if (available <= 0) return;
 
-    const stationInfo = _resolveStation(scene, step);
-    if (!stationInfo) {
-      console.warn('[LOGI] Station not found for step', step);
-      // skip this broken step and advance to next one
-      h.routeIndex = (h.routeIndex + 1) % route.length;
-      continue;
+    const take = Math.min(available, room);
+    const remaining = available - take;
+
+    b.resources.food = remaining;
+    b.storageFood = remaining;
+
+    if (b.type === 'docks') {
+      ensureDocksStoreLabel(scene, b);
+      updateDocksStoreLabel(scene, b);
     }
 
-    const { q: targetQ, r: targetR, stationRef } = stationInfo;
+    carrier.cargoFood = current + take;
+    _syncCarrierCargoLabel(carrier);
 
-    // If hauler is not yet on the station hex, move it towards it
-    if (h.q !== targetQ || h.r !== targetR) {
-      const arrived = moveCarrierOneLeg(scene, h, targetQ, targetR);
-      // movement only this turn; cargo actions happen when we actually arrive
-      if (!arrived) continue;
-    }
+  } else if (station.kind === 'mobileBase') {
+    // Load from global player resources
+    scene.playerResources = scene.playerResources || {};
+    const available = scene.playerResources.food || 0;
+    if (available <= 0) return;
 
-    // At the station: perform the action
-    const action = step.action || 'idle';
-    const resKey = step.resource || 'food';
+    const take = Math.min(available, room);
+    scene.playerResources.food -= take;
+    scene.updateResourceUI?.();
 
-    switch (action) {
-      case 'load':
-      case 'loadAll':
-        _doLoadAll(scene, h, stationRef, resKey);
-        break;
-      case 'unload':
-      case 'unloadAll':
-        _doUnloadAll(scene, h, stationRef, resKey);
-        break;
-      case 'idle':
-      default:
-        // no cargo change, just stay here
-        break;
-    }
+    carrier.cargoFood = current + take;
+    _syncCarrierCargoLabel(carrier);
+  }
+}
 
-    // Advance to next step in route (looping)
-    h.routeIndex = (h.routeIndex + 1) % route.length;
+function _performUnload(scene, carrier, station, resource) {
+  if (resource !== 'food') {
+    return;
   }
 
-  // Reset move points for next turn so moveCarrierOneLeg has full MPs again
-  for (const h of haulers) {
-    if (typeof h.maxMovePoints !== 'number') h.maxMovePoints = 8;
-    h.movePoints = h.maxMovePoints;
+  const current = carrier.cargoFood || 0;
+  if (current <= 0) return;
+  const give = current;
+
+  if (station.kind === 'building') {
+    const b = station.buildingRef;
+    b.resources = b.resources || {};
+
+    const fromResources = typeof b.resources.food === 'number' ? b.resources.food : 0;
+    const fromStorage   = typeof b.storageFood === 'number' ? b.storageFood : 0;
+    const total = Math.max(fromResources, fromStorage) + give;
+
+    b.resources.food = total;
+    b.storageFood = total;
+
+    if (b.type === 'docks') {
+      ensureDocksStoreLabel(scene, b);
+      updateDocksStoreLabel(scene, b);
+    }
+
+    carrier.cargoFood = 0;
+    _syncCarrierCargoLabel(carrier);
+
+  } else if (station.kind === 'mobileBase') {
+    // Unload into player resources
+    scene.playerResources = scene.playerResources || {};
+    scene.playerResources.food = (scene.playerResources.food || 0) + give;
+    scene.updateResourceUI?.();
+
+    carrier.cargoFood = 0;
+    _syncCarrierCargoLabel(carrier);
   }
+}
+
+/* =========================
+   Tiny label sync (no import from Haulers internals)
+   ========================= */
+
+function _syncCarrierCargoLabel(carrier) {
+  if (!carrier.cargoObj) return;
+  const n = carrier.cargoFood || 0;
+  carrier.cargoObj.setText(n > 0 ? `🍖×${n}` : '');
 }
 
 export default {
   applyLogisticsRoutesOnEndTurn,
 };
-
-///////////////////////////////
-// Internal helpers
-///////////////////////////////
-
-/**
- * Keep haulers that are "pinned" to a Mobile Base riding along with it.
- * This runs at end of turn; so after you move the mobile base,
- * pinned haulers will be teleported onto its hex.
- */
-function _syncPinnedHaulersToMobileBase(scene) {
-  const players = scene.players || [];
-  const haulers = scene.haulers || [];
-
-  for (const h of haulers) {
-    if (!h.pinnedToBase) continue;
-    if (!h.baseRef) continue;
-
-    const base = players.find(u => u === h.baseRef);
-    if (!base || typeof base.q !== 'number' || typeof base.r !== 'number') continue;
-
-    h.q = base.q;
-    h.r = base.r;
-    const p = scene.axialToWorld(base.q, base.r);
-    h.obj?.setPosition(p.x, p.y);
-    _updateHaulerCargoLabel(scene, h);
-  }
-}
-
-/**
- * Resolve station and its hex from a route step.
- * Returns { q, r, stationRef } or null.
- */
-function _resolveStation(scene, step) {
-  if (!step) return null;
-
-  const type = step.stationType;
-  const id   = step.stationId;
-
-  // Mobile base as station
-  if (type === 'mobileBase') {
-    const players = scene.players || [];
-    const base = players.find(u =>
-      (u.type === 'mobileBase' ||
-       u.isMobileBase === true ||
-       u.name === 'Mobile Base') &&
-      (id == null || u.id === id)
-    );
-    if (!base || typeof base.q !== 'number' || typeof base.r !== 'number') return null;
-    return { q: base.q, r: base.r, stationRef: base };
-  }
-
-  // Building as station
-  const buildings = scene.buildings || [];
-  const b = buildings.find(x =>
-    x.type === type &&
-    (id == null || x.id === id)
-  );
-
-  if (!b || typeof b.q !== 'number' || typeof b.r !== 'number') return null;
-  return { q: b.q, r: b.r, stationRef: b };
-}
-
-/**
- * Load as much of resource from station into hauler as possible (respecting hauler capacity).
- * Currently only "food" is actually wired for docks, but this is generic.
- */
-function _doLoadAll(scene, hauler, station, resKey) {
-  if (!hauler || !station) return;
-
-  // Ensure cargo counters exist
-  if (typeof hauler.cargoFood !== 'number') hauler.cargoFood = 0;
-
-  // For now, we treat 'food' as the moved resource (UI always sets resource: 'food')
-  if (resKey !== 'food') {
-    // stub for future resources
-    return;
-  }
-
-  const capacity = typeof hauler.maxCargoFood === 'number' ? hauler.maxCargoFood : 5;
-  const currentCargo = hauler.cargoFood || 0;
-  const space = Math.max(0, capacity - currentCargo);
-  if (space <= 0) return;
-
-  const available = _getStationAmount(station, 'food');
-  if (available <= 0) return;
-
-  const take = Math.min(space, available);
-  const nextCargo = currentCargo + take;
-  const nextStation = available - take;
-
-  hauler.cargoFood = nextCargo;
-  _setStationAmount(station, 'food', nextStation);
-
-  _updateHaulerCargoLabel(scene, hauler);
-  _updateStationVisuals(scene, station);
-}
-
-/**
- * Unload all of resource from hauler into station.
- */
-function _doUnloadAll(scene, hauler, station, resKey) {
-  if (!hauler || !station) return;
-
-  if (resKey !== 'food') {
-    // stub for future resources
-    return;
-  }
-
-  const currentCargo = hauler.cargoFood || 0;
-  if (currentCargo <= 0) return;
-
-  const stationAmount = _getStationAmount(station, 'food');
-  const nextStation = stationAmount + currentCargo;
-
-  hauler.cargoFood = 0;
-  _setStationAmount(station, 'food', nextStation);
-
-  _updateHaulerCargoLabel(scene, hauler);
-  _updateStationVisuals(scene, station);
-}
-
-/**
- * Read a resource amount from a station, taking into account both `resources.*`
- * and any legacy `storage*` fields.
- */
-function _getStationAmount(station, resKey) {
-  if (!station) return 0;
-
-  let v = 0;
-  if (station.resources && typeof station.resources[resKey] === 'number') {
-    v = station.resources[resKey];
-  }
-
-  const storageProp = _storagePropForRes(resKey);
-  if (storageProp && typeof station[storageProp] === 'number') {
-    v = Math.max(v, station[storageProp]);
-  }
-  return v;
-}
-
-/**
- * Write a resource amount back to a station, syncing both `resources.*`
- * and any legacy `storage*` field if present.
- */
-function _setStationAmount(station, resKey, value) {
-  if (!station) return;
-  if (!station.resources) station.resources = {};
-
-  const v = Math.max(0, value | 0);
-
-  station.resources[resKey] = v;
-
-  const storageProp = _storagePropForRes(resKey);
-  if (storageProp && storageProp in station) {
-    station[storageProp] = v;
-  }
-}
-
-function _storagePropForRes(resKey) {
-  switch (resKey) {
-    case 'food':      return 'storageFood';
-    case 'scrap':     return 'storageScrap';
-    case 'money':     return 'storageMoney';
-    case 'influence': return 'storageInfluence';
-    default:          return null;
-  }
-}
-
-/**
- * Update any visuals associated with a station after load/unload.
- * Right now this mainly covers docks' little 🍖 label.
- */
-function _updateStationVisuals(scene, station) {
-  if (!station) return;
-  if (station.type === 'docks') {
-    ensureDocksStoreLabel(scene, station);
-    updateDocksStoreLabel(scene, station);
-  }
-}
-
-/**
- * Minimal cargo label updater without depending on Haulers' private helpers.
- */
-function _updateHaulerCargoLabel(scene, hauler) {
-  if (!hauler) return;
-  const txt = hauler.cargoObj;
-  if (!txt) return;
-
-  const n = hauler.cargoFood || 0;
-  txt.setText(n > 0 ? `🍖×${n}` : '');
-
-  // keep label positioned correctly if we know the hex
-  if (typeof hauler.q === 'number' && typeof hauler.r === 'number') {
-    const p = scene.axialToWorld(hauler.q, hauler.r);
-    txt.setPosition(p.x + 10, p.y - 6);
-  }
-}
