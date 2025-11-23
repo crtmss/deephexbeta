@@ -228,17 +228,6 @@ export function setupLogisticsPanel(scene) {
 /**
  * Convenience helper if you ever want to open from outside the scene helper.
  */
-export function openLogisticsPanel(scene) {
-  scene.openLogisticsPanel?.();
-}
-
-/**
- * Called from WorldScene.endTurn().
- * Handles building-side logistics, e.g. Mines producing scrap each turn.
- *
- * Hauler movement and cargo transfers are handled in
- * WorldSceneLogisticsRuntime.js using hauler.logisticsRoute.
- */
 export function applyLogisticsOnEndTurn(sceneArg) {
   const scene = sceneArg || /** @type {any} */ (this);
   if (!scene) return;
@@ -249,9 +238,24 @@ export function applyLogisticsOnEndTurn(sceneArg) {
   // --- Mine production: +1 scrap per mine per turn, capped at maxScrap (default 10) ---
   buildings.forEach(b => {
     if (b.type !== 'mine') return;
+
     const maxScrap = typeof b.maxScrap === 'number' ? b.maxScrap : 10;
-    const cur = typeof b.storageScrap === 'number' ? b.storageScrap : 0;
+
+    // Ensure a resources bag exists for UI & logistics consumers
+    if (!b.resources) b.resources = {};
+
+    const currentFromResources =
+      typeof b.resources.scrap === 'number' ? b.resources.scrap : 0;
+    const currentFromStorage =
+      typeof b.storageScrap === 'number' ? b.storageScrap : 0;
+
+    // Keep compatibility with both fields by using the higher of the two
+    const cur = Math.max(currentFromResources, currentFromStorage);
+
     const next = Math.min(maxScrap, cur + 1);
+
+    // Write back to BOTH fields so everyone sees the same value
+    b.resources.scrap = next;
     b.storageScrap = next;
   });
 }
