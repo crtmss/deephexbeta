@@ -8,7 +8,7 @@
 // - Provide a Logistics panel UI: list of haulers, details for selected hauler.
 // - Provide applyLogisticsOnEndTurn() for building-side logistics (mines, etc.).
 //
-// Movement logic for haulers/ships lives in WorldSceneHaulers.js.
+// Movement logic for haulers/ships still lives in WorldSceneHaulers.js.
 // WorldSceneLogisticsRuntime.js consumes hauler.logisticsRoute on end turn.
 
 ///////////////////////////////
@@ -147,12 +147,19 @@ export function setupLogisticsPanel(scene) {
   scene.openLogisticsPanel = function () {
     if (!this.logisticsUI) return;
     this.logisticsUI.container.visible = true;
+
+    // Block normal unit movement while logistics panel is open
+    this.disableUnitMovementForLogistics = true;
+
     this.refreshLogisticsPanel?.();
   };
 
   scene.closeLogisticsPanel = function () {
     if (!this.logisticsUI) return;
     this.logisticsUI.container.visible = false;
+
+    // Re-enable movement
+    this.disableUnitMovementForLogistics = false;
   };
 
   scene.refreshLogisticsPanel = function () {
@@ -226,7 +233,7 @@ export function setupLogisticsPanel(scene) {
 }
 
 /**
- * Convenience helper if you ever want to open from outside the scene helper.
+ * Helper if you ever want to open from outside the scene helper.
  */
 export function openLogisticsPanel(scene) {
   scene.openLogisticsPanel?.();
@@ -337,8 +344,8 @@ function _formatHaulerLabel(h) {
  * Render the right-side details for a single hauler:
  * - basic info
  * - list of route stops (if any)
- * - "＋ Add station…" button to append a new step
- * - "Reset routes" button to clear all steps
+ * - "＋ Add station…" button
+ * - "Reset routes" button
  */
 function _renderHaulerDetails(scene, hauler) {
   const ui = scene.logisticsUI;
@@ -395,11 +402,7 @@ function _renderHaulerDetails(scene, hauler) {
     const note = scene.add.text(
       0, y,
       'No custom logistics route.\n\n' +
-      'This hauler will not move until you\n' +
-      'assign stations.\n\n' +
-      'Typical setup:\n' +
-      '  1) Docks – Load all (🍖)\n' +
-      '  2) Mobile Base – Unload all (🍖)\n\n' +
+      'This hauler currently does nothing.\n\n' +
       'Click "＋ Add station…" below,\n' +
       'then left-click a station on the map\n' +
       'and choose an action.',
@@ -447,7 +450,7 @@ function _renderHaulerDetails(scene, hauler) {
   const stub = scene.add.text(
     0, y,
     'Use "＋ Add station…" to extend this route\n' +
-    'or "Reset routes" to clear all steps.',
+    'or "Reset routes" to clear it.',
     { fontSize: '11px', color: LOGI_COLORS.textDim }
   ).setOrigin(0, 0);
   c.add(stub);
@@ -480,7 +483,7 @@ function _addAddStationButton(scene, hauler, container, y) {
 }
 
 /**
- * Small helper to create the "Reset routes" button.
+ * Helper to create "Reset routes" button.
  */
 function _addResetRoutesButton(scene, hauler, container, y) {
   const btn = scene.add.text(
@@ -488,7 +491,7 @@ function _addResetRoutesButton(scene, hauler, container, y) {
     'Reset routes',
     {
       fontSize: '12px',
-      color: LOGI_COLORS.textDim,
+      color: '#ff7b7b',
     }
   ).setOrigin(0, 0).setInteractive({ useHandCursor: true });
 
@@ -496,7 +499,7 @@ function _addResetRoutesButton(scene, hauler, container, y) {
     hauler.logisticsRoute = [];
     hauler.routeIndex = 0;
     hauler.pinnedToBase = false;
-    console.log('[LOGI] Routes reset for hauler#', hauler._logiId);
+    console.log('[LOGI] Reset routes for hauler#', hauler._logiId);
     scene.refreshLogisticsPanel?.();
   });
 
@@ -535,7 +538,7 @@ function _startAddStationFlow(scene, hauler) {
 
     const station = _findStationAt(scene, q, r);
     if (!station) {
-      console.warn('[LOGI] No station (mobile base or building) on that hex.');
+      console.warn('[LOGI] No station (mobile base or building) on that hex.', { q, r });
       overlay.destroy();
       return;
     }
@@ -714,27 +717,40 @@ function _resourceEmoji(resKey) {
 
 /**
  * Find a "station" on the given hex:
- * - Mobile Base unit
+ * - Mobile Base unit (very robust heuristics)
  * - Any building at that coordinate
- *
- * IMPORTANT: mobile base detection now matches WorldSceneHaulers._getMobileBaseCoords:
- * we check type/name/isMobileBase and also emojis 🏕️ / 🚚.
  */
 function _findStationAt(scene, q, r) {
   if (q == null || r == null) return null;
 
-  // Mobile base (we treat any flagged as mobile base and on that hex)
-  const players = scene.players || [];
-  const base = players.find(u =>
+  // Collect units from multiple arrays – some setups keep the base only in units, some in players
+  const players = Array.isArray(scene.players) ? scene.players : [];
+  const units   = Array.isArray(scene.units)   ? scene.units   : [];
+  const allUnits = [...players, ...units];
+
+  // First: explicitly flagged mobile base on this hex
+  let base = allUnits.find(u =>
+    u &&
+    u.q === q && u.r === r &&
     (
       u.type === 'mobileBase' ||
       u.isMobileBase === true ||
       u.name === 'Mobile Base' ||
       u.emoji === '🏕️' ||
       u.emoji === '🚚'
-    ) &&
-    u.q === q && u.r === r
+    )
   );
+
+  // Fallback: any player unit on that hex counts as Mobile Base station
+  if (!base) {
+    const anyPlayerOnHex = allUnits.find(u =>
+      u && u.q === q && u.r === r && (u.isPlayer === true || u.isBase === true)
+    );
+    if (anyPlayerOnHex) {
+      base = anyPlayerOnHex;
+    }
+  }
+
   if (base) {
     return {
       stationType: 'mobileBase',
