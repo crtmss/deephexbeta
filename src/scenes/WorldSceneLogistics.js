@@ -554,8 +554,12 @@ function _startAddStationFlow(scene, hauler) {
 }
 
 /**
- * After picking a station on the map, present action options
- * (Load all / Unload all / Idle) in the Logistics panel.
+ * After picking a station on the map, present action options:
+ *  - Load all (any resource)
+ *  - Load resource… (choose specific)
+ *  - Unload all
+ *  - Unload resource…
+ *  - Idle at station
  */
 function _showActionPicker(scene, hauler, station) {
   const ui = scene.logisticsUI;
@@ -592,7 +596,32 @@ function _showActionPicker(scene, hauler, station) {
   c.add(hint);
   y += 24;
 
-  const makeBtn = (label, actionKey) => {
+  // helper: actually push a route step
+  const addStep = (actionKey, resourceKey = null) => {
+    const step = {
+      stationType: station.stationType,
+      stationId: station.stationId,
+      action: actionKey,
+      resource: resourceKey,
+    };
+    hauler.logisticsRoute = hauler.logisticsRoute || [];
+    hauler.logisticsRoute.push(step);
+
+    // Idle at Mobile Base: pin hauler to the base so it rides along
+    if (actionKey === 'idle' && station.stationType === 'mobileBase') {
+      if (station.unitRef) {
+        hauler.baseRef = station.unitRef;
+        hauler.baseQ = station.unitRef.q;
+        hauler.baseR = station.unitRef.r;
+      }
+      hauler.pinnedToBase = true;
+    }
+
+    console.log('[LOGI] Added route step', step, 'for hauler#', hauler._logiId);
+    scene.refreshLogisticsPanel?.();
+  };
+
+  const makeBtn = (label, onClick) => {
     const b = scene.add.text(
       0, y,
       label,
@@ -602,38 +631,30 @@ function _showActionPicker(scene, hauler, station) {
       }
     ).setOrigin(0, 0).setInteractive({ useHandCursor: true });
 
-    b.on('pointerdown', () => {
-      const step = {
-        stationType: station.stationType,
-        stationId: station.stationId,
-        action: actionKey,
-        resource: 'food',  // current implemented cargo
-      };
-
-      hauler.logisticsRoute = hauler.logisticsRoute || [];
-      hauler.logisticsRoute.push(step);
-
-      // Idle at Mobile Base: pin hauler to the base so it rides along
-      if (actionKey === 'idle' && station.stationType === 'mobileBase') {
-        if (station.unitRef) {
-          hauler.baseRef = station.unitRef;
-          hauler.baseQ = station.unitRef.q;
-          hauler.baseR = station.unitRef.r;
-        }
-        hauler.pinnedToBase = true;
-      }
-
-      console.log('[LOGI] Added route step', step, 'for hauler#', hauler._logiId);
-      scene.refreshLogisticsPanel?.();
-    });
+    b.on('pointerdown', onClick);
 
     c.add(b);
     y += 24;
   };
 
-  makeBtn('Load all (🍖)', 'loadAll');
-  makeBtn('Unload all (🍖)', 'unloadAll');
-  makeBtn('Idle at station', 'idle');
+  // Load all: any resource, runtime will decide which to pick until full
+  makeBtn('Load all (any)', () => addStep('loadAll', null));
+
+  // Load specific resource
+  makeBtn('Load resource…', () => {
+    _showResourcePicker(scene, hauler, station, 'load');
+  });
+
+  // Unload all: dump everything this hauler carries into this station
+  makeBtn('Unload all', () => addStep('unloadAll', null));
+
+  // Unload specific resource
+  makeBtn('Unload resource…', () => {
+    _showResourcePicker(scene, hauler, station, 'unload');
+  });
+
+  // Idle
+  makeBtn('Idle at station', () => addStep('idle', null));
 
   y += 15;
   const note = scene.add.text(
@@ -643,6 +664,91 @@ function _showActionPicker(scene, hauler, station) {
     { fontSize: '16px', color: LOGI_COLORS.textDim }  // 11 -> 16
   ).setOrigin(0, 0);
   c.add(note);
+}
+
+/**
+ * Resource picker for "Load resource…" / "Unload resource…".
+ * mode: 'load' | 'unload'
+ */
+function _showResourcePicker(scene, hauler, station, mode) {
+  const ui = scene.logisticsUI;
+  if (!ui) return;
+
+  const c = ui.detailContainer;
+  c.removeAll(true);
+
+  let y = 0;
+
+  const verb = mode === 'unload' ? 'unload' : 'load';
+  const title = scene.add.text(
+    0, y,
+    `Select resource to ${verb}:`,
+    {
+      fontSize: '21px',
+      color: LOGI_COLORS.textMain,
+      fontStyle: 'bold',
+    }
+  ).setOrigin(0, 0);
+  c.add(title);
+  y += 30;
+
+  // Try to infer available resources from this building
+  let availableKeys = [];
+  const b = station.buildingRef;
+  if (b && b.resources) {
+    availableKeys = Object.keys(b.resources).filter(k => (b.resources[k] ?? 0) > 0);
+  }
+  // Fallback to common keys if nothing explicit
+  if (!availableKeys.length) {
+    availableKeys = ['food', 'scrap', 'money', 'influence'];
+  }
+
+  const makeResBtn = (resKey) => {
+    const label = `${_resourceEmoji(resKey)} ${_resourceName(resKey)}`;
+    const btn = scene.add.text(
+      0, y,
+      label,
+      {
+        fontSize: '18px',
+        color: LOGI_COLORS.listHighlight,
+      }
+    ).setOrigin(0, 0).setInteractive({ useHandCursor: true });
+
+    btn.on('pointerdown', () => {
+      const actionKey = (mode === 'unload') ? 'unload' : 'load';
+      const step = {
+        stationType: station.stationType,
+        stationId: station.stationId,
+        action: actionKey,
+        resource: resKey,
+      };
+      hauler.logisticsRoute = hauler.logisticsRoute || [];
+      hauler.logisticsRoute.push(step);
+      console.log('[LOGI] Added resource-specific step', step, 'for hauler#', hauler._logiId);
+      scene.refreshLogisticsPanel?.();
+    });
+
+    c.add(btn);
+    y += 24;
+  };
+
+  availableKeys.forEach(makeResBtn);
+
+  y += 20;
+  const backBtn = scene.add.text(
+    0, y,
+    '← Back',
+    {
+      fontSize: '16px',
+      color: LOGI_COLORS.textDim,
+    }
+  ).setOrigin(0, 0).setInteractive({ useHandCursor: true });
+
+  backBtn.on('pointerdown', () => {
+    _showActionPicker(scene, hauler, station);
+  });
+
+  c.add(backBtn);
 }
 
 /**
@@ -693,10 +799,11 @@ function _stationEmojiFallback(type) {
 
 function _formatActionLabel(action, resource) {
   const resEmoji = _resourceEmoji(resource);
+  const resName  = _resourceName(resource);
   switch (action) {
-    case 'load':      return `Load ${resEmoji}`;
+    case 'load':      return `Load ${resEmoji} ${resName}`.trim();
     case 'loadAll':   return 'Load all';
-    case 'unload':    return `Unload ${resEmoji}`;
+    case 'unload':    return `Unload ${resEmoji} ${resName}`.trim();
     case 'unloadAll': return 'Unload all';
     case 'idle':      return 'Idle';
     default:          return 'No action';
@@ -709,7 +816,22 @@ function _resourceEmoji(resKey) {
     case 'scrap':     return '🛠';
     case 'money':     return '💰';
     case 'influence': return '⭐';
-    default:          return '❓';
+    default:          return '';
+  }
+}
+
+function _resourceName(resKey) {
+  switch (resKey) {
+    case 'food':      return 'Food';
+    case 'scrap':     return 'Scrap';
+    case 'money':     return 'Money';
+    case 'influence': return 'Influence';
+    case null:
+    case undefined:
+    case '':
+      return '';
+    default:
+      return String(resKey);
   }
 }
 
