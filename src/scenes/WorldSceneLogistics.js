@@ -8,8 +8,8 @@
 // - Provide a Logistics panel UI: list of haulers, details for selected hauler.
 // - Provide applyLogisticsOnEndTurn() for building-side logistics (mines, etc.).
 //
-// Movement logic for haulers/ships still lives in WorldSceneHaulers.js.
-// WorldSceneLogisticsRuntime.js consumes hauler.logisticsRoute on end turn.
+// Movement logic for haulers/ships lives in WorldSceneLogisticsRuntime.js
+// via hauler.logisticsRoute, plus ship/hauler helpers from WorldSceneHaulers.js.
 
 ///////////////////////////////
 // Visual constants
@@ -295,7 +295,7 @@ function _getAllLogisticsHaulers(scene) {
 
 /**
  * Ensure every hauler/ship has a unique _logiId and a logisticsRoute array.
- * This is purely internal to the Logistics system and does not affect movement yet.
+ * This is purely internal to the Logistics system.
  */
 function _ensureLogisticsIds(scene) {
   const all = _getAllLogisticsHaulers(scene);
@@ -340,6 +340,7 @@ function _formatHaulerLabel(h) {
  * - basic info
  * - list of route stops (if any)
  * - "＋ Add station…" button to append a new step
+ * - "Reset routes" button to clear all steps
  */
 function _renderHaulerDetails(scene, hauler) {
   const ui = scene.logisticsUI;
@@ -390,14 +391,14 @@ function _renderHaulerDetails(scene, hauler) {
   c.add(divider);
   y += 8;
 
-  // Route preview
   const route = Array.isArray(hauler.logisticsRoute) ? hauler.logisticsRoute : [];
+
   if (route.length === 0) {
     const note = scene.add.text(
       0, y,
       'No custom logistics route.\n\n' +
-      'This hauler currently uses\n' +
-      'its default hardcoded behavior.\n\n' +
+      'This hauler will remain idle\n' +
+      'until a route is assigned.\n\n' +
       'Click "＋ Add station…" below,\n' +
       'then left-click a station on the map\n' +
       'and choose an action.',
@@ -410,6 +411,8 @@ function _renderHaulerDetails(scene, hauler) {
     y += note.height + 8;
 
     _addAddStationButton(scene, hauler, c, y);
+    y += 22;
+    _addResetRoutesButton(scene, hauler, c, y);
     return;
   }
 
@@ -442,13 +445,16 @@ function _renderHaulerDetails(scene, hauler) {
   y += 6;
   const stub = scene.add.text(
     0, y,
-    'Use "＋ Add station…" to extend this route.',
+    'Use "＋ Add station…" to extend this route\n' +
+    'or "Reset routes" to clear it.',
     { fontSize: '11px', color: LOGI_COLORS.textDim }
   ).setOrigin(0, 0);
   c.add(stub);
   y += stub.height + 4;
 
   _addAddStationButton(scene, hauler, c, y);
+  y += 22;
+  _addResetRoutesButton(scene, hauler, c, y);
 }
 
 /**
@@ -470,6 +476,39 @@ function _addAddStationButton(scene, hauler, container, y) {
   });
 
   container.add(btn);
+}
+
+/**
+ * Small helper to create the "Reset routes" button.
+ */
+function _addResetRoutesButton(scene, hauler, container, y) {
+  const btn = scene.add.text(
+    0, y,
+    'Reset routes',
+    {
+      fontSize: '12px',
+      color: '#ff8888',
+      fontStyle: 'bold',
+    }
+  ).setOrigin(0, 0).setInteractive({ useHandCursor: true });
+
+  btn.on('pointerdown', () => {
+    _resetHaulerRoutes(scene, hauler);
+  });
+
+  container.add(btn);
+}
+
+/**
+ * Clear all logistics steps for the given hauler and reset flags.
+ */
+function _resetHaulerRoutes(scene, hauler) {
+  hauler.logisticsRoute = [];
+  hauler.routeIndex = 0;
+  hauler.mode = 'idle';
+  hauler.pinnedToBase = false;
+  console.log('[LOGI] Reset routes for hauler#', hauler._logiId);
+  scene.refreshLogisticsPanel?.();
 }
 
 /**
@@ -689,12 +728,13 @@ function _resourceEmoji(resKey) {
 function _findStationAt(scene, q, r) {
   if (q == null || r == null) return null;
 
-  // Mobile base (we treat any flagged as mobile base and on that hex)
+  // Mobile base: be a bit lenient with flags
   const players = scene.players || [];
   const base = players.find(u =>
     (u.type === 'mobileBase' ||
      u.isMobileBase === true ||
-     u.name === 'Mobile Base') &&
+     u.name === 'Mobile Base' ||
+     u.emoji === '🏕️') &&
     u.q === q && u.r === r
   );
   if (base) {
