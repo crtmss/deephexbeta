@@ -1,518 +1,72 @@
-// src/scenes/WorldSceneLogistics.js
-//
-// Factorio-style logistics backend + basic UI.
-//
-// Responsibilities:
-// - Define a shared model for "stations" (Mobile Base + buildings).
-// - Define a shared model for "logistics routes" attached to haulers/ships.
-// - Provide a Logistics panel UI: list of haulers, details for selected hauler.
-// - Provide applyLogisticsOnEndTurn() for building-side logistics (mines, etc.).
-//
-// Movement logic for haulers/ships lives in WorldSceneHaulers.js.
-// WorldSceneLogisticsRuntime.js consumes hauler.logisticsRoute on end turn.
+// src/scenes/WorldSceneHaulers.js
+// Ships + Haulers module (movement, harvesting, cyan path, labels, route picker)
+// Compatible with single-hex Docks (both land & water units can enter docks hex)
 
 ///////////////////////////////
-// Visual constants
+// Visual + UI constants (scoped here)
 ///////////////////////////////
-const LOGI_COLORS = {
-  panelBg: 0x0f2233,
-  panelStroke: 0x3da9fc,
-  textMain: '#e8f6ff',
-  textDim: '#9bb6cc',
-  listHighlight: '#ffffff',
+const COLORS = {
+  xMarkerPlate: 0x112633,
+  xMarkerStroke: 0x3da9fc,
+  cargoText: '#ffffff',
+  docksStoreText: '#ffffff',
+};
+const UI = {
+  zBuilding: 2100,
+  zOverlay: 2290,
+  zCargo: 2101,
+  zDocksStore: 2101,
 };
 
-const LOGI_Z = {
-  panel: 4100,
-  overlay: 4090,
-};
+const DOCKS_STORAGE_CAP = 10;
+const SHIP_CARGO_CAP = 2;
+const HAULER_CARGO_CAP = 5; // kept for reference / future use
 
 ///////////////////////////////
-// Public API
+// Public API (named exports)
 ///////////////////////////////
 
-/**
- * Called from WorldScene.create().
- * Builds the Logistics panel (hidden by default) and attaches helpers:
- *  - scene.openLogisticsPanel()
- *  - scene.closeLogisticsPanel()
- *  - scene.refreshLogisticsPanel()
- */
-export function setupLogisticsPanel(scene) {
-  const originX = 300;   // we can reposition later if needed
-  const originY = 120;
-
-  const container = scene.add.container(originX, originY)
-    .setDepth(LOGI_Z.panel)
-    .setScrollFactor(0);
-
-  container.visible = false;
-
-  // panel background
-  const W = 460;
-  const H = 260;
-
-  const bg = scene.add.graphics();
-  bg.fillStyle(LOGI_COLORS.panelBg, 0.96);
-  bg.fillRoundedRect(0, 0, W, H, 12);
-  bg.lineStyle(2, LOGI_COLORS.panelStroke, 1);
-  bg.strokeRoundedRect(0, 0, W, H, 12);
-
-  // inner bezel
-  const bezel = scene.add.graphics();
-  bezel.lineStyle(1, 0x9be4ff, 0.25);
-  bezel.strokeRect(10, 10, W - 20, H - 20);
-
-  container.add([bg, bezel]);
-
-  // Titles
-  const title = scene.add.text(
-    16, 12,
-    'Logistics – Haulers & Ships',
-    {
-      fontSize: '16px',
-      color: LOGI_COLORS.textMain,
-      fontStyle: 'bold',
-    }
-  ).setOrigin(0, 0);
-
-  const subtitle = scene.add.text(
-    16, 32,
-    'Select a hauler on the left to inspect or edit its route.',
-    {
-      fontSize: '12px',
-      color: LOGI_COLORS.textDim,
-    }
-  ).setOrigin(0, 0);
-
-  container.add([title, subtitle]);
-
-  // Close button (top-right X)
-  const closeText = scene.add.text(
-    W - 18, 10,
-    '✕',
-    {
-      fontSize: '16px',
-      color: LOGI_COLORS.textMain,
-    }
-  ).setOrigin(1, 0).setInteractive({ useHandCursor: true });
-
-  closeText.on('pointerdown', () => {
-    scene.closeLogisticsPanel?.();
-  });
-
-  container.add(closeText);
-
-  // Left column: hauler list
-  const listLabel = scene.add.text(
-    16, 56,
-    'Haulers & Ships',
-    {
-      fontSize: '14px',
-      color: LOGI_COLORS.textMain,
-      fontStyle: 'bold',
-    }
-  ).setOrigin(0, 0);
-
-  const listContainer = scene.add.container(16, 76);
-  container.add([listLabel, listContainer]);
-
-  // Right column: selected hauler details
-  const detailLabel = scene.add.text(
-    200, 56,
-    'Selected Route',
-    {
-      fontSize: '14px',
-      color: LOGI_COLORS.textMain,
-      fontStyle: 'bold',
-    }
-  ).setOrigin(0, 0);
-
-  const detailContainer = scene.add.container(200, 76);
-  container.add([detailLabel, detailContainer]);
-
-  // Store UI handles on the scene
-  scene.logisticsUI = {
-    container,
-    listContainer,
-    detailContainer,
-    listEntries: [],
-    selectedHaulerId: null,
-  };
-
-  ///////////////////////////////
-  // Scene helper methods
-  ///////////////////////////////
-
-  scene.openLogisticsPanel = function () {
-    if (!this.logisticsUI) return;
-    this.logisticsUI.container.visible = true;
-    this.refreshLogisticsPanel?.();
-  };
-
-  scene.closeLogisticsPanel = function () {
-    if (!this.logisticsUI) return;
-    this.logisticsUI.container.visible = false;
-  };
-
-  scene.refreshLogisticsPanel = function () {
-    if (!this.logisticsUI) return;
-
-    _ensureLogisticsIds(this);
-
-    const ui = this.logisticsUI;
-    const haulers = _getAllLogisticsHaulers(this);
-
-    // --- rebuild list ---
-    ui.listEntries.forEach(e => e.text.destroy());
-    ui.listEntries = [];
-    ui.listContainer.removeAll(true); // remove children from container
-
-    let y = 0;
-    const lineH = 20;
-
-    if (haulers.length === 0) {
-      const txt = this.add.text(
-        0, 0,
-        'No haulers or ships yet.',
-        { fontSize: '12px', color: LOGI_COLORS.textDim }
-      ).setOrigin(0, 0);
-      ui.listContainer.add(txt);
-      ui.listEntries.push({ text: txt, haulerId: null });
-    } else {
-      haulers.forEach(h => {
-        const label = _formatHaulerLabel(h);
-        const isSelected = (h._logiId === ui.selectedHaulerId);
-        const txt = this.add.text(
-          0, y,
-          label,
-          {
-            fontSize: '13px',
-            color: isSelected ? LOGI_COLORS.listHighlight : LOGI_COLORS.textMain,
-          }
-        ).setOrigin(0, 0).setInteractive({ useHandCursor: true });
-
-        txt.on('pointerdown', () => {
-          ui.selectedHaulerId = h._logiId;
-          this.refreshLogisticsPanel?.();
-        });
-
-        ui.listContainer.add(txt);
-        ui.listEntries.push({ text: txt, haulerId: h._logiId });
-        y += lineH;
-      });
-    }
-
-    // --- rebuild detail pane for selected hauler ---
-    ui.detailContainer.removeAll(true);
-
-    const selected = haulers.find(h => h._logiId === ui.selectedHaulerId) || haulers[0] || null;
-    if (selected && !ui.selectedHaulerId) {
-      ui.selectedHaulerId = selected._logiId;
-    }
-
-    if (!selected) {
-      const t = this.add.text(
-        0, 0,
-        'No hauler selected.',
-        { fontSize: '12px', color: LOGI_COLORS.textDim }
-      ).setOrigin(0, 0);
-      ui.detailContainer.add(t);
-      return;
-    }
-
-    _renderHaulerDetails(this, selected);
-  };
-}
-
-/**
- * Convenience helper if you ever want to open from outside the scene helper.
- */
-export function openLogisticsPanel(scene) {
-  scene.openLogisticsPanel?.();
-}
-
-/**
- * Called from WorldScene.endTurn().
- * Handles building-side logistics, e.g. Mines producing scrap each turn.
- */
-export function applyLogisticsOnEndTurn(sceneArg) {
-  const scene = sceneArg || /** @type {any} */ (this);
-  if (!scene) return;
-
-  const buildings = scene.buildings || [];
-  if (!buildings.length) return;
-
-  // --- Mine production: +1 scrap per mine per turn, capped at maxScrap (default 10) ---
-  buildings.forEach(b => {
-    if (b.type !== 'mine') return;
-
-    const maxScrap = typeof b.maxScrap === 'number' ? b.maxScrap : 10;
-
-    // Ensure a resources bag exists for UI & logistics consumers
-    if (!b.resources) b.resources = {};
-
-    const currentFromResources =
-      typeof b.resources.scrap === 'number' ? b.resources.scrap : 0;
-    const currentFromStorage =
-      typeof b.storageScrap === 'number' ? b.storageScrap : 0;
-
-    // Keep compatibility with both fields by using the higher of the two
-    const cur = Math.max(currentFromResources, currentFromStorage);
-
-    const next = Math.min(maxScrap, cur + 1);
-
-    // Write back to BOTH fields so everyone sees the same value
-    b.resources.scrap = next;
-    b.storageScrap = next;
-  });
-}
-
-export default {
-  setupLogisticsPanel,
-  openLogisticsPanel,
-  applyLogisticsOnEndTurn,
-};
-
-///////////////////////////////
-// Internal helpers – model
-///////////////////////////////
-
-/**
- * Collect all units that participate in logistics:
- * - Land haulers (🚚)
- * - Ships (🚢) created at docks
- */
-function _getAllLogisticsHaulers(scene) {
-  const haulers = Array.isArray(scene.haulers) ? scene.haulers : [];
-  const ships   = Array.isArray(scene.ships)   ? scene.ships   : [];
-
-  // For now we treat ships as haulers as well.
-  return [...haulers, ...ships];
-}
-
-/**
- * Ensure every hauler/ship has a unique _logiId and a logisticsRoute array.
- * This is purely internal to the Logistics system and does not affect movement yet.
- */
-function _ensureLogisticsIds(scene) {
-  const all = _getAllLogisticsHaulers(scene);
-  let nextId = 1;
-
-  // Reserve existing ids and find max
-  all.forEach(h => {
-    if (typeof h._logiId === 'number') {
-      nextId = Math.max(nextId, h._logiId + 1);
-    }
-  });
-
-  all.forEach(h => {
-    if (typeof h._logiId !== 'number') {
-      h._logiId = nextId++;
-    }
-    if (!Array.isArray(h.logisticsRoute)) {
-      h.logisticsRoute = [];
-    }
-  });
-}
-
-/**
- * Format a short label for the hauler list.
- */
-function _formatHaulerLabel(h) {
-  const emoji = h.emoji || (h.isNaval ? '🚢' : '🚚');
-  let base = `${emoji} ${h.name || 'Hauler'} #${h._logiId}`;
-
-  if (h.type === 'ship') {
-    base += ' (Ship)';
-  }
-
-  if (typeof h.q === 'number' && typeof h.r === 'number') {
-    base += `  @(${h.q},${h.r})`;
-  }
-  return base;
-}
-
-/**
- * Render the right-side details for a single hauler:
- * - basic info
- * - list of route stops (if any)
- * - "＋ Add station…" button to append a new step
- * - "Reset routes" button to clear all steps
- */
-function _renderHaulerDetails(scene, hauler) {
-  const ui = scene.logisticsUI;
-  if (!ui) return;
-
-  const c = ui.detailContainer;
-  c.removeAll(true);
-
-  const isShip = (hauler.type === 'ship' || hauler.isNaval);
-  const emoji = hauler.emoji || (isShip ? '🚢' : '🚚');
-
-  let y = 0;
-
-  const title = scene.add.text(
-    0, y,
-    `${emoji} ${hauler.name || (isShip ? 'Ship' : 'Hauler')} #${hauler._logiId}`,
-    {
-      fontSize: '14px',
-      color: LOGI_COLORS.textMain,
-      fontStyle: 'bold',
-    }
-  ).setOrigin(0, 0);
-  c.add(title);
-  y += 20;
-
-  const posLine = scene.add.text(
-    0, y,
-    `Position: (${hauler.q ?? '?'}, ${hauler.r ?? '?'})`,
-    { fontSize: '12px', color: LOGI_COLORS.textDim }
-  ).setOrigin(0, 0);
-  c.add(posLine);
-  y += 16;
-
-  // Show simple cargo info (currently only 🍖 is implemented)
-  const cargoFood = hauler.cargoFood ?? 0;
-  const cargoLine = scene.add.text(
-    0, y,
-    `Cargo: 🍖 ${cargoFood}`,
-    { fontSize: '12px', color: LOGI_COLORS.textDim }
-  ).setOrigin(0, 0);
-  c.add(cargoLine);
-  y += 18;
-
-  // Divider
-  const divider = scene.add.graphics();
-  divider.lineStyle(1, 0x9bb6cc, 0.4);
-  divider.strokeLineShape(new Phaser.Geom.Line(0, y, 240, y));
-  c.add(divider);
-  y += 8;
-
-  // Route preview
-  const route = Array.isArray(hauler.logisticsRoute) ? hauler.logisticsRoute : [];
-  if (route.length === 0) {
-    const note = scene.add.text(
-      0, y,
-      'No custom logistics route.\n\n' +
-      'This hauler will not move until you\n' +
-      'assign stations.\n\n' +
-      'Typical setup:\n' +
-      '  1) Docks – Load all (🍖)\n' +
-      '  2) Mobile Base – Unload all (🍖)\n\n' +
-      'Click "＋ Add station…" below,\n' +
-      'then left-click a station on the map\n' +
-      'and choose an action.',
-      {
-        fontSize: '11px',
-        color: LOGI_COLORS.textDim,
-      }
-    ).setOrigin(0, 0);
-    c.add(note);
-    y += note.height + 8;
-
-    _addAddStationButton(scene, hauler, c, y);
-    y += 22;
-    _addResetRoutesButton(scene, hauler, c, y);
+/** Build a ship at the docks hex. Costs 10 food. */
+export function buildShipForDocks(scene, building) {
+  _ensureResourceInit(scene);
+  if (!_spend(scene, { food: 10 })) {
+    console.warn('[SHIP] Not enough 🍖 (need 10).');
     return;
   }
 
-  const routeTitle = scene.add.text(
-    0, y,
-    'Route:',
-    {
-      fontSize: '13px',
-      color: LOGI_COLORS.textMain,
-      fontStyle: 'bold',
-    }
-  ).setOrigin(0, 0);
-  c.add(routeTitle);
-  y += 18;
+  scene.ships = scene.ships || [];
+  const pos = scene.axialToWorld(building.q, building.r);
+  const t = scene.add.text(pos.x, pos.y, '🚢', { fontSize: '20px', color: '#ffffff' })
+    .setOrigin(0.5).setDepth(UI.zBuilding);
 
-  route.forEach((step, idx) => {
-    const stepText = _formatRouteStep(scene, step, idx);
-    const t = scene.add.text(
-      0, y,
-      stepText,
-      {
-        fontSize: '12px',
-        color: LOGI_COLORS.textMain,
-      }
-    ).setOrigin(0, 0);
-    c.add(t);
-    y += 16;
-  });
-
-  y += 6;
-  const stub = scene.add.text(
-    0, y,
-    'Use "＋ Add station…" to extend this route\n' +
-    'or "Reset routes" to clear all steps.',
-    { fontSize: '11px', color: LOGI_COLORS.textDim }
-  ).setOrigin(0, 0);
-  c.add(stub);
-  y += stub.height + 4;
-
-  _addAddStationButton(scene, hauler, c, y);
-  y += 22;
-  _addResetRoutesButton(scene, hauler, c, y);
+  const ship = {
+    type: 'ship',
+    name: 'Ship',
+    emoji: '🚢',
+    isNaval: true,
+    q: building.q, r: building.r,   // can sit on docks hex even if land; docks is "both-domain passable"
+    docksId: building.id,
+    obj: t,
+    maxMovePoints: 8,
+    movePoints: 8,
+    cargoFood: 0,
+    cargoObj: null,
+    mode: 'toTarget',
+    harvestTurnsRemaining: 0,
+    harvestAt: null,
+  };
+  scene.ships.push(ship);
+  _ensureCargoLabel(scene, ship);
+  _repositionCargoLabel(scene, ship);
 }
 
-/**
- * Small helper to create the "＋ Add station…" button.
- */
-function _addAddStationButton(scene, hauler, container, y) {
-  const btn = scene.add.text(
-    0, y,
-    '＋ Add station…',
-    {
-      fontSize: '12px',
-      color: LOGI_COLORS.listHighlight,
-      fontStyle: 'bold',
-    }
-  ).setOrigin(0, 0).setInteractive({ useHandCursor: true });
-
-  btn.on('pointerdown', () => {
-    _startAddStationFlow(scene, hauler);
-  });
-
-  container.add(btn);
-}
-
-/**
- * Small helper to create the "Reset routes" button.
- */
-function _addResetRoutesButton(scene, hauler, container, y) {
-  const btn = scene.add.text(
-    0, y,
-    'Reset routes',
-    {
-      fontSize: '12px',
-      color: LOGI_COLORS.textDim,
-    }
-  ).setOrigin(0, 0).setInteractive({ useHandCursor: true });
-
-  btn.on('pointerdown', () => {
-    hauler.logisticsRoute = [];
-    hauler.routeIndex = 0;
-    hauler.pinnedToBase = false;
-    console.log('[LOGI] Routes reset for hauler#', hauler._logiId);
-    scene.refreshLogisticsPanel?.();
-  });
-
-  container.add(btn);
-}
-
-/**
- * Begin "add station" interaction:
- * - User clicks button in Logistics panel.
- * - We show a faint full-screen overlay.
- * - Next left-click on the map selects a station (mobile base or building).
- * - Then an action picker (Load all / Unload all / Idle) appears in the panel.
- */
-function _startAddStationFlow(scene, hauler) {
-  if (!scene || !hauler) return;
-  console.log('[LOGI] Add station: left-click a Mobile Base or building hex.');
+/** Open a click-to-pick route target (water reachability from docks). */
+export function openDocksRoutePicker(scene, building) {
+  const ships = (scene.ships || []).filter(s => s.docksId === building.id);
+  if (ships.length === 0) {
+    console.log(`[DOCKS] Set route: no ships for docks#${building.id}`);
+    return;
+  }
 
   const cam = scene.cameras.main;
   const overlay = scene.add.rectangle(
@@ -520,12 +74,284 @@ function _startAddStationFlow(scene, hauler) {
     cam.worldView.y + cam.worldView.height / 2,
     cam.worldView.width,
     cam.worldView.height,
-    0x000000,
-    0.001
-  )
-    .setInteractive({ useHandCursor: true })
-    .setScrollFactor(0)
-    .setDepth(LOGI_Z.overlay);
+    0x000000, 0.001
+  ).setInteractive({ useHandCursor: true })
+   .setScrollFactor(0)
+   .setDepth(UI.zOverlay);
+
+  console.log('[DOCKS] Click a reachable water hex to set route…');
+
+  overlay.once('pointerdown', (pointer, lx, ly, event) => {
+    event?.stopPropagation?.();
+
+    // Use scene.worldToAxial (centralized offset logic)
+    const worldPoint = pointer.positionToCamera(scene.cameras.main);
+    const { q, r } = scene.worldToAxial(worldPoint.x, worldPoint.y);
+
+    if (q < 0 || r < 0 || q >= scene.mapWidth || r >= scene.mapHeight) {
+      console.warn('[DOCKS] Route pick out of bounds — cancelled');
+      overlay.destroy(); return;
+    }
+    if (!_isWater(scene, q, r)) {
+      console.warn('[DOCKS] Route must be on water.');
+      overlay.destroy(); return;
+    }
+    // Reachability for ships: allow path from docks hex (even if land) by treating docks as water-passable
+    if (!_reachableForShips(scene, building.q, building.r, q, r)) {
+      console.warn('[DOCKS] Route water hex is not reachable by water from the docks.');
+      overlay.destroy(); return;
+    }
+    _setRouteMarker(scene, building, q, r);
+    overlay.destroy();
+  });
+}
+
+/** Snap all ships of a docks back to the docks hex. */
+export function recallShipsToDocks(scene, building) {
+  const ships = (scene.ships || []).filter(s => s.docksId === building.id);
+  if (ships.length === 0) {
+    console.log(`[DOCKS] Recall: no ships for docks#${building.id}`);
+    return;
+  }
+  ships.forEach(s => {
+    s.q = building.q; s.r = building.r;
+    const p = scene.axialToWorld(s.q, s.r);
+    s.obj.setPosition(p.x, p.y);
+    _repositionCargoLabel(scene, s);
+  });
+}
+
+/** End-turn execution for ships (move/harvest/return, cyan path, deposit). */
+export function applyShipRoutesOnEndTurn(sceneArg) {
+  const scene = sceneArg || /** @type {any} */ (this);
+  if (!scene) return;
+  _ensureResourceInit(scene);
+
+  const buildings = scene.buildings || [];
+  const ships = scene.ships || [];
+  if (ships.length === 0) return;
+
+  let movedAny = false;
+
+  buildings.forEach(b => {
+    if (b.type !== 'docks') return;
+    if (typeof b.storageFood !== 'number') b.storageFood = 0;
+    ensureDocksStoreLabel(scene, b);
+    updateDocksStoreLabel(scene, b);
+
+    const route = b.route || null;
+    const docksShips = ships.filter(s => s.docksId === b.id);
+
+    docksShips.forEach(s => {
+      if (typeof s.maxMovePoints !== 'number') s.maxMovePoints = 8;
+      if (typeof s.movePoints !== 'number') s.movePoints = s.maxMovePoints;
+      if (typeof s.cargoFood !== 'number') s.cargoFood = 0;
+      if (!s.mode) s.mode = 'toTarget';
+      _ensureCargoLabel(scene, s);
+
+      // Route changed while harvesting → reset
+      if (s.mode === 'harvesting' && route && (s.harvestAt?.q !== route.q || s.harvestAt?.r !== route.r)) {
+        s.mode = 'toTarget';
+        s.harvestTurnsRemaining = 0;
+        s.harvestAt = null;
+      }
+      // No route but carrying → return
+      if (!route && s.cargoFood > 0) s.mode = 'returning';
+
+      // Harvest turn (no movement)
+      if (s.mode === 'harvesting') {
+        if (s.harvestTurnsRemaining > 0) {
+          const room = Math.max(0, SHIP_CARGO_CAP - s.cargoFood);
+          const take = Math.min(1, room);
+          if (take > 0) {
+            s.cargoFood += take;
+            _updateCargoLabel(scene, s);
+          }
+          s.harvestTurnsRemaining -= 1;
+        }
+        if (s.harvestTurnsRemaining <= 0 || s.cargoFood >= SHIP_CARGO_CAP) {
+          s.mode = 'returning';
+        }
+        s.movePoints = s.maxMovePoints;
+        return;
+      }
+
+      // Targets
+      let targetQ = s.q, targetR = s.r;
+      if (s.mode === 'toTarget' && route) { targetQ = route.q; targetR = route.r; }
+      else if (s.mode === 'returning') { targetQ = b.q; targetR = b.r; }
+
+      // Arrived?
+      if (s.q === targetQ && s.r === targetR) {
+        if (s.mode === 'toTarget') {
+          const onFish = _fishAt(scene, s.q, s.r);
+          if (onFish) {
+            s.mode = 'harvesting';
+            s.harvestTurnsRemaining = 2;
+            s.harvestAt = { q: s.q, r: s.r };
+          } else {
+            s.mode = 'returning';
+          }
+        } else if (s.mode === 'returning') {
+          if (s.cargoFood > 0) {
+            const room = Math.max(0, DOCKS_STORAGE_CAP - b.storageFood);
+            const deposit = Math.min(room, s.cargoFood);
+            b.storageFood += deposit;
+            s.cargoFood -= deposit;
+            updateDocksStoreLabel(scene, b);
+            _updateCargoLabel(scene, s);
+          }
+          s.mode = route ? 'toTarget' : 'returning';
+        }
+        s.movePoints = s.maxMovePoints;
+        return;
+      }
+
+      // Movement leg (water BFS that treats docks as water-passable)
+      if (s.movePoints <= 0) return;
+      const path = _shipPath(scene, s.q, s.r, targetQ, targetR);
+      if (!path || path.length <= 1) return;
+
+      _drawCyanPath(scene, path);
+      const steps = Math.min(s.movePoints, path.length - 1);
+      const nx = path[steps];
+      s.q = nx.q; s.r = nx.r;
+      s.movePoints -= steps;
+
+      const p = scene.axialToWorld(s.q, s.r);
+      s.obj.setPosition(p.x, p.y);
+      _repositionCargoLabel(scene, s);
+
+      movedAny = true;
+    });
+  });
+
+  // Reset MPs for next turn
+  (scene.ships || []).forEach(s => {
+    if (typeof s.maxMovePoints !== 'number') s.maxMovePoints = 8;
+    s.movePoints = s.maxMovePoints;
+  });
+
+  if (!movedAny) {
+    const dbg = (scene.ships || []).map(s => `ship#${s.docksId}@${s.q},${s.r} mp=${s.movePoints} mode=${s.mode} 🍖${s.cargoFood}`).join(' | ');
+    console.log(`[SHIP] No ships moved. Current ships: ${dbg}`);
+  }
+}
+
+/** Build a hauler at the selected mobile base (cost 10 food). */
+export function buildHaulerAtSelectedUnit() {
+  const scene = /** @type {Phaser.Scene & any} */ (this);
+  _ensureResourceInit(scene);
+  if (!_spend(scene, { food: 10 })) {
+    console.warn('[HAULER] Not enough 🍖 (need 10).');
+    return;
+  }
+  const u = scene.selectedUnit;
+  if (!u) { console.warn('[HAULER] No selected unit (mobile base).'); return; }
+
+  scene.haulers = scene.haulers || [];
+  const pos = scene.axialToWorld(u.q, u.r);
+  const t = scene.add.text(pos.x, pos.y, '🚚', { fontSize: '20px', color: '#ffffff' })
+    .setOrigin(0.5).setDepth(UI.zBuilding);
+
+  // ID for logistics UI
+  scene._haulerIdSeq = (scene._haulerIdSeq || 0) + 1;
+  const id = scene._haulerIdSeq;
+
+  const hauler = {
+    id,                          // unique id for UI / station references
+    type: 'hauler',
+    name: 'Hauler',
+    emoji: '🚚',
+    q: u.q, r: u.r,
+    obj: t,
+    maxMovePoints: 8,
+    movePoints: 8,
+    cargoFood: 0,
+    cargoObj: null,
+
+    // Behaviour flags
+    mode: 'idle',
+    baseRef: u,
+    baseQ: u.q,
+    baseR: u.r,
+    targetDocksId: null,   // kept for backward compatibility, but unused now
+
+    // Factorio-style logistics route (consumed by WorldSceneLogisticsRuntime)
+    logisticsRoute: [],
+    routeIndex: 0,
+    pinnedToBase: false,
+  };
+
+  // IMPORTANT: no default behaviour now.
+  // Hauler will remain idle until a logisticsRoute is defined
+  // via Logistics panel (Add station: Docks loadAll -> Mobile Base unloadAll, etc.).
+  console.log('[HAULER] Built new hauler#' + id + ' at mobile base. No default route.');
+
+  scene.haulers.push(hauler);
+  _ensureCargoLabel(scene, hauler);
+  _repositionCargoLabel(scene, hauler);
+}
+
+/**
+ * End-turn execution for haulers.
+ *
+ * Legacy behaviour (auto shuttle between docks and mobile base) is removed.
+ * Haulers now only move when WorldSceneLogisticsRuntime processes their
+ * hauler.logisticsRoute. This function just normalizes MPs and labels.
+ */
+export function applyHaulerBehaviorOnEndTurn(sceneArg) {
+  const scene = sceneArg || /** @type {any} */ (this);
+  if (!scene) return;
+  _ensureResourceInit(scene);
+
+  const haulers = scene.haulers || [];
+  if (haulers.length === 0) return;
+
+  haulers.forEach(h => {
+    if (typeof h.maxMovePoints !== 'number') h.maxMovePoints = 8;
+    if (typeof h.movePoints !== 'number') h.movePoints = h.maxMovePoints;
+    else h.movePoints = h.maxMovePoints;
+
+    // Ensure cargo label exists (for UI consistency)
+    if (!h.cargoObj || h.cargoObj.destroyed) {
+      _ensureCargoLabel(scene, h);
+    } else {
+      _updateCargoLabel(scene, h);
+      _repositionCargoLabel(scene, h);
+    }
+  });
+
+  // No movement here; movement is handled by WorldSceneLogisticsRuntime
+  // using moveCarrierOneLeg + logisticsRoute.
+  console.log('[HAULER] Legacy auto-shuttle disabled. Haulers require logistics routes.');
+}
+
+/** Click UI: assign docks to selected hauler (or first). Backwards compat. */
+export function enterHaulerRoutePicker() {
+  const scene = /** @type {Phaser.Scene & any} */ (this);
+  const sel = scene.selectedUnit;
+  let targetHauler = null;
+  if (sel && sel.type === 'hauler') targetHauler = sel;
+  else targetHauler = (scene.haulers || [])[0] || null;
+
+  if (!targetHauler) {
+    console.warn('[HAULER] No hauler available to set a route for.');
+    return;
+  }
+
+  const cam = scene.cameras.main;
+  const overlay = scene.add.rectangle(
+    cam.worldView.x + cam.worldView.width / 2,
+    cam.worldView.y + cam.worldView.height / 2,
+    cam.worldView.width,
+    cam.worldView.height,
+    0x000000, 0.001
+  ).setInteractive({ useHandCursor: true })
+   .setScrollFactor(0)
+   .setDepth(UI.zOverlay);
+
+  console.log('[HAULER] (legacy) Click a docks hex to set as pickup – note: auto-shuttle is disabled.');
 
   overlay.once('pointerdown', (pointer, _lx, _ly, event) => {
     event?.stopPropagation?.();
@@ -533,226 +359,322 @@ function _startAddStationFlow(scene, hauler) {
     const worldPoint = pointer.positionToCamera(scene.cameras.main);
     const { q, r } = scene.worldToAxial(worldPoint.x, worldPoint.y);
 
-    const station = _findStationAt(scene, q, r);
-    if (!station) {
-      console.warn('[LOGI] No station (mobile base or building) on that hex.');
+    if (q < 0 || r < 0 || q >= scene.mapWidth || r >= scene.mapHeight) {
+      console.warn('[HAULER] Route pick out of bounds.');
       overlay.destroy();
       return;
     }
 
+    const docks = (scene.buildings || []).find(b =>
+      b.type === 'docks' && (b.q === q && b.r === r)
+    );
+
+    if (!docks) {
+      console.warn('[HAULER] You must select an existing docks (its hex).');
+      overlay.destroy();
+      return;
+    }
+
+    // We still store targetDocksId for compatibility,
+    // but no default movement will occur without a logisticsRoute.
+    targetHauler.targetDocksId = docks.id;
+    console.log(`[HAULER] (legacy) targetDocksId set to docks#${docks.id}. Define logisticsRoute for real movement.`);
     overlay.destroy();
-    _showActionPicker(scene, hauler, station);
   });
 }
 
-/**
- * After picking a station on the map, present action options
- * (Load all / Unload all / Idle) in the Logistics panel.
- */
-function _showActionPicker(scene, hauler, station) {
-  const ui = scene.logisticsUI;
-  if (!ui) return;
+// Back-compat alias (older imports)
+export { applyHaulerBehaviorOnEndTurn as applyHaulerRoutesOnEndTurn };
 
-  const c = ui.detailContainer;
-  c.removeAll(true);
-
-  let y = 0;
-
-  const stationStepLike = {
-    stationType: station.stationType,
-    stationId: station.stationId,
-  };
-  const stationName = _resolveStationName(scene, stationStepLike);
-
-  const title = scene.add.text(
-    0, y,
-    `Add station: ${stationName}`,
-    {
-      fontSize: '14px',
-      color: LOGI_COLORS.textMain,
-      fontStyle: 'bold',
-    }
-  ).setOrigin(0, 0);
-  c.add(title);
-  y += 22;
-
-  const hint = scene.add.text(
-    0, y,
-    'Choose what this hauler should do at this stop:',
-    { fontSize: '12px', color: LOGI_COLORS.textDim }
-  ).setOrigin(0, 0);
-  c.add(hint);
-  y += 18;
-
-  const makeBtn = (label, actionKey) => {
-    const b = scene.add.text(
-      0, y,
-      label,
-      {
-        fontSize: '12px',
-        color: LOGI_COLORS.listHighlight,
-      }
-    ).setOrigin(0, 0).setInteractive({ useHandCursor: true });
-
-    b.on('pointerdown', () => {
-      const step = {
-        stationType: station.stationType,
-        stationId: station.stationId,
-        action: actionKey,
-        resource: 'food',  // current implemented cargo
-      };
-
-      hauler.logisticsRoute = hauler.logisticsRoute || [];
-      hauler.logisticsRoute.push(step);
-
-      // Idle at Mobile Base: pin hauler to the base so it rides along
-      if (actionKey === 'idle' && station.stationType === 'mobileBase') {
-        if (station.unitRef) {
-          hauler.baseRef = station.unitRef;
-          hauler.baseQ = station.unitRef.q;
-          hauler.baseR = station.unitRef.r;
-        }
-        hauler.pinnedToBase = true;
-      }
-
-      console.log('[LOGI] Added route step', step, 'for hauler#', hauler._logiId);
-      scene.refreshLogisticsPanel?.();
-    });
-
-    c.add(b);
-    y += 18;
-  };
-
-  makeBtn('Load all (🍖)', 'loadAll');
-  makeBtn('Unload all (🍖)', 'unloadAll');
-  makeBtn('Idle at station', 'idle');
-
-  y += 10;
-  const note = scene.add.text(
-    0, y,
-    'Idle at a Mobile Base will pin the hauler\n' +
-    'so it stays inside when the base moves.',
-    { fontSize: '11px', color: LOGI_COLORS.textDim }
-  ).setOrigin(0, 0);
-  c.add(note);
+///////////////////////////////
+// Docks storage tiny helpers (also used by Buildings after placement)
+///////////////////////////////
+export function ensureDocksStoreLabel(scene, docks) {
+  if (docks.storageObj && !docks.storageObj.destroyed) return;
+  const pos = scene.axialToWorld(docks.q, docks.r);
+  docks.storageObj = scene.add.text(pos.x + 16, pos.y - 14, '', {
+    fontSize: '14px',
+    color: COLORS.docksStoreText,
+  }).setOrigin(0, 1).setDepth(UI.zDocksStore);
+  updateDocksStoreLabel(scene, docks);
 }
+export function updateDocksStoreLabel(scene, docks) {
+  if (!docks.storageObj) return;
+  const n = Math.min(DOCKS_STORAGE_CAP, docks.storageFood || 0);
+  docks.storageObj.setText(n > 0 ? `🍖×${n}` : '');
+}
+
+///////////////////////////////
+// Shared logistics helper: move one leg toward a target hex
+///////////////////////////////
 
 /**
- * Convert a single route step into a readable string.
- * step shape:
- * {
- *   stationType: 'mobileBase' | 'docks' | 'mine' | 'factory' | 'bunker',
- *   stationId: number | null,
- *   action: 'load' | 'loadAll' | 'unload' | 'unloadAll' | 'idle',
- *   resource: 'food' | 'scrap' | 'money' | 'influence', // etc.
- * }
- */
-function _formatRouteStep(scene, step, idx) {
-  const n = idx + 1;
-
-  const stationName = _resolveStationName(scene, step);
-  const actionLabel = _formatActionLabel(step.action, step.resource);
-
-  return `${n}. ${stationName} (${actionLabel})`;
-}
-
-/**
- * Resolve "Mine #2", "Docks #1", "Mobile Base", etc. from a step.
- */
-function _resolveStationName(scene, step) {
-  if (!step) return 'Unknown Station';
-
-  const type = step.stationType;
-  const id   = step.stationId;
-
-  if (type === 'mobileBase') {
-    return 'Mobile Base';
-  }
-
-  const buildings = scene.buildings || [];
-  const b = buildings.find(x => x.id === id && x.type === type);
-  if (!b) {
-    return `${type || 'Station'} #${id ?? '?'}`;
-  }
-
-  const emoji = b.emoji || _stationEmojiFallback(type);
-  const indexStr = (typeof id === 'number') ? `#${id}` : '';
-  return `${emoji} ${b.name || type} ${indexStr}`;
-}
-
-function _stationEmojiFallback(type) {
-  switch (type) {
-    case 'docks':   return '⚓';
-    case 'mine':    return '⛏️';
-    case 'factory': return '🏭';
-    case 'bunker':  return '🛡️';
-    default:        return '🏗️';
-  }
-}
-
-function _formatActionLabel(action, resource) {
-  const resEmoji = _resourceEmoji(resource);
-  switch (action) {
-    case 'load':      return `Load ${resEmoji}`;
-    case 'loadAll':   return 'Load all';
-    case 'unload':    return `Unload ${resEmoji}`;
-    case 'unloadAll': return 'Unload all';
-    case 'idle':      return 'Idle';
-    default:          return 'No action';
-  }
-}
-
-function _resourceEmoji(resKey) {
-  switch (resKey) {
-    case 'food':      return '🍖';
-    case 'scrap':     return '🛠';
-    case 'money':     return '💰';
-    case 'influence': return '⭐';
-    default:          return '❓';
-  }
-}
-
-/**
- * Find a "station" on the given hex:
- * - Mobile Base unit
- * - Any building at that coordinate
+ * Shared helper for logistics:
+ * Move a carrier (ship or hauler) toward (targetQ, targetR) using
+ * the existing BFS pathfinders, consume its movePoints, animate,
+ * and return true if it is now exactly on the target hex.
  *
- * IMPORTANT: mobile base detection now matches WorldSceneHaulers._getMobileBaseCoords:
- * we check type/name/isMobileBase and also emojis 🏕️ / 🚚.
+ * Used by WorldSceneLogisticsRuntime.applyLogisticsRoutesOnEndTurn.
  */
-function _findStationAt(scene, q, r) {
-  if (q == null || r == null) return null;
+export function moveCarrierOneLeg(scene, carrier, targetQ, targetR) {
+  if (!scene || !carrier) return false;
 
-  // Mobile base (we treat any flagged as mobile base and on that hex)
-  const players = scene.players || [];
-  const base = players.find(u =>
-    (
-      u.type === 'mobileBase' ||
-      u.isMobileBase === true ||
-      u.name === 'Mobile Base' ||
-      u.emoji === '🏕️' ||
-      u.emoji === '🚚'
-    ) &&
-    u.q === q && u.r === r
-  );
-  if (base) {
-    return {
-      stationType: 'mobileBase',
-      stationId: base.id ?? null,
-      unitRef: base,
-    };
+  // Ensure MPs have some sane default
+  if (typeof carrier.maxMovePoints !== 'number') carrier.maxMovePoints = 8;
+  if (typeof carrier.movePoints !== 'number') carrier.movePoints = carrier.maxMovePoints;
+
+  // Already there
+  if (carrier.q === targetQ && carrier.r === targetR) {
+    return true;
   }
 
-  // Buildings
-  const buildings = scene.buildings || [];
-  const b = buildings.find(x => x.q === q && x.r === r);
-  if (b) {
-    return {
-      stationType: b.type,
-      stationId: b.id,
-      buildingRef: b,
-    };
+  const isShip = carrier.type === 'ship' || carrier.isNaval;
+  const isHauler = carrier.type === 'hauler';
+
+  let path = null;
+  if (isShip) {
+    path = _shipPath(scene, carrier.q, carrier.r, targetQ, targetR);
+  } else if (isHauler) {
+    path = _haulerPath(scene, carrier.q, carrier.r, targetQ, targetR);
+  } else {
+    // Fallback to land rules
+    path = _haulerPath(scene, carrier.q, carrier.r, targetQ, targetR);
   }
 
+  if (!path || path.length <= 1) {
+    return carrier.q === targetQ && carrier.r === targetR;
+  }
+
+  const steps = Math.min(carrier.movePoints, path.length - 1);
+  if (steps <= 0) {
+    return carrier.q === targetQ && carrier.r === targetR;
+  }
+
+  // Draw cyan path for debug/feedback (only the segment we will travel)
+  _drawCyanPath(scene, path.slice(0, steps + 1));
+
+  const nx = path[steps];
+  carrier.q = nx.q;
+  carrier.r = nx.r;
+  carrier.movePoints -= steps;
+
+  const p = scene.axialToWorld(carrier.q, carrier.r);
+  carrier.obj?.setPosition(p.x, p.y);
+  _repositionCargoLabel(scene, carrier);
+
+  return carrier.q === targetQ && carrier.r === targetR;
+}
+
+///////////////////////////////
+// Internal helpers (movement, paths, labels, resources, etc.)
+///////////////////////////////
+
+function _setRouteMarker(scene, building, q, r) {
+  if (building.routeMarker) building.routeMarker.destroy(true);
+  const pos = scene.axialToWorld(q, r);
+  const container = scene.add.container(pos.x, pos.y).setDepth(UI.zBuilding);
+
+  const t = scene.add.text(0, 0, 'X', { fontSize: '18px', color: '#ffffff', fontStyle: 'bold' }).setOrigin(0.5);
+  const pad = 4;
+  const w = Math.max(18, t.width + pad * 2);
+  const h = Math.max(18, t.height + pad * 2);
+  const box = scene.add.graphics();
+  box.fillStyle(COLORS.xMarkerPlate, 0.93);
+  box.fillRoundedRect(-w / 2, -h / 2, w, h, 6);
+  box.lineStyle(2, COLORS.xMarkerStroke, 0.9);
+  box.strokeRoundedRect(-w / 2, -h / 2, w, h, 6);
+
+  container.add([box, t]);
+  building.routeMarker = container;
+  building.route = { q, r };
+}
+
+// ----- Resource system -----
+function _ensureResourceInit(scene) {
+  // Start the player with 200 of each (synced with Buildings & WorldScene)
+  if (!scene.playerResources) {
+    scene.playerResources = { food: 200, scrap: 200, money: 200, influence: 200 };
+  }
+  scene.updateResourceUI?.();
+}
+function _spend(scene, cost) {
+  if (!Object.entries(cost).every(([k, v]) => (scene.playerResources?.[k] ?? 0) >= v)) return false;
+  Object.entries(cost).forEach(([k, v]) => {
+    scene.playerResources[k] = (scene.playerResources[k] ?? 0) - v;
+    scene.bumpResource?.(k);
+  });
+  scene.updateResourceUI?.();
+  return true;
+}
+function _gain(scene, gains) {
+  Object.entries(gains).forEach(([k, v]) => {
+    scene.playerResources[k] = (scene.playerResources[k] ?? 0) + v;
+    scene.bumpResource?.(k);
+  });
+  scene.updateResourceUI?.();
+}
+
+// ----- Map helpers -----
+function _tileAt(scene, q, r) { return scene.mapData?.find?.(t => t.q === q && t.r === r); }
+function _isWater(scene, q, r) {
+  const t = _tileAt(scene, q, r);
+  return !!t && (t.type === 'water' || t.type === 'ocean' || t.type === 'sea');
+}
+function _isLand(scene, q, r) {
+  const t = _tileAt(scene, q, r);
+  return !!t && !_isWater(scene, q, r);
+}
+
+// Single-hex docks presence check
+function _hasDocksAt(scene, q, r) {
+  return (scene.buildings || []).some(b => b.type === 'docks' && b.q === q && b.r === r);
+}
+
+// Offsets (odd-r horizontal)
+function _offsetNeighbors(q, r) {
+  const isOdd = (r & 1) === 1;
+  const even = [[0,-1],[+1,0],[0,+1],[-1,+1],[-1,0],[-1,-1]];
+  const odd  = [[+1,-1],[+1,0],[+1,+1],[0,+1],[-1,0],[0,-1]];
+  const d = isOdd ? odd : even;
+  return d.map(([dq, dr]) => ({ q: q + dq, r: r + dr }));
+}
+
+function _hexManhattan(q1, r1, q2, r2) {
+  return Math.abs(q1 - q2) + Math.abs(r1 - r2);
+}
+
+// ----- Passability rules with single-hex docks -----
+// For ships (water domain): water tiles are passable; docks hex is also passable (even if underlying tile is land)
+function _passableForShip(scene, q, r) {
+  return _isWater(scene, q, r) || _hasDocksAt(scene, q, r);
+}
+// For haulers (land domain): land tiles are passable; docks hex is also passable (even if underlying tile is water)
+function _passableForHauler(scene, q, r) {
+  return _isLand(scene, q, r) || _hasDocksAt(scene, q, r);
+}
+
+// ----- Reachability wrappers -----
+function _reachableForShips(scene, fromQ, fromR, toQ, toR) {
+  return !!_bfsPath(scene, fromQ, fromR, toQ, toR, _passableForShip);
+}
+function _reachableForHaulers(scene, fromQ, fromR, toQ, toR) {
+  return !!_bfsPath(scene, fromQ, fromR, toQ, toR, _passableForHauler);
+}
+
+// ----- Path builders (domain-aware BFS) -----
+function _bfsPath(scene, fromQ, fromR, toQ, toR, passableFn) {
+  if (fromQ === toQ && fromR === toR) return [{ q: fromQ, r: fromR }];
+  const inb = (q, r) => q >= 0 && r >= 0 && q < scene.mapWidth && r < scene.mapHeight;
+  const key = (q, r) => `${q},${r}`;
+  if (!inb(fromQ, fromR) || !inb(toQ, toR)) return null;
+
+  // Both start and target must be passable
+  if (!passableFn(scene, fromQ, fromR) || !passableFn(scene, toQ, toR)) return null;
+
+  const came = new Map();
+  const seen = new Set([key(fromQ, fromR)]);
+  const qArr = [{ q: fromQ, r: fromR }];
+
+  while (qArr.length) {
+    const cur = qArr.shift();
+    if (cur.q === toQ && cur.r === toR) {
+      // Reconstruct path
+      const path = [];
+      let node = cur, k = key(cur.q, cur.r);
+      while (node) {
+        path.push({ q: node.q, r: node.r });
+        const prev = came.get(k);
+        if (!prev) break;
+        k = key(prev.q, prev.r);
+        node = prev;
+      }
+      return path.reverse();
+    }
+    for (const n of _offsetNeighbors(cur.q, cur.r)) {
+      if (!inb(n.q, n.r)) continue;
+      if (!passableFn(scene, n.q, n.r)) continue;
+      const nk = key(n.q, n.r);
+      if (seen.has(nk)) continue;
+      seen.add(nk);
+      came.set(nk, cur);
+      qArr.push(n);
+    }
+  }
   return null;
 }
+
+// Domain-specific wrappers to keep callsites readable
+function _shipPath(scene, fromQ, fromR, toQ, toR) {
+  return _bfsPath(scene, fromQ, fromR, toQ, toR, _passableForShip);
+}
+function _haulerPath(scene, fromQ, fromR, toQ, toR) {
+  return _bfsPath(scene, fromQ, fromR, toQ, toR, _passableForHauler);
+}
+
+// ----- Visual cyan path (shared for both) -----
+function _drawCyanPath(scene, path) {
+  try {
+    if (!path || path.length < 2) return;
+    if (scene._cyanPathGfx) scene._cyanPathGfx.destroy();
+    const g = scene.add.graphics().setDepth(2400);
+    scene._cyanPathGfx = g; g.lineStyle(2, 0x6fe3ff, 0.9);
+    let p0 = scene.axialToWorld(path[0].q, path[0].r);
+    for (let i = 1; i < path.length; i++) {
+      const p1 = scene.axialToWorld(path[i].q, path[i].r);
+      g.strokeLineShape(new Phaser.Geom.Line(p0.x, p0.y, p1.x, p1.y)); p0 = p1;
+    }
+    scene.tweens.add({ targets: g, alpha: 0, duration: 900, delay: 600, onComplete: () => g.destroy() });
+  } catch { /* ignore */ }
+}
+
+// ----- Misc helpers -----
+function _fishAt(scene, q, r) {
+  return !!(scene.resources || []).find(o => o.type === 'fish' && o.q === q && o.r === r);
+}
+function _ensureCargoLabel(scene, unit) {
+  if (unit.cargoObj && !unit.cargoObj.destroyed) return;
+  unit.cargoObj = scene.add.text(0, 0, '', { fontSize: '14px', color: COLORS.cargoText })
+    .setOrigin(0, 1).setDepth(UI.zCargo);
+  _updateCargoLabel(scene, unit); _repositionCargoLabel(scene, unit);
+}
+function _updateCargoLabel(scene, unit) {
+  if (!unit.cargoObj) return;
+  const n = unit.cargoFood || 0;
+  unit.cargoObj.setText(n > 0 ? `🍖×${n}` : '');
+}
+function _repositionCargoLabel(scene, unit) {
+  if (!unit.cargoObj) return;
+  const p = scene.axialToWorld(unit.q, unit.r);
+  unit.cargoObj.setPosition(p.x + 10, p.y - 6);
+}
+
+function _getMobileBaseCoords(scene, hauler) {
+  if (hauler?.baseRef && typeof hauler.baseRef.q === 'number' && typeof hauler.baseRef.r === 'number') {
+    return { q: hauler.baseRef.q, r: hauler.baseRef.r };
+  }
+  if (Array.isArray(scene.players)) {
+    const mb = scene.players.find(u =>
+      u?.type === 'mobileBase' ||
+      u?.isMobileBase === true ||
+      u?.name === 'Mobile Base' ||
+      u?.emoji === '🏕️' || u?.emoji === '🚚'
+    );
+    if (mb && typeof mb.q === 'number' && typeof mb.r === 'number') {
+      return { q: mb.q, r: mb.r };
+    }
+  }
+  return { q: hauler.baseQ ?? 0, r: hauler.baseR ?? 0 };
+}
+
+export default {
+  buildShipForDocks,
+  openDocksRoutePicker,
+  recallShipsToDocks,
+  ensureDocksStoreLabel,
+  updateDocksStoreLabel,
+  applyShipRoutesOnEndTurn,
+  buildHaulerAtSelectedUnit,
+  applyHaulerBehaviorOnEndTurn,
+  enterHaulerRoutePicker,
+  moveCarrierOneLeg,
+};
