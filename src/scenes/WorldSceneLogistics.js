@@ -147,12 +147,14 @@ export function setupLogisticsPanel(scene) {
   scene.openLogisticsPanel = function () {
     if (!this.logisticsUI) return;
     this.logisticsUI.container.visible = true;
+    this.isLogisticsOpen = true; // block movement input while open
     this.refreshLogisticsPanel?.();
   };
 
   scene.closeLogisticsPanel = function () {
     if (!this.logisticsUI) return;
     this.logisticsUI.container.visible = false;
+    this.isLogisticsOpen = false;
   };
 
   scene.refreshLogisticsPanel = function () {
@@ -695,6 +697,8 @@ function _resourceEmoji(resKey) {
  * Find a "station" on the given hex:
  * - Mobile Base unit (your big red circle, type 'mobile_base')
  * - Any building at that coordinate
+ *
+ * Includes a fallback if coords don't match but there is exactly one mobile_base.
  */
 function _findStationAt(scene, q, r) {
   if (q == null || r == null) return null;
@@ -703,21 +707,44 @@ function _findStationAt(scene, q, r) {
   const units   = Array.isArray(scene.units)   ? scene.units   : [];
   const allUnits = [...players, ...units];
 
-  const base = allUnits.find(u => {
+  // 1) Exact match on this hex for current player's mobile base
+  let base = allUnits.find(u => {
     if (!u || typeof u.q !== 'number' || typeof u.r !== 'number') return false;
     if (u.q !== q || u.r !== r) return false;
 
-    // Your mobile base from WorldSceneUnits.js:
-    // unit.type = 'mobile_base', color red, playerName === scene.playerName
     const isMobileBaseType =
-      u.type === 'mobile_base' ||   // <- important for your code
+      u.type === 'mobile_base' ||
       u.type === 'mobileBase';
 
     const isLocalPlayer =
       !!scene.playerName && u.playerName === scene.playerName;
 
-    return isMobileBaseType || isLocalPlayer;
+    return isMobileBaseType && isLocalPlayer;
   });
+
+  // 2) If not found, any mobile_base on this hex
+  if (!base) {
+    base = allUnits.find(u => {
+      if (!u || typeof u.q !== 'number' || typeof u.r !== 'number') return false;
+      if (u.q !== q || u.r !== r) return false;
+      return u.type === 'mobile_base' || u.type === 'mobileBase';
+    });
+  }
+
+  // 3) Fallback: if there is exactly one mobile_base in the scene,
+  //    use it even if the click hex didn't line up exactly.
+  if (!base) {
+    const allBases = allUnits.filter(u => u && (u.type === 'mobile_base' || u.type === 'mobileBase'));
+    if (allBases.length === 1) {
+      base = allBases[0];
+      console.warn(
+        '[LOGI] Using fallback mobile base station at',
+        { q: base.q, r: base.r },
+        'for clicked hex',
+        { q, r }
+      );
+    }
+  }
 
   if (base) {
     return {
