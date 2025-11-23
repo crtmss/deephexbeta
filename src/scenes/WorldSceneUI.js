@@ -92,7 +92,25 @@ export function setupTurnUI(scene) {
   // Top-right tabs (Resources / Logistics) + panels
   createTopTabs(scene);
   createResourcesPanel(scene);
-  setupLogisticsPanel(scene); // hook up logistics panel + helpers
+
+  // Logistics panel + helpers
+  setupLogisticsPanel(scene);
+
+  // Wrap logistics open/close to lock world input (no mobile base movement while logistics is open)
+  const origOpenLogi = scene.openLogisticsPanel;
+  const origCloseLogi = scene.closeLogisticsPanel;
+
+  scene.logisticsInputLocked = false;
+
+  scene.openLogisticsPanel = function () {
+    this.logisticsInputLocked = true;
+    origOpenLogi?.call(this);
+  };
+
+  scene.closeLogisticsPanel = function () {
+    this.logisticsInputLocked = false;
+    origCloseLogi?.call(this);
+  };
 }
 
 export function updateTurnText(scene, currentTurn) {
@@ -459,6 +477,9 @@ export function setupWorldInputUI(scene) {
   scene.pathPreviewLabels = scene.pathPreviewLabels || [];
 
   scene.input.on('pointerdown', pointer => {
+    // Block world input when Logistics panel is open / logistics interactions active
+    if (scene.logisticsInputLocked) return;
+
     if (scene.isDragging) return;
     if (pointer.rightButtonDown && pointer.rightButtonDown()) return;
 
@@ -527,6 +548,9 @@ export function setupWorldInputUI(scene) {
   });
 
   scene.input.on('pointermove', pointer => {
+    // Block hover preview when logistics panel is open
+    if (scene.logisticsInputLocked) return;
+
     if (scene.isDragging) return;
     if (!scene.selectedUnit || scene.isUnitMoving) return;
 
