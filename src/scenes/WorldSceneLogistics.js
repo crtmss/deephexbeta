@@ -48,9 +48,9 @@ export function setupLogisticsPanel(scene) {
 
   container.visible = false;
 
-  // panel background
-  const W = 460;
-  const H = 260;
+  // panel background (50% bigger)
+  const W = 460 * 1.5;   // 690
+  const H = 260 * 1.5;   // 390
 
   const bg = scene.add.graphics();
   bg.fillStyle(LOGI_COLORS.panelBg, 0.96);
@@ -65,12 +65,12 @@ export function setupLogisticsPanel(scene) {
 
   container.add([bg, bezel]);
 
-  // Titles
+  // Titles (font sizes 50% bigger)
   const title = scene.add.text(
     16, 12,
     'Logistics – Haulers & Ships',
     {
-      fontSize: '16px',
+      fontSize: '24px',           // 16 -> 24
       color: LOGI_COLORS.textMain,
       fontStyle: 'bold',
     }
@@ -80,7 +80,7 @@ export function setupLogisticsPanel(scene) {
     16, 32,
     'Select a hauler on the left to inspect or edit its route.',
     {
-      fontSize: '12px',
+      fontSize: '18px',           // 12 -> 18
       color: LOGI_COLORS.textDim,
     }
   ).setOrigin(0, 0);
@@ -92,7 +92,7 @@ export function setupLogisticsPanel(scene) {
     W - 18, 10,
     '✕',
     {
-      fontSize: '16px',
+      fontSize: '24px',           // 16 -> 24
       color: LOGI_COLORS.textMain,
     }
   ).setOrigin(1, 0).setInteractive({ useHandCursor: true });
@@ -108,7 +108,7 @@ export function setupLogisticsPanel(scene) {
     16, 56,
     'Haulers & Ships',
     {
-      fontSize: '14px',
+      fontSize: '21px',           // 14 -> 21
       color: LOGI_COLORS.textMain,
       fontStyle: 'bold',
     }
@@ -119,16 +119,16 @@ export function setupLogisticsPanel(scene) {
 
   // Right column: selected hauler details
   const detailLabel = scene.add.text(
-    200, 56,
+    260, 56,                       // shifted a bit right for bigger panel
     'Selected Route',
     {
-      fontSize: '14px',
+      fontSize: '21px',           // 14 -> 21
       color: LOGI_COLORS.textMain,
       fontStyle: 'bold',
     }
   ).setOrigin(0, 0);
 
-  const detailContainer = scene.add.container(200, 76);
+  const detailContainer = scene.add.container(260, 76);
   container.add([detailLabel, detailContainer]);
 
   // Store UI handles on the scene
@@ -171,13 +171,13 @@ export function setupLogisticsPanel(scene) {
     ui.listContainer.removeAll(true); // remove children from container
 
     let y = 0;
-    const lineH = 20;
+    const lineH = 30; // increased spacing for bigger font
 
     if (haulers.length === 0) {
       const txt = this.add.text(
         0, 0,
         'No haulers or ships yet.',
-        { fontSize: '12px', color: LOGI_COLORS.textDim }
+        { fontSize: '18px', color: LOGI_COLORS.textDim }  // 12 -> 18
       ).setOrigin(0, 0);
       ui.listContainer.add(txt);
       ui.listEntries.push({ text: txt, haulerId: null });
@@ -189,7 +189,7 @@ export function setupLogisticsPanel(scene) {
           0, y,
           label,
           {
-            fontSize: '13px',
+            fontSize: '19px',     // 13 -> 19
             color: isSelected ? LOGI_COLORS.listHighlight : LOGI_COLORS.textMain,
           }
         ).setOrigin(0, 0).setInteractive({ useHandCursor: true });
@@ -217,7 +217,7 @@ export function setupLogisticsPanel(scene) {
       const t = this.add.text(
         0, 0,
         'No hauler selected.',
-        { fontSize: '12px', color: LOGI_COLORS.textDim }
+        { fontSize: '18px', color: LOGI_COLORS.textDim }  // 12 -> 18
       ).setOrigin(0, 0);
       ui.detailContainer.add(t);
       return;
@@ -240,25 +240,29 @@ export function applyLogisticsOnEndTurn(sceneArg) {
 
   // --- Mine production: +1 scrap per mine per turn, capped at maxScrap (default 10) ---
   buildings.forEach(b => {
-    if (b.type !== 'mine') return;
+    if (b.type === 'mine') {
+      const maxScrap = typeof b.maxScrap === 'number' ? b.maxScrap : 10;
 
-    const maxScrap = typeof b.maxScrap === 'number' ? b.maxScrap : 10;
+      // Ensure a resources bag exists for UI & logistics consumers
+      if (!b.resources) b.resources = {};
 
-    // Ensure a resources bag exists for UI & logistics consumers
-    if (!b.resources) b.resources = {};
+      const currentFromResources =
+        typeof b.resources.scrap === 'number' ? b.resources.scrap : 0;
+      const currentFromStorage =
+        typeof b.storageScrap === 'number' ? b.storageScrap : 0;
 
-    const currentFromResources =
-      typeof b.resources.scrap === 'number' ? b.resources.scrap : 0;
-    const currentFromStorage =
-      typeof b.storageScrap === 'number' ? b.storageScrap : 0;
+      // Keep compatibility with both fields by using the higher of the two
+      const cur = Math.max(currentFromResources, currentFromStorage);
+      const next = Math.min(maxScrap, cur + 1);
 
-    // Keep compatibility with both fields by using the higher of the two
-    const cur = Math.max(currentFromResources, currentFromStorage);
-    const next = Math.min(maxScrap, cur + 1);
+      // Write back to BOTH fields so everyone sees the same value
+      b.resources.scrap = next;
+      b.storageScrap = next;
+    }
 
-    // Write back to BOTH fields so everyone sees the same value
-    b.resources.scrap = next;
-    b.storageScrap = next;
+    // Update per-building resource label for *all* buildings (except bunker)
+    _ensureBuildingResourceLabel(scene, b);
+    _updateBuildingResourceLabel(scene, b);
   });
 }
 
@@ -348,38 +352,38 @@ function _renderHaulerDetails(scene, hauler) {
     0, y,
     `${emoji} ${hauler.name || (isShip ? 'Ship' : 'Hauler')} #${hauler._logiId}`,
     {
-      fontSize: '14px',
+      fontSize: '21px',           // 14 -> 21
       color: LOGI_COLORS.textMain,
       fontStyle: 'bold',
     }
   ).setOrigin(0, 0);
   c.add(title);
-  y += 20;
+  y += 30;
 
   const posLine = scene.add.text(
     0, y,
     `Position: (${hauler.q ?? '?'}, ${hauler.r ?? '?'})`,
-    { fontSize: '12px', color: LOGI_COLORS.textDim }
+    { fontSize: '18px', color: LOGI_COLORS.textDim }  // 12 -> 18
   ).setOrigin(0, 0);
   c.add(posLine);
-  y += 16;
+  y += 24;
 
   // Show simple cargo info (currently only 🍖 is implemented)
   const cargoFood = hauler.cargoFood ?? 0;
   const cargoLine = scene.add.text(
     0, y,
     `Cargo: 🍖 ${cargoFood}`,
-    { fontSize: '12px', color: LOGI_COLORS.textDim }
+    { fontSize: '18px', color: LOGI_COLORS.textDim }  // 12 -> 18
   ).setOrigin(0, 0);
   c.add(cargoLine);
-  y += 18;
+  y += 27;
 
   // Divider
   const divider = scene.add.graphics();
   divider.lineStyle(1, 0x9bb6cc, 0.4);
-  divider.strokeLineShape(new Phaser.Geom.Line(0, y, 240, y));
+  divider.strokeLineShape(new Phaser.Geom.Line(0, y, 320, y));  // wider
   c.add(divider);
-  y += 8;
+  y += 12;
 
   // Route preview
   const route = Array.isArray(hauler.logisticsRoute) ? hauler.logisticsRoute : [];
@@ -393,15 +397,15 @@ function _renderHaulerDetails(scene, hauler) {
       'then left-click a station on the map\n' +
       'and choose an action.',
       {
-        fontSize: '11px',
+        fontSize: '16px',   // 11 -> 16
         color: LOGI_COLORS.textDim,
       }
     ).setOrigin(0, 0);
     c.add(note);
-    y += note.height + 8;
+    y += note.height + 12;
 
     _addAddStationButton(scene, hauler, c, y);
-    _addResetRoutesButton(scene, hauler, c, y + 22);
+    _addResetRoutesButton(scene, hauler, c, y + 30);
     return;
   }
 
@@ -409,13 +413,13 @@ function _renderHaulerDetails(scene, hauler) {
     0, y,
     'Route:',
     {
-      fontSize: '13px',
+      fontSize: '20px',       // 13 -> 20
       color: LOGI_COLORS.textMain,
       fontStyle: 'bold',
     }
   ).setOrigin(0, 0);
   c.add(routeTitle);
-  y += 18;
+  y += 27;
 
   route.forEach((step, idx) => {
     const stepText = _formatRouteStep(scene, step, idx);
@@ -423,25 +427,25 @@ function _renderHaulerDetails(scene, hauler) {
       0, y,
       stepText,
       {
-        fontSize: '12px',
+        fontSize: '18px',     // 12 -> 18
         color: LOGI_COLORS.textMain,
       }
     ).setOrigin(0, 0);
     c.add(t);
-    y += 16;
+    y += 24;
   });
 
-  y += 6;
+  y += 9;
   const stub = scene.add.text(
     0, y,
     'Use "＋ Add station…" to extend this route.',
-    { fontSize: '11px', color: LOGI_COLORS.textDim }
+    { fontSize: '16px', color: LOGI_COLORS.textDim }   // 11 -> 16
   ).setOrigin(0, 0);
   c.add(stub);
-  y += stub.height + 4;
+  y += stub.height + 6;
 
   _addAddStationButton(scene, hauler, c, y);
-  _addResetRoutesButton(scene, hauler, c, y + 22);
+  _addResetRoutesButton(scene, hauler, c, y + 30);
 }
 
 /**
@@ -452,7 +456,7 @@ function _addAddStationButton(scene, hauler, container, y) {
     0, y,
     '＋ Add station…',
     {
-      fontSize: '12px',
+      fontSize: '18px',           // 12 -> 18
       color: LOGI_COLORS.listHighlight,
       fontStyle: 'bold',
     }
@@ -473,7 +477,7 @@ function _addResetRoutesButton(scene, hauler, container, y) {
     0, y,
     'Reset routes',
     {
-      fontSize: '11px',
+      fontSize: '17px',           // 11 -> ~17
       color: LOGI_COLORS.textDim,
       fontStyle: 'italic',
     }
@@ -492,10 +496,20 @@ function _addResetRoutesButton(scene, hauler, container, y) {
 
 /**
  * Begin "add station" interaction.
+ * Hides the logistics panel so the player can see/click hexes behind it,
+ * then reopens the panel after the hex click (success or failure).
  */
 function _startAddStationFlow(scene, hauler) {
   if (!scene || !hauler) return;
   console.log('[LOGI] Add station: left-click a Mobile Base or building hex.');
+
+  // Hide the logistics UI so we can see the map behind it.
+  const ui = scene.logisticsUI;
+  const wasVisible = !!(ui && ui.container.visible);
+  if (ui) {
+    ui.container.visible = false;
+  }
+  scene.isLogisticsOpen = false;
 
   const cam = scene.cameras.main;
   const overlay = scene.add.rectangle(
@@ -513,6 +527,14 @@ function _startAddStationFlow(scene, hauler) {
   // flag so WorldSceneUI input won't treat this click as move order
   scene.isLogisticsPickingStation = true;
 
+  const finish = () => {
+    overlay.destroy();
+    scene.isLogisticsPickingStation = false;
+    if (wasVisible) {
+      scene.openLogisticsPanel?.();
+    }
+  };
+
   overlay.once('pointerdown', (pointer, _lx, _ly, event) => {
     event?.stopPropagation?.();
 
@@ -522,13 +544,11 @@ function _startAddStationFlow(scene, hauler) {
     const station = _findStationAt(scene, q, r);
     if (!station) {
       console.warn('[LOGI] No station (mobile base or building) on that hex.', { q, r });
-      overlay.destroy();
-      scene.isLogisticsPickingStation = false;
+      finish();
       return;
     }
 
-    overlay.destroy();
-    scene.isLogisticsPickingStation = false;
+    finish();
     _showActionPicker(scene, hauler, station);
   });
 }
@@ -556,28 +576,28 @@ function _showActionPicker(scene, hauler, station) {
     0, y,
     `Add station: ${stationName}`,
     {
-      fontSize: '14px',
+      fontSize: '21px',           // 14 -> 21
       color: LOGI_COLORS.textMain,
       fontStyle: 'bold',
     }
   ).setOrigin(0, 0);
   c.add(title);
-  y += 22;
+  y += 30;
 
   const hint = scene.add.text(
     0, y,
     'Choose what this hauler should do at this stop:',
-    { fontSize: '12px', color: LOGI_COLORS.textDim }
+    { fontSize: '18px', color: LOGI_COLORS.textDim }  // 12 -> 18
   ).setOrigin(0, 0);
   c.add(hint);
-  y += 18;
+  y += 24;
 
   const makeBtn = (label, actionKey) => {
     const b = scene.add.text(
       0, y,
       label,
       {
-        fontSize: '12px',
+        fontSize: '18px',         // 12 -> 18
         color: LOGI_COLORS.listHighlight,
       }
     ).setOrigin(0, 0).setInteractive({ useHandCursor: true });
@@ -608,19 +628,19 @@ function _showActionPicker(scene, hauler, station) {
     });
 
     c.add(b);
-    y += 18;
+    y += 24;
   };
 
   makeBtn('Load all (🍖)', 'loadAll');
   makeBtn('Unload all (🍖)', 'unloadAll');
   makeBtn('Idle at station', 'idle');
 
-  y += 10;
+  y += 15;
   const note = scene.add.text(
     0, y,
     'Idle at a Mobile Base will pin the hauler\n' +
     'so it stays inside when the base moves.',
-    { fontSize: '11px', color: LOGI_COLORS.textDim }
+    { fontSize: '16px', color: LOGI_COLORS.textDim }  // 11 -> 16
   ).setOrigin(0, 0);
   c.add(note);
 }
@@ -766,4 +786,63 @@ function _findStationAt(scene, q, r) {
   }
 
   return null;
+}
+
+///////////////////////////////
+// Building resource label helpers
+///////////////////////////////
+
+/**
+ * Create a floating resource label for a building if needed.
+ * Placed in the upper-right of the building (similar to docks food label).
+ */
+function _ensureBuildingResourceLabel(scene, building) {
+  if (!building) return;
+  if (building.type === 'bunker') return; // no label for bunkers by design
+
+  if (building.resourceLabelObj && !building.resourceLabelObj.destroyed) return;
+
+  const pos = scene.axialToWorld(building.q, building.r);
+  building.resourceLabelObj = scene.add.text(
+    pos.x + 16,
+    pos.y - 14,
+    '',
+    {
+      fontSize: '16px',
+      color: '#ffffff',
+    }
+  ).setOrigin(0, 1).setDepth(2101); // similar depth to docks overlay
+}
+
+/**
+ * Update the contents of a building's resource label from building.resources
+ * and legacy storage fields. Only show resources > 0.
+ */
+function _updateBuildingResourceLabel(scene, building) {
+  if (!building || building.type === 'bunker') return;
+  if (!building.resourceLabelObj) return;
+
+  const res = building.resources || {};
+  const vals = {
+    food:      res.food       ?? building.storageFood  ?? 0,
+    scrap:     res.scrap      ?? building.storageScrap ?? 0,
+    energy:    res.energy     ?? 0,
+    metal:     res.metal      ?? res.metalPlates ?? 0,
+    components:res.components ?? 0,
+    currency:  res.currency   ?? 0,
+  };
+
+  const parts = [];
+  if (vals.food > 0)      parts.push(`🍖×${vals.food}`);
+  if (vals.scrap > 0)     parts.push(`🛠×${vals.scrap}`);
+  if (vals.energy > 0)    parts.push(`⚡×${vals.energy}`);
+  if (vals.metal > 0)     parts.push(`🔩×${vals.metal}`);
+  if (vals.components > 0)parts.push(`🧩×${vals.components}`);
+  if (vals.currency > 0)  parts.push(`💰×${vals.currency}`);
+
+  building.resourceLabelObj.setText(parts.join(' '));
+
+  // Reposition each update (in case building moved or map offset changed)
+  const pos = scene.axialToWorld(building.q, building.r);
+  building.resourceLabelObj.setPosition(pos.x + 16, pos.y - 14);
 }
