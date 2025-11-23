@@ -9,14 +9,30 @@
 //   stationType: 'mobileBase' | 'docks' | 'mine' | 'factory' | 'bunker',
 //   stationId: number | null,
 //   action: 'load' | 'loadAll' | 'unload' | 'unloadAll' | 'idle',
-//   resource: 'food' | 'scrap' | 'money' | 'influence',
+//   resource: 'food' | 'scrap' | 'money' | 'influence',   // for load/unload (single resource)
+//   // loadAll / unloadAll ignore "resource" and operate on all resources.
 // }
 
-import { moveCarrierOneLeg, ensureDocksStoreLabel, updateDocksStoreLabel } from './WorldSceneHaulers.js';
+import {
+  moveCarrierOneLeg,
+  ensureDocksStoreLabel,
+  updateDocksStoreLabel,
+} from './WorldSceneHaulers.js';
 
-// These mirror the caps in WorldSceneHaulers.js
+// Fallback caps (WorldSceneHaulers.js also sets carrier.cargoCap)
 const HAULER_CARGO_CAP = 5;
 const SHIP_CARGO_CAP = 2;
+
+// All supported logistics resources
+const LOGI_RESOURCES = ['food', 'scrap', 'money', 'influence'];
+
+// Mapping from resource key to legacy building storage field name
+const STORAGE_FIELD_BY_RESOURCE = {
+  food: 'storageFood',
+  scrap: 'storageScrap',
+  money: 'storageMoney',
+  influence: 'storageInfluence',
+};
 
 /**
  * Apply logistics routes for all carriers that have them.
@@ -35,10 +51,36 @@ export function applyLogisticsRoutesOnEndTurn(sceneArg) {
       continue; // legacy behaviour in WorldSceneHaulers handles non-route haulers
     }
 
+    // Ensure multi-resource cargo bag exists for this runtime
+    if (!carrier.cargo || typeof carrier.cargo !== 'object') {
+      carrier.cargo = {
+        food: carrier.cargoFood || 0,
+        scrap: 0,
+        money: 0,
+        influence: 0,
+      };
+    } else {
+      // Ensure all keys exist
+      LOGI_RESOURCES.forEach(k => {
+        if (typeof carrier.cargo[k] !== 'number') carrier.cargo[k] = 0;
+      });
+      // Keep legacy cargoFood in sync with food
+      if (typeof carrier.cargoFood !== 'number') {
+        carrier.cargoFood = carrier.cargo.food || 0;
+      }
+    }
+    if (typeof carrier.cargoCap !== 'number') {
+      carrier.cargoCap = _getCargoCapacity(carrier);
+    }
+
     const steps = carrier.logisticsRoute;
     if (!steps.length) continue;
 
-    if (typeof carrier.routeIndex !== 'number' || carrier.routeIndex < 0 || carrier.routeIndex >= steps.length) {
+    if (
+      typeof carrier.routeIndex !== 'number' ||
+      carrier.routeIndex < 0 ||
+      carrier.routeIndex >= steps.length
+    ) {
       carrier.routeIndex = 0;
     }
 
@@ -86,13 +128,15 @@ function _resolveStationForStep(scene, step) {
     // Prefer my own mobile base
     let base = players.find(u =>
       u &&
-      u.type === 'mobile_base' &&
+      (u.type === 'mobile_base' || u.type === 'mobileBase') &&
       u.playerName === scene.playerName
     );
 
-    // Fallback: any mobile_base
+    // Fallback: any mobile_base / mobileBase
     if (!base) {
-      base = players.find(u => u && u.type === 'mobile_base');
+      base = players.find(u =>
+        u && (u.type === 'mobile_base' || u.type === 'mobileBase')
+      );
     }
 
     if (!base) {
@@ -141,16 +185,20 @@ function _resolveStationForStep(scene, step) {
 
 function _executeStepAtStation(scene, carrier, station, step) {
   const action = step.action || 'idle';
-  const resource = step.resource || 'food';
+  const resource = step.resource || null; // specific resource for 'load' / 'unload'
 
   switch (action) {
-    case 'load':
     case 'loadAll':
-      _performLoad(scene, carrier, station, resource);
+      _performLoadAll(scene, carrier, station);
+      break;
+    case 'load':
+      if (resource) _performLoadSingle(scene, carrier, station, resource);
+      break;
+    case 'unloadAll':
+      _performUnloadAll(scene, carrier, station);
       break;
     case 'unload':
-    case 'unloadAll':
-      _performUnload(scene, carrier, station, resource);
+      if (resource) _performUnloadSingle(scene, carrier, station, resource);
       break;
     case 'idle':
     default:
@@ -166,100 +214,265 @@ function _executeStepAtStation(scene, carrier, station, step) {
 }
 
 function _getCargoCapacity(carrier) {
+  if (typeof carrier.cargoCap === 'number') return carrier.cargoCap;
   if (carrier.type === 'ship' || carrier.isNaval) return SHIP_CARGO_CAP;
   return HAULER_CARGO_CAP;
 }
 
+function _totalCargo(carrier) {
+  if (!carrier || !carrier.cargo || typeof carrier.cargo !== 'object') {
+    return carrier?.cargoFood || 0;
+  }
+  return LOGI_RESOURCES.reduce((sum, key) => sum + (carrier.cargo[key] || 0), 0);
+}
+
 /* =========================
-   Load / Unload helpers
+   Load helpers
    ========================= */
 
-function _performLoad(scene, carrier, station, resource) {
-  if (resource !== 'food') {
-    // For now we only implement food; other resources can be added later.
-    return;
-  }
-
+// Load random resources until full or station empty
+function _performLoadAll(scene, carrier, station) {
   const cap = _getCargoCapacity(carrier);
-  const current = carrier.cargoFood || 0;
-  const room = Math.max(0, cap - current);
+  const cargo = carrier.cargo || (carrier.cargo = { food: 0, scrap: 0, money: 0, influence: 0 });
+  let room = Math.max(0, cap - _totalCargo(carrier));
   if (room <= 0) return;
 
   if (station.kind === 'building') {
     const b = station.buildingRef;
     b.resources = b.resources || {};
 
-    const fromResources = typeof b.resources.food === 'number' ? b.resources.food : 0;
-    const fromStorage   = typeof b.storageFood === 'number' ? b.storageFood : 0;
-    const available = Math.max(fromResources, fromStorage);
+    while (room > 0) {
+      const availableList = LOGI_RESOURCES
+        .map(key => ({ key, amount: _buildingGetAvailable(b, key) }))
+        .filter(entry => entry.amount > 0);
 
-    if (available <= 0) return;
+      if (availableList.length === 0) break;
 
-    const take = Math.min(available, room);
-    const remaining = available - take;
+      const idx = Math.floor(Math.random() * availableList.length);
+      const choice = availableList[idx];
+      const take = Math.min(choice.amount, room);
 
-    b.resources.food = remaining;
-    b.storageFood = remaining;
+      _buildingAdjust(b, choice.key, -take);
+
+      cargo[choice.key] = (cargo[choice.key] || 0) + take;
+      if (choice.key === 'food') {
+        carrier.cargoFood = (carrier.cargoFood || 0) + take;
+      }
+
+      room -= take;
+    }
 
     if (b.type === 'docks') {
       ensureDocksStoreLabel(scene, b);
       updateDocksStoreLabel(scene, b);
     }
 
-    carrier.cargoFood = current + take;
     _syncCarrierCargoLabel(carrier);
 
   } else if (station.kind === 'mobileBase') {
-    // Load from global player resources
     scene.playerResources = scene.playerResources || {};
-    const available = scene.playerResources.food || 0;
-    if (available <= 0) return;
 
-    const take = Math.min(available, room);
-    scene.playerResources.food -= take;
+    while (room > 0) {
+      const availableList = LOGI_RESOURCES
+        .map(key => ({ key, amount: scene.playerResources[key] || 0 }))
+        .filter(entry => entry.amount > 0);
+
+      if (availableList.length === 0) break;
+
+      const idx = Math.floor(Math.random() * availableList.length);
+      const choice = availableList[idx];
+      const take = Math.min(choice.amount, room);
+
+      scene.playerResources[choice.key] -= take;
+      cargo[choice.key] = (cargo[choice.key] || 0) + take;
+      if (choice.key === 'food') {
+        carrier.cargoFood = (carrier.cargoFood || 0) + take;
+      }
+
+      room -= take;
+    }
+
     scene.updateResourceUI?.();
-
-    carrier.cargoFood = current + take;
     _syncCarrierCargoLabel(carrier);
   }
 }
 
-function _performUnload(scene, carrier, station, resource) {
-  if (resource !== 'food') {
-    return;
-  }
+// Load a specific resource
+function _performLoadSingle(scene, carrier, station, resource) {
+  if (!LOGI_RESOURCES.includes(resource)) return;
 
-  const current = carrier.cargoFood || 0;
-  if (current <= 0) return;
-  const give = current;
+  const cap = _getCargoCapacity(carrier);
+  const cargo = carrier.cargo || (carrier.cargo = { food: 0, scrap: 0, money: 0, influence: 0 });
+  const room = Math.max(0, cap - _totalCargo(carrier));
+  if (room <= 0) return;
 
   if (station.kind === 'building') {
     const b = station.buildingRef;
     b.resources = b.resources || {};
 
-    const fromResources = typeof b.resources.food === 'number' ? b.resources.food : 0;
-    const fromStorage   = typeof b.storageFood === 'number' ? b.storageFood : 0;
-    const total = Math.max(fromResources, fromStorage) + give;
+    const available = _buildingGetAvailable(b, resource);
+    if (available <= 0) return;
 
-    b.resources.food = total;
-    b.storageFood = total;
+    const take = Math.min(available, room);
+    _buildingAdjust(b, resource, -take);
+
+    cargo[resource] = (cargo[resource] || 0) + take;
+    if (resource === 'food') {
+      carrier.cargoFood = (carrier.cargoFood || 0) + take;
+    }
+
+    if (b.type === 'docks' && resource === 'food') {
+      ensureDocksStoreLabel(scene, b);
+      updateDocksStoreLabel(scene, b);
+    }
+
+    _syncCarrierCargoLabel(carrier);
+
+  } else if (station.kind === 'mobileBase') {
+    scene.playerResources = scene.playerResources || {};
+    const available = scene.playerResources[resource] || 0;
+    if (available <= 0) return;
+
+    const take = Math.min(available, room);
+    scene.playerResources[resource] -= take;
+
+    cargo[resource] = (cargo[resource] || 0) + take;
+    if (resource === 'food') {
+      carrier.cargoFood = (carrier.cargoFood || 0) + take;
+    }
+
+    scene.updateResourceUI?.();
+    _syncCarrierCargoLabel(carrier);
+  }
+}
+
+/* =========================
+   Unload helpers
+   ========================= */
+
+// Unload all cargo resources from carrier into station
+function _performUnloadAll(scene, carrier, station) {
+  const cargo = carrier.cargo || (carrier.cargo = { food: 0, scrap: 0, money: 0, influence: 0 });
+
+  if (_totalCargo(carrier) <= 0) return;
+
+  if (station.kind === 'building') {
+    const b = station.buildingRef;
+    b.resources = b.resources || {};
+
+    LOGI_RESOURCES.forEach(resource => {
+      const amt = cargo[resource] || 0;
+      if (amt <= 0) return;
+
+      _buildingAdjust(b, resource, amt); // add to building
+
+      if (resource === 'food') {
+        carrier.cargoFood = Math.max(0, (carrier.cargoFood || 0) - amt);
+      }
+      cargo[resource] = 0;
+    });
 
     if (b.type === 'docks') {
       ensureDocksStoreLabel(scene, b);
       updateDocksStoreLabel(scene, b);
     }
 
-    carrier.cargoFood = 0;
     _syncCarrierCargoLabel(carrier);
 
   } else if (station.kind === 'mobileBase') {
-    // Unload into player resources
     scene.playerResources = scene.playerResources || {};
-    scene.playerResources.food = (scene.playerResources.food || 0) + give;
-    scene.updateResourceUI?.();
 
-    carrier.cargoFood = 0;
+    LOGI_RESOURCES.forEach(resource => {
+      const amt = cargo[resource] || 0;
+      if (amt <= 0) return;
+
+      scene.playerResources[resource] = (scene.playerResources[resource] || 0) + amt;
+
+      if (resource === 'food') {
+        carrier.cargoFood = Math.max(0, (carrier.cargoFood || 0) - amt);
+      }
+      cargo[resource] = 0;
+    });
+
+    scene.updateResourceUI?.();
     _syncCarrierCargoLabel(carrier);
+  }
+}
+
+// Unload a single specific resource
+function _performUnloadSingle(scene, carrier, station, resource) {
+  if (!LOGI_RESOURCES.includes(resource)) return;
+
+  const cargo = carrier.cargo || (carrier.cargo = { food: 0, scrap: 0, money: 0, influence: 0 });
+  const amt = cargo[resource] || 0;
+  if (amt <= 0) return;
+
+  if (station.kind === 'building') {
+    const b = station.buildingRef;
+    b.resources = b.resources || {};
+
+    _buildingAdjust(b, resource, amt);
+
+    if (resource === 'food') {
+      carrier.cargoFood = Math.max(0, (carrier.cargoFood || 0) - amt);
+    }
+    cargo[resource] = 0;
+
+    if (b.type === 'docks' && resource === 'food') {
+      ensureDocksStoreLabel(scene, b);
+      updateDocksStoreLabel(scene, b);
+    }
+
+    _syncCarrierCargoLabel(carrier);
+
+  } else if (station.kind === 'mobileBase') {
+    scene.playerResources = scene.playerResources || {};
+    scene.playerResources[resource] = (scene.playerResources[resource] || 0) + amt;
+
+    if (resource === 'food') {
+      carrier.cargoFood = Math.max(0, (carrier.cargoFood || 0) - amt);
+    }
+    cargo[resource] = 0;
+
+    scene.updateResourceUI?.();
+    _syncCarrierCargoLabel(carrier);
+  }
+}
+
+/* =========================
+   Building resource helpers
+   ========================= */
+
+// Read total amount of a resource from building (resources bag + legacy storage)
+function _buildingGetAvailable(building, resource) {
+  if (!LOGI_RESOURCES.includes(resource)) return 0;
+
+  building.resources = building.resources || {};
+  const fromResources = typeof building.resources[resource] === 'number'
+    ? building.resources[resource]
+    : 0;
+
+  const field = STORAGE_FIELD_BY_RESOURCE[resource];
+  const fromStorage = field && typeof building[field] === 'number'
+    ? building[field]
+    : 0;
+
+  return Math.max(fromResources, fromStorage);
+}
+
+// Adjust building resource by delta and write back to both bag + legacy field
+function _buildingAdjust(building, resource, delta) {
+  if (!LOGI_RESOURCES.includes(resource)) return;
+
+  building.resources = building.resources || {};
+  const field = STORAGE_FIELD_BY_RESOURCE[resource];
+
+  const available = _buildingGetAvailable(building, resource);
+  const next = Math.max(0, available + delta);
+
+  building.resources[resource] = next;
+  if (field) {
+    building[field] = next;
   }
 }
 
@@ -269,8 +482,28 @@ function _performUnload(scene, carrier, station, resource) {
 
 function _syncCarrierCargoLabel(carrier) {
   if (!carrier.cargoObj) return;
-  const n = carrier.cargoFood || 0;
-  carrier.cargoObj.setText(n > 0 ? `🍖×${n}` : '');
+
+  const cargo = carrier.cargo || {};
+  const parts = [];
+
+  const emoji = {
+    food: '🍖',
+    scrap: '🛠',
+    money: '💰',
+    influence: '⭐',
+  };
+
+  LOGI_RESOURCES.forEach(key => {
+    const v = cargo[key] || 0;
+    if (v > 0) parts.push(`${emoji[key]}×${v}`);
+  });
+
+  // Fallback to legacy cargoFood if bag is empty
+  if (parts.length === 0 && typeof carrier.cargoFood === 'number' && carrier.cargoFood > 0) {
+    parts.push(`🍖×${carrier.cargoFood}`);
+  }
+
+  carrier.cargoObj.setText(parts.join(' '));
 }
 
 export default {
