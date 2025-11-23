@@ -4,24 +4,25 @@ import { findPath as aStarFindPath } from '../engine/AStar.js';
 import { drawLocationsAndRoads } from './WorldSceneMapLocations.js';
 import { setupWorldMenus, attachSelectionHighlight } from './WorldSceneMenus.js';
 
-// Logistics: building-side production + advanced hauler routes
-import { applyLogisticsOnEndTurn } from './WorldSceneLogistics.js';
-import { applyLogisticsRoutesOnEndTurn } from './WorldSceneLogisticsRuntime.js';
-
-// Haulers & ships
+// Haulers / ships
 import {
   applyShipRoutesOnEndTurn,
   applyHaulerBehaviorOnEndTurn as applyHaulerRoutesOnEndTurn,
 } from './WorldSceneHaulers.js';
 
-// UI & input
+// Logistics (buildings + routes)
+import {
+  setupLogisticsPanel,
+  applyLogisticsOnEndTurn,
+} from './WorldSceneLogistics.js';
+import { applyLogisticsRoutesOnEndTurn } from './WorldSceneLogisticsRuntime.js';
+
+// UI (HUD, tabs, input)
 import { setupTurnUI, updateTurnText, setupWorldInputUI } from './WorldSceneUI.js';
 
-// Units / resources
+// Units / resources / map
 import { spawnUnitsAndEnemies } from './WorldSceneUnits.js';
 import { spawnFishResources } from './WorldSceneResources.js';
-
-// Map rendering & helpers
 import {
   drawHexMap,
   hexToPixel,
@@ -59,37 +60,33 @@ function getWorldSummaryForSeed(seedStr, width, height) {
   const rng = __xorshift32(seed);
 
   const totalTiles = width * height;
-  const waterRatio = 0.28 + (rng() - 0.5) * 0.08;
-  const forestRatio = 0.25 + (rng() - 0.5) * 0.10;
+  const waterRatio    = 0.28 + (rng() - 0.5) * 0.08;
+  const forestRatio   = 0.25 + (rng() - 0.5) * 0.10;
   const mountainRatio = 0.10 + (rng() - 0.5) * 0.05;
 
-  const roughness = 0.4 + rng() * 0.4;
+  const roughness    = 0.4 + rng() * 0.4;
   const elevationVar = 0.6 + rng() * 0.4;
 
   const geography = {
-    waterTiles: Math.round(totalTiles * waterRatio),
-    forestTiles: Math.round(totalTiles * forestRatio),
+    waterTiles:    Math.round(totalTiles * waterRatio),
+    forestTiles:   Math.round(totalTiles * forestRatio),
     mountainTiles: Math.round(totalTiles * mountainRatio),
-    roughness: +roughness.toFixed(2),
-    elevationVar: +elevationVar.toFixed(2),
+    roughness:     +roughness.toFixed(2),
+    elevationVar:  +elevationVar.toFixed(2),
   };
 
   const biomes = [];
-  if (waterRatio > 0.3) biomes.push('Archipelago');
+  if (waterRatio > 0.3)      biomes.push('Archipelago');
   else if (waterRatio < 0.22) biomes.push('Continental');
 
-  if (forestRatio > 0.28) biomes.push('Dense Forests');
+  if (forestRatio > 0.28)      biomes.push('Dense Forests');
   else if (forestRatio < 0.20) biomes.push('Sparse Forests');
 
   if (mountainRatio > 0.12) biomes.push('Mountainous');
-  if (roughness > 0.6) biomes.push('Rugged Terrain');
-  if (elevationVar > 0.7) biomes.push('High Elevation Contrast');
+  if (roughness > 0.6)      biomes.push('Rugged Terrain');
+  if (elevationVar > 0.7)   biomes.push('High Elevation Contrast');
 
-  const biome =
-    biomes.length > 0
-      ? biomes.join(', ')
-      : 'Mixed Terrain';
-
+  const biome = biomes.length > 0 ? biomes.join(', ') : 'Mixed Terrain';
   return { geography, biome };
 }
 
@@ -121,7 +118,7 @@ export default class WorldScene extends Phaser.Scene {
     this.players = [];
     this.buildings = [];
     this.haulers = [];
-    this.shipRoutes = [];
+    this.ships = [];
     this.resources = [];
 
     // selection state
@@ -151,7 +148,7 @@ export default class WorldScene extends Phaser.Scene {
     this.turnOwner = null;
     this.turnNumber = 1;
 
-    // >>> INITIAL RESOURCES: +200 each <<<
+    // Initial resources (kept in sync with Buildings / Haulers modules)
     this.playerResources = {
       food: 200,
       scrap: 200,
@@ -174,10 +171,8 @@ export default class WorldScene extends Phaser.Scene {
         tiles,
         objects: this.hexMap.objects || [],
       };
-    } else {
-      if (!Array.isArray(mapInfo.objects)) {
-        mapInfo.objects = this.hexMap.objects || [];
-      }
+    } else if (!Array.isArray(mapInfo.objects)) {
+      mapInfo.objects = this.hexMap.objects || [];
     }
 
     this.mapInfo = mapInfo;
@@ -207,19 +202,22 @@ export default class WorldScene extends Phaser.Scene {
       this.players[0]?.name ||
       null;
 
-    // UI: selection highlight + build menu + top HUD
+    // UI: selection highlight + build menu + top HUD + logistics panel
     attachSelectionHighlight(this);
     setupWorldMenus(this);
     setupTurnUI(this);
+    setupLogisticsPanel(this); // Logistics tab hooks into helpers defined in setupTurnUI
+
     if (this.turnOwner) {
       updateTurnText(this, this.turnOwner);
     }
 
     this.addWorldMetaBadge();
 
-    // Input (selection + path preview + movement) is handled via UI module
+    // Input (selection + path preview + movement)
     setupWorldInputUI(this);
 
+    // Supabase sync (multiplayer)
     if (this.supabase) {
       this.syncPlayerMove = async unit => {
         const res = await this.supabase
@@ -406,11 +404,11 @@ Biomes: ${biome}`;
 
     // 1) Ships (fish → docks)
     applyShipRoutesOnEndTurn(this);
-    // 2) Ground haulers (basic docks ↔ base behavior)
+    // 2) Ground haulers (legacy behavior, e.g. docks ↔ base)
     applyHaulerRoutesOnEndTurn(this);
     // 3) Buildings logistics (e.g. Mines produce scrap into local storage)
     applyLogisticsOnEndTurn(this);
-    // 4) Factorio-style logistics routes (haulers with custom logisticsRoute)
+    // 4) Factorio-style hauler routes (logisticsRoute on haulers / ships)
     applyLogisticsRoutesOnEndTurn(this);
 
     this.moveEnemies();
