@@ -718,7 +718,7 @@ function _resourceEmoji(resKey) {
  * - Mobile Base unit (your big red circle, type 'mobile_base')
  * - Any building at that coordinate
  *
- * Includes a fallback if coords don't match but there is exactly one mobile_base.
+ * NO fallback: if you click a mine, you get a mine; if you miss everything, you get null.
  */
 function _findStationAt(scene, q, r) {
   if (q == null || r == null) return null;
@@ -732,6 +732,8 @@ function _findStationAt(scene, q, r) {
     if (!u || typeof u.q !== 'number' || typeof u.r !== 'number') return false;
     if (u.q !== q || u.r !== r) return false;
 
+    // Your mobile base from WorldSceneUnits.js:
+    // unit.type = 'mobile_base', color red, playerName === scene.playerName
     const isMobileBaseType =
       u.type === 'mobile_base' ||
       u.type === 'mobileBase';
@@ -742,28 +744,13 @@ function _findStationAt(scene, q, r) {
     return isMobileBaseType && isLocalPlayer;
   });
 
-  // 2) If not found, any mobile_base on this hex
+  // 2) If not found, any mobile_base on this exact hex (regardless of owner)
   if (!base) {
     base = allUnits.find(u => {
       if (!u || typeof u.q !== 'number' || typeof u.r !== 'number') return false;
       if (u.q !== q || u.r !== r) return false;
       return u.type === 'mobile_base' || u.type === 'mobileBase';
     });
-  }
-
-  // 3) Fallback: if there is exactly one mobile_base in the scene,
-  //    use it even if the click hex didn't line up exactly.
-  if (!base) {
-    const allBases = allUnits.filter(u => u && (u.type === 'mobile_base' || u.type === 'mobileBase'));
-    if (allBases.length === 1) {
-      base = allBases[0];
-      console.warn(
-        '[LOGI] Using fallback mobile base station at',
-        { q: base.q, r: base.r },
-        'for clicked hex',
-        { q, r }
-      );
-    }
   }
 
   if (base) {
@@ -824,21 +811,21 @@ function _updateBuildingResourceLabel(scene, building) {
 
   const res = building.resources || {};
   const vals = {
-    food:      res.food       ?? building.storageFood  ?? 0,
-    scrap:     res.scrap      ?? building.storageScrap ?? 0,
-    energy:    res.energy     ?? 0,
-    metal:     res.metal      ?? res.metalPlates ?? 0,
-    components:res.components ?? 0,
-    currency:  res.currency   ?? 0,
+    food:       res.food       ?? building.storageFood  ?? 0,
+    scrap:      res.scrap      ?? building.storageScrap ?? 0,
+    energy:     res.energy     ?? 0,
+    metal:      res.metal      ?? res.metalPlates ?? 0,
+    components: res.components ?? 0,
+    currency:   res.currency   ?? 0,
   };
 
   const parts = [];
-  if (vals.food > 0)      parts.push(`🍖×${vals.food}`);
-  if (vals.scrap > 0)     parts.push(`🛠×${vals.scrap}`);
-  if (vals.energy > 0)    parts.push(`⚡×${vals.energy}`);
-  if (vals.metal > 0)     parts.push(`🔩×${vals.metal}`);
-  if (vals.components > 0)parts.push(`🧩×${vals.components}`);
-  if (vals.currency > 0)  parts.push(`💰×${vals.currency}`);
+  if (vals.food > 0)       parts.push(`🍖×${vals.food}`);
+  if (vals.scrap > 0)      parts.push(`🛠×${vals.scrap}`);
+  if (vals.energy > 0)     parts.push(`⚡×${vals.energy}`);
+  if (vals.metal > 0)      parts.push(`🔩×${vals.metal}`);
+  if (vals.components > 0) parts.push(`🧩×${vals.components}`);
+  if (vals.currency > 0)   parts.push(`💰×${vals.currency}`);
 
   building.resourceLabelObj.setText(parts.join(' '));
 
