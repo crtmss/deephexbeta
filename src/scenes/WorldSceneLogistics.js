@@ -8,8 +8,8 @@
 // - Provide a Logistics panel UI: list of haulers, details for selected hauler.
 // - Provide applyLogisticsOnEndTurn() for building-side logistics (mines, etc.).
 //
-// Movement logic for haulers/ships lives in WorldSceneLogisticsRuntime.js
-// via hauler.logisticsRoute, plus ship/hauler helpers from WorldSceneHaulers.js.
+// Movement logic for haulers/ships lives in WorldSceneHaulers.js.
+// WorldSceneLogisticsRuntime.js consumes hauler.logisticsRoute on end turn.
 
 ///////////////////////////////
 // Visual constants
@@ -226,17 +226,15 @@ export function setupLogisticsPanel(scene) {
 }
 
 /**
- * Convenience helper if you ever want to open from outside with a scene ref.
+ * Convenience helper if you ever want to open from outside the scene helper.
  */
 export function openLogisticsPanel(scene) {
-  scene?.openLogisticsPanel?.();
+  scene.openLogisticsPanel?.();
 }
 
 /**
  * Called from WorldScene.endTurn().
  * Handles building-side logistics, e.g. Mines producing scrap each turn.
- *
- * Hauler movement and cargo transfers are handled in WorldSceneLogisticsRuntime.
  */
 export function applyLogisticsOnEndTurn(sceneArg) {
   const scene = sceneArg || /** @type {any} */ (this);
@@ -295,7 +293,7 @@ function _getAllLogisticsHaulers(scene) {
 
 /**
  * Ensure every hauler/ship has a unique _logiId and a logisticsRoute array.
- * This is purely internal to the Logistics system.
+ * This is purely internal to the Logistics system and does not affect movement yet.
  */
 function _ensureLogisticsIds(scene) {
   const all = _getAllLogisticsHaulers(scene);
@@ -391,14 +389,17 @@ function _renderHaulerDetails(scene, hauler) {
   c.add(divider);
   y += 8;
 
+  // Route preview
   const route = Array.isArray(hauler.logisticsRoute) ? hauler.logisticsRoute : [];
-
   if (route.length === 0) {
     const note = scene.add.text(
       0, y,
       'No custom logistics route.\n\n' +
-      'This hauler will remain idle\n' +
-      'until a route is assigned.\n\n' +
+      'This hauler will not move until you\n' +
+      'assign stations.\n\n' +
+      'Typical setup:\n' +
+      '  1) Docks – Load all (🍖)\n' +
+      '  2) Mobile Base – Unload all (🍖)\n\n' +
       'Click "＋ Add station…" below,\n' +
       'then left-click a station on the map\n' +
       'and choose an action.',
@@ -446,7 +447,7 @@ function _renderHaulerDetails(scene, hauler) {
   const stub = scene.add.text(
     0, y,
     'Use "＋ Add station…" to extend this route\n' +
-    'or "Reset routes" to clear it.',
+    'or "Reset routes" to clear all steps.',
     { fontSize: '11px', color: LOGI_COLORS.textDim }
   ).setOrigin(0, 0);
   c.add(stub);
@@ -487,28 +488,19 @@ function _addResetRoutesButton(scene, hauler, container, y) {
     'Reset routes',
     {
       fontSize: '12px',
-      color: '#ff8888',
-      fontStyle: 'bold',
+      color: LOGI_COLORS.textDim,
     }
   ).setOrigin(0, 0).setInteractive({ useHandCursor: true });
 
   btn.on('pointerdown', () => {
-    _resetHaulerRoutes(scene, hauler);
+    hauler.logisticsRoute = [];
+    hauler.routeIndex = 0;
+    hauler.pinnedToBase = false;
+    console.log('[LOGI] Routes reset for hauler#', hauler._logiId);
+    scene.refreshLogisticsPanel?.();
   });
 
   container.add(btn);
-}
-
-/**
- * Clear all logistics steps for the given hauler and reset flags.
- */
-function _resetHaulerRoutes(scene, hauler) {
-  hauler.logisticsRoute = [];
-  hauler.routeIndex = 0;
-  hauler.mode = 'idle';
-  hauler.pinnedToBase = false;
-  console.log('[LOGI] Reset routes for hauler#', hauler._logiId);
-  scene.refreshLogisticsPanel?.();
 }
 
 /**
@@ -724,17 +716,23 @@ function _resourceEmoji(resKey) {
  * Find a "station" on the given hex:
  * - Mobile Base unit
  * - Any building at that coordinate
+ *
+ * IMPORTANT: mobile base detection now matches WorldSceneHaulers._getMobileBaseCoords:
+ * we check type/name/isMobileBase and also emojis 🏕️ / 🚚.
  */
 function _findStationAt(scene, q, r) {
   if (q == null || r == null) return null;
 
-  // Mobile base: be a bit lenient with flags
+  // Mobile base (we treat any flagged as mobile base and on that hex)
   const players = scene.players || [];
   const base = players.find(u =>
-    (u.type === 'mobileBase' ||
-     u.isMobileBase === true ||
-     u.name === 'Mobile Base' ||
-     u.emoji === '🏕️') &&
+    (
+      u.type === 'mobileBase' ||
+      u.isMobileBase === true ||
+      u.name === 'Mobile Base' ||
+      u.emoji === '🏕️' ||
+      u.emoji === '🚚'
+    ) &&
     u.q === q && u.r === r
   );
   if (base) {
