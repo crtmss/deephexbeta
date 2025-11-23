@@ -20,7 +20,7 @@ const UI = {
 
 const DOCKS_STORAGE_CAP = 10;
 const SHIP_CARGO_CAP = 2;
-const HAULER_CARGO_CAP = 5;
+const HAULER_CARGO_CAP = 5; // kept for reference / future use
 
 ///////////////////////////////
 // Public API (named exports)
@@ -259,7 +259,7 @@ export function buildHaulerAtSelectedUnit() {
   const id = scene._haulerIdSeq;
 
   const hauler = {
-    id,                          // NEW: unique id
+    id,                          // unique id for UI / station references
     type: 'hauler',
     name: 'Hauler',
     emoji: '🚚',
@@ -269,34 +269,37 @@ export function buildHaulerAtSelectedUnit() {
     movePoints: 8,
     cargoFood: 0,
     cargoObj: null,
-    mode: 'idle',
-    baseRef: u, baseQ: u.q, baseR: u.r,
-    targetDocksId: null,
 
-    // Factorio-style logistics
+    // Behaviour flags
+    mode: 'idle',
+    baseRef: u,
+    baseQ: u.q,
+    baseR: u.r,
+    targetDocksId: null,   // kept for backward compatibility, but unused now
+
+    // Factorio-style logistics route (consumed by WorldSceneLogisticsRuntime)
     logisticsRoute: [],
     routeIndex: 0,
+    pinnedToBase: false,
   };
 
-  // Auto-assign nearest docks (by distance to docks hex)
-  const docksList = (scene.buildings || []).filter(b => b.type === 'docks');
-  if (docksList.length > 0) {
-    const best = docksList
-      .map(b => ({ b, d: _hexManhattan(u.q, u.r, b.q, b.r) }))
-      .sort((a, b) => a.d - b.d)[0].b;
-    hauler.targetDocksId = best.id;
-    hauler.mode = 'toDocks';
-    console.log(`[HAULER] Auto-assigned to docks#${best.id} at (${best.q},${best.r}).`);
-  } else {
-    console.warn('[HAULER] No docks available to assign route.');
-  }
+  // IMPORTANT: no default behaviour now.
+  // Hauler will remain idle until a logisticsRoute is defined
+  // via Logistics panel (Add station: Docks loadAll -> Mobile Base unloadAll, etc.).
+  console.log('[HAULER] Built new hauler#' + id + ' at mobile base. No default route.');
 
   scene.haulers.push(hauler);
   _ensureCargoLabel(scene, hauler);
   _repositionCargoLabel(scene, hauler);
 }
 
-/** End-turn execution for haulers (move/pickup/deposit). */
+/**
+ * End-turn execution for haulers.
+ *
+ * Legacy behaviour (auto shuttle between docks and mobile base) is removed.
+ * Haulers now only move when WorldSceneLogisticsRuntime processes their
+ * hauler.logisticsRoute. This function just normalizes MPs and labels.
+ */
 export function applyHaulerBehaviorOnEndTurn(sceneArg) {
   const scene = sceneArg || /** @type {any} */ (this);
   if (!scene) return;
@@ -305,83 +308,26 @@ export function applyHaulerBehaviorOnEndTurn(sceneArg) {
   const haulers = scene.haulers || [];
   if (haulers.length === 0) return;
 
-  let movedAny = false;
-
-  for (const h of haulers) {
-    // If this hauler has a logistics route, let LogisticsRuntime handle it.
-    if (Array.isArray(h.logisticsRoute) && h.logisticsRoute.length > 0) {
-      continue;
-    }
-
+  haulers.forEach(h => {
     if (typeof h.maxMovePoints !== 'number') h.maxMovePoints = 8;
     if (typeof h.movePoints !== 'number') h.movePoints = h.maxMovePoints;
-    if (!h.cargoObj || h.cargoObj.destroyed) _ensureCargoLabel(scene, h);
+    else h.movePoints = h.maxMovePoints;
 
-    const docks = (scene.buildings || []).find(b => b.type === 'docks' && b.id === h.targetDocksId) || null;
-    if (!docks) { h.mode = 'idle'; h.movePoints = h.maxMovePoints; continue; }
-
-    ensureDocksStoreLabel(scene, docks);
-    updateDocksStoreLabel(scene, docks);
-
-    const basePos = _getMobileBaseCoords(scene, h);
-    const baseQ = basePos.q, baseR = basePos.r;
-
-    if (h.cargoFood > 0 && h.mode !== 'returningToBase') h.mode = 'returningToBase';
-    if (h.cargoFood === 0 && h.mode === 'idle') h.mode = 'toDocks';
-
-    let targetQ = h.q, targetR = h.r;
-    if (h.mode === 'toDocks') { targetQ = docks.q; targetR = docks.r; }
-    else if (h.mode === 'returningToBase') { targetQ = baseQ; targetR = baseR; }
-
-    // Arrived?
-    if (h.q === targetQ && h.r === targetR) {
-      if (h.mode === 'toDocks') {
-        const room = Math.max(0, HAULER_CARGO_CAP - h.cargoFood);
-        const take = Math.min(room, docks.storageFood || 0);
-        docks.storageFood = Math.max(0, (docks.storageFood || 0) - take);
-        h.cargoFood += take;
-        updateDocksStoreLabel(scene, docks);
-        _updateCargoLabel(scene, h);
-        h.mode = 'returningToBase';
-      } else if (h.mode === 'returningToBase') {
-        if (h.cargoFood > 0) {
-          _gain(scene, { food: h.cargoFood });
-          h.cargoFood = 0;
-          _updateCargoLabel(scene, h);
-        }
-        h.mode = 'toDocks';
-      }
-      h.movePoints = h.maxMovePoints;
-      continue;
+    // Ensure cargo label exists (for UI consistency)
+    if (!h.cargoObj || h.cargoObj.destroyed) {
+      _ensureCargoLabel(scene, h);
+    } else {
+      _updateCargoLabel(scene, h);
+      _repositionCargoLabel(scene, h);
     }
+  });
 
-    // Move (land BFS that treats docks as land-passable)
-    if (h.movePoints <= 0) continue;
-    const path = _haulerPath(scene, h.q, h.r, targetQ, targetR);
-    if (!path || path.length <= 1) continue;
-
-    _drawCyanPath(scene, path);
-    const steps = Math.min(h.movePoints, path.length - 1);
-    const nx = path[steps];
-    h.q = nx.q; h.r = nx.r;
-    h.movePoints -= steps;
-
-    const p = scene.axialToWorld(h.q, h.r);
-    h.obj.setPosition(p.x, p.y);
-    _repositionCargoLabel(scene, h);
-
-    movedAny = true;
-  }
-
-  haulers.forEach(h => { h.movePoints = h.maxMovePoints; });
-
-  if (!movedAny) {
-    const dbg = haulers.map(h => `hauler@${h.q},${h.r} mode=${h.mode} mp=${h.movePoints} 🍖${h.cargoFood}`).join(' | ');
-    console.log(`[HAULER] No haulers moved. ${dbg}`);
-  }
+  // No movement here; movement is handled by WorldSceneLogisticsRuntime
+  // using moveCarrierOneLeg + logisticsRoute.
+  console.log('[HAULER] Legacy auto-shuttle disabled. Haulers require logistics routes.');
 }
 
-/** Click UI: assign docks to selected hauler (or first). Bound to scene as `this`. */
+/** Click UI: assign docks to selected hauler (or first). Backwards compat. */
 export function enterHaulerRoutePicker() {
   const scene = /** @type {Phaser.Scene & any} */ (this);
   const sel = scene.selectedUnit;
@@ -405,12 +351,11 @@ export function enterHaulerRoutePicker() {
    .setScrollFactor(0)
    .setDepth(UI.zOverlay);
 
-  console.log('[HAULER] Click a docks (its hex) to set as pickup…');
+  console.log('[HAULER] (legacy) Click a docks hex to set as pickup – note: auto-shuttle is disabled.');
 
   overlay.once('pointerdown', (pointer, _lx, _ly, event) => {
     event?.stopPropagation?.();
 
-    // Use worldToAxial here as well
     const worldPoint = pointer.positionToCamera(scene.cameras.main);
     const { q, r } = scene.worldToAxial(worldPoint.x, worldPoint.y);
 
@@ -430,9 +375,10 @@ export function enterHaulerRoutePicker() {
       return;
     }
 
+    // We still store targetDocksId for compatibility,
+    // but no default movement will occur without a logisticsRoute.
     targetHauler.targetDocksId = docks.id;
-    if (targetHauler.mode === 'idle') targetHauler.mode = 'toDocks';
-    console.log(`[HAULER] Hauler will pick up from docks#${docks.id} at (${docks.q},${docks.r}).`);
+    console.log(`[HAULER] (legacy) targetDocksId set to docks#${docks.id}. Define logisticsRoute for real movement.`);
     overlay.destroy();
   });
 }
@@ -467,13 +413,17 @@ export function updateDocksStoreLabel(scene, docks) {
  * Move a carrier (ship or hauler) toward (targetQ, targetR) using
  * the existing BFS pathfinders, consume its movePoints, animate,
  * and return true if it is now exactly on the target hex.
+ *
+ * Used by WorldSceneLogisticsRuntime.applyLogisticsRoutesOnEndTurn.
  */
 export function moveCarrierOneLeg(scene, carrier, targetQ, targetR) {
   if (!scene || !carrier) return false;
 
+  // Ensure MPs have some sane default
   if (typeof carrier.maxMovePoints !== 'number') carrier.maxMovePoints = 8;
   if (typeof carrier.movePoints !== 'number') carrier.movePoints = carrier.maxMovePoints;
 
+  // Already there
   if (carrier.q === targetQ && carrier.r === targetR) {
     return true;
   }
@@ -487,6 +437,7 @@ export function moveCarrierOneLeg(scene, carrier, targetQ, targetR) {
   } else if (isHauler) {
     path = _haulerPath(scene, carrier.q, carrier.r, targetQ, targetR);
   } else {
+    // Fallback to land rules
     path = _haulerPath(scene, carrier.q, carrier.r, targetQ, targetR);
   }
 
@@ -499,6 +450,7 @@ export function moveCarrierOneLeg(scene, carrier, targetQ, targetR) {
     return carrier.q === targetQ && carrier.r === targetR;
   }
 
+  // Draw cyan path for debug/feedback (only the segment we will travel)
   _drawCyanPath(scene, path.slice(0, steps + 1));
 
   const nx = path[steps];
