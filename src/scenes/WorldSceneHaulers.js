@@ -47,8 +47,8 @@ export function buildShipForDocks(scene, building) {
     q: building.q, r: building.r,   // can sit on docks hex even if land; docks is "both-domain passable"
     docksId: building.id,
     obj: t,
-    maxMovePoints: 8,
-    movePoints: 8,
+    maxMovePoints: 4,
+    movePoints: 4,
 
     // Cargo: can hold multiple resource types, but currently only food is used by ship logic
     cargoFood: 0, // legacy single-resource field (food)
