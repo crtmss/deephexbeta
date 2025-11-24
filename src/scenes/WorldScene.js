@@ -3,6 +3,7 @@ import HexMap from '../engine/HexMap.js';
 import { findPath as aStarFindPath } from '../engine/AStar.js';
 import { drawLocationsAndRoads } from './WorldSceneMapLocations.js';
 import { setupWorldMenus, attachSelectionHighlight } from './WorldSceneMenus.js';
+import { startHexTransformTool } from './HexTransformTool.js';
 
 // Haulers / ships
 import {
@@ -112,6 +113,8 @@ export default class WorldScene extends Phaser.Scene {
     this.isDragging = false;
     this.isUnitMoving = false;
 
+    startHexTransformTool(this, { defaultType: 'water', defaultLevel: 1 });
+    
     // collections
     this.units = [];
     this.enemies = [];
