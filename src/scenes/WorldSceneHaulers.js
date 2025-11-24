@@ -287,8 +287,8 @@ export function buildHaulerAtSelectedUnit() {
     emoji: '🚚',
     q: u.q, r: u.r,
     obj: t,
-    maxMovePoints: 8,
-    movePoints: 8,
+    maxMovePoints: 4,
+    movePoints: 4,
 
     // Cargo: multi-resource
     cargoFood: 0, // legacy for compatibility (food)
