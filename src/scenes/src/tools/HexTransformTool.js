@@ -1,152 +1,260 @@
-// src/tools/HexTransformTool.js
+// src/scenes/HexTransformTool.js
 //
-// Simple dev/editor tool to change a hex tile's type + level at runtime.
+// Small dev tool for transforming individual hex tiles at runtime
+// and for stamping small patterns (like a central lake).
 //
-// Features:
-// - startHexTransformTool(scene):
-//     * shows a transparent overlay
-//     * waits for a single left-click on the map
-//     * prompts for new type + level
-//     * applies changes to the clicked tile
-// - applyHexTransform(scene, q, r, newType, newLevel):
-//     * programmatic helper to change a tile without UI
+// Exports:
+//   - startHexTransformTool(scene, options?)
+//   - stopHexTransformTool(scene)
+//   - applyHexTransform(scene, q, r, newType, level?, extra?)
+//   - makeCentralLake(scene, level?)
 //
-// Notes:
-// - Expects scene.mapData to be an array of tiles with { q, r, type, level, ... }.
-// - Visual refresh is done via optional hooks if present:
-//     scene.updateTileSprite?.(tile);
-//     scene.refreshBiomeLabels?.();
-//     scene.refreshFogOfWar?.();
+// Usage example in WorldScene.create():
+//   import { startHexTransformTool } from './HexTransformTool.js';
+//   startHexTransformTool(this, { defaultType: 'water', defaultLevel: 1 });
+//
+// While the tool is active:
+//   - Left-click on a hex: it will be converted to the configured type/level.
+//   - Press "X": 8 adjacent hexes in the center of the map become water.
+//
+// This is intended as a debugging / world-editing helper.
 
-const HEX_TOOL_Z = {
-  overlay: 3900, // below HUD/logistics (which you’re running at ~4000–8000)
-};
+import { drawHex } from './WorldSceneMap.js';
+
+// -----------------
+// Internal helpers
+// -----------------
+
+// Simple default movement cost per terrain type (tweak as needed)
+function movementCostForType(terrainType) {
+  switch (terrainType) {
+    case 'water':
+    case 'ocean':
+    case 'sea':
+    case 'mountain':
+      return 99; // effectively impassable
+    case 'forest':
+      return 2;
+    case 'hill':
+      return 2;
+    case 'sand':
+    case 'snow':
+    case 'ice':
+      return 2;
+    default:
+      return 1;
+  }
+}
+
+function findTile(scene, q, r) {
+  return (scene.mapData || []).find(t => t.q === q && t.r === r);
+}
+
+// -----------------
+// Core transform
+// -----------------
 
 /**
- * One-shot interactive transform:
- *  1) Draws a faint overlay.
- *  2) Next left-click selects a hex.
- *  3) Prompts for type + level, then applies.
+ * Mutate a single hex at (q,r) to a new type / level and redraw that hex.
+ *
+ * @param {Phaser.Scene} scene
+ * @param {number} q axial q
+ * @param {number} r axial r
+ * @param {string} newType e.g. 'water', 'sand', 'snow', 'forest', etc.
+ * @param {number} [level=1] arbitrary elevation / level value to store
+ * @param {object} [extra] optional extra props (e.g. { feature: 'none' })
  */
-export function startHexTransformTool(scene) {
+export function applyHexTransform(scene, q, r, newType, level = 1, extra = {}) {
   if (!scene || !scene.mapData) {
-    console.warn('[HEX-TOOL] Scene or mapData missing.');
+    console.warn('[HEX-TOOL] applyHexTransform: scene/mapData missing.');
     return;
   }
 
-  // Prevent overlapping modes
-  if (scene.isHexTransformMode) {
-    console.warn('[HEX-TOOL] Already in hex transform mode.');
+  const tile = findTile(scene, q, r);
+  if (!tile) {
+    console.warn('[HEX-TOOL] applyHexTransform: no tile at', { q, r });
     return;
   }
-  scene.isHexTransformMode = true;
 
-  const cam = scene.cameras.main;
-  const overlay = scene.add.rectangle(
-    cam.worldView.x + cam.worldView.width / 2,
-    cam.worldView.y + cam.worldView.height / 2,
-    cam.worldView.width,
-    cam.worldView.height,
-    0x000000,
-    0.001
-  )
-    .setScrollFactor(0)
-    .setDepth(HEX_TOOL_Z.overlay)
-    .setInteractive({ useHandCursor: true });
+  tile.type = newType;
+  tile.level = level;
+  tile.elevation = level; // keep in sync with your elevation usage
+  tile.movementCost = movementCostForType(newType);
 
-  console.log('[HEX-TOOL] Click a hex to transform it…');
+  // Apply any extra overrides (feature, biome, etc.)
+  Object.assign(tile, extra);
 
-  const finish = () => {
-    overlay.destroy();
-    scene.isHexTransformMode = false;
-  };
+  // Redraw just this hex using your existing renderer
+  try {
+    drawHex.call(scene, tile);
+  } catch (err) {
+    console.warn('[HEX-TOOL] drawHex failed, map may not update visually until redraw.', err);
+  }
 
-  overlay.once('pointerdown', (pointer, _lx, _ly, event) => {
-    event?.stopPropagation?.();
-
-    const wp = pointer.positionToCamera(scene.cameras.main);
-    const { q, r } = scene.worldToAxial(wp.x, wp.y);
-
-    const tile = (scene.mapData || []).find(t => t.q === q && t.r === r);
-    if (!tile) {
-      console.warn('[HEX-TOOL] No tile at clicked hex', { q, r });
-      finish();
-      return;
-    }
-
-    // Prompt for new type / level (dev tool, so prompt() is fine)
-    const currentType = tile.type ?? 'unknown';
-    const currentLevel = tile.level ?? 1;
-
-    const newType = window.prompt(
-      `HEX-TOOL: New type for hex (${q},${r})?` +
-      `\nCurrent: "${currentType}"` +
-      `\nExamples: grass, water, sand, ice, snow, desert, tundra`,
-      String(currentType)
-    );
-
-    if (newType == null || newType.trim() === '') {
-      console.log('[HEX-TOOL] Transform cancelled (no type).');
-      finish();
-      return;
-    }
-
-    const levelStr = window.prompt(
-      `HEX-TOOL: New level for hex (${q},${r})?` +
-      `\nCurrent: ${currentLevel}` +
-      `\nEnter integer like 1, 2, 3…`,
-      String(currentLevel)
-    );
-
-    let newLevel = currentLevel;
-    if (levelStr != null && levelStr.trim() !== '') {
-      const parsed = parseInt(levelStr, 10);
-      if (!Number.isNaN(parsed)) newLevel = parsed;
-    }
-
-    applyHexTransform(scene, q, r, newType.trim(), newLevel);
-    finish();
-  });
+  console.log('[HEX-TOOL] Transformed hex', { q, r, type: newType, level });
 }
 
 /**
- * Programmatic helper: change the tile at (q,r) to newType/newLevel.
- * Returns the mutated tile, or null if not found.
+ * Stamp a small 8-hex "lake" near the geometric center of the map.
+ * Center + its neighbours (and one extra neighbour) become water.
+ *
+ * @param {Phaser.Scene} scene
+ * @param {number} [level=1]
  */
-export function applyHexTransform(scene, q, r, newType, newLevel) {
-  if (!scene || !scene.mapData) return null;
-
-  const tile = scene.mapData.find(t => t.q === q && t.r === r);
-  if (!tile) {
-    console.warn('[HEX-TOOL] applyHexTransform: no tile at', { q, r });
-    return null;
+export function makeCentralLake(scene, level = 1) {
+  if (!scene || !scene.mapData || !scene.mapWidth || !scene.mapHeight) {
+    console.warn('[HEX-TOOL] makeCentralLake: scene/map data missing.');
+    return;
   }
 
-  const oldType = tile.type;
-  const oldLevel = tile.level;
+  const cx = Math.floor(scene.mapWidth / 2);
+  const cy = Math.floor(scene.mapHeight / 2);
 
-  tile.type = newType;
-  tile.level = newLevel;
-
-  console.log(
-    `[HEX-TOOL] Hex (${q},${r}) transformed:`,
-    `type "${oldType}"→"${newType}",`,
-    `level ${oldLevel}→${newLevel}`
-  );
-
-  // Optional: let the scene refresh visuals if it has helpers for that.
-  try {
-    scene.updateTileSprite?.(tile);
-    scene.refreshBiomeLabels?.();
-    scene.refreshFogOfWar?.();
-  } catch (err) {
-    console.warn('[HEX-TOOL] Visual refresh threw:', err);
+  // Find tile closest to center in axial coords
+  let centerTile = null;
+  let bestDist = Infinity;
+  for (const t of scene.mapData) {
+    const d = Math.abs(t.q - cx) + Math.abs(t.r - cy);
+    if (d < bestDist) {
+      bestDist = d;
+      centerTile = t;
+    }
   }
 
-  return tile;
+  if (!centerTile) {
+    console.warn('[HEX-TOOL] makeCentralLake: could not find center tile.');
+    return;
+  }
+
+  const { q: cq, r: cr } = centerTile;
+
+  // Neighbour offsets for odd-r horizontal layout
+  const isOdd = (cr & 1) === 1;
+  const neighEven = [
+    [0, -1], [+1, 0], [0, +1],
+    [-1, +1], [-1, 0], [-1, -1],
+  ];
+  const neighOdd = [
+    [+1, -1], [+1, 0], [+1, +1],
+    [0, +1], [-1, 0], [0, -1],
+  ];
+  const neigh = isOdd ? neighOdd : neighEven;
+
+  // Center + its 6 immediate neighbours + one “extra” further away = 8 tiles total
+  const targets = [{ q: cq, r: cr }];
+
+  neigh.forEach(([dq, dr]) => {
+    targets.push({ q: cq + dq, r: cr + dr });
+  });
+
+  const [dqExtra, drExtra] = neigh[0];
+  targets.push({ q: cq + dqExtra * 2, r: cr + drExtra * 2 });
+
+  targets.forEach(({ q, r }) => {
+    if (q < 0 || r < 0 || q >= scene.mapWidth || r >= scene.mapHeight) return;
+    applyHexTransform(scene, q, r, 'water', level);
+  });
+
+  console.log('[HEX-TOOL] Central lake created around', { q: cq, r: cr });
+}
+
+// -----------------
+// Interactive tool
+// -----------------
+
+/**
+ * Enable interactive hex-editing mode on the given scene.
+ *
+ * Left-click: change clicked hex to `options.defaultType` / `options.defaultLevel`.
+ * Key "X": call makeCentralLake(scene, defaultLevel).
+ *
+ * @param {Phaser.Scene & any} scene
+ * @param {object} [options]
+ * @param {string} [options.defaultType='water']
+ * @param {number} [options.defaultLevel=1]
+ */
+export function startHexTransformTool(scene, options = {}) {
+  if (!scene || !scene.input) {
+    console.warn('[HEX-TOOL] startHexTransformTool: scene/input missing.');
+    return;
+  }
+
+  const defaultType = options.defaultType ?? 'water';
+  const defaultLevel = options.defaultLevel ?? 1;
+
+  // Prevent double-activation
+  if (scene._hexTransformTool && scene._hexTransformTool.active) {
+    console.warn('[HEX-TOOL] Tool already active on this scene.');
+    return;
+  }
+
+  // Pointer handler – convert clicked hex
+  const onPointerDown = (pointer) => {
+    // Only left button
+    if (pointer.rightButtonDown && pointer.rightButtonDown()) return;
+
+    const cam = scene.cameras.main;
+    const worldPoint = pointer.positionToCamera(cam);
+
+    if (!scene.worldToAxial) {
+      console.warn('[HEX-TOOL] worldToAxial not available on scene.');
+      return;
+    }
+
+    const { q, r } = scene.worldToAxial(worldPoint.x, worldPoint.y);
+
+    if (
+      q < 0 || r < 0 ||
+      q >= scene.mapWidth || r >= scene.mapHeight
+    ) {
+      return;
+    }
+
+    applyHexTransform(scene, q, r, defaultType, defaultLevel);
+  };
+
+  scene.input.on('pointerdown', onPointerDown);
+
+  // Keyboard: press "X" to create the central lake
+  let keyX = null;
+  if (scene.input.keyboard) {
+    keyX = scene.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.X);
+    keyX.on('down', () => {
+      makeCentralLake(scene, defaultLevel);
+    });
+  }
+
+  scene._hexTransformTool = {
+    active: true,
+    onPointerDown,
+    keyX,
+  };
+
+  console.log('[HEX-TOOL] Hex transform tool started. Left-click to paint, press X for central lake.');
+}
+
+/**
+ * Disable the interactive hex-editing tool previously enabled with startHexTransformTool().
+ */
+export function stopHexTransformTool(scene) {
+  if (!scene || !scene._hexTransformTool) return;
+  const tool = scene._hexTransformTool;
+
+  if (tool.onPointerDown) {
+    scene.input?.off('pointerdown', tool.onPointerDown);
+  }
+  if (tool.keyX) {
+    tool.keyX.off('down');
+    // optionally: scene.input.keyboard.removeKey(tool.keyX);
+  }
+
+  scene._hexTransformTool = { active: false };
+  console.log('[HEX-TOOL] Hex transform tool stopped.');
 }
 
 export default {
   startHexTransformTool,
+  stopHexTransformTool,
   applyHexTransform,
+  makeCentralLake,
 };
