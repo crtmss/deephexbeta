@@ -113,6 +113,7 @@ export default class WorldScene extends Phaser.Scene {
     this.isDragging = false;
     this.isUnitMoving = false;
 
+    // Hex transform tool (X key etc.)
     startHexTransformTool(this, { defaultType: 'water', defaultLevel: 1 });
     
     // collections
@@ -459,6 +460,19 @@ Biomes: ${biome}`;
         }
       }
     });
+  }
+
+  /**
+   * Redraw the whole hex map & locations using current this.mapData.
+   * Use this after terrain changes (e.g. HexTransformTool "X" key),
+   * typically wired to the Refresh button in WorldSceneUI.
+   */
+  redrawWorld() {
+    // Re-draw terrain
+    drawHexMap.call(this);
+    // Re-draw roads & special locations
+    drawLocationsAndRoads.call(this);
+    // (Optional) re-spawn resources here if needed in the future.
   }
 }
 
