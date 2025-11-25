@@ -113,9 +113,9 @@ export default class WorldScene extends Phaser.Scene {
     this.isDragging = false;
     this.isUnitMoving = false;
 
-    // Hex transform tool (X key etc.)
+    // Hex transform tool (X key creates central lake)
     startHexTransformTool(this, { defaultType: 'water', defaultLevel: 1 });
-    
+
     // collections
     this.units = [];
     this.enemies = [];
@@ -211,6 +211,15 @@ export default class WorldScene extends Phaser.Scene {
     setupWorldMenus(this);
     setupTurnUI(this);
     setupLogisticsPanel(this); // Logistics tab hooks into helpers defined in setupTurnUI
+
+    // 🔁 Auto-refresh world visuals every 1 second
+    this.time.addEvent({
+      delay: 1000,
+      loop: true,
+      callback: () => {
+        this.redrawWorld?.();
+      },
+    });
 
     if (this.turnOwner) {
       updateTurnText(this, this.turnOwner);
@@ -464,8 +473,7 @@ Biomes: ${biome}`;
 
   /**
    * Redraw the whole hex map & locations using current this.mapData.
-   * Use this after terrain changes (e.g. HexTransformTool "X" key),
-   * typically wired to the Refresh button in WorldSceneUI.
+   * Used by the dev HexTransformTool ("X" key) and auto-refresh timer.
    */
   redrawWorld() {
     // Re-draw terrain
