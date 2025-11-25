@@ -86,7 +86,10 @@ export function setupTurnUI(scene) {
   }).setScrollFactor(0).setDepth(100).setInteractive();
 
   scene.refreshButton.on('pointerdown', () => {
+    // Existing unit-refresh behaviour
     refreshUnits(scene);
+    // New: redraw terrain & locations (so X-key water etc appears)
+    scene.redrawWorld?.();
   });
 
   // Top-right tabs (Resources / Logistics) + panels
@@ -96,7 +99,9 @@ export function setupTurnUI(scene) {
   // Logistics panel + helpers
   setupLogisticsPanel(scene);
 
-  // Wrap logistics open/close to lock world input (no mobile base movement while logistics is open)
+  // Wrap logistics open/close to:
+  // - lock world input (no mobile base movement while logistics is open)
+  // - clear any selected unit and path preview when opening
   const origOpenLogi = scene.openLogisticsPanel;
   const origCloseLogi = scene.closeLogisticsPanel;
 
@@ -104,6 +109,12 @@ export function setupTurnUI(scene) {
 
   scene.openLogisticsPanel = function () {
     this.logisticsInputLocked = true;
+
+    // Unselect any unit and clear move preview when opening logistics
+    this.setSelectedUnit?.(null);
+    this.selectedHex = null;
+    this.clearPathPreview?.();
+
     origOpenLogi?.call(this);
   };
 
