@@ -332,96 +332,52 @@ export function buildHaulerAtSelectedUnit() {
 export function applyHaulerBehaviorOnEndTurn(sceneArg) {
   const scene = sceneArg || /** @type {any} */ (this);
   if (!scene) return;
+
+  // Keep resource init (playerResources etc.) consistent with the rest of the module
   _ensureResourceInit(scene);
 
-  const haulers = scene.haulers || [];
-  if (haulers.length === 0) return;
-
-  let movedAny = false;
+  const haulers = Array.isArray(scene.haulers) ? scene.haulers : [];
+  if (!haulers.length) return;
 
   for (const h of haulers) {
-    // If this hauler has a logistics route, let LogisticsRuntime handle it.
+    // Haulers with a logistics route are handled by
+    // WorldSceneLogisticsRuntime.applyLogisticsRoutesOnEndTurn().
     if (Array.isArray(h.logisticsRoute) && h.logisticsRoute.length > 0) {
       continue;
     }
 
+    // Make sure basic movement/cargo fields are sane,
+    // but DO NOT move or auto-shuttle anywhere.
     if (typeof h.maxMovePoints !== 'number') h.maxMovePoints = 8;
     if (typeof h.movePoints !== 'number') h.movePoints = h.maxMovePoints;
+
     if (!h.cargo) {
-      h.cargo = { food: h.cargoFood || 0, scrap: 0, money: 0, influence: 0 };
+      h.cargo = {
+        food:      h.cargoFood ?? 0,
+        scrap:     0,
+        money:     0,
+        influence: 0,
+      };
     }
-    if (typeof h.cargoCap !== 'number') h.cargoCap = HAULER_CARGO_CAP;
-    if (!h.cargoObj || h.cargoObj.destroyed) _ensureCargoLabel(scene, h);
+    if (typeof h.cargoCap !== 'number') {
+      h.cargoCap = HAULER_CARGO_CAP;
+    }
 
-    const docks = (scene.buildings || []).find(b => b.type === 'docks' && b.id === h.targetDocksId) || null;
-    if (!docks) { h.mode = 'idle'; h.movePoints = h.maxMovePoints; continue; }
-
-    ensureDocksStoreLabel(scene, docks);
-    updateDocksStoreLabel(scene, docks);
-
-    const basePos = _getMobileBaseCoords(scene, h);
-    const baseQ = basePos.q, baseR = basePos.r;
-
-    const total = _totalCargo(h);
-    if (total > 0 && h.mode !== 'returningToBase') h.mode = 'returningToBase';
-    if (total === 0 && h.mode === 'idle') h.mode = 'toDocks';
-
-    let targetQ = h.q, targetR = h.r;
-    if (h.mode === 'toDocks') { targetQ = docks.q; targetR = docks.r; }
-    else if (h.mode === 'returningToBase') { targetQ = baseQ; targetR = baseR; }
-
-    // Arrived?
-    if (h.q === targetQ && h.r === targetR) {
-      if (h.mode === 'toDocks') {
-        const before = _totalCargo(h);
-        const room = Math.max(0, h.cargoCap - before);
-        const available = docks.storageFood || 0;
-        const take = Math.min(room, available);
-        docks.storageFood = Math.max(0, available - take);
-        h.cargoFood = (h.cargoFood || 0) + take;
-        h.cargo.food = (h.cargo.food || 0) + take;
-        updateDocksStoreLabel(scene, docks);
-        _updateCargoLabel(scene, h);
-        h.mode = 'returningToBase';
-      } else if (h.mode === 'returningToBase') {
-        const foodAmt = h.cargo?.food ?? h.cargoFood ?? 0;
-        if (foodAmt > 0) {
-          _gain(scene, { food: foodAmt });
-          h.cargoFood = 0;
-          if (h.cargo) {
-            h.cargo.food = 0;
-          }
-          _updateCargoLabel(scene, h);
-        }
-        h.mode = 'toDocks';
-      }
-      h.movePoints = h.maxMovePoints;
+    // If pinned to Mobile Base, it will ride along with the base
+    // in whatever code moves the base — we do nothing here.
+    if (h.pinnedToBase) {
       continue;
     }
 
-    // Move (land BFS that treats docks as land-passable)
-    if (h.movePoints <= 0) continue;
-    const path = _haulerPath(scene, h.q, h.r, targetQ, targetR);
-    if (!path || path.length <= 1) continue;
+    // No logistics route + not pinned = the hauler just sits still.
+    console.log('[HAULER] Legacy auto-shuttle disabled. Haulers require logistics routes.', {
+      id: h.id,
+      q: h.q,
+      r: h.r,
+    });
 
-    _drawCyanPath(scene, path);
-    const steps = Math.min(h.movePoints, path.length - 1);
-    const nx = path[steps];
-    h.q = nx.q; h.r = nx.r;
-    h.movePoints -= steps;
-
-    const p = scene.axialToWorld(h.q, h.r);
-    h.obj.setPosition(p.x, p.y);
-    _repositionCargoLabel(scene, h);
-
-    movedAny = true;
-  }
-
-  haulers.forEach(h => { h.movePoints = h.maxMovePoints; });
-
-  if (!movedAny) {
-    const dbg = haulers.map(h => `hauler@${h.q},${h.r} mode=${h.mode} mp=${h.movePoints} cargo=${JSON.stringify(h.cargo || { food: h.cargoFood || 0 })}`).join(' | ');
-    console.log(`[HAULER] No haulers moved. ${dbg}`);
+    // Reset move points for next turn (even though we didn't move).
+    h.movePoints = h.maxMovePoints;
   }
 }
 
