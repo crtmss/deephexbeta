@@ -23,10 +23,8 @@ const LOGI_COLORS = {
 };
 
 const LOGI_Z = {
-  // Make UI very high so no hex/path/marker draws over it.
-  panel: 8000,
-  overlay: 7990,
-  routePreviewPath: 3500,
+  panel: 4100,
+  overlay: 4090,
 };
 
 ///////////////////////////////
@@ -72,7 +70,7 @@ export function setupLogisticsPanel(scene) {
     16, 12,
     'Logistics – Haulers & Ships',
     {
-      fontSize: '24px',           // 16 -> 24
+      fontSize: '24px',
       color: LOGI_COLORS.textMain,
       fontStyle: 'bold',
     }
@@ -82,7 +80,7 @@ export function setupLogisticsPanel(scene) {
     16, 32,
     'Select a hauler on the left to inspect or edit its route.',
     {
-      fontSize: '18px',           // 12 -> 18
+      fontSize: '18px',
       color: LOGI_COLORS.textDim,
     }
   ).setOrigin(0, 0);
@@ -94,7 +92,7 @@ export function setupLogisticsPanel(scene) {
     W - 18, 10,
     '✕',
     {
-      fontSize: '24px',           // 16 -> 24
+      fontSize: '24px',
       color: LOGI_COLORS.textMain,
     }
   ).setOrigin(1, 0).setInteractive({ useHandCursor: true });
@@ -110,27 +108,27 @@ export function setupLogisticsPanel(scene) {
     16, 56,
     'Haulers & Ships',
     {
-      fontSize: '21px',           // 14 -> 21
+      fontSize: '21px',
       color: LOGI_COLORS.textMain,
       fontStyle: 'bold',
     }
   ).setOrigin(0, 0);
 
-  const listContainer = scene.add.container(16, 86);
+  const listContainer = scene.add.container(16, 76);
   container.add([listLabel, listContainer]);
 
   // Right column: selected hauler details
   const detailLabel = scene.add.text(
-    260, 56,                       // shifted a bit right for bigger panel
+    260, 56,
     'Selected Route',
     {
-      fontSize: '21px',           // 14 -> 21
+      fontSize: '21px',
       color: LOGI_COLORS.textMain,
       fontStyle: 'bold',
     }
   ).setOrigin(0, 0);
 
-  const detailContainer = scene.add.container(260, 86);
+  const detailContainer = scene.add.container(260, 76);
   container.add([detailLabel, detailContainer]);
 
   // Store UI handles on the scene
@@ -149,13 +147,12 @@ export function setupLogisticsPanel(scene) {
   scene.openLogisticsPanel = function () {
     if (!this.logisticsUI) return;
 
-    // (1) Opening Logistics deselects any unit and clears path preview.
+    // Unselect any selected unit and clear path preview
     this.setSelectedUnit?.(null);
     this.clearPathPreview?.();
-    _clearRoutePreview(this);
 
     this.logisticsUI.container.visible = true;
-    this.isLogisticsOpen = true; // flag for input UI if needed
+    this.isLogisticsOpen = true; // block movement input while open
     this.refreshLogisticsPanel?.();
   };
 
@@ -163,7 +160,6 @@ export function setupLogisticsPanel(scene) {
     if (!this.logisticsUI) return;
     this.logisticsUI.container.visible = false;
     this.isLogisticsOpen = false;
-    _clearRoutePreview(this);
   };
 
   scene.refreshLogisticsPanel = function () {
@@ -186,7 +182,7 @@ export function setupLogisticsPanel(scene) {
       const txt = this.add.text(
         0, 0,
         'No haulers or ships yet.',
-        { fontSize: '18px', color: LOGI_COLORS.textDim }  // 12 -> 18
+        { fontSize: '18px', color: LOGI_COLORS.textDim }
       ).setOrigin(0, 0);
       ui.listContainer.add(txt);
       ui.listEntries.push({ text: txt, haulerId: null });
@@ -198,7 +194,7 @@ export function setupLogisticsPanel(scene) {
           0, y,
           label,
           {
-            fontSize: '19px',     // 13 -> 19
+            fontSize: '19px',
             color: isSelected ? LOGI_COLORS.listHighlight : LOGI_COLORS.textMain,
           }
         ).setOrigin(0, 0).setInteractive({ useHandCursor: true });
@@ -206,14 +202,6 @@ export function setupLogisticsPanel(scene) {
         txt.on('pointerdown', () => {
           ui.selectedHaulerId = h._logiId;
           this.refreshLogisticsPanel?.();
-        });
-
-        // (3) Hovering a hauler shows its current-leg route preview.
-        txt.on('pointerover', () => {
-          _previewCarrierRoute(this, h);
-        });
-        txt.on('pointerout', () => {
-          _clearRoutePreview(this);
         });
 
         ui.listContainer.add(txt);
@@ -234,17 +222,13 @@ export function setupLogisticsPanel(scene) {
       const t = this.add.text(
         0, 0,
         'No hauler selected.',
-        { fontSize: '18px', color: LOGI_COLORS.textDim }  // 12 -> 18
+        { fontSize: '18px', color: LOGI_COLORS.textDim }
       ).setOrigin(0, 0);
       ui.detailContainer.add(t);
-      _clearRoutePreview(this);
       return;
     }
 
     _renderHaulerDetails(this, selected);
-
-    // Also show preview for the *selected* hauler.
-    _previewCarrierRoute(this, selected);
   };
 }
 
@@ -373,7 +357,7 @@ function _renderHaulerDetails(scene, hauler) {
     0, y,
     `${emoji} ${hauler.name || (isShip ? 'Ship' : 'Hauler')} #${hauler._logiId}`,
     {
-      fontSize: '21px',           // 14 -> 21
+      fontSize: '21px',
       color: LOGI_COLORS.textMain,
       fontStyle: 'bold',
     }
@@ -384,17 +368,23 @@ function _renderHaulerDetails(scene, hauler) {
   const posLine = scene.add.text(
     0, y,
     `Position: (${hauler.q ?? '?'}, ${hauler.r ?? '?'})`,
-    { fontSize: '18px', color: LOGI_COLORS.textDim }  // 12 -> 18
+    { fontSize: '18px', color: LOGI_COLORS.textDim }
   ).setOrigin(0, 0);
   c.add(posLine);
   y += 24;
 
-  // Show simple cargo info (currently only 🍖 is implemented in UI)
-  const cargoFood = hauler.cargoFood ?? hauler.cargo?.food ?? 0;
+  // Simple cargo summary: 4 resource types
+  const cargo = hauler.cargo || {};
+  const cargoStr =
+    `Cargo: ` +
+    `🍖 ${cargo.food ?? 0}  ` +
+    `🛠 ${cargo.scrap ?? 0}  ` +
+    `💰 ${cargo.money ?? 0}  ` +
+    `⭐ ${cargo.influence ?? 0}`;
   const cargoLine = scene.add.text(
     0, y,
-    `Cargo (🍖): ${cargoFood}`,
-    { fontSize: '18px', color: LOGI_COLORS.textDim }  // 12 -> 18
+    cargoStr,
+    { fontSize: '18px', color: LOGI_COLORS.textDim }
   ).setOrigin(0, 0);
   c.add(cargoLine);
   y += 27;
@@ -402,7 +392,7 @@ function _renderHaulerDetails(scene, hauler) {
   // Divider
   const divider = scene.add.graphics();
   divider.lineStyle(1, 0x9bb6cc, 0.4);
-  divider.strokeLineShape(new Phaser.Geom.Line(0, y, 320, y));  // wider
+  divider.strokeLineShape(new Phaser.Geom.Line(0, y, 320, y));
   c.add(divider);
   y += 12;
 
@@ -412,13 +402,12 @@ function _renderHaulerDetails(scene, hauler) {
     const note = scene.add.text(
       0, y,
       'No custom logistics route.\n\n' +
-      'This hauler currently uses\n' +
-      'its default hardcoded behavior.\n\n' +
+      'Haulers do *nothing* by default.\n\n' +
       'Click "＋ Add station…" below,\n' +
       'then left-click a station on the map\n' +
       'and choose an action.',
       {
-        fontSize: '16px',   // 11 -> 16
+        fontSize: '16px',
         color: LOGI_COLORS.textDim,
       }
     ).setOrigin(0, 0);
@@ -434,7 +423,7 @@ function _renderHaulerDetails(scene, hauler) {
     0, y,
     'Route:',
     {
-      fontSize: '20px',       // 13 -> 20
+      fontSize: '20px',
       color: LOGI_COLORS.textMain,
       fontStyle: 'bold',
     }
@@ -448,7 +437,7 @@ function _renderHaulerDetails(scene, hauler) {
       0, y,
       stepText,
       {
-        fontSize: '18px',     // 12 -> 18
+        fontSize: '18px',
         color: LOGI_COLORS.textMain,
       }
     ).setOrigin(0, 0);
@@ -460,7 +449,7 @@ function _renderHaulerDetails(scene, hauler) {
   const stub = scene.add.text(
     0, y,
     'Use "＋ Add station…" to extend this route.',
-    { fontSize: '16px', color: LOGI_COLORS.textDim }   // 11 -> 16
+    { fontSize: '16px', color: LOGI_COLORS.textDim }
   ).setOrigin(0, 0);
   c.add(stub);
   y += stub.height + 6;
@@ -477,7 +466,7 @@ function _addAddStationButton(scene, hauler, container, y) {
     0, y,
     '＋ Add station…',
     {
-      fontSize: '18px',           // 12 -> 18
+      fontSize: '18px',
       color: LOGI_COLORS.listHighlight,
       fontStyle: 'bold',
     }
@@ -498,7 +487,7 @@ function _addResetRoutesButton(scene, hauler, container, y) {
     0, y,
     'Reset routes',
     {
-      fontSize: '17px',           // 11 -> ~17
+      fontSize: '17px',
       color: LOGI_COLORS.textDim,
       fontStyle: 'italic',
     }
@@ -576,7 +565,7 @@ function _startAddStationFlow(scene, hauler) {
 
 /**
  * After picking a station on the map, present action options
- * (Load all / Unload all / Idle) in the Logistics panel.
+ * (Load all / Load resource / Unload all / Unload resource / Idle) in the Logistics panel.
  */
 function _showActionPicker(scene, hauler, station) {
   const ui = scene.logisticsUI;
@@ -597,7 +586,7 @@ function _showActionPicker(scene, hauler, station) {
     0, y,
     `Add station: ${stationName}`,
     {
-      fontSize: '21px',           // 14 -> 21
+      fontSize: '21px',
       color: LOGI_COLORS.textMain,
       fontStyle: 'bold',
     }
@@ -608,62 +597,211 @@ function _showActionPicker(scene, hauler, station) {
   const hint = scene.add.text(
     0, y,
     'Choose what this hauler should do at this stop:',
-    { fontSize: '18px', color: LOGI_COLORS.textDim }  // 12 -> 18
+    { fontSize: '18px', color: LOGI_COLORS.textDim }
   ).setOrigin(0, 0);
   c.add(hint);
   y += 24;
 
-  const makeBtn = (label, actionKey) => {
+  // --- Buttons ---
+
+  const addBtn = (label, onClick) => {
     const b = scene.add.text(
       0, y,
       label,
       {
-        fontSize: '18px',         // 12 -> 18
+        fontSize: '18px',
         color: LOGI_COLORS.listHighlight,
       }
     ).setOrigin(0, 0).setInteractive({ useHandCursor: true });
 
-    b.on('pointerdown', () => {
-      const step = {
-        stationType: station.stationType,
-        stationId: station.stationId,
-        action: actionKey,
-        resource: 'food',  // current implemented cargo (can be extended)
-      };
-
-      hauler.logisticsRoute = hauler.logisticsRoute || [];
-      hauler.logisticsRoute.push(step);
-
-      // Idle at Mobile Base: pin hauler to the base so it rides along
-      if (actionKey === 'idle' && station.stationType === 'mobileBase') {
-        if (station.unitRef) {
-          hauler.baseRef = station.unitRef;
-          hauler.baseQ = station.unitRef.q;
-          hauler.baseR = station.unitRef.r;
-        }
-        hauler.pinnedToBase = true;
-      }
-
-      console.log('[LOGI] Added route step', step, 'for hauler#', hauler._logiId);
-      scene.refreshLogisticsPanel?.();
-    });
-
+    b.on('pointerdown', onClick);
     c.add(b);
     y += 24;
   };
 
-  makeBtn('Load all', 'loadAll');
-  makeBtn('Unload all', 'unloadAll');
-  makeBtn('Idle at station', 'idle');
+  // Load all (non-resource specific, runtime chooses which resource)
+  addBtn('Load all', () => {
+    _addRouteStep(scene, hauler, station, 'loadAll', null);
+  });
+
+  // Load resource (brings up secondary picker)
+  addBtn('Load resource…', () => {
+    _showResourcePicker(scene, hauler, station, 'load');
+  });
+
+  // Unload all
+  addBtn('Unload all', () => {
+    _addRouteStep(scene, hauler, station, 'unloadAll', null);
+  });
+
+  // Unload resource (secondary picker)
+  addBtn('Unload resource…', () => {
+    _showResourcePicker(scene, hauler, station, 'unload');
+  });
+
+  // Idle
+  addBtn('Idle at station', () => {
+    _addRouteStep(scene, hauler, station, 'idle', null);
+  });
 
   y += 15;
   const note = scene.add.text(
     0, y,
     'Idle at a Mobile Base will pin the hauler\n' +
-    'so it stays inside when the base moves.',
-    { fontSize: '16px', color: LOGI_COLORS.textDim }  // 11 -> 16
+    'so it stays inside when the base moves.\n\n' +
+    'You cannot have a route that both LOADS\n' +
+    'and UNLOADS at the same station.',
+    { fontSize: '16px', color: LOGI_COLORS.textDim }
   ).setOrigin(0, 0);
   c.add(note);
+}
+
+/**
+ * Resource picker for "Load resource…" / "Unload resource…".
+ */
+function _showResourcePicker(scene, hauler, station, mode /* 'load' | 'unload' */) {
+  const ui = scene.logisticsUI;
+  if (!ui) return;
+
+  const c = ui.detailContainer;
+  c.removeAll(true);
+
+  const isLoad = mode === 'load';
+
+  let y = 0;
+  const title = scene.add.text(
+    0, y,
+    `${isLoad ? 'Load' : 'Unload'} which resource?`,
+    {
+      fontSize: '21px',
+      color: LOGI_COLORS.textMain,
+      fontStyle: 'bold',
+    }
+  ).setOrigin(0, 0);
+  c.add(title);
+  y += 30;
+
+  const hint = scene.add.text(
+    0, y,
+    'Choose a specific resource:',
+    { fontSize: '18px', color: LOGI_COLORS.textDim }
+  ).setOrigin(0, 0);
+  c.add(hint);
+  y += 24;
+
+  const resources = [
+    { key: 'food',      label: 'Food 🍖' },
+    { key: 'scrap',     label: 'Scrap 🛠' },
+    { key: 'money',     label: 'Money 💰' },
+    { key: 'influence', label: 'Influence ⭐' },
+  ];
+
+  resources.forEach(res => {
+    const btn = scene.add.text(
+      0, y,
+      res.label,
+      {
+        fontSize: '18px',
+        color: LOGI_COLORS.listHighlight,
+      }
+    ).setOrigin(0, 0).setInteractive({ useHandCursor: true });
+
+    btn.on('pointerdown', () => {
+      _addRouteStep(scene, hauler, station, isLoad ? 'load' : 'unload', res.key);
+    });
+
+    c.add(btn);
+    y += 24;
+  });
+
+  y += 20;
+  const back = scene.add.text(
+    0, y,
+    '← Back',
+    {
+      fontSize: '16px',
+      color: LOGI_COLORS.textDim,
+      fontStyle: 'italic',
+    }
+  ).setOrigin(0, 0).setInteractive({ useHandCursor: true });
+
+  back.on('pointerdown', () => {
+    _showActionPicker(scene, hauler, station);
+  });
+
+  c.add(back);
+}
+
+/**
+ * Add a route step with validation:
+ * - Forbids having both a LOAD and UNLOAD action at the same station.
+ * - Handles Mobile Base "idle" pinning.
+ */
+function _addRouteStep(scene, hauler, station, actionKey, resourceKey) {
+  hauler.logisticsRoute = hauler.logisticsRoute || [];
+
+  const step = {
+    stationType: station.stationType,
+    stationId: station.stationId,
+    action: actionKey,
+    resource: resourceKey || null,
+  };
+
+  if (_wouldConflictWithExistingStep(hauler.logisticsRoute, step)) {
+    console.warn(
+      '[LOGI] Refusing route that both loads and unloads at the same station.',
+      step
+    );
+    return;
+  }
+
+  hauler.logisticsRoute.push(step);
+
+  // Idle at Mobile Base: pin hauler to the base so it rides along
+  if (actionKey === 'idle' && station.stationType === 'mobileBase') {
+    if (station.unitRef) {
+      hauler.baseRef = station.unitRef;
+      hauler.baseQ = station.unitRef.q;
+      hauler.baseR = station.unitRef.r;
+    }
+    hauler.pinnedToBase = true;
+  }
+
+  console.log('[LOGI] Added route step', step, 'for hauler#', hauler._logiId);
+  scene.refreshLogisticsPanel?.();
+}
+
+/**
+ * Check if adding "step" would create a route that both LOADS and UNLOADS
+ * at the same station.
+ */
+function _wouldConflictWithExistingStep(route, newStep) {
+  const isLoad = _isLoadAction(newStep.action);
+  const isUnload = _isUnloadAction(newStep.action);
+
+  // Idle / non-transfer actions never conflict
+  if (!isLoad && !isUnload) return false;
+
+  return route.some(s => {
+    if (!s) return false;
+    if (s.stationType !== newStep.stationType) return false;
+
+    // stationId may be null for Mobile Base; treat null==null as "same"
+    if ((s.stationId ?? null) !== (newStep.stationId ?? null)) return false;
+
+    const sLoad = _isLoadAction(s.action);
+    const sUnload = _isUnloadAction(s.action);
+
+    // Conflict only if one is load-ish and the other unload-ish at same station
+    return (sLoad && isUnload) || (sUnload && isLoad);
+  });
+}
+
+function _isLoadAction(action) {
+  return action === 'load' || action === 'loadAll';
+}
+function _isUnloadAction(action) {
+  return action === 'unload' || action === 'unloadAll';
 }
 
 /**
@@ -736,20 +874,32 @@ function _resourceEmoji(resKey) {
 
 /**
  * Find a "station" on the given hex:
- * - Mobile Base unit (your big red circle, type 'mobile_base')
  * - Any building at that coordinate
+ * - Mobile Base unit (your big red circle, type 'mobile_base') *if no building there*
  *
- * Includes a fallback if coords don't match but there is exactly one mobile_base.
+ * IMPORTANT: buildings are checked *before* Mobile Base,
+ * and we removed the "fallback single mobile base" hack that caused your bug.
  */
 function _findStationAt(scene, q, r) {
   if (q == null || r == null) return null;
 
+  // 1) Buildings first (mine, docks, factory, bunker, etc.)
+  const buildings = scene.buildings || [];
+  const b = buildings.find(x => x.q === q && x.r === r);
+  if (b) {
+    return {
+      stationType: b.type,
+      stationId: b.id,
+      buildingRef: b,
+    };
+  }
+
+  // 2) Mobile base / player units
   const players = Array.isArray(scene.players) ? scene.players : [];
   const units   = Array.isArray(scene.units)   ? scene.units   : [];
   const allUnits = [...players, ...units];
 
-  // 1) Exact match on this hex for current player's mobile base
-  let base = allUnits.find(u => {
+  const base = allUnits.find(u => {
     if (!u || typeof u.q !== 'number' || typeof u.r !== 'number') return false;
     if (u.q !== q || u.r !== r) return false;
 
@@ -763,30 +913,6 @@ function _findStationAt(scene, q, r) {
     return isMobileBaseType && isLocalPlayer;
   });
 
-  // 2) If not found, any mobile_base on this hex
-  if (!base) {
-    base = allUnits.find(u => {
-      if (!u || typeof u.q !== 'number' || typeof u.r !== 'number') return false;
-      if (u.q !== q || u.r !== r) return false;
-      return u.type === 'mobile_base' || u.type === 'mobileBase';
-    });
-  }
-
-  // 3) Fallback: if there is exactly one mobile_base in the scene,
-  //    use it even if the click hex didn't line up exactly.
-  if (!base) {
-    const allBases = allUnits.filter(u => u && (u.type === 'mobile_base' || u.type === 'mobileBase'));
-    if (allBases.length === 1) {
-      base = allBases[0];
-      console.warn(
-        '[LOGI] Using fallback mobile base station at',
-        { q: base.q, r: base.r },
-        'for clicked hex',
-        { q, r }
-      );
-    }
-  }
-
   if (base) {
     return {
       stationType: 'mobileBase',
@@ -795,166 +921,7 @@ function _findStationAt(scene, q, r) {
     };
   }
 
-  // Buildings
-  const buildings = scene.buildings || [];
-  const b = buildings.find(x => x.q === q && x.r === r);
-  if (b) {
-    return {
-      stationType: b.type,
-      stationId: b.id,
-      buildingRef: b,
-    };
-  }
-
   return null;
-}
-
-///////////////////////////////
-// Route preview helpers
-///////////////////////////////
-
-/**
- * Clear logistics route preview path (cyan line).
- */
-function _clearRoutePreview(scene) {
-  if (scene._logisticsPreviewPathGfx) {
-    scene._logisticsPreviewPathGfx.destroy();
-    scene._logisticsPreviewPathGfx = null;
-  }
-}
-
-/**
- * Draw the path from the carrier to its *current* route step station.
- */
-function _previewCarrierRoute(scene, carrier) {
-  _clearRoutePreview(scene);
-  if (!scene || !carrier) return;
-  const steps = Array.isArray(carrier.logisticsRoute) ? carrier.logisticsRoute : [];
-  if (!steps.length) return;
-
-  let idx = typeof carrier.routeIndex === 'number' ? carrier.routeIndex : 0;
-  if (idx < 0 || idx >= steps.length) idx = 0;
-
-  const step = steps[idx];
-  const station = _previewResolveStation(scene, step);
-  if (!station) return;
-
-  const path = _previewBuildPath(scene, carrier, station.q, station.r);
-  if (!path || path.length < 2) return;
-
-  try {
-    const g = scene.add.graphics().setDepth(LOGI_Z.routePreviewPath);
-    g.lineStyle(3, 0x64ffda, 0.9);
-    let p0 = scene.axialToWorld(path[0].q, path[0].r);
-    for (let i = 1; i < path.length; i++) {
-      const p1 = scene.axialToWorld(path[i].q, path[i].r);
-      g.strokeLineShape(new Phaser.Geom.Line(p0.x, p0.y, p1.x, p1.y));
-      p0 = p1;
-    }
-    scene._logisticsPreviewPathGfx = g;
-  } catch {
-    // ignore preview errors
-  }
-}
-
-function _previewResolveStation(scene, step) {
-  if (!step) return null;
-  const type = step.stationType;
-
-  if (type === 'mobileBase') {
-    const players = scene.players || [];
-
-    let base = players.find(u =>
-      u &&
-      (u.type === 'mobile_base' || u.type === 'mobileBase') &&
-      u.playerName === scene.playerName
-    );
-
-    if (!base) {
-      base = players.find(u => u && (u.type === 'mobile_base' || u.type === 'mobileBase'));
-    }
-
-    if (!base) return null;
-
-    return { q: base.q, r: base.r };
-  }
-
-  const buildings = scene.buildings || [];
-  let b = null;
-
-  if (typeof step.stationId === 'number') {
-    b = buildings.find(x => x.id === step.stationId);
-  }
-  if (!b && type) {
-    b = buildings.find(x => x.type === type);
-  }
-  if (!b) return null;
-  return { q: b.q, r: b.r };
-}
-
-/**
- * Lightweight BFS similar to WorldSceneHaulers, just for preview.
- */
-function _previewBuildPath(scene, carrier, toQ, toR) {
-  const fromQ = carrier.q;
-  const fromR = carrier.r;
-  if (fromQ === toQ && fromR === toR) return [{ q: fromQ, r: fromR }];
-
-  const isShip = carrier.type === 'ship' || carrier.isNaval;
-  const inb = (q, r) => q >= 0 && r >= 0 && q < scene.mapWidth && r < scene.mapHeight;
-
-  const passable = (q, r) => {
-    const t = (scene.mapData || []).find(h => h.q === q && h.r === r);
-    if (!t) return false;
-    const isWater = t.type === 'water' || t.type === 'ocean' || t.type === 'sea';
-    if (isShip) return isWater;
-    return !isWater; // haulers: land only
-  };
-
-  const key = (q, r) => `${q},${r}`;
-  if (!inb(fromQ, fromR) || !inb(toQ, toR)) return null;
-  if (!passable(fromQ, fromR) || !passable(toQ, toR)) return null;
-
-  const came = new Map();
-  const seen = new Set([key(fromQ, fromR)]);
-  const qArr = [{ q: fromQ, r: fromR }];
-
-  while (qArr.length) {
-    const cur = qArr.shift();
-    if (cur.q === toQ && cur.r === toR) {
-      // reconstruct
-      const path = [];
-      let node = cur;
-      let k = key(cur.q, cur.r);
-      while (node) {
-        path.push({ q: node.q, r: node.r });
-        const prev = came.get(k);
-        if (!prev) break;
-        k = key(prev.q, prev.r);
-        node = prev;
-      }
-      return path.reverse();
-    }
-    for (const n of _previewOffsetNeighbors(cur.q, cur.r)) {
-      if (!inb(n.q, n.r)) continue;
-      if (!passable(n.q, n.r)) continue;
-      const nk = key(n.q, n.r);
-      if (seen.has(nk)) continue;
-      seen.add(nk);
-      came.set(nk, cur);
-      qArr.push(n);
-    }
-  }
-  return null;
-}
-
-// same odd-r offset grid as WorldSceneHaulers.js
-function _previewOffsetNeighbors(q, r) {
-  const isOdd = (r & 1) === 1;
-  const even = [[0,-1],[+1,0],[0,+1],[-1,+1],[-1,0],[-1,-1]];
-  const odd  = [[+1,-1],[+1,0],[+1,+1],[0,+1],[-1,0],[0,-1]];
-  const d = isOdd ? odd : even;
-  return d.map(([dq, dr]) => ({ q: q + dq, r: r + dr }));
 }
 
 ///////////////////////////////
