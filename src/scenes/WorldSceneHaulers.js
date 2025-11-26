@@ -342,14 +342,25 @@ export function applyHaulerBehaviorOnEndTurn(sceneArg) {
   for (const h of haulers) {
     // Haulers with a logistics route are handled by
     // WorldSceneLogisticsRuntime.applyLogisticsRoutesOnEndTurn().
+    // We just make sure their cargo structure & caps are sane.
     if (Array.isArray(h.logisticsRoute) && h.logisticsRoute.length > 0) {
+      if (!h.cargo) {
+        h.cargo = {
+          food:      h.cargoFood ?? 0,
+          scrap:     0,
+          money:     0,
+          influence: 0,
+        };
+      }
+      if (typeof h.cargoCap !== 'number') {
+        h.cargoCap = HAULER_CARGO_CAP;
+      }
       continue;
     }
 
-    // Make sure basic movement/cargo fields are sane,
-    // but DO NOT move or auto-shuttle anywhere.
+    // --- Legacy auto-shuttle disabled for non-route haulers ---
+
     if (typeof h.maxMovePoints !== 'number') h.maxMovePoints = 8;
-    if (typeof h.movePoints !== 'number') h.movePoints = h.maxMovePoints;
 
     if (!h.cargo) {
       h.cargo = {
@@ -363,8 +374,8 @@ export function applyHaulerBehaviorOnEndTurn(sceneArg) {
       h.cargoCap = HAULER_CARGO_CAP;
     }
 
-    // If pinned to Mobile Base, it will ride along with the base
-    // in whatever code moves the base — we do nothing here.
+    // If pinned to Mobile Base, it will ride along with the base;
+    // we do not move it autonomously here.
     if (h.pinnedToBase) {
       continue;
     }
@@ -375,8 +386,12 @@ export function applyHaulerBehaviorOnEndTurn(sceneArg) {
       q: h.q,
       r: h.r,
     });
+  }
 
-    // Reset move points for next turn (even though we didn't move).
+  // IMPORTANT: reset move points for ALL haulers (including routed ones)
+  // once per turn so LogisticsRuntime can move them every turn.
+  for (const h of haulers) {
+    if (typeof h.maxMovePoints !== 'number') h.maxMovePoints = 8;
     h.movePoints = h.maxMovePoints;
   }
 }
