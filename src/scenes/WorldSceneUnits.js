@@ -63,18 +63,18 @@ function updateTriangleFacing(scene, unit) {
   const { x, y } = scene.axialToWorld(unit.q, unit.r);
 
   const size = 8; // triangle size
-  const tipX = x + Math.cos(angleRad) * size;
-  const tipY = y + Math.sin(angleRad) * size;
+const tipX = x + Math.cos(angleRad) * size;
+const tipY = y - Math.sin(angleRad) * size;  // ⬅ flip Y
 
-  // Base corners (back side)
-  const baseAngle1 = angleRad + Math.PI * 0.75;
-  const baseAngle2 = angleRad - Math.PI * 0.75;
+// Base corners (back side)
+const baseAngle1 = angleRad + Math.PI * 0.75;
+const baseAngle2 = angleRad - Math.PI * 0.75;
 
-  const b1x = x + Math.cos(baseAngle1) * (size * 0.6);
-  const b1y = y + Math.sin(baseAngle1) * (size * 0.6);
+const b1x = x + Math.cos(baseAngle1) * (size * 0.6);
+const b1y = y - Math.sin(baseAngle1) * (size * 0.6);  // ⬅ flip Y
 
-  const b2x = x + Math.cos(baseAngle2) * (size * 0.6);
-  const b2y = y + Math.sin(baseAngle2) * (size * 0.6);
+const b2x = x + Math.cos(baseAngle2) * (size * 0.6);
+const b2y = y - Math.sin(baseAngle2) * (size * 0.6);  // ⬅ flip Y
 
   const triangle = scene.add.polygon(
     0,
