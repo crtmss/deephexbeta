@@ -22,7 +22,7 @@ import { applyLogisticsRoutesOnEndTurn } from './WorldSceneLogisticsRuntime.js';
 import { setupTurnUI, updateTurnText, setupWorldInputUI } from './WorldSceneUI.js';
 
 // Units / resources / map
-import { spawnUnitsAndEnemies } from './WorldSceneUnits.js';
+import { spawnUnitsAndEnemies, updateUnitOrientation } from './WorldSceneUnits.js';
 import { spawnFishResources } from './WorldSceneResources.js';
 import {
   drawHexMap,
