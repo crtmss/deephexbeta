@@ -4,45 +4,38 @@ import { supabase } from '../net/SupabaseClient.js';
 // 0 = east, then clockwise, but now parity-aware (odd-r offset)
 function getDirectionDeltasForRow(r) {
   const even = r % 2 === 0;
-
-  // Order here must match your facing index:
-  // 0: E, 1: NE, 2: NW, 3: W, 4: SW, 5: SE
   if (even) {
-    // Even rows – match AStar.js
+    // same order as before: E, NE, NW, W, SW, SE
     return [
-      { dq: +1, dr: 0 },  // 0 east
+      { dq: +1, dr: 0 },  // 0 E
       { dq: 0,  dr: -1 }, // 1 NE
       { dq: -1, dr: -1 }, // 2 NW
-      { dq: -1, dr: 0 },  // 3 west
+      { dq: -1, dr: 0 },  // 3 W
       { dq: -1, dr: +1 }, // 4 SW
       { dq: 0,  dr: +1 }, // 5 SE
     ];
   } else {
-    // Odd rows – match AStar.js
     return [
-      { dq: +1, dr: 0 },  // 0 east
+      { dq: +1, dr: 0 },  // 0 E
       { dq: +1, dr: -1 }, // 1 NE
       { dq: 0,  dr: -1 }, // 2 NW
-      { dq: -1, dr: 0 },  // 3 west
+      { dq: -1, dr: 0 },  // 3 W
       { dq: 0,  dr: +1 }, // 4 SW
       { dq: +1, dr: +1 }, // 5 SE
     ];
   }
 }
 
-/** Computes hex facing direction index 0–5 */
 function computeFacingDirection(oldQ, oldR, newQ, newR) {
   const dq = newQ - oldQ;
   const dr = newR - oldR;
-
   const dirs = getDirectionDeltasForRow(oldR);
 
   for (let i = 0; i < 6; i++) {
-    if (dirs[i].dq === dq && dirs[i].dr === dr) {
-      return i;
-    }
+    if (dirs[i].dq === dq && dirs[i].dr === dr) return i;
   }
-
+  return 0; // fallback
+}
   // Fallback: if move is > 1 hex (teleport / path jump), keep current or default
   return 0;
 }
