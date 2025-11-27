@@ -145,17 +145,24 @@ export function tryBuildBridgeFromMobileBase(scene) {
   const line = findBridgeLineFromMobileBase(scene);
   if (!line) return;
 
-  line.forEach(tile => {
-    tile.type = BRIDGE_TERRAIN;
-    tile.movementCost = BRIDGE_MOVEMENT_COST;
-    tile.impassable = false;
-    // Optional: tag for future logic
-    tile.isBridge = true;
+  line.forEach((tile, index) => {
+    const isStart = index === 0;
+    const isEnd = index === line.length - 1;
+
+    // Only convert middle water tiles
+    if (!isStart && !isEnd && tile.type === 'water') {
+      tile.type = BRIDGE_TERRAIN;            // "volcano_ash" = ashland
+      tile.movementCost = BRIDGE_MOVEMENT_COST;
+      tile.impassable = false;
+      tile.isBridge = true;
+    }
   });
 
   if (typeof scene.redrawWorld === 'function') {
     scene.redrawWorld();
   }
 
-  console.log('[BRIDGE] Built bridge of length', line.length, 'from mobile base.');
+  console.log(
+    `[BRIDGE] Built bridge of length ${line.length}. Converted only water tiles (${line.length - 2}).`
+  );
 }
