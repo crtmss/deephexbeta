@@ -8,6 +8,10 @@ import {
 } from './WorldSceneBuildings.js';
 
 import {
+  tryBuildBridgeFromMobileBase,
+} from './WorldSceneBridges.js';
+
+import {
   buildHaulerAtSelectedUnit,
 } from './WorldSceneHaulers.js';
 
