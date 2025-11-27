@@ -418,18 +418,25 @@ function handleMenuAction(scene, action) {
     return;
   }
 
-  if (kind === 'infra') {
-    switch (arg) {
-      case 'road':
-      case 'bridge':
-      case 'canal':
-        console.log('[MENU] Infrastructure action (not yet implemented):', arg);
-        break;
-      default:
-        console.warn('[MENU] Unknown infrastructure action:', arg);
-        break;
-    }
+if (kind === 'infra') {
+  switch (arg) {
+    case 'road':
+      console.log('[MENU] Road action not implemented yet.');
+      break;
+
+    case 'bridge':
+      tryBuildBridgeFromMobileBase(scene);
+      break;
+
+    case 'canal':
+      console.log('[MENU] Canal action not implemented yet.');
+      break;
+
+    default:
+      console.warn('[MENU] Unknown infrastructure action:', arg);
+      break;
   }
+}
 }
 
 /**
