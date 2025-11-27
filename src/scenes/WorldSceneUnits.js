@@ -20,6 +20,7 @@ function computeFacingDirection(oldQ, oldR, newQ, newR) {
   for (let i = 0; i < 6; i++) {
     if (HEX_DIRS[i].dq === dq && HEX_DIRS[i].dr === dr) return i;
   }
+  // Fallback if we didn't move exactly 1 hex (e.g. teleport) → keep east.
   return 0;
 }
 
@@ -53,7 +54,8 @@ function updateTriangleFacing(scene, unit) {
   const b2y = y + Math.sin(baseAngle2) * (size * 0.6);
 
   const triangle = scene.add.polygon(
-    0, 0,
+    0,
+    0,
     [tipX, tipY, b1x, b1y, b2x, b2y],
     0xffdd55,
     1.0
@@ -65,21 +67,26 @@ function updateTriangleFacing(scene, unit) {
 }
 
 /** Update orientation when the unit moves */
-function updateUnitOrientation(scene, unit, oldQ, oldR, newQ, newR) {
+export function updateUnitOrientation(scene, unit, oldQ, oldR, newQ, newR) {
+  if (!unit) return;
+
   const facing = computeFacingDirection(oldQ, oldR, newQ, newR);
   unit.orientation = facing;
 
   updateTriangleFacing(scene, unit);
 
   // Write into lobbyState for multiplayer sync
+  scene.lobbyState = scene.lobbyState || {};
   scene.lobbyState.units = scene.lobbyState.units || {};
   scene.lobbyState.units[unit.playerName] =
     scene.lobbyState.units[unit.playerName] || {};
+  scene.lobbyState.units[unit.playerName].q = newQ;
+  scene.lobbyState.units[unit.playerName].r = newR;
   scene.lobbyState.units[unit.playerName].orientation = facing;
 
-  // Sync to Supabase
-  if (scene.supabase) {
-    supabase
+  // Sync to Supabase (fire-and-forget)
+  if (scene.supabase || supabase) {
+    (scene.supabase || supabase)
       .from('lobbies')
       .update({ state: scene.lobbyState })
       .eq('room_code', scene.roomCode);
@@ -111,7 +118,11 @@ export async function spawnUnitsAndEnemies() {
     this.players.push(unit);
 
     this.lobbyState.units = this.lobbyState.units || {};
-    this.lobbyState.units[this.playerName] = { q: unit.q, r: unit.r, orientation: 0 };
+    this.lobbyState.units[this.playerName] = {
+      q: unit.q,
+      r: unit.r,
+      orientation: 0,
+    };
 
     await supabase
       .from('lobbies')
