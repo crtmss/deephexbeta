@@ -389,17 +389,28 @@ Biomes: ${biome}`;
       const step = path[index];
       const { x, y } = scene.axialToWorld(step.q, step.r);
 
-      scene.tweens.add({
-        targets: unit,
-        x,
-        y,
-        duration: 160,
-        ease: 'Sine.easeInOut',
-        onComplete: () => {
-          index += 1;
-          stepNext();
-        }
-      });
+scene.tweens.add({
+  targets: unit,
+  x,
+  y,
+  duration: 160,
+  ease: 'Sine.easeInOut',
+  onComplete: () => {
+    // previous axial coords before committing the step
+    const prevQ = unit.q;
+    const prevR = unit.r;
+
+    // commit the logical move to this hex
+    unit.q = step.q;
+    unit.r = step.r;
+
+    // 🔺 update facing direction towards this step
+    updateUnitOrientation(scene, unit, prevQ, prevR, unit.q, unit.r);
+
+    index += 1;
+    stepNext();
+  }
+});
     }
 
     stepNext();
