@@ -400,32 +400,67 @@ export function drawGeographyOverlay(scene) {
     const t = byKey.get(keyOf(c.q, c.r));
     if (!t) continue;
 
-    // Center of hex in world space: prefer axialToWorld
-    let cx, cy;
+    // Center of hex in world space
+    let center;
     if (scene.axialToWorld) {
-      const p = scene.axialToWorld(t.q, t.r);
-      cx = p.x;
-      cy = p.y;
+      center = scene.axialToWorld(t.q, t.r);
     } else {
-      const center = scene.hexToPixel(t.q, t.r, size);
-      cx = center.x + offsetX;
-      cy = center.y + offsetY - LIFT * effectiveElevationLocal(t);
+      const p = scene.hexToPixel(t.q, t.r, size);
+      center = {
+        x: p.x + offsetX,
+        y: p.y + offsetY - LIFT * effectiveElevationLocal(t),
+      };
     }
 
+    const cx = center.x;
+    const cy = center.y;
+
     const pts = [];
-    for (let i = 0; i < 6; i++) {
-      const ang = Phaser.Math.DegToRad(60 * i - 30); // pointy-top
+
+    // Build polygon via midpoints between this center and neighbour centers.
+    // This guarantees alignment with the actual grid regardless of projection.
+    for (const [dq, dr] of neighborsOddR(t.q, t.r)) {
+      const nq = t.q + dq;
+      const nr = t.r + dr;
+      const nt = byKey.get(keyOf(nq, nr));
+
+      let nx, ny;
+      if (nt) {
+        if (scene.axialToWorld) {
+          const pw = scene.axialToWorld(nt.q, nt.r);
+          nx = pw.x;
+          ny = pw.y;
+        } else {
+          const p2 = scene.hexToPixel(nt.q, nt.r, size);
+          nx = p2.x + offsetX;
+          ny = p2.y + offsetY - LIFT * effectiveElevationLocal(nt);
+        }
+      } else {
+        // If neighbour is off-map, extrapolate using axial coordinates
+        if (scene.axialToWorld) {
+          const ghost = scene.axialToWorld(nq, nr);
+          nx = ghost.x;
+          ny = ghost.y;
+        } else {
+          const ghost = scene.hexToPixel(nq, nr, size);
+          nx = ghost.x + offsetX;
+          ny = ghost.y + offsetY;
+        }
+      }
+
       pts.push({
-        x: cx + size * Math.cos(ang),
-        y: cy + size * Math.sin(ang),
+        x: (cx + nx) / 2,
+        y: (cy + ny) / 2,
       });
     }
 
-    g.beginPath();
-    g.moveTo(pts[0].x, pts[0].y);
-    for (let i = 1; i < 6; i++) g.lineTo(pts[i].x, pts[i].y);
-    g.closePath();
-    g.strokePath();
+    if (pts.length >= 3) {
+      g.beginPath();
+      g.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < pts.length; i++) g.lineTo(pts[i].x, pts[i].y);
+      g.closePath();
+      g.strokePath();
+    }
   }
 }
 
