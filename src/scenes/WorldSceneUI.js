@@ -3,6 +3,7 @@
 import { refreshUnits } from './WorldSceneActions.js';
 import { findPath as aStarFindPath } from '../engine/AStar.js';
 import { setupLogisticsPanel } from './WorldSceneLogistics.js';
+import { setupEconomyUI } from './WorldSceneEconomy.js';
 
 /* ---------------- Camera controls (unused unless called) ---------------- */
 export function setupCameraControls(scene) {
@@ -31,8 +32,10 @@ export function setupCameraControls(scene) {
     if (scene.isDragging) {
       const dx = pointer.x - scene.dragStartX;
       const dy = pointer.y - scene.dragStartY;
-      scene.cameras.main.scrollX = scene.cameraStartX - dx / scene.cameras.main.zoom;
-      scene.cameras.main.scrollY = scene.cameraStartY - dy / scene.cameras.main.zoom;
+      scene.cameras.main.scrollX =
+        scene.cameraStartX - dx / scene.cameras.main.zoom;
+      scene.cameras.main.scrollY =
+        scene.cameraStartY - dy / scene.cameras.main.zoom;
     }
   });
 
@@ -44,59 +47,47 @@ export function setupCameraControls(scene) {
   });
 }
 
-/* ---------------- Turn UI + top tabs ---------------- */
+/* ---------------- Turn UI + economy + logistics ---------------- */
 export function setupTurnUI(scene) {
-  // Ensure resource state exists BEFORE drawing HUD
-  if (!scene.playerResources) {
-    scene.playerResources = { food: 20, scrap: 20, money: 100, influence: 0 };
-  }
+  // Centralised economy UI (resource HUD, top tabs, resources panel)
+  setupEconomyUI(scene);
 
-  // Resource HUD (top-left, fixed)
-  createResourceHUD(scene);
-  scene.updateResourceUI = () => updateResourceUI(scene);
-  scene.bumpResource = (key) => bumpResource(scene, key);
-  updateResourceUI(scene);
+  // Turn label – positioned under the (now taller) resource HUD
+  const baseY = 170;
 
-  // Turn label
-  scene.turnText = scene.add.text(20, 58, 'Player Turn: ...', {
+  scene.turnText = scene.add.text(20, baseY, 'Player Turn: ...', {
     fontSize: '18px',
     fill: '#e8f6ff',
     backgroundColor: '#133046',
-    padding: { x: 10, y: 5 }
+    padding: { x: 10, y: 5 },
   }).setScrollFactor(0).setDepth(100).setInteractive();
 
   // End Turn button
-  scene.endTurnButton = scene.add.text(20, 88, 'End Turn', {
+  scene.endTurnButton = scene.add.text(20, baseY + 30, 'End Turn', {
     fontSize: '18px',
     fill: '#fff',
     backgroundColor: '#3da9fc',
-    padding: { x: 10, y: 5 }
+    padding: { x: 10, y: 5 },
   }).setScrollFactor(0).setDepth(100).setInteractive();
 
   scene.endTurnButton.on('pointerdown', () => {
     scene.endTurn();
   });
 
-  // Refresh button
-  scene.refreshButton = scene.add.text(20, 121, 'Refresh', {
+  // Refresh button (refresh units + redraw world)
+  scene.refreshButton = scene.add.text(20, baseY + 63, 'Refresh', {
     fontSize: '18px',
     fill: '#fff',
     backgroundColor: '#444',
-    padding: { x: 10, y: 5 }
+    padding: { x: 10, y: 5 },
   }).setScrollFactor(0).setDepth(100).setInteractive();
 
   scene.refreshButton.on('pointerdown', () => {
-    // Existing unit-refresh behaviour
     refreshUnits(scene);
-    // New: redraw terrain & locations (so X-key water etc appears)
     scene.redrawWorld?.();
   });
 
-  // Top-right tabs (Resources / Logistics) + panels
-  createTopTabs(scene);
-  createResourcesPanel(scene);
-
-  // Logistics panel + helpers
+  // Logistics panel + helpers (the UI itself lives in WorldSceneLogistics)
   setupLogisticsPanel(scene);
 
   // Wrap logistics open/close to:
@@ -128,318 +119,6 @@ export function updateTurnText(scene, currentTurn) {
   if (scene.turnText) {
     scene.turnText.setText('Player Turn: ' + currentTurn);
   }
-}
-
-/* =========================
-   RESOURCE HUD (top-left)
-   ========================= */
-function createResourceHUD(scene) {
-  const plateColor = 0x0f2233;
-  const strokeColor = 0x3da9fc;
-
-  const originX = 20;
-  const originY = 16;
-
-  const panel = scene.add.container(originX, originY).setScrollFactor(0).setDepth(2000);
-
-  const W = 280, H = 34;
-  const bg = scene.add.graphics();
-  bg.fillStyle(plateColor, 0.92);
-  bg.fillRoundedRect(0, 0, W, H, 10);
-  bg.lineStyle(2, strokeColor, 0.9);
-  bg.strokeRoundedRect(0, 0, W, H, 10);
-
-  panel.add(bg);
-
-  const items = [
-    { key: 'food',      emoji: '🍖', label: 'Food' },
-    { key: 'scrap',     emoji: '🛠', label: 'Scrap' },
-    { key: 'money',     emoji: '💰', label: 'Money' },
-    { key: 'influence', emoji: '⭐', label: 'Inf' },
-  ];
-
-  const gap = 66;
-  const startX = 12;
-  const yMid = H / 2;
-
-  const entries = {};
-
-  items.forEach((it, i) => {
-    const x = startX + i * gap;
-
-    const icon = scene.add.text(x, yMid, it.emoji, {
-      fontSize: '18px',
-      color: '#ffffff'
-    }).setOrigin(0, 0.5).setDepth(2001);
-
-    const txt = scene.add.text(x + 22, yMid, '0', {
-      fontSize: '16px',
-      color: '#e8f6ff'
-    }).setOrigin(0, 0.5).setDepth(2001);
-
-    panel.add(icon);
-    panel.add(txt);
-
-    entries[it.key] = { icon, txt };
-  });
-
-  scene.resourceHUD = {
-    container: panel,
-    bg,
-    entries
-  };
-}
-
-function updateResourceUI(scene) {
-  if (!scene.resourceHUD || !scene.resourceHUD.entries) return;
-  const r = scene.playerResources || { food: 0, scrap: 0, money: 0, influence: 0 };
-  const { entries } = scene.resourceHUD;
-
-  if (entries.food)      entries.food.txt.setText(String(r.food ?? 0));
-  if (entries.scrap)     entries.scrap.txt.setText(String(r.scrap ?? 0));
-  if (entries.money)     entries.money.txt.setText(String(r.money ?? 0));
-  if (entries.influence) entries.influence.txt.setText(String(r.influence ?? 0));
-}
-
-function bumpResource(scene, key) {
-  if (!scene.resourceHUD || !scene.resourceHUD.entries) return;
-  const entry = scene.resourceHUD.entries[key];
-  if (!entry) return;
-
-  const targets = [entry.icon, entry.txt];
-  targets.forEach(obj => {
-    obj.setScale(1);
-    scene.tweens.add({
-      targets: obj,
-      scale: 1.15,
-      duration: 120,
-      yoyo: true,
-      ease: 'Quad.easeOut'
-    });
-  });
-}
-
-/* =========================
-   Top-right tab bar (Resources / Logistics)
-   ========================= */
-
-function createTopTabs(scene) {
-  const margin = 16;
-  const tabWidth = 140;
-  const tabHeight = 40;
-  const spacing = 12;
-
-  const totalWidth = tabWidth * 2 + spacing;
-  const x = scene.scale.width - totalWidth - margin;
-  const y = 16;
-
-  const bar = scene.add.container(x, y).setScrollFactor(0).setDepth(2100);
-
-  // Green strip background
-  const bg = scene.add.graphics();
-  bg.fillStyle(0x2e7d32, 1);
-  bg.fillRoundedRect(0, 0, totalWidth, tabHeight + 8, 8);
-  bar.add(bg);
-
-  const makeTab = (label, index, onClick) => {
-    const tx = index * (tabWidth + spacing);
-    const ty = 4;
-
-    const outer = scene.add.graphics();
-    const text = scene.add.text(
-      tx + tabWidth / 2,
-      ty + tabHeight / 2,
-      label,
-      {
-        fontSize: '16px',
-        color: '#ffffff',
-      }
-    ).setOrigin(0.5);
-
-    const hit = scene.add.rectangle(tx, ty, tabWidth, tabHeight, 0x000000, 0)
-      .setOrigin(0, 0)
-      .setInteractive({ useHandCursor: true });
-
-    const drawState = (active) => {
-      outer.clear();
-      outer.fillStyle(active ? 0x3da9fc : 0x000000, 1);
-      outer.fillRoundedRect(tx, ty, tabWidth, tabHeight, 6);
-      text.setColor(active ? '#ffffff' : '#dddddd');
-    };
-
-    drawState(false);
-
-    hit.on('pointerdown', (pointer, lx, ly, event) => {
-      event?.stopPropagation?.();
-      onClick?.();
-    });
-
-    bar.add([outer, text, hit]);
-
-    return { outer, text, hit, drawState };
-  };
-
-  const tabs = {};
-
-  tabs.resources = makeTab('Resources', 0, () => {
-    scene.openResourcesPanel?.();
-    scene.closeLogisticsPanel?.();
-    scene.setActiveTopTab?.('resources');
-  });
-
-  tabs.logistics = makeTab('Logistics', 1, () => {
-    scene.openLogisticsPanel?.();
-    scene.closeResourcesPanel?.();
-    scene.setActiveTopTab?.('logistics');
-  });
-
-  scene.topTabs = { container: bar, tabs };
-
-  // Helper to update active/inactive visuals
-  scene.setActiveTopTab = function (which) {
-    const t = scene.topTabs?.tabs;
-    if (!t) return;
-    Object.entries(t).forEach(([key, tab]) => {
-      tab.drawState?.(key === which);
-    });
-  };
-}
-
-/* =========================
-   Resources Panel (table-style)
-   ========================= */
-
-function createResourcesPanel(scene) {
-  // Positioned under the top tabs, on the right side
-  const panelX = scene.scale.width - 520;   // width 500 + margin
-  const panelY = 70;
-
-  const container = scene.add.container(panelX, panelY)
-    .setScrollFactor(0)
-    .setDepth(2050);
-
-  container.visible = false;
-
-  const WIDTH = 500;
-  const HEIGHT = 220; // fixed for now; enough for several rows
-
-  const bg = scene.add.graphics();
-  bg.fillStyle(0x0f2233, 0.96);
-  bg.fillRoundedRect(0, 0, WIDTH, HEIGHT, 12);
-  bg.lineStyle(2, 0x3da9fc, 1);
-  bg.strokeRoundedRect(0, 0, WIDTH, HEIGHT, 12);
-
-  const bezel = scene.add.graphics();
-  bezel.lineStyle(1, 0x9be4ff, 0.25);
-  bezel.strokeRect(10, 10, WIDTH - 20, HEIGHT - 20);
-  bezel.strokeRect(18, 18, WIDTH - 36, HEIGHT - 36);
-
-  container.add([bg, bezel]);
-
-  // Column definitions
-  // Building | Food | Scrap | Energy | Metal plates | Components | Currency
-  const cols = [
-    { key: 'name',       label: 'Building',    width: 130 },
-    { key: 'food',       label: 'Food',        width: 55 },
-    { key: 'scrap',      label: 'Scrap',       width: 55 },
-    { key: 'energy',     label: 'Energy',      width: 65 },
-    { key: 'metal',      label: 'Metal',       width: 70 }, // "Metal plates"
-    { key: 'components', label: 'Components',  width: 85 },
-    { key: 'currency',   label: 'Currency',    width: 70 },
-  ];
-
-  const startX = 20;
-  const startY = 24;
-  const rowHeight = 20;
-
-  let xCursor = startX;
-  cols.forEach(col => {
-    col.x = xCursor;
-    const header = scene.add.text(
-      xCursor,
-      startY,
-      col.label,
-      {
-        fontFamily: 'monospace',
-        fontSize: '12px',
-        color: '#e8f6ff',
-      }
-    ).setOrigin(0, 0);
-    header.setScrollFactor(0);
-    container.add(header);
-    xCursor += col.width;
-  });
-
-  // We keep created row texts so they can be destroyed on refresh
-  const meta = {
-    container,
-    columns: cols,
-    rowTexts: [],
-    headerY: startY,
-    rowHeight,
-  };
-
-  scene.resourcesPanel = container;
-  scene.resourcesPanelMeta = meta;
-
-  // Public helpers on scene:
-
-  scene.refreshResourcesPanel = function () {
-    const m = scene.resourcesPanelMeta;
-    if (!m) return;
-
-    // Clear previous row texts
-    m.rowTexts.forEach(t => t.destroy());
-    m.rowTexts.length = 0;
-
-    const buildings = scene.buildings || [];
-    buildings.forEach((b, idx) => {
-      const y = m.headerY + m.rowHeight * (idx + 1);
-
-      // derive a display name
-      const baseName = b.displayName || b.name || (b.type ? b.type[0].toUpperCase() + b.type.slice(1) : 'Building');
-      const suffix = typeof b.id !== 'undefined' ? ` ${b.id}` : ` ${idx + 1}`;
-      const dispName = baseName + suffix;
-
-      const res = b.resources || {};
-      const rowValues = {
-        name: dispName,
-        food:       res.food       ?? b.storageFood ?? 0,
-        scrap:      res.scrap      ?? 0,
-        energy:     res.energy     ?? 0,
-        metal:      res.metal      ?? res.metalPlates ?? 0,
-        components: res.components ?? 0,
-        currency:   res.currency   ?? 0,
-      };
-
-      m.columns.forEach(col => {
-        const val = rowValues[col.key] ?? 0;
-        const txt = scene.add.text(
-          col.x,
-          y,
-          String(val),
-          {
-            fontFamily: 'monospace',
-            fontSize: '12px',
-            color: '#e8f6ff',
-          }
-        ).setOrigin(0, 0);
-        txt.setScrollFactor(0);
-        m.container.add(txt);
-        m.rowTexts.push(txt);
-      });
-    });
-  };
-
-  scene.openResourcesPanel = function () {
-    scene.resourcesPanel.visible = true;
-    scene.refreshResourcesPanel?.();
-    scene.closeLogisticsPanel?.();
-  };
-
-  scene.closeResourcesPanel = function () {
-    if (scene.resourcesPanel) scene.resourcesPanel.visible = false;
-  };
 }
 
 /* =========================
@@ -497,7 +176,12 @@ export function setupWorldInputUI(scene) {
     const worldPoint = pointer.positionToCamera(scene.cameras.main);
     const rounded = scene.worldToAxial(worldPoint.x, worldPoint.y);
 
-    if (rounded.q < 0 || rounded.r < 0 || rounded.q >= scene.mapWidth || rounded.r >= scene.mapHeight) return;
+    if (
+      rounded.q < 0 ||
+      rounded.r < 0 ||
+      rounded.q >= scene.mapWidth ||
+      rounded.r >= scene.mapHeight
+    ) return;
 
     const { q, r } = rounded;
 
@@ -544,7 +228,10 @@ export function setupWorldInputUI(scene) {
         if (trimmedPath.length > 1) {
           console.log('[MOVE] Committing move along path:', trimmedPath);
           scene.startStepMovement?.(scene.selectedUnit, trimmedPath, () => {
-            if (scene.checkCombat?.(scene.selectedUnit, trimmedPath[trimmedPath.length - 1])) {
+            if (scene.checkCombat?.(
+              scene.selectedUnit,
+              trimmedPath[trimmedPath.length - 1]
+            )) {
               scene.scene.start('CombatScene', {
                 seed: scene.seed,
                 playerUnit: scene.selectedUnit,
@@ -568,7 +255,12 @@ export function setupWorldInputUI(scene) {
     const worldPoint = pointer.positionToCamera(scene.cameras.main);
     const rounded = scene.worldToAxial(worldPoint.x, worldPoint.y);
 
-    if (rounded.q < 0 || rounded.r < 0 || rounded.q >= scene.mapWidth || rounded.r >= scene.mapHeight) {
+    if (
+      rounded.q < 0 ||
+      rounded.r < 0 ||
+      rounded.q >= scene.mapWidth ||
+      rounded.r >= scene.mapHeight
+    ) {
       scene.clearPathPreview?.();
       return;
     }
@@ -622,7 +314,7 @@ export function setupWorldInputUI(scene) {
         const label = scene.add.text(x, y, `${costSum}`, {
           fontSize: '10px',
           color: labelColor,
-          fontStyle: 'bold'
+          fontStyle: 'bold',
         }).setOrigin(0.5).setDepth(51);
         scene.pathPreviewLabels.push(label);
       }
