@@ -218,36 +218,25 @@ function createTopTabs(scene) {
 
   // Helper to update tab visuals
   function updateTabVisual(active) {
-    const setTab = (tab, isActive) => {
+    const setTab = (tab, isActive, offsetX) => {
       if (!tab) return;
       tab.bg.clear();
       tab.bg.fillStyle(isActive ? 0x1b4b72 : 0x123047, 0.95);
-      tab.bg.fillRoundedRect(
-        tab === resTab ? 4 : tabWidth + 4,
-        3,
-        tabWidth,
-        tabHeight,
-        8
-      );
+      tab.bg.fillRoundedRect(offsetX, 3, tabWidth, tabHeight, 8);
       tab.bg.lineStyle(1, 0x3da9fc, 1);
-      tab.bg.strokeRoundedRect(
-        tab === resTab ? 4 : tabWidth + 4,
-        3,
-        tabWidth,
-        tabHeight,
-        8
-      );
+      tab.bg.strokeRoundedRect(offsetX, 3, tabWidth, tabHeight, 8);
       tab.label.setStyle(isActive ? tabStyleActive : tabStyleInactive);
     };
 
-    setTab(resTab, active === 'resources');
-    setTab(logTab, active === 'logistics');
+    setTab(resTab, active === 'resources', 4);
+    setTab(logTab, active === 'logistics', tabWidth + 4);
   }
 
   // Public API on scene
   scene.setActiveTopTab = function (which) {
     updateTabVisual(which);
 
+    // visibility toggling stays here too
     if (which === 'resources') {
       if (scene.resourcesPanel) scene.resourcesPanel.visible = true;
       if (scene.logisticsPanel) scene.logisticsPanel.visible = false;
@@ -257,12 +246,17 @@ function createTopTabs(scene) {
     }
   };
 
-  // Click handlers
+  // Click handlers – this is the critical part we were missing:
+  // they must call open/close functions AND set the active tab.
   resTab.label.on('pointerdown', () => {
+    scene.openResourcesPanel?.();      // defined in createResourcesPanel
+    scene.closeLogisticsPanel?.();     // defined in setupLogisticsPanel
     scene.setActiveTopTab('resources');
   });
 
   logTab.label.on('pointerdown', () => {
+    scene.openLogisticsPanel?.();      // defined in setupLogisticsPanel, wrapped in WorldSceneUI
+    scene.closeResourcesPanel?.();     // defined in createResourcesPanel
     scene.setActiveTopTab('logistics');
   });
 }
