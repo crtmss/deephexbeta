@@ -3,7 +3,6 @@
 /* =========================================================================
    WorldSceneEconomy
    - Centralises resource HUD + resource panel UI for the world scene
-   - Keeps visual style & behaviour self-contained and attach helpers on scene
    ======================================================================= */
 
 /**
@@ -51,8 +50,18 @@ export function setupEconomyUI(scene) {
 function createResourceHUD(scene) {
   const padding = 8;
   const lineHeight = 18;
-  const HUD_WIDTH = 190;
-  const HUD_HEIGHT = 8 + lineHeight * 7 + 8;
+  const rows = [
+    { key: 'food',       emoji: '🍖', label: 'Food' },
+    { key: 'scrap',      emoji: '♻', label: 'Scrap' },
+    { key: 'metal',      emoji: '⚙️', label: 'Metal' },
+    { key: 'components', emoji: '📦', label: 'Components' },
+    { key: 'crudeOil',   emoji: '🛢', label: 'Crude Oil' },
+    { key: 'energy',     emoji: '⚡', label: 'Energy' },
+    { key: 'credits',    emoji: '💰', label: 'Credits' },
+  ];
+
+  const HUD_WIDTH  = 210;
+  const HUD_HEIGHT = padding * 2 + lineHeight * rows.length;
 
   const x = 12;
   const y = 12;
@@ -61,11 +70,13 @@ function createResourceHUD(scene) {
     .setScrollFactor(0)
     .setDepth(2050);
 
+  // Background FIRST so everything else is above it
   const bg = scene.add.graphics();
-  bg.fillStyle(0x0f2233, 0.9);
+  bg.fillStyle(0x0f2233, 0.92);
   bg.fillRoundedRect(0, 0, HUD_WIDTH, HUD_HEIGHT, 10);
-  bg.lineStyle(2, 0x3da9fc, 1);
+  bg.lineStyle(2, 0x3da9fc, 0.9);
   bg.strokeRoundedRect(0, 0, HUD_WIDTH, HUD_HEIGHT, 10);
+  container.add(bg);
 
   const labelStyle = {
     fontSize: '12px',
@@ -79,73 +90,100 @@ function createResourceHUD(scene) {
     fontFamily: 'monospace',
   };
 
-  const rows = [
-    { key: 'food',       label: '🍖 Food'       },
-    { key: 'scrap',      label: '♻ Scrap'      },
-    { key: 'metal',      label: '⚙ Metal'      },
-    { key: 'components', label: '📦 Components' },
-    { key: 'crudeOil',   label: '🛢 Oil'        },
-    { key: 'energy',     label: '⚡ Energy'     },
-    { key: 'credits',    label: '💰 Credits'    },
-  ];
+  const iconStyle = {
+    fontSize: '14px',
+    color: '#ffffff',
+    fontFamily: 'sans-serif',
+  };
 
   const texts = {};
+  const iconX = padding + 2;
+  const labelX = iconX + 20;
+  const valueX = HUD_WIDTH - padding;
 
-  let rowY = padding;
+  let rowY = padding + lineHeight / 2;
+
   for (const row of rows) {
+    // Icon column – perfectly vertical
+    const icon = scene.add.text(
+      iconX,
+      rowY,
+      row.emoji,
+      iconStyle
+    ).setOrigin(0, 0.5);
+
     const label = scene.add.text(
-      padding,
+      labelX,
       rowY,
       row.label,
       labelStyle
-    ).setOrigin(0, 0);
+    ).setOrigin(0, 0.5);
 
     const value = scene.add.text(
-      HUD_WIDTH - padding,
+      valueX,
       rowY,
       '0',
       valueStyle
-    ).setOrigin(1, 0);
+    ).setOrigin(1, 0.5);
 
+    container.add(icon);
     container.add(label);
     container.add(value);
 
-    texts[row.key] = value;
+    texts[row.key] = { icon, label, value };
+
     rowY += lineHeight;
   }
 
-  container.add(bg);
-  bg.setDepth(-1);
-
-  scene.resourceHUD = container;
-  scene.resourceHUDTexts = texts;
+  scene.resourceHUD = {
+    container,
+    bg,
+    entries: texts,
+  };
 }
 
 function updateResourceUI(scene) {
-  if (!scene.playerResources || !scene.resourceHUDTexts) return;
+  if (!scene.resourceHUD || !scene.resourceHUD.entries) return;
+  const r = scene.playerResources || {};
+  const entries = scene.resourceHUD.entries;
 
-  const res = scene.playerResources;
-  const texts = scene.resourceHUDTexts;
+  const safe = v => (typeof v === 'number' ? v : 0);
 
-  const safe = (v) => (typeof v === 'number' ? v : 0);
+  const setVal = (key, prop) => {
+    const entry = entries[key];
+    if (!entry) return;
+    entry.value.setText(String(safe(r[key])));
+  };
 
-  if (texts.food)       texts.food.setText(String(safe(res.food)));
-  if (texts.scrap)      texts.scrap.setText(String(safe(res.scrap)));
-  if (texts.metal)      texts.metal.setText(String(safe(res.metal)));
-  if (texts.components) texts.components.setText(String(safe(res.components)));
-  if (texts.crudeOil)   texts.crudeOil.setText(String(safe(res.crudeOil)));
-  if (texts.energy)     texts.energy.setText(String(safe(res.energy)));
-  if (texts.credits)    texts.credits.setText(String(safe(res.credits)));
+  setVal('food');
+  setVal('scrap');
+  setVal('metal');
+  setVal('components');
+  setVal('crudeOil');
+  setVal('energy');
+  setVal('credits');
 }
 
 function bumpResource(scene, key, delta = 1) {
-  if (!scene.playerResources) {
-    scene.playerResources = {};
-  }
-  const current = scene.playerResources[key] || 0;
-  scene.playerResources[key] = current + delta;
+  if (!scene.playerResources) scene.playerResources = {};
+  scene.playerResources[key] = (scene.playerResources[key] || 0) + delta;
   updateResourceUI(scene);
   refreshResourcesPanel(scene);
+
+  const entry = scene.resourceHUD?.entries?.[key];
+  if (!entry) return;
+
+  const targets = [entry.icon, entry.label, entry.value];
+  targets.forEach(obj => {
+    obj.setScale(1);
+    scene.tweens.add({
+      targets: obj,
+      scale: 1.13,
+      duration: 120,
+      yoyo: true,
+      ease: 'Quad.easeOut',
+    });
+  });
 }
 
 /* =========================================================================
@@ -236,7 +274,6 @@ function createTopTabs(scene) {
   scene.setActiveTopTab = function (which) {
     updateTabVisual(which);
 
-    // visibility toggling stays here too
     if (which === 'resources') {
       if (scene.resourcesPanel) scene.resourcesPanel.visible = true;
       if (scene.logisticsPanel) scene.logisticsPanel.visible = false;
@@ -246,17 +283,16 @@ function createTopTabs(scene) {
     }
   };
 
-  // Click handlers – this is the critical part we were missing:
-  // they must call open/close functions AND set the active tab.
+  // Click handlers
   resTab.label.on('pointerdown', () => {
-    scene.openResourcesPanel?.();      // defined in createResourcesPanel
-    scene.closeLogisticsPanel?.();     // defined in setupLogisticsPanel
+    scene.openResourcesPanel?.();
+    scene.closeLogisticsPanel?.();
     scene.setActiveTopTab('resources');
   });
 
   logTab.label.on('pointerdown', () => {
-    scene.openLogisticsPanel?.();      // defined in setupLogisticsPanel, wrapped in WorldSceneUI
-    scene.closeResourcesPanel?.();     // defined in createResourcesPanel
+    scene.openLogisticsPanel?.();
+    scene.closeResourcesPanel?.();
     scene.setActiveTopTab('logistics');
   });
 }
@@ -277,6 +313,7 @@ function createResourcesPanel(scene) {
     .setScrollFactor(0)
     .setDepth(2050);
 
+  // Background FIRST so other content is clearly above it
   const bg = scene.add.graphics();
   bg.fillStyle(0x0f2233, 0.96);
   bg.fillRoundedRect(0, 0, WIDTH, HEIGHT, 12);
@@ -296,8 +333,8 @@ function createResourcesPanel(scene) {
   ).setOrigin(0, 0);
   container.add(title);
 
-  const header = scene.add.text(
-    12,
+  const headerType = scene.add.text(
+    32,
     32,
     'Type',
     {
@@ -316,7 +353,7 @@ function createResourcesPanel(scene) {
       fontFamily: 'sans-serif',
     }
   ).setOrigin(1, 0);
-  container.add(header);
+  container.add(headerType);
   container.add(headerVal);
 
   const rowStyleLabel = {
@@ -329,43 +366,61 @@ function createResourcesPanel(scene) {
     color: '#ffffff',
     fontFamily: 'monospace',
   };
+  const rowStyleIcon = {
+    fontSize: '13px',
+    color: '#ffffff',
+    fontFamily: 'sans-serif',
+  };
 
   const rows = [
-    { key: 'food',       label: '🍖 Food'       },
-    { key: 'scrap',      label: '♻ Scrap'      },
-    { key: 'metal',      label: '⚙ Metal'      },
-    { key: 'components', label: '📦 Components' },
-    { key: 'crudeOil',   label: '🛢 Crude Oil'  },
-    { key: 'energy',     label: '⚡ Energy'     },
-    { key: 'credits',    label: '💰 Credits'    },
+    { key: 'food',       icon: '🍖', label: 'Food' },
+    { key: 'scrap',      icon: '♻', label: 'Scrap' },
+    { key: 'metal',      icon: '⚙️', label: 'Metal' },
+    { key: 'components', icon: '📦', label: 'Components' },
+    { key: 'crudeOil',   icon: '🛢', label: 'Crude Oil' },
+    { key: 'energy',     icon: '⚡', label: 'Energy' },
+    { key: 'credits',    icon: '💰', label: 'Credits' },
   ];
 
   const texts = {};
   let rowY = 52;
 
+  const iconX = 12;
+  const labelX = 32;
+  const valueX = WIDTH - 12;
+
   for (const row of rows) {
+    const icon = scene.add.text(
+      iconX,
+      rowY + 9, // center icon in 18px row
+      row.icon,
+      rowStyleIcon
+    ).setOrigin(0, 0.5);
+
     const lbl = scene.add.text(
-      12,
+      labelX,
       rowY,
       row.label,
       rowStyleLabel
     ).setOrigin(0, 0);
 
     const val = scene.add.text(
-      WIDTH - 12,
+      valueX,
       rowY,
       '0',
       rowStyleValue
     ).setOrigin(1, 0);
 
+    container.add(icon);
     container.add(lbl);
     container.add(val);
-    texts[row.key] = val;
+
+    texts[row.key] = { icon, label: lbl, value: val };
 
     rowY += 18;
   }
 
-  container.visible = true; // will be toggled by tabs later
+  container.visible = true; // visibility toggled via tabs
 
   scene.resourcesPanel = container;
   scene.resourcesPanelTexts = texts;
@@ -377,13 +432,19 @@ function refreshResourcesPanel(scene) {
   const res = scene.playerResources;
   const texts = scene.resourcesPanelTexts;
 
-  const safe = (v) => (typeof v === 'number' ? v : 0);
+  const safe = v => (typeof v === 'number' ? v : 0);
 
-  if (texts.food)       texts.food.setText(String(safe(res.food)));
-  if (texts.scrap)      texts.scrap.setText(String(safe(res.scrap)));
-  if (texts.metal)      texts.metal.setText(String(safe(res.metal)));
-  if (texts.components) texts.components.setText(String(safe(res.components)));
-  if (texts.crudeOil)   texts.crudeOil.setText(String(safe(res.crudeOil)));
-  if (texts.energy)     texts.energy.setText(String(safe(res.energy)));
-  if (texts.credits)    texts.credits.setText(String(safe(res.credits)));
+  const setVal = key => {
+    const entry = texts[key];
+    if (!entry) return;
+    entry.value.setText(String(safe(res[key])));
+  };
+
+  setVal('food');
+  setVal('scrap');
+  setVal('metal');
+  setVal('components');
+  setVal('crudeOil');
+  setVal('energy');
+  setVal('credits');
 }
