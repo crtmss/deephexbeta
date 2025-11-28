@@ -17,6 +17,16 @@ function neighborsOddR(q, r) {
     : [[+1, 0], [+1, -1], [0, -1], [-1, 0], [0, +1], [+1, +1]];
 }
 
+// Copy of ISO projection constants from WorldSceneMap.js
+const ISO_SHEAR  = 0.15;
+const ISO_YSCALE = 0.95;
+function localIsoOffset(dx, dy) {
+  return {
+    x: dx - dy * ISO_SHEAR,
+    y: dy * ISO_YSCALE,
+  };
+}
+
 ///////////////////////////////
 // Biome helpers (exported where useful)
 ///////////////////////////////
@@ -311,17 +321,11 @@ export function drawGeographyOverlay(scene) {
     const lm = map.__geoLandmark;
     const ct = map.__geoCenterTile;
 
-    // Use same transform as tiles: axialToWorld if available, else fallback
-    let px, py;
-    if (scene.axialToWorld) {
-      const p = scene.axialToWorld(ct.q, ct.r);
-      px = p.x;
-      py = p.y;
-    } else {
-      const p = scene.hexToPixel(ct.q, ct.r, size);
-      px = p.x + offsetX;
-      py = p.y + offsetY - LIFT * effectiveElevationLocal(ct);
-    }
+    // Center like tiles (hexToPixel + offsets + lift)
+    const p  = scene.hexToPixel(ct.q, ct.r, size);
+    const eff = effectiveElevationLocal(ct);
+    const px = p.x + offsetX;
+    const py = p.y + offsetY - LIFT * eff;
 
     const emoji = lm.emoji || (
       lm.type === 'volcano' ? '🌋' :
@@ -394,63 +398,44 @@ export function drawGeographyOverlay(scene) {
   const highlightCells = computeHighlightCells(map, lm, base);
 
   g.clear();
-  // Minimalistic, slick outline: thin, high alpha, no fill
+  // Minimalistic, crisp outline
   g.lineStyle(3, col, 0.95);
+
+  const w = size * Math.sqrt(3) / 2;
+  const h = size / 2;
 
   for (const c of highlightCells) {
     const t = byKey.get(keyOf(c.q, c.r));
     if (!t) continue;
 
-    // Center of hex in world space: prefer axialToWorld
-    let cx, cy;
-    if (scene.axialToWorld) {
-      const p = scene.axialToWorld(t.q, t.r);
-      cx = p.x;
-      cy = p.y;
-    } else {
-      const p = scene.hexToPixel(t.q, t.r, size);
-      cx = p.x + offsetX;
-      cy = p.y + offsetY - LIFT * effectiveElevationLocal(t);
+    // Same center as map hex faces
+    const pCenter = scene.hexToPixel(t.q, t.r, size);
+    const eff = effectiveElevationLocal(t);
+    const xIso = pCenter.x + offsetX;
+    const yIso = pCenter.y + offsetY - LIFT * eff;
+
+    // Same vertex ring as drawHex() in WorldSceneMap.js
+    const offsets = [
+      { dx: 0,  dy: -size }, // top
+      { dx: +w, dy: -h    }, // top-right
+      { dx: +w, dy: +h    }, // bottom-right
+      { dx: 0,  dy: +size }, // bottom
+      { dx: -w, dy: +h    }, // bottom-left
+      { dx: -w, dy: -h    }, // top-left
+    ];
+
+    const ring = offsets.map(({ dx, dy }) => {
+      const off = localIsoOffset(dx, dy);
+      return { x: xIso + off.x, y: yIso + off.y };
+    });
+
+    g.beginPath();
+    g.moveTo(ring[0].x, ring[0].y);
+    for (let i = 1; i < ring.length; i++) {
+      g.lineTo(ring[i].x, ring[i].y);
     }
-
-    // Build hex boundary from midpoints between center and neighbours,
-    // sorted by angle around the center in screen space. This automatically
-    // respects whatever isometry/projection the grid uses.
-    const midpoints = [];
-
-    for (const [dq, dr] of neighborsOddR(t.q, t.r)) {
-      const nq = t.q + dq;
-      const nr = t.r + dr;
-
-      let nx, ny;
-      if (scene.axialToWorld) {
-        const pw = scene.axialToWorld(nq, nr);
-        nx = pw.x;
-        ny = pw.y;
-      } else {
-        const p2 = scene.hexToPixel(nq, nr, size);
-        nx = p2.x + offsetX;
-        ny = p2.y + offsetY;
-      }
-
-      const mx = cx + (nx - cx) * 0.52; // a bit towards neighbour
-      const my = cy + (ny - cy) * 0.52;
-      const angle = Math.atan2(my - cy, mx - cx);
-
-      midpoints.push({ x: mx, y: my, angle });
-    }
-
-    midpoints.sort((a, b) => a.angle - b.angle);
-
-    if (midpoints.length >= 3) {
-      g.beginPath();
-      g.moveTo(midpoints[0].x, midpoints[0].y);
-      for (let i = 1; i < midpoints.length; i++) {
-        g.lineTo(midpoints[i].x, midpoints[i].y);
-      }
-      g.closePath();
-      g.strokePath();
-    }
+    g.closePath();
+    g.strokePath();
   }
 }
 
