@@ -428,6 +428,7 @@ export function drawGeographyOverlay(scene) {
     g.strokePath();
   }
 }
+
 /** Returns the set of tiles suppressed for POIs (bound to the geo footprint). */
 export function getNoPOISet(map) {
   return map?.__geoNoPOISet || null;
