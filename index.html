@@ -3,21 +3,25 @@
   <head>
     <meta charset="UTF-8" />
     <title>DeepHex Beta</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
     <style>
-      html, body {
+      html,
+      body {
         width: 100%;
         height: 100%;
         margin: 0;
         overflow: hidden;
-        background: #000;
+        background: #7cc4ff; /* match water color */
       }
 
       #game-container {
         position: relative;
         width: 100%;
         height: 100%;
-        background: #000;
+        background: #7cc4ff; /* match water color */
         -webkit-tap-highlight-color: transparent;
       }
 
@@ -30,14 +34,26 @@
       }
 
       /* Layer order */
-      #game-container > canvas { z-index: 0; image-rendering: pixelated; }
-      #game-container > .dom-container { z-index: 10; background: transparent !important; }
+      #game-container > canvas {
+        z-index: 0;
+        image-rendering: pixelated;
+      }
+      #game-container > .dom-container {
+        z-index: 10;
+        background: transparent !important;
+      }
 
       /* IMPORTANT: let canvas get mouse events except where DOM controls exist */
-      #game-container > .dom-container { pointer-events: none; }
-      #game-container > .dom-container * { pointer-events: auto; }
+      #game-container > .dom-container {
+        pointer-events: none;
+      }
+      #game-container > .dom-container * {
+        pointer-events: auto;
+      }
 
-      ::-webkit-scrollbar { display: none; }
+      ::-webkit-scrollbar {
+        display: none;
+      }
     </style>
   </head>
 
@@ -56,26 +72,28 @@
 
       const config = {
         type: Phaser.AUTO,
-        backgroundColor: "#000000",
+        backgroundColor: "#7CC4FF", // match water color
         parent: "game-container",
         scene: [LobbyScene, WorldScene, CombatScene],
         scale: {
           mode: Phaser.Scale.FIT,
           autoCenter: Phaser.Scale.CENTER_BOTH,
           width: DESIGN_WIDTH,
-          height: DESIGN_HEIGHT
+          height: DESIGN_HEIGHT,
         },
         resolution: window.devicePixelRatio || 1,
         render: {
           antialias: true,
           roundPixels: true,
-          pixelArt: false
+          pixelArt: false,
         },
-        dom: { createContainer: true }
+        dom: { createContainer: true },
       };
 
       const game = new Phaser.Game(config);
-      window.addEventListener("resize", () => { if (game && game.scale) game.scale.refresh(); });
+      window.addEventListener("resize", () => {
+        if (game && game.scale) game.scale.refresh();
+      });
     </script>
   </body>
 </html>
