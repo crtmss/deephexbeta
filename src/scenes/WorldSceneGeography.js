@@ -13,8 +13,8 @@ const keyOf = (q, r) => `${q},${r}`;
 function neighborsOddR(q, r) {
   const even = (r % 2 === 0);
   return even
-    ? [[+1,0],[0,-1],[-1,-1],[-1,0],[-1,+1],[0,+1]]
-    : [[+1,0],[+1,-1],[0,-1],[-1,0],[0,+1],[+1,+1]];
+    ? [[+1, 0], [0, -1], [-1, -1], [-1, 0], [-1, +1], [0, +1]]
+    : [[+1, 0], [+1, -1], [0, -1], [-1, 0], [0, +1], [+1, +1]];
 }
 
 ///////////////////////////////
@@ -22,15 +22,16 @@ function neighborsOddR(q, r) {
 ///////////////////////////////
 export function resolveBiome(scene, mapData) {
   return scene?.hexMap?.worldMeta?.biome ||
-         mapData?.__worldMeta?.biome ||
-         'Temperate Biome';
+    mapData?.__worldMeta?.biome ||
+    'Temperate Biome';
 }
+
 export function outlineColorFor(biome) {
   const b = (biome || '').toLowerCase();
-  if (b.includes('icy'))     return 0x1e88e5; // blue
-  if (b.includes('volcan'))  return 0xd32f2f; // red
-  if (b.includes('desert'))  return 0xfdd835; // yellow
-  if (b.includes('swamp'))   return 0x4e342e; // dark brown
+  if (b.includes('icy')) return 0x1e88e5; // blue
+  if (b.includes('volcan')) return 0xd32f2f; // red
+  if (b.includes('desert')) return 0xfdd835; // yellow
+  if (b.includes('swamp')) return 0x4e342e; // dark brown
   return 0x43a047; // temperate green
 }
 
@@ -93,8 +94,8 @@ function buildCellsIfMissing(meta, map, width, height) {
   const pred = (t) => {
     if (!t) return false;
     if (type === 'glacier') return (t.type !== 'mountain'); // can include water, will be converted
-    if (type === 'desert')  return (t.type !== 'water');
-    if (type === 'bog')     return (t.type !== 'mountain');
+    if (type === 'desert') return (t.type !== 'water');
+    if (type === 'bog') return (t.type !== 'mountain');
     if (type === 'plateau') return true;
     if (type === 'volcano') return true;
     return true;
@@ -114,12 +115,14 @@ function buildCellsIfMissing(meta, map, width, height) {
   }
   return cells;
 }
+
 function centroidOf(cells) {
   if (!cells || !cells.length) return null;
   const sx = cells.reduce((s, c) => s + c.q, 0);
   const sy = cells.reduce((s, c) => s + c.r, 0);
   return { q: sx / cells.length, r: sy / cells.length };
 }
+
 function closestTileTo(map, target, predicate = () => true) {
   let best = null, bd = Infinity;
   for (const t of map) {
@@ -135,11 +138,11 @@ function closestTileTo(map, target, predicate = () => true) {
 ///////////////////////////////
 function landmarkFromBiome(biome) {
   const b = (biome || '').toLowerCase();
-  if (b.includes('icy'))     return { type: 'glacier', emoji: '❄️', label: 'Glacier' };
-  if (b.includes('volcan'))  return { type: 'volcano', emoji: '🌋', label: 'Volcano' };
-  if (b.includes('desert'))  return { type: 'desert',  emoji: '🌵', label: 'Dune Field' };
-  if (b.includes('swamp'))   return { type: 'bog',     emoji: '🌾', label: 'Bog' };
-  return { type: 'plateau',   emoji: '🌄', label: 'Plateau' };
+  if (b.includes('icy')) return { type: 'glacier', emoji: '❄️', label: 'Glacier' };
+  if (b.includes('volcan')) return { type: 'volcano', emoji: '🌋', label: 'Volcano' };
+  if (b.includes('desert')) return { type: 'desert', emoji: '🌵', label: 'Dune Field' };
+  if (b.includes('swamp')) return { type: 'bog', emoji: '🌾', label: 'Bog' };
+  return { type: 'plateau', emoji: '🌄', label: 'Plateau' };
 }
 
 /**
@@ -166,7 +169,12 @@ export function initOrUpdateGeography(scene, map) {
     }
 
     // Base footprint
-    const baseCells = buildCellsIfMissing({ geoLandmark: lm, geoCells: meta.geoCells }, map, scene.mapWidth, scene.mapHeight);
+    const baseCells = buildCellsIfMissing(
+      { geoLandmark: lm, geoCells: meta.geoCells },
+      map,
+      scene.mapWidth,
+      scene.mapHeight
+    );
     const byKeyLocal = new Map(map.map(t => [keyOf(t.q, t.r), t]));
     const noPOISet = new Set();
 
@@ -177,7 +185,7 @@ export function initOrUpdateGeography(scene, map) {
       if (!isPeak(center)) {
         const target = closestTileTo(
           map,
-          center || { q: (scene.mapWidth||25)/2, r:(scene.mapHeight||25)/2 },
+          center || { q: (scene.mapWidth || 25) / 2, r: (scene.mapHeight || 25) / 2 },
           t => t.type === 'mountain' || t.elevation === 4
         );
         center = target || center;
@@ -245,11 +253,11 @@ export function initOrUpdateGeography(scene, map) {
       ? closestTileTo(map, centerAxial, tt => tt.type !== 'water')
       : map.find(t => t.q === lm.q && t.r === lm.r);
 
-    Object.defineProperty(map, '__geoLandmark',   { value: lm,        enumerable: false });
-    Object.defineProperty(map, '__geoCells',      { value: baseCells, enumerable: false });
-    Object.defineProperty(map, '__geoNoPOISet',   { value: noPOISet,  enumerable: false });
+    Object.defineProperty(map, '__geoLandmark', { value: lm, enumerable: false });
+    Object.defineProperty(map, '__geoCells', { value: baseCells, enumerable: false });
+    Object.defineProperty(map, '__geoNoPOISet', { value: noPOISet, enumerable: false });
     Object.defineProperty(map, '__geoCenterTile', { value: centerTile || null, enumerable: false });
-    Object.defineProperty(map, '__geoBuilt',      { value: true,      enumerable: false });
+    Object.defineProperty(map, '__geoBuilt', { value: true, enumerable: false });
   }
 }
 
@@ -297,10 +305,10 @@ export function drawGeographyOverlay(scene) {
   const map = scene.mapData;
   if (!Array.isArray(map) || !map.length) return;
 
-  const size    = scene.hexSize || 24;
+  const size = scene.hexSize || 24;
   const offsetX = scene.mapOffsetX || 0;
   const offsetY = scene.mapOffsetY || 0;
-  const LIFT    = scene?.LIFT_PER_LVL ?? 4;
+  const LIFT = scene?.LIFT_PER_LVL ?? 4;
 
   const biomeName = resolveBiome(scene, map);
 
@@ -326,15 +334,15 @@ export function drawGeographyOverlay(scene) {
     const emoji = lm.emoji || (
       lm.type === 'volcano' ? '🌋' :
       lm.type === 'glacier' ? '❄️' :
-      lm.type === 'desert'  ? '🌵' :
-      lm.type === 'bog'     ? '🌾' :
+      lm.type === 'desert' ? '🌵' :
+      lm.type === 'bog' ? '🌾' :
       '🌄'
     );
     const label = lm.label || (
       lm.type === 'volcano' ? 'Volcano' :
       lm.type === 'glacier' ? 'Glacier' :
-      lm.type === 'desert'  ? 'Dune Field' :
-      lm.type === 'bog'     ? 'Bog' :
+      lm.type === 'desert' ? 'Dune Field' :
+      lm.type === 'bog' ? 'Bog' :
       'Plateau'
     );
 
@@ -370,7 +378,7 @@ export function drawGeographyOverlay(scene) {
       const listed = highlight.map(c => {
         const t = map.find(tt => tt.q === c.q && tt.r === c.r);
         const lvl = (t && typeof t.elevation === 'number') ? t.elevation : 0;
-        const tp  = t ? t.type : '?';
+        const tp = t ? t.type : '?';
         return `(${c.q},${c.r}) — ${tp}, lvl ${lvl}`;
       });
       const header = `${label} @ (${ct.q},${ct.r}) — bound tiles: ${listed.length}`;
@@ -385,11 +393,11 @@ export function drawGeographyOverlay(scene) {
   // -----------------------------
   if (scene.geoOutlineGraphics) scene.geoOutlineGraphics.clear();
   const col = outlineColorFor(biomeName);
-  const g   = scene.geoOutlineGraphics || scene.add.graphics({ x: 0, y: 0 }).setDepth(120);
+  const g = scene.geoOutlineGraphics || scene.add.graphics({ x: 0, y: 0 }).setDepth(120);
   if (!scene.geoOutlineGraphics) scene.geoOutlineGraphics = g;
 
-  const lm    = map.__geoLandmark;
-  const base  = map.__geoCells || [];
+  const lm = map.__geoLandmark;
+  const base = map.__geoCells || [];
   const byKey = new Map(map.map(t => [keyOf(t.q, t.r), t]));
   const highlightCells = computeHighlightCells(map, lm, base);
 
@@ -400,67 +408,34 @@ export function drawGeographyOverlay(scene) {
     const t = byKey.get(keyOf(c.q, c.r));
     if (!t) continue;
 
-    // Center of hex in world space
-    let center;
+    // Center of hex in world space: prefer axialToWorld
+    let cx, cy;
     if (scene.axialToWorld) {
-      center = scene.axialToWorld(t.q, t.r);
+      const p = scene.axialToWorld(t.q, t.r);
+      cx = p.x;
+      cy = p.y;
     } else {
       const p = scene.hexToPixel(t.q, t.r, size);
-      center = {
-        x: p.x + offsetX,
-        y: p.y + offsetY - LIFT * effectiveElevationLocal(t),
-      };
+      cx = p.x + offsetX;
+      cy = p.y + offsetY - LIFT * effectiveElevationLocal(t);
     }
 
-    const cx = center.x;
-    const cy = center.y;
-
-    const pts = [];
-
-    // Build polygon via midpoints between this center and neighbour centers.
-    // This guarantees alignment with the actual grid regardless of projection.
-    for (const [dq, dr] of neighborsOddR(t.q, t.r)) {
-      const nq = t.q + dq;
-      const nr = t.r + dr;
-      const nt = byKey.get(keyOf(nq, nr));
-
-      let nx, ny;
-      if (nt) {
-        if (scene.axialToWorld) {
-          const pw = scene.axialToWorld(nt.q, nt.r);
-          nx = pw.x;
-          ny = pw.y;
-        } else {
-          const p2 = scene.hexToPixel(nt.q, nt.r, size);
-          nx = p2.x + offsetX;
-          ny = p2.y + offsetY - LIFT * effectiveElevationLocal(nt);
-        }
-      } else {
-        // If neighbour is off-map, extrapolate using axial coordinates
-        if (scene.axialToWorld) {
-          const ghost = scene.axialToWorld(nq, nr);
-          nx = ghost.x;
-          ny = ghost.y;
-        } else {
-          const ghost = scene.hexToPixel(nq, nr, size);
-          nx = ghost.x + offsetX;
-          ny = ghost.y + offsetY;
-        }
-      }
-
-      pts.push({
-        x: (cx + nx) / 2,
-        y: (cy + ny) / 2,
-      });
+    // Flat-topped hex: angles 0°, 60°, 120°, ... around the center
+    const vertices = [];
+    for (let i = 0; i < 6; i++) {
+      const angle = (Math.PI / 3) * i; // 0, 60, 120...
+      const vx = cx + size * Math.cos(angle);
+      const vy = cy + size * Math.sin(angle);
+      vertices.push({ x: vx, y: vy });
     }
 
-    if (pts.length >= 3) {
-      g.beginPath();
-      g.moveTo(pts[0].x, pts[0].y);
-      for (let i = 1; i < pts.length; i++) g.lineTo(pts[i].x, pts[i].y);
-      g.closePath();
-      g.strokePath();
+    g.beginPath();
+    g.moveTo(vertices[0].x, vertices[0].y);
+    for (let i = 1; i < vertices.length; i++) {
+      g.lineTo(vertices[i].x, vertices[i].y);
     }
+    g.closePath();
+    g.strokePath();
   }
 }
 
