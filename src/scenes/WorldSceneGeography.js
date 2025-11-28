@@ -297,20 +297,31 @@ export function drawGeographyOverlay(scene) {
   const map = scene.mapData;
   if (!Array.isArray(map) || !map.length) return;
 
-  const size   = scene.hexSize || 24;
+  const size    = scene.hexSize || 24;
   const offsetX = scene.mapOffsetX || 0;
   const offsetY = scene.mapOffsetY || 0;
   const LIFT    = scene?.LIFT_PER_LVL ?? 4;
 
   const biomeName = resolveBiome(scene, map);
 
-  // Emoji + label once
+  // -----------------------------
+  // Emoji + label (once)
+  // -----------------------------
   if (!map.__geoDecorAdded && map.__geoLandmark && map.__geoCenterTile) {
     const lm = map.__geoLandmark;
     const ct = map.__geoCenterTile;
-    const p  = scene.hexToPixel(ct.q, ct.r, size);
-    const px = p.x + offsetX;
-    const py = p.y + offsetY - LIFT * effectiveElevationLocal(ct);
+
+    // Use same transform as tiles: axialToWorld if available, else fallback
+    let px, py;
+    if (scene.axialToWorld) {
+      const p = scene.axialToWorld(ct.q, ct.r);
+      px = p.x;
+      py = p.y;
+    } else {
+      const p = scene.hexToPixel(ct.q, ct.r, size);
+      px = p.x + offsetX;
+      py = p.y + offsetY - LIFT * effectiveElevationLocal(ct);
+    }
 
     const emoji = lm.emoji || (
       lm.type === 'volcano' ? '🌋' :
@@ -329,22 +340,23 @@ export function drawGeographyOverlay(scene) {
 
     const icon = scene.add.text(px, py, emoji, {
       fontSize: `${Math.max(16, size * 0.95)}px`,
-      fontFamily: 'Arial, "Segoe UI Emoji", "Noto Color Emoji", sans-serif'
+      fontFamily: 'Arial, "Segoe UI Emoji", "Noto Color Emoji", sans-serif',
     }).setOrigin(0.5).setDepth(200);
 
     const txt = scene.add.text(px, py + size * 0.9, label, {
       fontSize: `${Math.max(12, size * 0.55)}px`,
       color: '#ffffff',
       backgroundColor: 'rgba(0,0,0,0.35)',
-      padding: { left: 4, right: 4, top: 2, bottom: 2 }
+      padding: { left: 4, right: 4, top: 2, bottom: 2 },
     }).setOrigin(0.5).setDepth(200);
 
     scene.locationsLayer?.add(txt);
 
     // Click → hex-inspect
     const sendHexInspect = (header, bodyLines) => {
-      const text = `[HEX INSPECT] ${header}\n` + (Array.isArray(bodyLines) ? bodyLines.join('\n') : '');
-      if (scene && scene.events && typeof scene.events.emit === 'function') {
+      const text = `[HEX INSPECT] ${header}\n` +
+        (Array.isArray(bodyLines) ? bodyLines.join('\n') : '');
+      if (scene?.events && typeof scene.events.emit === 'function') {
         scene.events.emit('hex-inspect', text);
       } else {
         console.log(text);
@@ -368,14 +380,16 @@ export function drawGeographyOverlay(scene) {
     Object.defineProperty(map, '__geoDecorAdded', { value: true, enumerable: false });
   }
 
-  // Outlines each frame
+  // -----------------------------
+  // Hex outlines (each frame)
+  // -----------------------------
   if (scene.geoOutlineGraphics) scene.geoOutlineGraphics.clear();
-  const col  = outlineColorFor(biomeName);
-  const g    = scene.geoOutlineGraphics || scene.add.graphics({ x: 0, y: 0 }).setDepth(120);
+  const col = outlineColorFor(biomeName);
+  const g   = scene.geoOutlineGraphics || scene.add.graphics({ x: 0, y: 0 }).setDepth(120);
   if (!scene.geoOutlineGraphics) scene.geoOutlineGraphics = g;
 
-  const lm   = map.__geoLandmark;
-  const base = map.__geoCells || [];
+  const lm    = map.__geoLandmark;
+  const base  = map.__geoCells || [];
   const byKey = new Map(map.map(t => [keyOf(t.q, t.r), t]));
   const highlightCells = computeHighlightCells(map, lm, base);
 
@@ -383,15 +397,30 @@ export function drawGeographyOverlay(scene) {
   g.lineStyle(4, col, 0.98);
 
   for (const c of highlightCells) {
-    const t = byKey.get(keyOf(c.q, c.r)); if (!t) continue;
-    const center = scene.hexToPixel(t.q, t.r, size);
-    const cx = center.x + offsetX;
-    const cy = center.y + offsetY - (scene?.LIFT_PER_LVL ?? 4) * effectiveElevationLocal(t);
+    const t = byKey.get(keyOf(c.q, c.r));
+    if (!t) continue;
+
+    // Center of hex in world space: prefer axialToWorld
+    let cx, cy;
+    if (scene.axialToWorld) {
+      const p = scene.axialToWorld(t.q, t.r);
+      cx = p.x;
+      cy = p.y;
+    } else {
+      const center = scene.hexToPixel(t.q, t.r, size);
+      cx = center.x + offsetX;
+      cy = center.y + offsetY - LIFT * effectiveElevationLocal(t);
+    }
+
     const pts = [];
     for (let i = 0; i < 6; i++) {
-      const ang = Phaser.Math.DegToRad(60 * i - 30);
-      pts.push({ x: cx + size * Math.cos(ang), y: cy + size * Math.sin(ang) });
+      const ang = Phaser.Math.DegToRad(60 * i - 30); // pointy-top
+      pts.push({
+        x: cx + size * Math.cos(ang),
+        y: cy + size * Math.sin(ang),
+      });
     }
+
     g.beginPath();
     g.moveTo(pts[0].x, pts[0].y);
     for (let i = 1; i < 6; i++) g.lineTo(pts[i].x, pts[i].y);
@@ -399,7 +428,6 @@ export function drawGeographyOverlay(scene) {
     g.strokePath();
   }
 }
-
 /** Returns the set of tiles suppressed for POIs (bound to the geo footprint). */
 export function getNoPOISet(map) {
   return map?.__geoNoPOISet || null;
