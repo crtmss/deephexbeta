@@ -152,7 +152,9 @@ export function setupLogisticsPanel(scene) {
     this.clearPathPreview?.();
 
     this.logisticsUI.container.visible = true;
-    this.isLogisticsOpen = true; // block movement input while open
+    this.isLogisticsOpen = true;      // legacy flag
+    this.logisticsInputLocked = true; // used by WorldSceneUI input
+
     this.refreshLogisticsPanel?.();
   };
 
@@ -160,6 +162,7 @@ export function setupLogisticsPanel(scene) {
     if (!this.logisticsUI) return;
     this.logisticsUI.container.visible = false;
     this.isLogisticsOpen = false;
+    this.logisticsInputLocked = false;
   };
 
   scene.refreshLogisticsPanel = function () {
@@ -373,7 +376,7 @@ function _renderHaulerDetails(scene, hauler) {
   c.add(posLine);
   y += 24;
 
-  // Simple cargo summary: 4 resource types
+  // Simple cargo summary
   const cargo = hauler.cargo || {};
   const cargoStr =
     `Cargo: ` +
@@ -520,6 +523,7 @@ function _startAddStationFlow(scene, hauler) {
     ui.container.visible = false;
   }
   scene.isLogisticsOpen = false;
+  scene.logisticsInputLocked = false;
 
   const cam = scene.cameras.main;
   const overlay = scene.add.rectangle(
@@ -534,7 +538,7 @@ function _startAddStationFlow(scene, hauler) {
     .setScrollFactor(0)
     .setDepth(LOGI_Z.overlay);
 
-  // flag so WorldSceneUI input won't treat this click as move order
+  // flag so WorldSceneUI input can treat this click specially if needed
   scene.isLogisticsPickingStation = true;
 
   const finish = () => {
@@ -619,12 +623,12 @@ function _showActionPicker(scene, hauler, station) {
     y += 24;
   };
 
-  // Load all (non-resource specific, runtime chooses which resource)
+  // Load all
   addBtn('Load all', () => {
     _addRouteStep(scene, hauler, station, 'loadAll', null);
   });
 
-  // Load resource (brings up secondary picker)
+  // Load resource (secondary picker)
   addBtn('Load resource…', () => {
     _showResourcePicker(scene, hauler, station, 'load');
   });
@@ -960,21 +964,21 @@ function _updateBuildingResourceLabel(scene, building) {
 
   const res = building.resources || {};
   const vals = {
-    food:      res.food       ?? building.storageFood  ?? 0,
-    scrap:     res.scrap      ?? building.storageScrap ?? 0,
-    energy:    res.energy     ?? 0,
-    metal:     res.metal      ?? res.metalPlates ?? 0,
-    components:res.components ?? 0,
-    currency:  res.currency   ?? 0,
+    food:       res.food       ?? building.storageFood  ?? 0,
+    scrap:      res.scrap      ?? building.storageScrap ?? 0,
+    energy:     res.energy     ?? 0,
+    metal:      res.metal      ?? res.metalPlates ?? 0,
+    components: res.components ?? 0,
+    currency:   res.currency   ?? 0,
   };
 
   const parts = [];
-  if (vals.food > 0)      parts.push(`🍖×${vals.food}`);
-  if (vals.scrap > 0)     parts.push(`🛠×${vals.scrap}`);
-  if (vals.energy > 0)    parts.push(`⚡×${vals.energy}`);
-  if (vals.metal > 0)     parts.push(`🔩×${vals.metal}`);
-  if (vals.components > 0)parts.push(`🧩×${vals.components}`);
-  if (vals.currency > 0)  parts.push(`💰×${vals.currency}`);
+  if (vals.food > 0)       parts.push(`🍖×${vals.food}`);
+  if (vals.scrap > 0)      parts.push(`🛠×${vals.scrap}`);
+  if (vals.energy > 0)     parts.push(`⚡×${vals.energy}`);
+  if (vals.metal > 0)      parts.push(`🔩×${vals.metal}`);
+  if (vals.components > 0) parts.push(`🧩×${vals.components}`);
+  if (vals.currency > 0)   parts.push(`💰×${vals.currency}`);
 
   building.resourceLabelObj.setText(parts.join(' '));
 
