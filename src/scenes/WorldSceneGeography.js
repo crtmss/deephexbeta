@@ -25,6 +25,7 @@ export function resolveBiome(scene, mapData) {
          mapData?.__worldMeta?.biome ||
          'Temperate Biome';
 }
+
 export function outlineColorFor(biome) {
   const b = (biome || '').toLowerCase();
   if (b.includes('icy'))     return 0x1e88e5; // blue
@@ -114,12 +115,14 @@ function buildCellsIfMissing(meta, map, width, height) {
   }
   return cells;
 }
+
 function centroidOf(cells) {
   if (!cells || !cells.length) return null;
   const sx = cells.reduce((s, c) => s + c.q, 0);
   const sy = cells.reduce((s, c) => s + c.r, 0);
   return { q: sx / cells.length, r: sy / cells.length };
 }
+
 function closestTileTo(map, target, predicate = () => true) {
   let best = null, bd = Infinity;
   for (const t of map) {
@@ -182,7 +185,7 @@ export function initOrUpdateGeography(scene, map) {
       if (!isPeak(center)) {
         const target = closestTileTo(
           map,
-          center || { q: (scene.mapWidth||25)/2, r:(scene.mapHeight||25)/2 },
+          center || { q: (scene.mapWidth || 25) / 2, r: (scene.mapHeight || 25) / 2 },
           t => t.type === 'mountain' || t.elevation === 4
         );
         center = target || center;
@@ -305,9 +308,11 @@ export function drawGeographyOverlay(scene) {
   const size    = scene.hexSize || 24;
   const offsetX = scene.mapOffsetX || 0;
   const offsetY = scene.mapOffsetY || 0;
-  const LIFT    = scene?.LIFT_PER_LVL ?? 4;
-
   const biomeName = resolveBiome(scene, map);
+
+  const LIFT    = scene?.LIFT_PER_LVL ?? 4;
+  const TILE_DEPTH_BASE     = scene?.TILE_DEPTH_BASE ?? 10;
+  const TILE_DEPTH_PER_LVL  = scene?.TILE_DEPTH_PER_LVL ?? 5;
 
   // -----------------------------
   // Emoji + label (once)
@@ -316,7 +321,6 @@ export function drawGeographyOverlay(scene) {
     const lm = map.__geoLandmark;
     const ct = map.__geoCenterTile;
 
-    // Use same transform as tiles: axialToWorld if available, else fallback
     let px, py;
     if (scene.axialToWorld) {
       const p = scene.axialToWorld(ct.q, ct.r);
@@ -385,26 +389,26 @@ export function drawGeographyOverlay(scene) {
   }
 
   // -----------------------------
-  // Per-hex filled overlay (each frame)
+  // Per-hex filled overlay
   // -----------------------------
-  if (scene.geoOutlineGraphics) scene.geoOutlineGraphics.clear();
-  const col = outlineColorFor(biomeName);
-  const g   = scene.geoOutlineGraphics || scene.add.graphics({ x: 0, y: 0 }).setDepth(120);
-  if (!scene.geoOutlineGraphics) scene.geoOutlineGraphics = g;
+  // Destroy previous hex graphics if any
+  if (Array.isArray(scene.geoHexGraphics)) {
+    scene.geoHexGraphics.forEach(g => g.destroy());
+  }
+  scene.geoHexGraphics = [];
 
   const lm    = map.__geoLandmark;
   const base  = map.__geoCells || [];
   const byKey = new Map(map.map(t => [keyOf(t.q, t.r), t]));
   const highlightCells = computeHighlightCells(map, lm, base);
 
-  g.clear();
-  g.lineStyle(2, col, 0.9); // thin, minimal outline
+  const col = outlineColorFor(biomeName);
 
   for (const c of highlightCells) {
     const t = byKey.get(keyOf(c.q, c.r));
     if (!t) continue;
 
-    // Center of hex in world space: prefer axialToWorld
+    // Center of hex in world space
     let cx, cy;
     if (scene.axialToWorld) {
       const p = scene.axialToWorld(t.q, t.r);
@@ -416,45 +420,34 @@ export function drawGeographyOverlay(scene) {
       cy = p.y + offsetY - LIFT * effectiveElevationLocal(t);
     }
 
-    // Build this tile's hex using midpoints between its center and neighbours.
-    // This uses the actual neighbour centers, so the shape matches the grid's
-    // isometry exactly.
-    const midpoints = [];
+    // Depth just under terrain at this elevation
+    const elev = effectiveElevationLocal(t);
+    const depth = TILE_DEPTH_BASE + TILE_DEPTH_PER_LVL * elev - 0.5;
 
-    for (const [dq, dr] of neighborsOddR(t.q, t.r)) {
-      const nq = t.q + dq;
-      const nr = t.r + dr;
+    const g = scene.add.graphics({ x: 0, y: 0 });
+    g.setDepth(depth);
+    g.fillStyle(col, 0.45); // high alpha, no stroke
 
-      let nx, ny;
-      if (scene.axialToWorld) {
-        const pw = scene.axialToWorld(nq, nr);
-        nx = pw.x;
-        ny = pw.y;
-      } else {
-        const p2 = scene.hexToPixel(nq, nr, size);
-        nx = p2.x + offsetX;
-        ny = p2.y + offsetY;
-      }
-
-      const mx = (cx + nx) * 0.5;
-      const my = (cy + ny) * 0.5;
-      const angle = Math.atan2(my - cy, mx - cx);
-      midpoints.push({ x: mx, y: my, angle });
+    // Regular hex, rotated +90 degrees relative to previous versions
+    // 6 vertices around center
+    const verts = [];
+    for (let i = 0; i < 6; i++) {
+      // base: flat-top 30 + 60*i; rotate +90deg => + (Math.PI/2)
+      const angle = (Math.PI / 3) * i + Math.PI / 2;
+      const vx = cx + size * Math.cos(angle);
+      const vy = cy + size * Math.sin(angle);
+      verts.push({ x: vx, y: vy });
     }
 
-    if (midpoints.length < 3) continue;
-
-    midpoints.sort((a, b) => a.angle - b.angle);
-
-    g.fillStyle(col, 0.4); // high-ish alpha fill
     g.beginPath();
-    g.moveTo(midpoints[0].x, midpoints[0].y);
-    for (let i = 1; i < midpoints.length; i++) {
-      g.lineTo(midpoints[i].x, midpoints[i].y);
+    g.moveTo(verts[0].x, verts[0].y);
+    for (let i = 1; i < verts.length; i++) {
+      g.lineTo(verts[i].x, verts[i].y);
     }
     g.closePath();
     g.fillPath();
-    g.strokePath(); // outline for crisp hex edges
+
+    scene.geoHexGraphics.push(g);
   }
 }
 
