@@ -2,7 +2,7 @@
 // Geo objects (volcano / plateau / glacier / bog/desert) + their UI/overlay
 // This module mutates map tiles for the chosen landmark, stores private
 // metadata on the map object, draws an emoji+label once, and draws a
-// per-frame outline (highlight) of the bound tiles.
+// per-frame overlay of the bound tiles.
 //
 // It is imported and invoked from WorldSceneMapLocations.js.
 
@@ -15,16 +15,6 @@ function neighborsOddR(q, r) {
   return even
     ? [[+1, 0], [0, -1], [-1, -1], [-1, 0], [-1, +1], [0, +1]]
     : [[+1, 0], [+1, -1], [0, -1], [-1, 0], [0, +1], [+1, +1]];
-}
-
-// Copy of ISO projection constants from WorldSceneMap.js
-const ISO_SHEAR  = 0.15;
-const ISO_YSCALE = 0.95;
-function localIsoOffset(dx, dy) {
-  return {
-    x: dx - dy * ISO_SHEAR,
-    y: dy * ISO_YSCALE,
-  };
 }
 
 ///////////////////////////////
@@ -176,7 +166,12 @@ export function initOrUpdateGeography(scene, map) {
     }
 
     // Base footprint
-    const baseCells = buildCellsIfMissing({ geoLandmark: lm, geoCells: meta.geoCells }, map, scene.mapWidth, scene.mapHeight);
+    const baseCells = buildCellsIfMissing(
+      { geoLandmark: lm, geoCells: meta.geoCells },
+      map,
+      scene.mapWidth,
+      scene.mapHeight
+    );
     const byKeyLocal = new Map(map.map(t => [keyOf(t.q, t.r), t]));
     const noPOISet = new Set();
 
@@ -302,7 +297,7 @@ export function computeHighlightCells(map, lm, geoCells) {
   return out;
 }
 
-/** Draw (or update) emoji+label once and per-frame hex outlines. */
+/** Draw (or update) emoji+label once and per-frame filled hexes. */
 export function drawGeographyOverlay(scene) {
   const map = scene.mapData;
   if (!Array.isArray(map) || !map.length) return;
@@ -321,11 +316,17 @@ export function drawGeographyOverlay(scene) {
     const lm = map.__geoLandmark;
     const ct = map.__geoCenterTile;
 
-    // Center like tiles (hexToPixel + offsets + lift)
-    const p  = scene.hexToPixel(ct.q, ct.r, size);
-    const eff = effectiveElevationLocal(ct);
-    const px = p.x + offsetX;
-    const py = p.y + offsetY - LIFT * eff;
+    // Use same transform as tiles: axialToWorld if available, else fallback
+    let px, py;
+    if (scene.axialToWorld) {
+      const p = scene.axialToWorld(ct.q, ct.r);
+      px = p.x;
+      py = p.y;
+    } else {
+      const p = scene.hexToPixel(ct.q, ct.r, size);
+      px = p.x + offsetX;
+      py = p.y + offsetY - LIFT * effectiveElevationLocal(ct);
+    }
 
     const emoji = lm.emoji || (
       lm.type === 'volcano' ? '🌋' :
@@ -356,7 +357,6 @@ export function drawGeographyOverlay(scene) {
 
     scene.locationsLayer?.add(txt);
 
-    // Click → hex-inspect
     const sendHexInspect = (header, bodyLines) => {
       const text = `[HEX INSPECT] ${header}\n` +
         (Array.isArray(bodyLines) ? bodyLines.join('\n') : '');
@@ -385,7 +385,7 @@ export function drawGeographyOverlay(scene) {
   }
 
   // -----------------------------
-  // Hex outlines (each frame)
+  // Per-hex filled overlay (each frame)
   // -----------------------------
   if (scene.geoOutlineGraphics) scene.geoOutlineGraphics.clear();
   const col = outlineColorFor(biomeName);
@@ -398,44 +398,63 @@ export function drawGeographyOverlay(scene) {
   const highlightCells = computeHighlightCells(map, lm, base);
 
   g.clear();
-  // Minimalistic, crisp outline
-  g.lineStyle(3, col, 0.95);
-
-  const w = size * Math.sqrt(3) / 2;
-  const h = size / 2;
+  g.lineStyle(2, col, 0.9); // thin, minimal outline
 
   for (const c of highlightCells) {
     const t = byKey.get(keyOf(c.q, c.r));
     if (!t) continue;
 
-    // Same center as map hex faces
-    const pCenter = scene.hexToPixel(t.q, t.r, size);
-    const eff = effectiveElevationLocal(t);
-    const xIso = pCenter.x + offsetX;
-    const yIso = pCenter.y + offsetY - LIFT * eff;
+    // Center of hex in world space: prefer axialToWorld
+    let cx, cy;
+    if (scene.axialToWorld) {
+      const p = scene.axialToWorld(t.q, t.r);
+      cx = p.x;
+      cy = p.y;
+    } else {
+      const p = scene.hexToPixel(t.q, t.r, size);
+      cx = p.x + offsetX;
+      cy = p.y + offsetY - LIFT * effectiveElevationLocal(t);
+    }
 
-    // Same vertex ring as drawHex() in WorldSceneMap.js
-    const offsets = [
-      { dx: 0,  dy: -size }, // top
-      { dx: +w, dy: -h    }, // top-right
-      { dx: +w, dy: +h    }, // bottom-right
-      { dx: 0,  dy: +size }, // bottom
-      { dx: -w, dy: +h    }, // bottom-left
-      { dx: -w, dy: -h    }, // top-left
-    ];
+    // Build this tile's hex using midpoints between its center and neighbours.
+    // This uses the actual neighbour centers, so the shape matches the grid's
+    // isometry exactly.
+    const midpoints = [];
 
-    const ring = offsets.map(({ dx, dy }) => {
-      const off = localIsoOffset(dx, dy);
-      return { x: xIso + off.x, y: yIso + off.y };
-    });
+    for (const [dq, dr] of neighborsOddR(t.q, t.r)) {
+      const nq = t.q + dq;
+      const nr = t.r + dr;
 
+      let nx, ny;
+      if (scene.axialToWorld) {
+        const pw = scene.axialToWorld(nq, nr);
+        nx = pw.x;
+        ny = pw.y;
+      } else {
+        const p2 = scene.hexToPixel(nq, nr, size);
+        nx = p2.x + offsetX;
+        ny = p2.y + offsetY;
+      }
+
+      const mx = (cx + nx) * 0.5;
+      const my = (cy + ny) * 0.5;
+      const angle = Math.atan2(my - cy, mx - cx);
+      midpoints.push({ x: mx, y: my, angle });
+    }
+
+    if (midpoints.length < 3) continue;
+
+    midpoints.sort((a, b) => a.angle - b.angle);
+
+    g.fillStyle(col, 0.4); // high-ish alpha fill
     g.beginPath();
-    g.moveTo(ring[0].x, ring[0].y);
-    for (let i = 1; i < ring.length; i++) {
-      g.lineTo(ring[i].x, ring[i].y);
+    g.moveTo(midpoints[0].x, midpoints[0].y);
+    for (let i = 1; i < midpoints.length; i++) {
+      g.lineTo(midpoints[i].x, midpoints[i].y);
     }
     g.closePath();
-    g.strokePath();
+    g.fillPath();
+    g.strokePath(); // outline for crisp hex edges
   }
 }
 
