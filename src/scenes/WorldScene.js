@@ -4,6 +4,7 @@ import { findPath as aStarFindPath } from '../engine/AStar.js';
 import { drawLocationsAndRoads } from './WorldSceneMapLocations.js';
 import { setupWorldMenus, attachSelectionHighlight } from './WorldSceneMenus.js';
 import { startHexTransformTool } from './HexTransformTool.js';
+import { setupBuildingsUI } from './WorldSceneBuildingsUI.js';
 
 // Haulers / ships
 import {
@@ -113,6 +114,9 @@ export default class WorldScene extends Phaser.Scene {
     this.isDragging = false;
     this.isUnitMoving = false;
 
+    // make LIFT_PER_LVL available to other modules that read it from scene
+    this.LIFT_PER_LVL = LIFT_PER_LVL;
+
     // Hex transform tool (X key creates central lake etc.)
     // HexTransformTool should call scene.redrawWorld() after mutating mapData.
     startHexTransformTool(this, { defaultType: 'water', defaultLevel: 1 });
@@ -210,6 +214,7 @@ export default class WorldScene extends Phaser.Scene {
     // UI: selection highlight + build menu + top HUD + logistics panel
     attachSelectionHighlight(this);
     setupWorldMenus(this);
+    setupBuildingsUI(this);   // ⬅️ building click menus (docks, factories, etc.)
     setupTurnUI(this);
     setupLogisticsPanel(this); // Logistics tab hooks into helpers defined in setupTurnUI
 
@@ -389,28 +394,28 @@ Biomes: ${biome}`;
       const step = path[index];
       const { x, y } = scene.axialToWorld(step.q, step.r);
 
-scene.tweens.add({
-  targets: unit,
-  x,
-  y,
-  duration: 160,
-  ease: 'Sine.easeInOut',
-  onComplete: () => {
-    // previous axial coords before committing the step
-    const prevQ = unit.q;
-    const prevR = unit.r;
+      scene.tweens.add({
+        targets: unit,
+        x,
+        y,
+        duration: 160,
+        ease: 'Sine.easeInOut',
+        onComplete: () => {
+          // previous axial coords before committing the step
+          const prevQ = unit.q;
+          const prevR = unit.r;
 
-    // commit the logical move to this hex
-    unit.q = step.q;
-    unit.r = step.r;
+          // commit the logical move to this hex
+          unit.q = step.q;
+          unit.r = step.r;
 
-    // 🔺 update facing direction towards this step
-    updateUnitOrientation(scene, unit, prevQ, prevR, unit.q, unit.r);
+          // 🔺 update facing direction towards this step
+          updateUnitOrientation(scene, unit, prevQ, prevR, unit.q, unit.r);
 
-    index += 1;
-    stepNext();
-  }
-});
+          index += 1;
+          stepNext();
+        }
+      });
     }
 
     stepNext();
