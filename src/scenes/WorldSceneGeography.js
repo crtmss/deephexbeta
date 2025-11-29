@@ -261,7 +261,7 @@ export function initOrUpdateGeography(scene, map) {
   }
 }
 
-/** Pick cells to outline based on current tile states. */
+/** Pick cells to highlight based on current tile states. */
 export function computeHighlightCells(map, lm, geoCells) {
   const out = [];
   if (!lm) return out;
@@ -308,11 +308,11 @@ export function drawGeographyOverlay(scene) {
   const size    = scene.hexSize || 24;
   const offsetX = scene.mapOffsetX || 0;
   const offsetY = scene.mapOffsetY || 0;
-  const biomeName = resolveBiome(scene, map);
-
   const LIFT    = scene?.LIFT_PER_LVL ?? 4;
-  const TILE_DEPTH_BASE     = scene?.TILE_DEPTH_BASE ?? 10;
-  const TILE_DEPTH_PER_LVL  = scene?.TILE_DEPTH_PER_LVL ?? 5;
+
+  const biomeName = resolveBiome(scene, map);
+  const TILE_DEPTH_BASE    = scene?.TILE_DEPTH_BASE ?? 10;
+  const TILE_DEPTH_PER_LVL = scene?.TILE_DEPTH_PER_LVL ?? 5;
 
   // -----------------------------
   // Emoji + label (once)
@@ -391,7 +391,6 @@ export function drawGeographyOverlay(scene) {
   // -----------------------------
   // Per-hex filled overlay
   // -----------------------------
-  // Destroy previous hex graphics if any
   if (Array.isArray(scene.geoHexGraphics)) {
     scene.geoHexGraphics.forEach(g => g.destroy());
   }
@@ -401,7 +400,6 @@ export function drawGeographyOverlay(scene) {
   const base  = map.__geoCells || [];
   const byKey = new Map(map.map(t => [keyOf(t.q, t.r), t]));
   const highlightCells = computeHighlightCells(map, lm, base);
-
   const col = outlineColorFor(biomeName);
 
   for (const c of highlightCells) {
@@ -421,28 +419,48 @@ export function drawGeographyOverlay(scene) {
     }
 
     // Depth just under terrain at this elevation
-    const elev = effectiveElevationLocal(t);
+    const elev  = effectiveElevationLocal(t);
     const depth = TILE_DEPTH_BASE + TILE_DEPTH_PER_LVL * elev - 0.5;
 
-    const g = scene.add.graphics({ x: 0, y: 0 });
-    g.setDepth(depth);
-    g.fillStyle(col, 0.45); // high alpha, no stroke
+    const g = scene.add.graphics({ x: 0, y: 0 }).setDepth(depth);
+    g.fillStyle(col, 0.4); // high alpha, no stroke
 
-    // Regular hex, rotated +90 degrees relative to previous versions
-    // 6 vertices around center
-    const verts = [];
-    for (let i = 0; i < 6; i++) {
-      // base: flat-top 30 + 60*i; rotate +90deg => + (Math.PI/2)
-      const angle = (Math.PI / 3) * i + Math.PI / 2;
-      const vx = cx + size * Math.cos(angle);
-      const vy = cy + size * Math.sin(angle);
-      verts.push({ x: vx, y: vy });
+    // Build hex polygon from midpoints between this center and neighbour centers.
+    // This uses the actual neighbour layout, so shape/orientation matches terrain.
+    const pts = [];
+
+    for (const [dq, dr] of neighborsOddR(t.q, t.r)) {
+      const nq = t.q + dq;
+      const nr = t.r + dr;
+
+      let nx, ny;
+      if (scene.axialToWorld) {
+        const pw = scene.axialToWorld(nq, nr);
+        nx = pw.x;
+        ny = pw.y;
+      } else {
+        const p2 = scene.hexToPixel(nq, nr, size);
+        nx = p2.x + offsetX;
+        ny = p2.y + offsetY;
+      }
+
+      const mx = (cx + nx) * 0.5;
+      const my = (cy + ny) * 0.5;
+      const ang = Math.atan2(my - cy, mx - cx);
+      pts.push({ x: mx, y: my, angle: ang });
     }
 
+    if (pts.length < 3) {
+      scene.geoHexGraphics.push(g);
+      continue;
+    }
+
+    pts.sort((a, b) => a.angle - b.angle);
+
     g.beginPath();
-    g.moveTo(verts[0].x, verts[0].y);
-    for (let i = 1; i < verts.length; i++) {
-      g.lineTo(verts[i].x, verts[i].y);
+    g.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i++) {
+      g.lineTo(pts[i].x, pts[i].y);
     }
     g.closePath();
     g.fillPath();
