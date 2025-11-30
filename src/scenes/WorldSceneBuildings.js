@@ -208,6 +208,12 @@ export function startBuildingPlacement(arg1, arg2, arg3) {
     return;
   }
 
+  // 🔒 MP: only host should actually spawn buildings
+  if (scene.isHost === false) {
+    console.warn('[BUILD][MP] Non-host cannot place buildings; host is authoritative.');
+    return;
+  }
+
   _ensureResourceInit(scene);
 
   const cost = COSTS[key] || {};
@@ -331,6 +337,12 @@ export function placeDocks(sceneOrQ, qOrHex, rMaybe) {
 
   if (!scene) {
     console.warn('[BUILD] placeDocks: no scene provided.');
+    return;
+  }
+
+  // 🔒 MP: only host should run direct placement
+  if (scene.isHost === false) {
+    console.warn('[BUILD][MP] Non-host cannot place docks directly; host is authoritative.');
     return;
   }
 
@@ -627,6 +639,12 @@ function _closeBuildingMenu(scene, building) {
 // Destroy building
 ///////////////////////////////
 function _destroyBuilding(scene, building) {
+  // 🔒 MP: Only host should actually destroy buildings
+  if (scene.isHost === false) {
+    console.warn('[BUILD][MP] Non-host cannot destroy buildings directly; host is authoritative.');
+    return;
+  }
+
   building.container?.destroy(true);
   building.menu?.destroy(true);
   building.overlay?.destroy(true);
@@ -648,6 +666,9 @@ function _destroyBuilding(scene, building) {
 export function applyBuildingProductionOnEndTurn(sceneArg) {
   const scene = sceneArg || /** @type {any} */ (this);
   if (!scene) return;
+
+  // 🔒 MP: only host should run per-turn production
+  if (scene.isHost === false) return;
 
   const buildings = scene.buildings || [];
   if (buildings.length === 0) return;
@@ -692,6 +713,8 @@ function _spend(scene, cost) {
 ///////////////////////////////
 // Tile + POI + neighbor helpers
 ///////////////////////////////
+// ... (unchanged helpers below)
+
 function _tileAt(scene, q, r) {
   return scene.mapData?.find?.(t => t.q === q && t.r === r);
 }
