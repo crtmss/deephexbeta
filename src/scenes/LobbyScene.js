@@ -1,5 +1,4 @@
 // deephexbeta/src/scenes/LobbyScene.js
-import { createLobby, joinLobby } from '../net/LobbyManager.js';
 import { supabase } from '../net/SupabaseClient.js';
 import HexMap from '../engine/HexMap.js';
 import { getColorForTerrain } from './WorldSceneMap.js';
@@ -91,12 +90,12 @@ function classifyGeographyFromTiles(tiles, width, height) {
   if ((riverEdges / Math.max(1, landCount)) >= 1.2) return 'Scattered Terrain';
 
   // diagonal PCA check
-  const land = tiles.filter(t => t.type !== 'water');
-  const cx = land.reduce((s, t) => s + t.q, 0) / Math.max(1, land.length);
-  const cy = land.reduce((s, t) => s + t.r, 0) / Math.max(1, land.length);
+  const land2 = tiles.filter(t => t.type !== 'water');
+  const cx = land2.reduce((s, t) => s + t.q, 0) / Math.max(1, land2.length);
+  const cy = land2.reduce((s, t) => s + t.r, 0) / Math.max(1, land2.length);
 
   let Sxx = 0, Syy = 0, Sxy = 0;
-  for (const t of land) {
+  for (const t of land2) {
     const dx = t.q - cx, dy = t.r - cy;
     Sxx += dx * dx; Syy += dy * dy; Sxy += dx * dy;
   }
@@ -134,6 +133,7 @@ export default class LobbyScene extends Phaser.Scene {
       fontSize: '28px', fill: '#ffffff'
     }).setScrollFactor(0);
 
+    // Supabase connectivity check (optional but useful)
     try {
       const { error: pingError } =
         await supabase.from('lobbies').select('id').limit(1);
@@ -257,7 +257,9 @@ export default class LobbyScene extends Phaser.Scene {
       let v = codeInput.node.value.replace(/\D/g, '');
       v = v.slice(0, 6);
       codeInput.node.value = v;
-      regenerateAndPreview(v.padStart(6, '0'));
+      if (v) {
+        regenerateAndPreview(v.padStart(6, '0'));
+      }
     });
 
     codeInput.node.addEventListener('blur', () => {
@@ -318,52 +320,173 @@ export default class LobbyScene extends Phaser.Scene {
     hostBtn.addListener('click');
     joinBtn.addListener('click');
 
+    /* =========================
+       Host Game handler
+       ========================= */
     hostBtn.on('click', async () => {
       const name = nameInput.node.value.trim();
-      const code = codeInput.node.value.trim().padStart(6, '0');
+      let code = codeInput.node.value.trim().replace(/\D/g, '');
+      code = code.slice(0, 6).padStart(6, '0');
 
       if (!name || !/^\d{6}$/.test(code)) {
         alert('Enter your name and a 6-digit numeric seed.');
         return;
       }
 
-      const { error } = await createLobby(name, code);
-      if (error) {
-        console.error('[Supabase ERROR] Create lobby:', error.message);
-        alert('Failed to create lobby.');
-        return;
-      }
+      const roomCode = code;
+      const seed = code;
+      const hostPlayerId = 'p1';
 
-      this.scene.start('WorldScene', {
-        seed: code,
-        playerName: name,
-        roomCode: code,
-        isHost: true
-      });
+      const initialState = {
+        seed,
+        mapConfig: { width: 25, height: 25 },
+        players: [{
+          id: hostPlayerId,
+          name,
+          slot: 0,
+          isHost: true,
+          isConnected: true,
+          resources: {
+            food: 200,
+            scrap: 200,
+            money: 200,
+            influence: 200,
+          },
+        }],
+        currentTurnPlayerId: hostPlayerId,
+        turnNumber: 1,
+        units: [],
+        buildings: [],
+        haulers: [],
+        enemies: [],
+        lastUpdatedAt: new Date().toISOString(),
+      };
+
+      try {
+        const { data, error } = await supabase
+          .from('lobbies')
+          .upsert(
+            {
+              room_code: roomCode,
+              state: initialState,
+            },
+            { onConflict: 'room_code' }
+          )
+          .select('state')
+          .single();
+
+        if (error) {
+          console.error('[Supabase ERROR] Create lobby:', error.message);
+          alert('Failed to create lobby.');
+          return;
+        }
+
+        const lobbyState = data?.state || initialState;
+
+        this.scene.start('WorldScene', {
+          seed,
+          playerName: name,
+          playerId: hostPlayerId,
+          roomCode,
+          isHost: true,
+          supabase,
+          lobbyState,
+        });
+      } catch (err) {
+        console.error('[Supabase EXCEPTION] Create lobby failed:', err.message);
+        alert('Failed to create lobby (exception).');
+      }
     });
 
+    /* =========================
+       Join Game handler
+       ========================= */
     joinBtn.on('click', async () => {
       const name = nameInput.node.value.trim();
-      const code = codeInput.node.value.trim().padStart(6, '0');
+      let code = codeInput.node.value.trim().replace(/\D/g, '');
+      code = code.slice(0, 6).padStart(6, '0');
 
       if (!name || !/^\d{6}$/.test(code)) {
         alert('Enter your name and a 6-digit numeric seed.');
         return;
       }
 
-      const { error } = await joinLobby(name, code);
-      if (error) {
-        console.error('[Supabase ERROR] Join lobby:', error.message);
-        alert('Failed to join lobby.');
-        return;
-      }
+      const roomCode = code;
 
-      this.scene.start('WorldScene', {
-        seed: code,
-        playerName: name,
-        roomCode: code,
-        isHost: false
-      });
+      try {
+        const { data, error } = await supabase
+          .from('lobbies')
+          .select('state')
+          .eq('room_code', roomCode)
+          .single();
+
+        if (error || !data?.state) {
+          console.error('[Supabase ERROR] Join lobby:', error?.message);
+          alert('Game not found for this seed.');
+          return;
+        }
+
+        let state = data.state;
+
+        if (!Array.isArray(state.players)) {
+          state.players = [];
+        }
+
+        if (state.players.length >= 4) {
+          alert('This game already has 4 players (maximum).');
+          return;
+        }
+
+        const newId = `p${state.players.length + 1}`;
+        const newPlayer = {
+          id: newId,
+          name,
+          slot: state.players.length,
+          isHost: false,
+          isConnected: true,
+          resources: {
+            food: 200,
+            scrap: 200,
+            money: 200,
+            influence: 200,
+          },
+        };
+
+        state = {
+          ...state,
+          players: [...state.players, newPlayer],
+          lastUpdatedAt: new Date().toISOString(),
+        };
+
+        const { data: updateData, error: updateError } = await supabase
+          .from('lobbies')
+          .update({ state })
+          .eq('room_code', roomCode)
+          .select('state')
+          .single();
+
+        if (updateError) {
+          console.error('[Supabase ERROR] Join lobby update:', updateError.message);
+          alert('Failed to join lobby.');
+          return;
+        }
+
+        const lobbyState = updateData?.state || state;
+        const seed = lobbyState.seed || code;
+
+        this.scene.start('WorldScene', {
+          seed,
+          playerName: name,
+          playerId: newId,
+          roomCode,
+          isHost: false,
+          supabase,
+          lobbyState,
+        });
+      } catch (err) {
+        console.error('[Supabase EXCEPTION] Join lobby failed:', err.message);
+        alert('Failed to join lobby (exception).');
+      }
     });
   }
 
