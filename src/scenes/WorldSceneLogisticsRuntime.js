@@ -42,6 +42,9 @@ export function applyLogisticsRoutesOnEndTurn(sceneArg) {
   const scene = sceneArg || /** @type {any} */ (this);
   if (!scene) return;
 
+  // MP: host-only guard – only host should mutate world state here
+  if (scene.isHost === false) return;
+
   const haulers = Array.isArray(scene.haulers) ? scene.haulers : [];
   const ships   = Array.isArray(scene.ships)   ? scene.ships   : [];
   const carriers = [...haulers, ...ships];
@@ -275,6 +278,7 @@ function _performLoadAll(scene, carrier, station) {
     while (room > 0) {
       const availableList = LOGI_RESOURCES
         .map(key => ({ key, amount: scene.playerResources[key] || 0 }))
+
         .filter(entry => entry.amount > 0);
 
       if (availableList.length === 0) break;
