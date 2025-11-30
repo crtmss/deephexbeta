@@ -124,7 +124,7 @@ export default class WorldScene extends Phaser.Scene {
     // collections
     this.units = [];
     this.enemies = [];
-    this.players = [];
+    this.players = [];     // unit objects marked isPlayer
     this.buildings = [];
     this.haulers = [];
     this.ships = [];
@@ -141,6 +141,7 @@ export default class WorldScene extends Phaser.Scene {
     const {
       seed,
       playerName,
+      playerId,
       roomCode,
       isHost,
       supabase,
@@ -148,11 +149,12 @@ export default class WorldScene extends Phaser.Scene {
     } = this.scene.settings.data || {};
 
     this.seed = seed || 'default-seed';
-    this.playerName = playerName;
-    this.roomCode = roomCode;
-    this.isHost = isHost;
-    this.supabase = supabase;
-    this.lobbyState = lobbyState || { units: {}, enemies: [] };
+    this.playerName = playerName || null;
+    this.playerId = playerId || null;         // 🔹 new: stable player id from lobby
+    this.roomCode = roomCode || null;
+    this.isHost = !!isHost;
+    this.supabase = supabase || null;
+    this.lobbyState = lobbyState || null;     // 🔹 full lobby snapshot (players, turnNumber, etc.)
 
     this.turnOwner = null;
     this.turnNumber = 1;
@@ -206,15 +208,39 @@ export default class WorldScene extends Phaser.Scene {
     this.players = this.players || this.units.filter(u => u.isPlayer);
     this.enemies = this.enemies || this.units.filter(u => u.isEnemy);
 
-    this.turnOwner =
-      this.players[0]?.playerName ||
-      this.players[0]?.name ||
-      null;
+    // --- Turn owner / number: derive from lobbyState if available ---
+    if (this.lobbyState && Array.isArray(this.lobbyState.players)) {
+      this.turnNumber = this.lobbyState.turnNumber || 1;
 
-    // UI: selection highlight + build menu + top HUD + logistics panel
+      const curId = this.lobbyState.currentTurnPlayerId;
+      let lobbyTurnOwnerName = null;
+      if (curId) {
+        const p = this.lobbyState.players.find(pl => pl.id === curId);
+        if (p) lobbyTurnOwnerName = p.name;
+      }
+      if (!lobbyTurnOwnerName && this.lobbyState.players.length > 0) {
+        lobbyTurnOwnerName = this.lobbyState.players[0].name;
+      }
+
+      this.turnOwner =
+        lobbyTurnOwnerName ||
+        this.playerName ||
+        this.players[0]?.playerName ||
+        this.players[0]?.name ||
+        null;
+    } else {
+      // local single-player fallback
+      this.turnOwner =
+        this.players[0]?.playerName ||
+        this.players[0]?.name ||
+        this.playerName ||
+        null;
+    }
+
+    // UI: selection highlight + build menu + building click menus + top HUD + logistics panel
     attachSelectionHighlight(this);
     setupWorldMenus(this);
-    setupBuildingsUI(this);   // ⬅️ building click menus (docks, factories, etc.)
+    setupBuildingsUI(this);   // 🔹 now wired: docks / factory menus etc.
     setupTurnUI(this);
     setupLogisticsPanel(this); // Logistics tab hooks into helpers defined in setupTurnUI
 
@@ -231,7 +257,7 @@ export default class WorldScene extends Phaser.Scene {
     // Input (selection + path preview + movement)
     setupWorldInputUI(this);
 
-    // Supabase sync (multiplayer)
+    // Supabase sync (multiplayer) – keep existing behaviour for now
     if (this.supabase) {
       this.syncPlayerMove = async unit => {
         const res = await this.supabase
@@ -240,18 +266,21 @@ export default class WorldScene extends Phaser.Scene {
           .eq('room_code', this.roomCode)
           .single();
         if (!res.data) return;
-        const nextPlayer = this.getNextPlayer(res.data.state.players, this.playerName);
+
+        const state = res.data.state;
+        const nextPlayer = this.getNextPlayer(state.players, this.playerName);
+
         await this.supabase
           .from('lobbies')
           .update({
             state: {
-              ...res.data.state,
-              players: res.data.state.players.map(p =>
+              ...state,
+              players: state.players.map(p =>
                 p.name === this.playerName
                   ? { ...p, q: unit.q, r: unit.r }
                   : p
               ),
-              currentTurn: nextPlayer,
+              currentTurn: nextPlayer, // legacy field; safe to keep until full sync refactor
             },
           })
           .eq('room_code', this.roomCode);
