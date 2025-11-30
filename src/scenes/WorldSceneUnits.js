@@ -93,7 +93,7 @@ function pickSpawnTiles(scene, count) {
 /**
  * Creates a mobile base unit (player "king" piece).
  */
-function createMobileBase(scene, spawnTile, playerName, color) {
+function createMobileBase(scene, spawnTile, playerName, color, playerIndex) {
   const { x, y } = scene.axialToWorld(spawnTile.q, spawnTile.r);
 
   // Use a simple circle for now – can be swapped to sprite later
@@ -109,6 +109,9 @@ function createMobileBase(scene, spawnTile, playerName, color) {
 
   unit.playerName = playerName;
   unit.name = playerName || 'Player';
+
+  // index in lobby state (0..3), useful for deterministic ordering
+  unit.playerIndex = playerIndex;
 
   unit.movementPoints = 4;
   unit.maxMovementPoints = 4;
@@ -185,12 +188,19 @@ export async function spawnUnitsAndEnemies() {
     }
   }
 
+  const localName = scene.playerName || (scene.isHost ? 'Host' : 'Player');
+
   // If we don't have remote lobby data, treat this as local / singleplayer.
   if (!lobbyPlayers || lobbyPlayers.length === 0) {
-    lobbyPlayers = [scene.playerName || 'Player'];
+    lobbyPlayers = [localName];
   }
 
-  // Limit to 4 players
+  // Ensure local player is included (if lobby has room for them).
+  if (!lobbyPlayers.includes(localName) && lobbyPlayers.length < 4) {
+    lobbyPlayers = [...lobbyPlayers, localName];
+  }
+
+  // Limit to 4 players, keep order from lobby state
   const maxPlayers = 4;
   const uniquePlayers = Array.from(new Set(lobbyPlayers)).slice(0, maxPlayers);
 
@@ -207,10 +217,10 @@ export async function spawnUnitsAndEnemies() {
     const tile = spawnTiles[idx] || spawnTiles[spawnTiles.length - 1];
     const color = PLAYER_COLORS[idx % PLAYER_COLORS.length];
 
-    const unit = createMobileBase(scene, tile, name, color);
+    const unit = createMobileBase(scene, tile, name, color, idx);
 
     // Mark which unit belongs to the local player
-    unit.isLocalPlayer = (name === scene.playerName);
+    unit.isLocalPlayer = (name === localName);
 
     scene.units.push(unit);
     scene.players.push(unit);
@@ -224,36 +234,38 @@ export async function spawnUnitsAndEnemies() {
     const centerR = Math.floor(scene.mapHeight / 2);
 
     const originTile = byKey.get(keyOf(centerQ, centerR)) || map[0];
-    const enemySpawnCandidates = [];
+    if (originTile) {
+      const enemySpawnCandidates = [];
 
-    // simple BFS from center, looking for non-water/non-mountain
-    const seen = new Set();
-    const qd = [originTile];
-    seen.add(keyOf(originTile.q, originTile.r));
+      // simple BFS from center, looking for non-water/non-mountain
+      const seen = new Set();
+      const qd = [originTile];
+      seen.add(keyOf(originTile.q, originTile.r));
 
-    while (qd.length && enemySpawnCandidates.length < 6) {
-      const cur = qd.shift();
-      if (cur.type !== 'water' && cur.type !== 'mountain') {
-        enemySpawnCandidates.push(cur);
+      while (qd.length && enemySpawnCandidates.length < 6) {
+        const cur = qd.shift();
+        if (cur.type !== 'water' && cur.type !== 'mountain') {
+          enemySpawnCandidates.push(cur);
+        }
+        for (const [dq, dr] of neighborsOddR(cur.q, cur.r)) {
+          const nq = cur.q + dq;
+          const nr = cur.r + dr;
+          const k = keyOf(nq, nr);
+          if (seen.has(k)) continue;
+          const nt = byKey.get(k);
+          if (!nt) continue;
+          seen.add(k);
+          qd.push(nt);
+        }
       }
-      for (const [dq, dr] of neighborsOddR(cur.q, cur.r)) {
-        const nq = cur.q + dq;
-        const nr = cur.r + dr;
-        const k = keyOf(nq, nr);
-        if (seen.has(k)) continue;
-        const nt = byKey.get(k);
-        if (!nt) continue;
-        seen.add(k);
-        qd.push(nt);
-      }
+
+      scene.enemies.length = 0;
+      enemySpawnCandidates.slice(0, 3).forEach(tile => {
+        const enemy = createEnemyUnit(scene, tile);
+        scene.units.push(enemy);
+        scene.enemies.push(enemy);
+      });
     }
-
-    scene.enemies.length = 0;
-    enemySpawnCandidates.slice(0, 3).forEach(tile => {
-      const enemy = createEnemyUnit(scene, tile);
-      scene.units.push(enemy);
-      scene.enemies.push(enemy);
-    });
   }
 
   console.log(
@@ -280,12 +292,12 @@ export function updateUnitOrientation(scene, unit, fromQ, fromR, toQ, toR) {
   // For pointy-top odd-r, we can use a small lookup.
   const key = `${dq},${dr}`;
   const ANGLES = {
-    '1,0':   0,            // east
-    '1,-1':  -Math.PI / 3, // NE
-    '0,-1':  -2 * Math.PI / 3, // NW
-    '-1,0':  Math.PI,      // W
-    '-1,1':  2 * Math.PI / 3,  // SW
-    '0,1':   Math.PI / 3,  // SE
+    '1,0':   0,                  // east
+    '1,-1':  -Math.PI / 3,       // NE
+    '0,-1':  -2 * Math.PI / 3,   // NW
+    '-1,0':  Math.PI,            // W
+    '-1,1':  2 * Math.PI / 3,    // SW
+    '0,1':   Math.PI / 3,        // SE
   };
 
   const angle = ANGLES[key] ?? 0;
