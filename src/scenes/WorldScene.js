@@ -124,7 +124,7 @@ export default class WorldScene extends Phaser.Scene {
     // collections
     this.units = [];
     this.enemies = [];
-    this.players = [];     // unit objects marked isPlayer
+    this.players = [];
     this.buildings = [];
     this.haulers = [];
     this.ships = [];
@@ -141,7 +141,6 @@ export default class WorldScene extends Phaser.Scene {
     const {
       seed,
       playerName,
-      playerId,
       roomCode,
       isHost,
       supabase,
@@ -149,12 +148,11 @@ export default class WorldScene extends Phaser.Scene {
     } = this.scene.settings.data || {};
 
     this.seed = seed || 'default-seed';
-    this.playerName = playerName || null;
-    this.playerId = playerId || null;         // 🔹 new: stable player id from lobby
-    this.roomCode = roomCode || null;
-    this.isHost = !!isHost;
-    this.supabase = supabase || null;
-    this.lobbyState = lobbyState || null;     // 🔹 full lobby snapshot (players, turnNumber, etc.)
+    this.playerName = playerName;
+    this.roomCode = roomCode;
+    this.isHost = isHost;
+    this.supabase = supabase;
+    this.lobbyState = lobbyState || { units: {}, enemies: [] };
 
     this.turnOwner = null;
     this.turnNumber = 1;
@@ -208,39 +206,15 @@ export default class WorldScene extends Phaser.Scene {
     this.players = this.players || this.units.filter(u => u.isPlayer);
     this.enemies = this.enemies || this.units.filter(u => u.isEnemy);
 
-    // --- Turn owner / number: derive from lobbyState if available ---
-    if (this.lobbyState && Array.isArray(this.lobbyState.players)) {
-      this.turnNumber = this.lobbyState.turnNumber || 1;
+    this.turnOwner =
+      this.players[0]?.playerName ||
+      this.players[0]?.name ||
+      null;
 
-      const curId = this.lobbyState.currentTurnPlayerId;
-      let lobbyTurnOwnerName = null;
-      if (curId) {
-        const p = this.lobbyState.players.find(pl => pl.id === curId);
-        if (p) lobbyTurnOwnerName = p.name;
-      }
-      if (!lobbyTurnOwnerName && this.lobbyState.players.length > 0) {
-        lobbyTurnOwnerName = this.lobbyState.players[0].name;
-      }
-
-      this.turnOwner =
-        lobbyTurnOwnerName ||
-        this.playerName ||
-        this.players[0]?.playerName ||
-        this.players[0]?.name ||
-        null;
-    } else {
-      // local single-player fallback
-      this.turnOwner =
-        this.players[0]?.playerName ||
-        this.players[0]?.name ||
-        this.playerName ||
-        null;
-    }
-
-    // UI: selection highlight + build menu + building click menus + top HUD + logistics panel
+    // UI: selection highlight + build menu + top HUD + logistics panel
     attachSelectionHighlight(this);
     setupWorldMenus(this);
-    setupBuildingsUI(this);   // 🔹 now wired: docks / factory menus etc.
+    setupBuildingsUI(this);   // ⬅️ building click menus (docks, factories, etc.)
     setupTurnUI(this);
     setupLogisticsPanel(this); // Logistics tab hooks into helpers defined in setupTurnUI
 
@@ -257,33 +231,38 @@ export default class WorldScene extends Phaser.Scene {
     // Input (selection + path preview + movement)
     setupWorldInputUI(this);
 
-    // Supabase sync (multiplayer) – keep existing behaviour for now
+    // Supabase sync (multiplayer) – only updates currentTurn in lobby.state
     if (this.supabase) {
       this.syncPlayerMove = async unit => {
-        const res = await this.supabase
-          .from('lobbies')
-          .select('state')
-          .eq('room_code', this.roomCode)
-          .single();
-        if (!res.data) return;
+        try {
+          const { data, error } = await this.supabase
+            .from('lobbies')
+            .select('state')
+            .eq('room_code', this.roomCode)
+            .single();
 
-        const state = res.data.state;
-        const nextPlayer = this.getNextPlayer(state.players, this.playerName);
+          if (error || !data) {
+            console.warn('[WORLD] Failed to fetch lobby state in syncPlayerMove:', error || 'no data');
+            return;
+          }
 
-        await this.supabase
-          .from('lobbies')
-          .update({
-            state: {
-              ...state,
-              players: state.players.map(p =>
-                p.name === this.playerName
-                  ? { ...p, q: unit.q, r: unit.r }
-                  : p
-              ),
-              currentTurn: nextPlayer, // legacy field; safe to keep until full sync refactor
-            },
-          })
-          .eq('room_code', this.roomCode);
+          const state = data.state || {};
+          const players = Array.isArray(state.players) ? state.players : [];
+
+          const nextPlayer = this.getNextPlayer(players, this.playerName);
+
+          await this.supabase
+            .from('lobbies')
+            .update({
+              state: {
+                ...state,
+                currentTurn: nextPlayer,
+              },
+            })
+            .eq('room_code', this.roomCode);
+        } catch (err) {
+          console.error('[WORLD] syncPlayerMove exception:', err);
+        }
       };
     }
 
@@ -292,9 +271,18 @@ export default class WorldScene extends Phaser.Scene {
 
   getNextPlayer(players, currentName) {
     if (!players || players.length === 0) return null;
-    const idx = players.findIndex(p => p.name === currentName);
-    if (idx === -1) return players[0].name;
-    return players[(idx + 1) % players.length].name;
+
+    // Accept either array of strings or array of { name }
+    const names = players
+      .map(p => (typeof p === 'string' ? p : p?.name))
+      .filter(Boolean);
+
+    if (names.length === 0) return null;
+
+    const idx = names.indexOf(currentName);
+    if (idx === -1) return names[0];
+
+    return names[(idx + 1) % names.length];
   }
 
   addWorldMetaBadge() {
@@ -467,9 +455,10 @@ Biomes: ${biome}`;
 
     this.moveEnemies();
 
-    const idx = this.players.findIndex(p => p.name === this.turnOwner);
-    const nextIdx = (idx + 1) % this.players.length;
-    this.turnOwner = this.players[nextIdx].name;
+    const idx = this.players.findIndex(p => p.name === this.turnOwner || p.playerName === this.turnOwner);
+    const nextIdx = (idx === -1 ? 0 : (idx + 1) % this.players.length);
+    const nextOwner = this.players[nextIdx];
+    this.turnOwner = nextOwner?.playerName || nextOwner?.name || this.turnOwner;
     this.turnNumber += 1;
 
     console.log(`[TURN] New turn owner: ${this.turnOwner} (Turn ${this.turnNumber})`);
