@@ -28,6 +28,12 @@ const HAULER_CARGO_CAP = 5;
 
 /** Build a ship at the docks hex. Costs 10 food. */
 export function buildShipForDocks(scene, building) {
+  // MP: host-only guard (clients shouldn’t spawn ships)
+  if (scene && scene.isHost === false) {
+    console.warn('[SHIP] Clients cannot build ships (host only).');
+    return;
+  }
+
   _ensureResourceInit(scene);
   if (!_spend(scene, { food: 10 })) {
     console.warn('[SHIP] Not enough 🍖 (need 10).');
@@ -118,6 +124,9 @@ export function openDocksRoutePicker(scene, building) {
 
 /** Snap all ships of a docks back to the docks hex. */
 export function recallShipsToDocks(scene, building) {
+  // MP: host-only guard
+  if (scene && scene.isHost === false) return;
+
   const ships = (scene.ships || []).filter(s => s.docksId === building.id);
   if (ships.length === 0) {
     console.log(`[DOCKS] Recall: no ships for docks#${building.id}`);
@@ -134,7 +143,9 @@ export function recallShipsToDocks(scene, building) {
 /** End-turn execution for ships (move/harvest/return, cyan path, deposit). */
 export function applyShipRoutesOnEndTurn(sceneArg) {
   const scene = sceneArg || /** @type {any} */ (this);
-  if (!scene) return;
+  // MP: host-only guard (only host runs end-turn world logic)
+  if (!scene || scene.isHost === false) return;
+
   _ensureResourceInit(scene);
 
   const buildings = scene.buildings || [];
@@ -263,6 +274,13 @@ export function applyShipRoutesOnEndTurn(sceneArg) {
 /** Build a hauler at the selected mobile base (cost 10 food). */
 export function buildHaulerAtSelectedUnit() {
   const scene = /** @type {Phaser.Scene & any} */ (this);
+
+  // MP: host-only guard
+  if (scene && scene.isHost === false) {
+    console.warn('[HAULER] Clients cannot build haulers (host only).');
+    return;
+  }
+
   _ensureResourceInit(scene);
   if (!_spend(scene, { food: 10 })) {
     console.warn('[HAULER] Not enough 🍖 (need 10).');
@@ -333,6 +351,9 @@ export function applyHaulerBehaviorOnEndTurn(sceneArg) {
   const scene = sceneArg || /** @type {any} */ (this);
   if (!scene) return;
 
+  // MP: host-only guard
+  if (scene.isHost === false) return;
+
   // Keep resource init (playerResources etc.) consistent with the rest of the module
   _ensureResourceInit(scene);
 
@@ -399,6 +420,13 @@ export function applyHaulerBehaviorOnEndTurn(sceneArg) {
 /** Click UI: assign docks to selected hauler (or first). Bound to scene as `this`. */
 export function enterHaulerRoutePicker() {
   const scene = /** @type {Phaser.Scene & any} */ (this);
+
+  // MP: host-only guard
+  if (scene && scene.isHost === false) {
+    console.warn('[HAULER] Clients cannot assign hauler routes (host only).');
+    return;
+  }
+
   const sel = scene.selectedUnit;
   let targetHauler = null;
   if (sel && sel.type === 'hauler') targetHauler = sel;
