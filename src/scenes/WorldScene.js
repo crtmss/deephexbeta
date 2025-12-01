@@ -30,14 +30,15 @@ import {
   hexToPixel,
   pixelToHex,
   roundHex,
-  drawHex,
   getColorForTerrain,
   isoOffset,
-  LIFT_PER_LVL
+  LIFT_PER_LVL,
 } from './WorldSceneMap.js';
 
+import { supabase as sharedSupabase } from '../net/SupabaseClient.js';
+
 /* =========================
-   Deterministic world summary
+   Deterministic world summary (UI-only)
    ========================= */
 
 function __hashStr32(s) {
@@ -78,8 +79,8 @@ function getWorldSummaryForSeed(seedStr, width, height) {
   };
 
   const biomes = [];
-  if (waterRatio > 0.3)      biomes.push('Archipelago');
-  else if (waterRatio < 0.22) biomes.push('Continental');
+  if (waterRatio > 0.3)        biomes.push('Archipelago');
+  else if (waterRatio < 0.22)  biomes.push('Continental');
 
   if (forestRatio > 0.28)      biomes.push('Dense Forests');
   else if (forestRatio < 0.20) biomes.push('Sparse Forests');
@@ -110,15 +111,15 @@ export default class WorldScene extends Phaser.Scene {
     this.hexSize = 24;
     this.mapWidth = 25;
     this.mapHeight = 25;
+
     this.input.setDefaultCursor('grab');
     this.isDragging = false;
     this.isUnitMoving = false;
 
-    // make LIFT_PER_LVL available to other modules that read it from scene
+    // Make elevation lift constant visible to map-location renderer
     this.LIFT_PER_LVL = LIFT_PER_LVL;
 
-    // Hex transform tool (X key creates central lake etc.)
-    // HexTransformTool should call scene.redrawWorld() after mutating mapData.
+    // Hex transform tool (X key edits terrain and then calls scene.redrawWorld())
     startHexTransformTool(this, { defaultType: 'water', defaultLevel: 1 });
 
     // collections
@@ -147,11 +148,13 @@ export default class WorldScene extends Phaser.Scene {
       lobbyState,
     } = this.scene.settings.data || {};
 
-    this.seed = seed || 'default-seed';
-    this.playerName = playerName;
-    this.roomCode = roomCode;
-    this.isHost = isHost;
-    this.supabase = supabase;
+    this.seed = seed || '000000';
+    this.playerName = playerName || 'Player';
+    this.roomCode = roomCode || this.seed;
+    this.isHost = !!isHost;
+
+    // Prefer instance passed via scene.start, fallback to global shared supabase
+    this.supabase = supabase || sharedSupabase || null;
     this.lobbyState = lobbyState || { units: {}, enemies: [] };
 
     this.turnOwner = null;
@@ -165,8 +168,12 @@ export default class WorldScene extends Phaser.Scene {
       influence: 200,
     };
 
-    // --- map generation: use HexMap.generateMap() but wrap into mapInfo ---
+    /* =========================
+       Deterministic map generation
+       ========================= */
     this.hexMap = new HexMap(this.mapWidth, this.mapHeight, this.seed);
+
+    // HexMap.generateMap() returns either tiles[] or { tiles, objects }
     let mapInfo = this.hexMap.generateMap && this.hexMap.generateMap();
 
     if (Array.isArray(mapInfo)) {
@@ -184,6 +191,7 @@ export default class WorldScene extends Phaser.Scene {
       mapInfo.objects = this.hexMap.objects || [];
     }
 
+    // Store mapInfo so other systems (roads, POIs, resources) see the same data
     this.mapInfo = mapInfo;
     this.hexMap.mapInfo = mapInfo;
     this.mapData = mapInfo.tiles;
@@ -194,33 +202,38 @@ export default class WorldScene extends Phaser.Scene {
     this.pixelToHex = (x, y, sizeOverride) =>
       pixelToHex(x, y, sizeOverride ?? this.hexSize);
 
-    // draw map and world objects
+    /* =========================
+       Draw terrain + POIs + roads + resources
+       ========================= */
     drawHexMap.call(this);
     drawLocationsAndRoads.call(this);
     spawnFishResources.call(this);
 
-    // === UNITS & ENEMIES SPAWN ===
+    /* =========================
+       UNITS & ENEMIES SPAWN (multiplayer-aware)
+       ========================= */
     await spawnUnitsAndEnemies.call(this);
-    // ==============================
 
-    this.players = this.players || this.units.filter(u => u.isPlayer);
-    this.enemies = this.enemies || this.units.filter(u => u.isEnemy);
+    this.players = this.players && this.players.length
+      ? this.players
+      : this.units.filter(u => u.isPlayer);
+    this.enemies = this.enemies && this.enemies.length
+      ? this.enemies
+      : this.units.filter(u => u.isEnemy);
 
     this.turnOwner =
       this.players[0]?.playerName ||
       this.players[0]?.name ||
       null;
 
-    // UI: selection highlight + build menu + top HUD + logistics panel
+    /* =========================
+       UI: menus, buildings, logistics, HUD
+       ========================= */
     attachSelectionHighlight(this);
     setupWorldMenus(this);
-    setupBuildingsUI(this);   // ⬅️ building click menus (docks, factories, etc.)
+    setupBuildingsUI(this);
     setupTurnUI(this);
-    setupLogisticsPanel(this); // Logistics tab hooks into helpers defined in setupTurnUI
-
-    // ⛔️ removed: auto-refresh timer that was redrawing every second
-    // HexTransformTool should now explicitly call scene.redrawWorld()
-    // whenever it mutates hex types/levels.
+    setupLogisticsPanel(this);
 
     if (this.turnOwner) {
       updateTurnText(this, this.turnOwner);
@@ -231,37 +244,39 @@ export default class WorldScene extends Phaser.Scene {
     // Input (selection + path preview + movement)
     setupWorldInputUI(this);
 
-    // Supabase sync (multiplayer) – only updates currentTurn in lobby.state
-    if (this.supabase) {
+    /* =========================
+       Supabase sync bridge stub
+       ========================= */
+    if (this.supabase && this.roomCode && this.playerName) {
       this.syncPlayerMove = async unit => {
         try {
-          const { data, error } = await this.supabase
+          const res = await this.supabase
             .from('lobbies')
             .select('state')
             .eq('room_code', this.roomCode)
             .single();
 
-          if (error || !data) {
-            console.warn('[WORLD] Failed to fetch lobby state in syncPlayerMove:', error || 'no data');
-            return;
-          }
+          if (!res.data || !res.data.state || !Array.isArray(res.data.state.players)) return;
 
-          const state = data.state || {};
-          const players = Array.isArray(state.players) ? state.players : [];
-
-          const nextPlayer = this.getNextPlayer(players, this.playerName);
+          const state = res.data.state;
+          const nextPlayer = this.getNextPlayer(state.players, this.playerName);
 
           await this.supabase
             .from('lobbies')
             .update({
               state: {
                 ...state,
+                players: state.players.map(p =>
+                  p === this.playerName || p?.name === this.playerName
+                    ? { ...(typeof p === 'string' ? { name: p } : p), q: unit.q, r: unit.r }
+                    : p
+                ),
                 currentTurn: nextPlayer,
               },
             })
             .eq('room_code', this.roomCode);
         } catch (err) {
-          console.error('[WORLD] syncPlayerMove exception:', err);
+          console.error('[Supabase syncPlayerMove] Error:', err);
         }
       };
     }
@@ -272,21 +287,20 @@ export default class WorldScene extends Phaser.Scene {
   getNextPlayer(players, currentName) {
     if (!players || players.length === 0) return null;
 
-    // Accept either array of strings or array of { name }
-    const names = players
-      .map(p => (typeof p === 'string' ? p : p?.name))
-      .filter(Boolean);
+    // players[] can be ["Vlad", "Alice"] or [{name:"Vlad"}, ...]
+    const norm = players.map(p => (typeof p === 'string' ? { name: p } : p));
+    const idx = norm.findIndex(p => p.name === currentName);
 
-    if (names.length === 0) return null;
-
-    const idx = names.indexOf(currentName);
-    if (idx === -1) return names[0];
-
-    return names[(idx + 1) % names.length];
+    if (idx === -1) return norm[0].name;
+    return norm[(idx + 1) % norm.length].name;
   }
 
   addWorldMetaBadge() {
-    const { geography, biome } = getWorldSummaryForSeed(this.seed, this.mapWidth, this.mapHeight);
+    const { geography, biome } = getWorldSummaryForSeed(
+      String(this.seed),
+      this.mapWidth,
+      this.mapHeight
+    );
 
     const text = `Seed: ${this.seed}
 Water: ~${geography.waterTiles}
@@ -418,15 +432,13 @@ Biomes: ${biome}`;
         duration: 160,
         ease: 'Sine.easeInOut',
         onComplete: () => {
-          // previous axial coords before committing the step
           const prevQ = unit.q;
           const prevR = unit.r;
 
-          // commit the logical move to this hex
           unit.q = step.q;
           unit.r = step.r;
 
-          // 🔺 update facing direction towards this step
+          // update facing direction towards this step
           updateUnitOrientation(scene, unit, prevQ, prevR, unit.q, unit.r);
 
           index += 1;
@@ -453,12 +465,25 @@ Biomes: ${biome}`;
     // 4) Factorio-style hauler routes (logisticsRoute on haulers / ships)
     applyLogisticsRoutesOnEndTurn(this);
 
-    this.moveEnemies();
+    // Host moves enemies; clients will later be synced via Supabase (future step)
+    if (this.isHost) {
+      this.moveEnemies();
+    }
 
-    const idx = this.players.findIndex(p => p.name === this.turnOwner || p.playerName === this.turnOwner);
-    const nextIdx = (idx === -1 ? 0 : (idx + 1) % this.players.length);
-    const nextOwner = this.players[nextIdx];
-    this.turnOwner = nextOwner?.playerName || nextOwner?.name || this.turnOwner;
+    const idx = this.players.findIndex(p =>
+      p.playerName === this.turnOwner ||
+      p.name === this.turnOwner
+    );
+
+    const nextIdx = idx === -1
+      ? 0
+      : (idx + 1) % this.players.length;
+
+    const nextOwner =
+      this.players[nextIdx].playerName ||
+      this.players[nextIdx].name;
+
+    this.turnOwner = nextOwner;
     this.turnNumber += 1;
 
     console.log(`[TURN] New turn owner: ${this.turnOwner} (Turn ${this.turnNumber})`);
@@ -510,7 +535,8 @@ Biomes: ${biome}`;
     drawHexMap.call(this);
     // Re-draw roads & special locations
     drawLocationsAndRoads.call(this);
-    // (Optional) re-spawn resources here if needed in the future.
+    // Re-bind resource visuals from deterministic mapInfo (fish etc.)
+    spawnFishResources.call(this);
   }
 }
 
