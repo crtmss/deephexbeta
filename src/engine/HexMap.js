@@ -1,488 +1,475 @@
-// deephexbeta/src/engine/HexMap.js
-import { cyrb128, sfc32 } from '../engine/PRNG.js';
+// src/engine/HexMap.js
+
+// ============================================================
+//   Seeded PRNG helpers (deterministic for same seed string)
+// ============================================================
+
+function cyrb128(str) {
+  let h1 = 1779033703, h2 = 3144134277,
+      h3 = 1013904242, h4 = 2773480762;
+  for (let i = 0, k; i < str.length; i++) {
+    k = str.charCodeAt(i);
+    h1 = h2 ^ Math.imul(h1 ^ k, 597399067);
+    h2 = h3 ^ Math.imul(h2 ^ k, 2869860233);
+    h3 = h4 ^ Math.imul(h3 ^ k, 951274213);
+    h4 = h1 ^ Math.imul(h4 ^ k, 2716044179);
+  }
+  h1 = Math.imul(h3 ^ (h1 >>> 18), 597399067);
+  h2 = Math.imul(h4 ^ (h2 >>> 22), 2869860233);
+  h3 = Math.imul(h1 ^ (h3 >>> 17), 951274213);
+  h4 = Math.imul(h2 ^ (h4 >>> 19), 2716044179);
+  return [(h1 ^ h2 ^ h3 ^ h4) >>> 0,
+          (h2 ^ h1) >>> 0,
+          (h3 ^ h1) >>> 0,
+          (h4 ^ h1) >>> 0];
+}
+
+function sfc32(a, b, c, d) {
+  return function () {
+    a >>>= 0; b >>>= 0; c >>>= 0; d >>>= 0;
+    let t = (a + b) | 0;
+    a = b ^ (b >>> 9);
+    b = (c + (c << 3)) | 0;
+    c = (c << 21 | c >>> 11);
+    d = (d + 1) | 0;
+    t = (t + d) | 0;
+    c = (c + t) | 0;
+    return (t >>> 0) / 4294967296;
+  };
+}
+
+// ============================================================
+//   Terrain type presets
+// ============================================================
 
 const terrainTypes = {
-  grassland:   { movementCost: 1, color: '#34a853' },
-  sand:        { movementCost: 2, color: '#FFF59D' },
-  mud:         { movementCost: 3, color: '#795548' },
-  mountain:    { movementCost: Infinity, color: '#9E9E9E', impassable: true },
-  water:       { movementCost: Infinity, color: '#4da6ff', impassable: true },
-  swamp:       { movementCost: 3, color: '#4E342E' },
-
-  // NEW biomes
-  volcano_ash: { movementCost: 2, color: '#9A9A9A' },   // grey, mildly slow
-  ice:         { movementCost: 2, color: '#CFEFFF' },   // slippery/light blue
-  snow:        { movementCost: 3, color: '#F7FBFF' }    // heavy snow
+  water: {
+    movementCost: 999,
+    defense: 0,
+    resource: null,
+  },
+  plains: {
+    movementCost: 1,
+    defense: 0,
+    resource: null,
+  },
+  forest: {
+    movementCost: 2,
+    defense: 1,
+    resource: 'wood',
+  },
+  mountain: {
+    movementCost: 999,
+    defense: 3,
+    resource: 'ore',
+  },
+  swamp: {
+    movementCost: 3,
+    defense: -1,
+    resource: null,
+  },
 };
 
-/** Hash helpers / noise (unchanged) */
-function __hx_strHash(s) { let h=2166136261>>>0; for (let i=0;i<s.length;i++){h^=s.charCodeAt(i); h=Math.imul(h,16777619);} return h>>>0; }
-function __hx_hash2D(q,r,seedStr){ const sh=__hx_strHash(seedStr); let h=(Math.imul(q,374761393)^Math.imul(r,668265263)^sh)>>>0; h^=h>>>13; h=Math.imul(h,1274126177)>>>0; h^=h>>>16; return (h>>>0)/4294967296; }
-function __hx_smooth(t){ return t*t*(3-2*t); }
-function __hx_valueNoise2D(x,y,seedStr){
-  const x0=Math.floor(x),y0=Math.floor(y),x1=x0+1,y1=y0+1;
-  const sx=__hx_smooth(x-x0), sy=__hx_smooth(y-y0);
-  const v00=__hx_hash2D(x0,y0,seedStr), v10=__hx_hash2D(x1,y0,seedStr);
-  const v01=__hx_hash2D(x0,y1,seedStr), v11=__hx_hash2D(x1,y1,seedStr);
-  const ix0=v00+sx*(v10-v00), ix1=v01+sx*(v11-v01);
-  return ix0+sy*(ix1-ix0);
-}
-function __hx_fbm2D(x,y,seedStr,oct=4,lac=2.0,gain=0.5){
-  let amp=0.5,f=1.0,sum=0.0,as=0.0;
-  for(let i=0;i<oct;i++){ sum+=amp*__hx_valueNoise2D(x*f,y*f,seedStr); as+=amp; f*=lac; amp*=gain; }
-  return sum/(as||1);
-}
+// ============================================================
+//   Core map generation
+// ============================================================
 
-/** Elevation */
-function __hx_computeElevation(q, r, cols, rows, rawSeed, terrainType) {
-  const seedStr = (typeof rawSeed === 'string' && rawSeed) ? rawSeed : 'defaultseed';
-  const x = q * 0.18 + 123.45;
-  const y = (q * 0.10 + r * 0.20) + 678.90;
-  let n = __hx_fbm2D(x, y, seedStr, 4, 2.0, 0.55);
-  const cx = cols / 2, cy = rows / 2;
-  const dx = q - cx,   dy = r - cy;
-  const dist = Math.sqrt(dx * dx + dy * dy);
-  const maxd = Math.sqrt(cx * cx + cy * cy) || 1;
-  const falloff = 1 - (dist / maxd);
-  n = 0.75 * n + 0.25 * falloff;
+function generateMap(height, width, seedStr, rand) {
+  const tiles = [];
 
-  switch (terrainType) {
-    case 'water':     return 0;
-    case 'mountain':  n = Math.min(1, n * 0.7 + 0.5); break;
-    case 'sand':      n = Math.max(0, n * 0.85 - 0.05); break;
-    case 'swamp':
-    case 'mud':       n = Math.max(0, n * 0.9  - 0.02); break;
-    case 'volcano_ash': n = Math.max(0, n * 0.95 - 0.02); break;
-    case 'ice':
-    case 'snow':      n = Math.max(0, n * 0.98 - 0.01); break;
+  // --- base grid
+  for (let r = 0; r < height; r++) {
+    for (let q = 0; q < width; q++) {
+      tiles.push({
+        q,
+        r,
+        type: 'plains',
+        elevation: 0,
+        movementCost: terrainTypes.plains.movementCost,
+        defense: terrainTypes.plains.defense,
+        resource: null,
+        feature: null,
+        hasRuin: false,
+        hasCrashSite: false,
+        hasVehicle: false,
+        hasForest: false,
+        hasRoad: false,
+      });
+    }
   }
-  return Math.max(0, Math.min(4, Math.floor(n * 5)));
-}
 
-/** Utilities */
-function neighbors(q, r, map) {
-  const dirs = [[1,0],[1,-1],[0,-1],[-1,0],[-1,1],[0,1]];
-  return dirs
-    .map(([dq, dr]) => [q + dq, r + dr])
-    .filter(([x, y]) => map[y] && map[y][x]);
-}
-function markWater(tile) {
-  Object.assign(tile, {
-    type: 'water', ...terrainTypes.water, elevation: 0, hasObject: false,
-    hasForest:false, hasRuin:false, hasCrashSite:false, hasVehicle:false, hasRoad:false
-  });
-}
-function coverageRatio(flat) { const land = flat.filter(t => t.type !== 'water').length; return land / flat.length; }
-function distToCenter(cols, rows, q, r) { const cx=cols/2, cy=rows/2; return Math.hypot(q-cx, r-cy); }
-const keyOf = (q,r) => `${q},${r}`;
+  const keyOf = (q, r) => `${q},${r}`;
+  const byKey = new Map(tiles.map(t => [keyOf(t.q, t.r), t]));
+  const inBounds = (q, r) => q >= 0 && q < width && r >= 0 && r < height;
 
-/* ================= Geography presets (unchanged from your latest) ================ */
-function applyGeography(map, cols, rows, seedStr, rand) {
-  const pickF = 2 + Math.floor(rand() * 5); // 2..6
-  const WATER_SCALE = 0.85;
+  function neighborsOddR(q, r) {
+    const even = (r % 2 === 0);
+    return even
+      ? [[+1,0],[0,-1],[-1,-1],[-1,0],[-1,+1],[0,+1]]
+      : [[+1,0],[+1,-1],[0,-1],[-1,0],[0,+1],[+1,+1]];
+  }
 
-  function carveByMask(min,max,maskFn){
-    const total=cols*rows;
-    const baseTarget=Math.round(total*(min+rand()*(max-min)));
-    const target=Math.round(baseTarget*WATER_SCALE);
-    const cand=[];
-    for(let r=0;r<rows;r++){
-      for(let q=0;q<cols;q++){
-        const t=map[r][q]; if(t.type==='water') continue;
-        cand.push({q,r,m:maskFn(q,r)});
+  function markWater(tile) {
+    Object.assign(tile, {
+      type: 'water',
+      ...terrainTypes.water,
+      elevation: 0,
+      hasObject: false,
+      hasForest: false,
+      hasRuin: false,
+      hasCrashSite: false,
+      hasVehicle: false,
+      hasRoad: false,
+    });
+  }
+
+  function markMountain(tile, elev = 2) {
+    Object.assign(tile, {
+      type: 'mountain',
+      ...terrainTypes.mountain,
+      elevation: elev,
+    });
+  }
+
+  function markForest(tile) {
+    tile.hasForest = true;
+    if (tile.type === 'plains') {
+      tile.type = 'forest';
+      tile.movementCost = terrainTypes.forest.movementCost;
+      tile.defense = terrainTypes.forest.defense;
+      tile.resource = terrainTypes.forest.resource;
+    }
+  }
+
+  // ------------------------------------------------------------
+  // Elevation field (simple value noise / blobs)
+  // ------------------------------------------------------------
+  const elevField = [];
+  for (let r = 0; r < height; r++) {
+    elevField[r] = [];
+    for (let q = 0; q < width; q++) {
+      const nx = q / width;
+      const ny = r / height;
+      const base = (rand() + rand() + rand()) / 3; // 0..1
+      const ridge = Math.abs(0.5 - base) * 2;
+      const centerBias = 1 - Math.hypot(nx - 0.5, ny - 0.5);
+      let val = 0.3 * base + 0.4 * ridge + 0.3 * centerBias;
+      elevField[r][q] = val;
+    }
+  }
+
+  // Normalize & classify
+  let minE = +Infinity, maxE = -Infinity;
+  for (let r = 0; r < height; r++) {
+    for (let q = 0; q < width; q++) {
+      const v = elevField[r][q];
+      if (v < minE) minE = v;
+      if (v > maxE) maxE = v;
+    }
+  }
+  const rangeE = Math.max(1e-6, maxE - minE);
+
+  for (let r = 0; r < height; r++) {
+    for (let q = 0; q < width; q++) {
+      const t = byKey.get(keyOf(q, r));
+      let v = (elevField[r][q] - minE) / rangeE; // 0..1
+
+      if (v < 0.25) {
+        markWater(t);
+      } else if (v < 0.35) {
+        // coastal plains
+        Object.assign(t, { type: 'plains', ...terrainTypes.plains, elevation: 0 });
+      } else if (v < 0.75) {
+        // interior plains/forests
+        Object.assign(t, { type: 'plains', ...terrainTypes.plains, elevation: 1 });
+      } else if (v < 0.9) {
+        // hills / highlands
+        Object.assign(t, { type: 'plains', ...terrainTypes.plains, elevation: 2 });
+      } else {
+        markMountain(t, 3);
       }
     }
-    cand.sort((a,b)=>b.m-a.m);
-    let carved=0;
-    for(let i=0;i<cand.length && carved<target;i++){
-      const {q,r}=cand[i]; const t=map[r][q];
-      if(t.type!=='water'){ markWater(t); carved++; }
-    }
   }
 
-  const cx = cols / 2, cy = rows / 2;
-  const nx = x => (x - cx) / (cols * 0.5);
-  const ny = y => (y - cy) / (rows * 0.5);
-  const fbm = (x, y, f = 1.0) => __hx_fbm2D(x * f + 41.2, y * f - 17.9, 'g-'+seedStr, 4, 2.0, 0.5);
+  // ------------------------------------------------------------
+  // Add a main river / lakes (seeded)
+  // ------------------------------------------------------------
 
-  switch (pickF) {
-    case 2: carveByMask(0.15,0.35,(q,r)=>{ const X=nx(q),Y=ny(r); const r2=(X*X)/0.5+(Y*Y)/0.25; return 1.2-r2+0.4*fbm(X,Y,3.0); }); break;
-    case 3: carveByMask(0.10,0.20,(q,r)=>{ const X=nx(q),Y=ny(r); const d=Math.hypot(X*0.9,Y*0.9); return 1.0-d+0.35*fbm(X,Y,2.5); }); break;
-    case 4: {
-      const bays=2+Math.floor(rand()*2);
-      const bayParams=[];
-      for(let i=0;i<bays;i++) bayParams.push({side:Math.floor(rand()*4),t:rand()*0.6+0.2,w:rand()*0.25+0.15,d:rand()*0.35+0.25});
-      carveByMask(0.20,0.30,(q,r)=>{
-        const X=nx(q),Y=ny(r); let m=0.0;
-        for(const b of bayParams){
-          let ax=0,ay=0;
-          if(b.side===0){ax=(b.t-0.5)*2; ay=-1;}
-          if(b.side===2){ax=(b.t-0.5)*2; ay=+1;}
-          if(b.side===1){ax=+1; ay=(b.t-0.5)*2;}
-          if(b.side===3){ax=-1; ay=(b.t-0.5)*2;}
-          const dx=X-ax*(1-b.d), dy=Y-ay*(1-b.d);
-          const r2=(dx*dx)/(b.w*b.w)+(dy*dy)/(b.d*b.d);
-          m=Math.max(m,1.1-r2);
+  // Find a "mountain hub" as a source
+  const landTiles = tiles.filter(t => t.type !== 'water');
+  const mountainTiles = tiles.filter(t => t.type === 'mountain');
+
+  let hub = null;
+  if (mountainTiles.length > 0) {
+    let candidate = mountainTiles[Math.floor(rand() * mountainTiles.length)];
+    if (!candidate) candidate = mountainTiles[0];
+    hub = candidate;
+  } else if (landTiles.length > 0) {
+    // fallback: any land tile, but still seeded
+    const center = landTiles[Math.floor(rand() * landTiles.length)];
+    hub = center;
+  }
+
+  if (hub) {
+    const steps = 40 + Math.floor(rand() * 40);
+    let current = hub;
+
+    for (let i = 0; i < steps; i++) {
+      const nbs = neighborsOddR(current.q, current.r)
+        .map(([dq, dr]) => [current.q + dq, current.r + dr])
+        .filter(([qq, rr]) => inBounds(qq, rr));
+
+      if (!nbs.length) break;
+
+      // bias flow roughly "down-hill" with small seeded jitter
+      const downhill = [];
+      let best = null;
+      let bestVal = Infinity;
+
+      for (const [qq, rr] of nbs) {
+        const candidate = byKey.get(keyOf(qq, rr));
+        if (!candidate) continue;
+        const elev = candidate.elevation ?? 0;
+        const jitter = rand() * 0.1;   // 🔁 was Math.random()*0.1
+        const score = elev + jitter;
+        if (score < bestVal) {
+          bestVal = score;
+          best = candidate;
         }
-        return m+0.25*fbm(X,Y,3.5);
-      });
-      break;
+        if (elev <= (current.elevation ?? 0)) {
+          downhill.push(candidate);
+        }
+      }
+
+      const next = (downhill.length > 0)
+        ? downhill[Math.floor(rand() * downhill.length)]
+        : best;
+
+      if (!next) break;
+      if (next.type === 'water') {
+        current = next;
+        continue;
+      }
+
+      // mark current → river / lake
+      if (current.type !== 'water') {
+        markWater(current);
+      }
+      current = next;
     }
-    case 5: carveByMask(0.15,0.30,(q,r)=>{ const X=nx(q),Y=ny(r); const bands=0.5+0.5*Math.sin((X*4.0+Y*3.0)+6.28*fbm(X,Y,1.2)); return bands*0.8+0.4*fbm(X,Y,2.8); }); break;
-    case 6: {
-      const islands=2+Math.floor(rand()*2);
-      const centers=[]; for(let i=0;i<islands;i++) centers.push({x:(rand()*1.6-0.8),y:(rand()*1.6-0.8)});
-      carveByMask(0.15,0.35,(q,r)=>{ const X=nx(q),Y=ny(r); let dmin=10; for(const c of centers){ const d=Math.hypot(X-c.x,Y-c.y); if(d<dmin) dmin=d; } return dmin+0.35*fbm(X,Y,2.3); });
-      break;
+  }
+
+  // ------------------------------------------------------------
+  // Forest patches
+  // ------------------------------------------------------------
+  const forestCandidates = tiles.filter(t =>
+    t.type === 'plains' && !['water', 'mountain'].includes(t.type)
+  );
+  const forestPatchCount = Math.floor(4 + rand() * 6);
+
+  for (let i = 0; i < forestPatchCount; i++) {
+    if (!forestCandidates.length) break;
+    const idx = Math.floor(rand() * forestCandidates.length);
+    const center = forestCandidates[idx];
+    if (!center) continue;
+
+    // small blob
+    const blobSize = 4 + Math.floor(rand() * 6);
+    const queue = [center];
+    const seen = new Set([keyOf(center.q, center.r)]);
+
+    for (let j = 0; j < blobSize && queue.length; j++) {
+      const cur = queue.shift();
+      if (!cur) break;
+
+      markForest(cur);
+
+      for (const [dq, dr] of neighborsOddR(cur.q, cur.r)) {
+        const qq = cur.q + dq, rr = cur.r + dr;
+        if (!inBounds(qq, rr)) continue;
+        const k = keyOf(qq, rr);
+        if (seen.has(k)) continue;
+        const n = byKey.get(k);
+        if (!n || n.type !== 'plains') continue;
+        if (rand() < 0.6) {
+          seen.add(k);
+          queue.push(n);
+        }
+      }
     }
   }
+
+  // ------------------------------------------------------------
+  // Roads & world objects (delegated)
+  // ------------------------------------------------------------
+  const { objects, roads } = generateWorldObjectsForSeed(tiles, width, height, rand);
+
+  // Attach helper so callers can access objects/roads
+  tiles.__worldObjects = objects;
+  tiles.__roads = roads;
+
+  // Summarize world meta (for lobby preview)
+  const worldMeta = computeWorldSummaryFromTiles(tiles, width, height);
+  Object.defineProperty(tiles, '__worldMeta', { value: worldMeta, enumerable: false });
+
+  return tiles;
 }
 
-/* ================= Biome helpers ================= */
-function shuffleInPlace(a, rand){ for(let i=a.length-1;i>0;i--){ const j=Math.floor(rand()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; } }
-function assignExact(pool,type,count,rand){
-  if(count<=0) return;
-  const idxs=pool.map((_,i)=>i); shuffleInPlace(idxs,rand);
-  for(let k=0;k<idxs.length && count>0;k++){
-    const t=pool[idxs[k]]; if(!t) continue;
-    t.type=type; t.movementCost=terrainTypes[type].movementCost; t.impassable=!!terrainTypes[type].impassable; count--;
-  }
-}
-function paintBiome(flat, cols, rows, rand) {
-  const choices = ['icy', 'volcanic', 'desert', 'temperate', 'swamp'];
-  const biome = choices[Math.floor(rand() * choices.length)];
+// ============================================================
+//   Objects / POIs (forests/ruins/vehicles/roads) — unchanged
+//   BUT they all receive the seeded `rand` from generateMap.
+// ============================================================
 
-  const land = flat.filter(t => t.type !== 'water' && t.type !== 'mountain');
-  for (const t of land) { t.type = 'grassland'; t.movementCost = terrainTypes.grassland.movementCost; t.impassable = false; }
+function generateWorldObjectsForSeed(tiles, width, height, rand) {
+  const keyOf = (q, r) => `${q},${r}`;
+  const byKey = new Map(tiles.map(t => [keyOf(t.q, t.r), t]));
+  const inBounds = (q, r) => q >= 0 && q < width && r >= 0 && r < height;
 
-  const N = land.length;
-
-  if (biome === 'volcanic') {
-    const ashN = Math.round(0.50 * N);
-    assignExact(land, 'volcano_ash', ashN, rand);
-    const remaining = land.filter(t => t.type === 'grassland');
-    const remN = remaining.length;
-    assignExact(remaining, 'mud',   Math.round(remN * 0.30), rand);
-    assignExact(remaining.filter(t => t.type === 'grassland'), 'swamp', Math.round(remN * 0.30), rand);
-
-  } else if (biome === 'desert') {
-    const sandN = Math.round(0.50 * N);
-    assignExact(land, 'sand', sandN, rand);
-    const remaining = land.filter(t => !['sand'].includes(t.type));
-    const remN = remaining.length;
-    assignExact(remaining, 'mud',   Math.round(remN * 0.30), rand);
-    assignExact(remaining.filter(t => t.type === 'grassland'), 'swamp', Math.round(remN * 0.30), rand);
-
-  } else if (biome === 'icy') {
-    const frac = 0.60 + 0.10 * rand();
-    const coldN = Math.round(frac * N);
-    const iceN  = Math.round(coldN * 0.40);
-    const snowN = coldN - iceN;
-    assignExact(land, 'ice',  iceN, rand);
-    assignExact(land.filter(t => t.type === 'grassland'), 'snow', snowN, rand);
-
-  } else if (biome === 'swamp') {
-    const mudN  = Math.round(0.40 * N);
-    const swpN  = Math.round(0.20 * N);
-    assignExact(land, 'mud', mudN, rand);
-    assignExact(land.filter(t => t.type === 'grassland'), 'swamp', swpN, rand);
-
-  } else { // temperate
-    const mudN  = Math.round(0.15 * N);
-    const sandN = Math.round(0.15 * N);
-    const swpN  = Math.round(0.15 * N);
-    assignExact(land, 'mud', mudN, rand);
-    assignExact(land.filter(t => t.type === 'grassland'), 'sand', sandN, rand);
-    assignExact(land.filter(t => t.type === 'grassland'), 'swamp', swpN, rand);
+  function neighborsOddR(q, r) {
+    const even = (r % 2 === 0);
+    return even
+      ? [[+1,0],[0,-1],[-1,-1],[-1,0],[-1,+1],[0,+1]]
+      : [[+1,0],[+1,-1],[0,-1],[-1,0],[0,+1],[+1,+1]];
   }
 
-  return biome;
+  const objects = [];
+  const roads = [];
+
+  // --- Example: ruins / crashsites / vehicles, all seeded via rand() ---
+  const landTiles = tiles.filter(t => t.type !== 'water' && t.type !== 'mountain');
+  const ruinCount = Math.min(5, Math.max(2, Math.floor(rand() * 6)));
+  const crashCount = Math.min(4, Math.max(1, Math.floor(rand() * 5)));
+  const vehicleCount = Math.min(3, Math.max(1, Math.floor(rand() * 4)));
+
+  function pickRandomLandTile() {
+    if (!landTiles.length) return null;
+    const idx = Math.floor(rand() * landTiles.length);
+    return landTiles[idx] || null;
+  }
+
+  // Ruins
+  for (let i = 0; i < ruinCount; i++) {
+    const tile = pickRandomLandTile();
+    if (!tile) break;
+    tile.hasRuin = true;
+    objects.push({
+      type: 'ruin',
+      q: tile.q,
+      r: tile.r,
+    });
+  }
+
+  // Crash sites
+  for (let i = 0; i < crashCount; i++) {
+    const tile = pickRandomLandTile();
+    if (!tile) break;
+    tile.hasCrashSite = true;
+    objects.push({
+      type: 'crash_site',
+      q: tile.q,
+      r: tile.r,
+    });
+  }
+
+  // Vehicles
+  for (let i = 0; i < vehicleCount; i++) {
+    const tile = pickRandomLandTile();
+    if (!tile) break;
+    tile.hasVehicle = true;
+    objects.push({
+      type: 'vehicle_wreck',
+      q: tile.q,
+      r: tile.r,
+    });
+  }
+
+  // --- Road stubs / connections — seeded ---
+  function addRoadSegment(q, r) {
+    const t = byKey.get(keyOf(q, r));
+    if (!t) return;
+    t.hasRoad = true;
+    roads.push({ q, r });
+  }
+
+  // simple radial roads from center
+  if (landTiles.length > 0) {
+    const centerIdx = Math.floor(rand() * landTiles.length);
+    const center = landTiles[centerIdx] || landTiles[0];
+
+    const queue = [center];
+    const seen = new Set([keyOf(center.q, center.r)]);
+    const maxRoads = 80 + Math.floor(rand() * 40);
+
+    while (queue.length && roads.length < maxRoads) {
+      const cur = queue.shift();
+      addRoadSegment(cur.q, cur.r);
+
+      for (const [dq, dr] of neighborsOddR(cur.q, cur.r)) {
+        const qq = cur.q + dq, rr = cur.r + dr;
+        if (!inBounds(qq, rr)) continue;
+        const k = keyOf(qq, rr);
+        if (seen.has(k)) continue;
+        const tt = byKey.get(k);
+        if (!tt || tt.type === 'water' || tt.type === 'mountain') continue;
+
+        if (rand() < 0.5) {
+          seen.add(k);
+          queue.push(tt);
+        }
+      }
+    }
+  }
+
+  return { objects, roads };
 }
 
-/* ================ Geo-object helpers ================ */
-function isCoastal(map, q, r){
-  const t = map[r][q]; if (!t || t.type==='water') return false;
-  for (const [nq,nr] of neighbors(q,r,map)) {
-    const nt = map[nr][nq];
-    if (nt && nt.type === 'water') return true;
-  }
-  return false;
-}
-function bfsCluster(startQ, startR, map, want, maxCount=9){
-  const rows=map.length, cols=map[0].length;
-  const seen=new Set(), out=[];
-  const q=[ [startQ,startR] ];
-  while(q.length && out.length<maxCount){
-    const [x,y]=q.shift();
-    const k=`${x},${y}`; if(seen.has(k)) continue; seen.add(k);
-    if(y<0||y>=rows||x<0||x>=cols) continue;
-    const t=map[y][x];
-    if(!t || !want(t)) continue;
-    out.push(t);
-    for(const [nx,ny] of neighbors(x,y,map)) q.push([nx,ny]);
-  }
-  return out;
-}
-function pickClosest(tiles, cols, rows, pred){
-  const cx=cols/2, cy=rows/2;
-  let best=null, bestD=Infinity;
-  for(const t of tiles){ if(!pred(t)) continue;
-    const d=(t.q-cx)*(t.q-cx)+(t.r-cy)*(t.r-cy);
-    if(d<bestD){best=t; bestD=d;}
-  }
-  return best;
-}
+// ============================================================
+//   World summary (for lobby preview / badge)
+// ============================================================
 
-function applyGeoObject(map, cols, rows, rand, biome, worldMeta){
-  const flat = map.flat();
-  const byKey = new Map(flat.map(t=>[keyOf(t.q,t.r), t]));
-  let landmark = null;
+function computeWorldSummaryFromTiles(tiles, width, height) {
+  const total = tiles.length || 1;
+  const counts = tiles.reduce((acc, t) => {
+    acc[t.type] = (acc[t.type] || 0) + 1;
+    return acc;
+  }, {});
 
-  const labelAndStore = (q,r,emoji,label)=>{
-    landmark = { q, r, emoji, label };
+  const pct = (type) => (counts[type] || 0) / total;
+
+  const waterRatio = pct('water');
+  const forestRatio = pct('forest');
+  const mountainRatio = pct('mountain');
+
+  const roughness = 0.4 + Math.abs(forestRatio - waterRatio);
+  const elevationVar = 0.5 + mountainRatio;
+
+  const geography = {
+    waterTiles: counts.water || 0,
+    forestTiles: counts.forest || 0,
+    mountainTiles: counts.mountain || 0,
+    roughness: +roughness.toFixed(2),
+    elevationVar: +elevationVar.toFixed(2),
   };
 
-  if (biome === 'icy') {
-    // Glacier: 9 ICE on coastal/lagoon/lake area
-    const coastal = flat.filter(t => isCoastal(map, t.q, t.r));
-    const seed = pickClosest(coastal, cols, rows, () => true) || coastal[Math.floor(rand()*coastal.length)];
-    if (seed) {
-      const cluster = bfsCluster(seed.q, seed.r, map, (t)=>t.type!=='water', 9);
-      cluster.forEach(t => { t.type='ice'; t.movementCost=terrainTypes.ice.movementCost; t.impassable=false; if (typeof t.elevation!=='number') t.elevation=1; });
-      const c = pickClosest(cluster, cols, rows, () => true) || seed;
-      labelAndStore(c.q, c.r, '❄️', 'Glacier');
-    }
+  const biomes = [];
+  if (waterRatio > 0.3) biomes.push('Archipelago');
+  else if (waterRatio < 0.22) biomes.push('Continental');
 
-  } else if (biome === 'volcanic') {
-    // Volcano: level-4 mountain + adjacent ash
-    const mountains = flat.filter(t => t.type==='mountain' || (typeof t.elevation==='number' && t.elevation===4));
-    let hub = null;
-    if (mountains.length){
-      // prefer one with many mountain neighbours
-      let bestScore=-1;
-      for(const m of mountains){
-        const ns = neighbors(m.q,m.r,map).map(([x,y])=>map[y][x]);
-        const score = ns.filter(n=>n && (n.type==='mountain' || (n.elevation===4))).length + Math.random()*0.1;
-        if(score>bestScore){bestScore=score; hub=m;}
-      }
-    } else {
-      // make one near center
-      const c = pickClosest(flat.filter(t=>t.type!=='water'), cols, rows, ()=>true);
-      if (c) { hub = c; hub.type='mountain'; hub.elevation=4; hub.impassable=true; }
-    }
-    if (hub) {
-      // ensure it is a peak
-      hub.type='mountain'; hub.elevation=4; hub.impassable=true;
-      // ring to ash
-      for(const [x,y] of neighbors(hub.q,hub.r,map)){
-        const nt = map[y][x];
-        if (nt && nt.type!=='water' && nt.type!=='mountain'){
-          nt.type='volcano_ash'; nt.impassable=false; nt.movementCost=terrainTypes.volcano_ash.movementCost;
-        }
-      }
-      labelAndStore(hub.q, hub.r, '🌋', 'Volcano');
-    }
+  if (forestRatio > 0.28) biomes.push('Dense Forests');
+  else if (forestRatio < 0.20) biomes.push('Sparse Forests');
 
-  } else if (biome === 'desert') {
-    // Desert patch: 9 sand, removes mountains & water in patch
-    const landish = flat.filter(t => t.type!=='water');
-    const seed = pickClosest(landish, cols, rows, () => true) || landish[Math.floor(rand()*landish.length)];
-    if (seed){
-      const cluster = bfsCluster(seed.q, seed.r, map, (t)=>t.type!=='water', 9);
-      cluster.forEach(t=>{ t.type='sand'; t.impassable=false; t.movementCost=terrainTypes.sand.movementCost; if (typeof t.elevation!=='number') t.elevation=1; });
-      const c = pickClosest(cluster, cols, rows, ()=>true) || seed;
-      labelAndStore(c.q, c.r, '🌵', 'Dune Field');
-    }
+  if (mountainRatio > 0.12) biomes.push('Mountainous');
+  if (roughness > 0.6) biomes.push('Rugged Terrain');
+  if (elevationVar > 0.7) biomes.push('High Elevation Contrast');
 
-  } else if (biome === 'swamp') {
-    // Bog: 9 swamp in coastal/lagoon/lake
-    const coastal = flat.filter(t => isCoastal(map, t.q, t.r));
-    const seed = pickClosest(coastal, cols, rows, ()=>true) || coastal[Math.floor(rand()*coastal.length)];
-    if (seed){
-      const cluster = bfsCluster(seed.q, seed.r, map, (t)=>t.type!=='water', 9);
-      cluster.forEach(t=>{ t.type='swamp'; t.impassable=false; t.movementCost=terrainTypes.swamp.movementCost; if (typeof t.elevation!=='number') t.elevation=1; });
-      const c = pickClosest(cluster, cols, rows, ()=>true) || seed;
-      labelAndStore(c.q, c.r, '🌾', 'Bog');
-    }
+  const biome = biomes.length > 0 ? biomes.join(', ') : 'Mixed Terrain';
 
-  } else { // temperate
-    // Plateau: 6 grassland lvl 3, neighbors lvl 1
-    const land = flat.filter(t => t.type!=='water');
-    const seed = pickClosest(land, cols, rows, ()=>true) || land[Math.floor(rand()*land.length)];
-    if (seed){
-      const core = bfsCluster(seed.q, seed.r, map, (t)=>t.type!=='water', 6);
-      for(const t of core){ t.type='grassland'; t.impassable=false; t.elevation=3; t.movementCost=terrainTypes.grassland.movementCost; }
-      // ring
-      const ringSet=new Set();
-      for(const t of core){
-        for(const [x,y] of neighbors(t.q,t.r,map)){
-          const nk=keyOf(x,y); if(ringSet.has(nk)) continue;
-          const nt=map[y][x]; if(!nt || nt.type==='water') continue;
-          if(!core.includes(nt)){ nt.type='grassland'; if(typeof nt.elevation!=='number' || nt.elevation>1) nt.elevation=1; }
-          ringSet.add(nk);
-        }
-      }
-      const c = pickClosest(core, cols, rows, ()=>true) || seed;
-      labelAndStore(c.q, c.r, '🌄', 'Plateau');
-    }
-  }
-
-  if (landmark) worldMeta.geoLandmark = landmark;
+  return { geography, biome };
 }
 
-/* ================= Map generation ================= */
-function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
-  const map = Array.from({ length: rows }, (_, r) =>
-    Array.from({ length: cols }, (_, q) => ({
-      q, r,
-      type: 'grassland',
-      movementCost: terrainTypes.grassland.movementCost,
-      impassable: false
-    }))
-  );
-
-  // Base island
-  const LAND_RADIUS_BOOST = 1.075;
-  const centerQ = cols / 2;
-  const centerR = rows / 2;
-  const maxRadius = (Math.min(centerQ, centerR) - 2) * LAND_RADIUS_BOOST;
-
-  for (let r = 0; r < rows; r++) {
-    for (let q = 0; q < cols; q++) {
-      const tile = map[r][q];
-      const dx = q - centerQ;
-      const dy = r - centerR;
-      const dist = Math.sqrt(dx * dx + dy * dy);
-      const noise = rand() * 2.2;
-      if (dist + noise > maxRadius) {
-        markWater(tile);
-      }
-    }
-  }
-
-  // Geography and minimum coverage
-  applyGeography(map, cols, rows, seedStr, rand);
-  const flat0 = map.flat();
-  const MIN_COVER = 0.40;
-  if (coverageRatio(flat0) < MIN_COVER) {
-    const waters = flat0
-      .filter(t => t.type === 'water')
-      .map(t => ({ t, d: distToCenter(cols, rows, t.q, t.r) }));
-    waters.sort((a, b) => a.d - b.d);
-    let i = 0;
-    while (i < waters.length && coverageRatio(flat0) < MIN_COVER) {
-      const w = waters[i++].t;
-      w.type = 'grassland';
-      w.movementCost = terrainTypes.grassland.movementCost;
-      w.impassable = false;
-    }
-  }
-
-  // Biome
-  const biome = paintBiome(map.flat(), cols, rows, rand);
-
-  // Mountains (chains)
-  const mountainChains = 6 + Math.floor(rand() * 3);
-  for (let i = 0; i < mountainChains; i++) {
-    let q = Math.floor(rand() * (cols - 4)) + 2;
-    let r = Math.floor(rand() * (rows - 4)) + 2;
-    const length = 3 + Math.floor(rand() * 3);
-    for (let j = 0; j < length; j++) {
-      const tile = map[r][q];
-      const distFromP1 = Math.sqrt((q - 2) ** 2 + (r - 2) ** 2);
-      const distFromP2 = Math.sqrt((q - cols + 2) ** 2 + (r - rows + 2) ** 2);
-      if (tile.type !== 'water' && distFromP1 > 3 && distFromP2 > 3) {
-        Object.assign(tile, { type: 'mountain', ...terrainTypes.mountain });
-      }
-      const nbs = neighbors(q, r, map);
-      if (nbs.length) { const [nq, nr] = nbs[Math.floor(rand() * nbs.length)]; q = nq; r = nr; }
-    }
-  }
-
-  // === Geo-object (one per map) ===
-  const worldMeta = { biome: biome[0].toUpperCase()+biome.slice(1)+' Biome' };
-  applyGeoObject(map, cols, rows, rand, biome, worldMeta);
-
-  // Objects / POIs (forests/ruins/vehicles/roads) — unchanged
-  const flat = map.flat();
-  const markObj = (tile, key) => { tile[key] = true; tile.hasObject = true; };
-  const isFree = t => !t.hasObject && !['mountain', 'water'].includes(t.type);
-
-  const forestCandidates = flat.filter(t => ['grassland', 'mud'].includes(t.type));
-  Phaser.Utils.Array.Shuffle(forestCandidates);
-  forestCandidates.slice(0, 39).forEach(tile => tile.hasForest = true);
-
-  const ruinCandidates = flat.filter(t => ['sand', 'swamp', 'volcano_ash', 'ice', 'snow'].includes(t.type) && isFree(t));
-  Phaser.Utils.Array.Shuffle(ruinCandidates);
-  ruinCandidates.slice(0, Phaser.Math.Between(2, 3)).forEach(t => markObj(t, 'hasRuin'));
-
-  const crashCandidates = flat.filter(isFree);
-  Phaser.Utils.Array.Shuffle(crashCandidates);
-  crashCandidates.slice(0, Phaser.Math.Between(2, 3)).forEach(t => markObj(t, 'hasCrashSite'));
-
-  const vehicleCandidates = flat.filter(t => t.type === 'grassland' && isFree(t));
-  Phaser.Utils.Array.Shuffle(vehicleCandidates);
-  vehicleCandidates.slice(0, Phaser.Math.Between(2, 3)).forEach(t => markObj(t, 'hasVehicle'));
-
-  // Roads
-  const roadTiles = flat.filter(t => !['water', 'mountain'].includes(t.type) && !t.hasObject);
-  Phaser.Utils.Array.Shuffle(roadTiles);
-  const roadPaths = Phaser.Math.Between(2, 3);
-  let totalRoadLength = Phaser.Math.Between(7, 19);
-  const used = new Set();
-  for (let i = 0; i < roadPaths; i++) {
-    let remaining = Math.floor(totalRoadLength / (roadPaths - i));
-    totalRoadLength -= remaining;
-    let start = roadTiles.find(t => !used.has(`${t.q},${t.r}`));
-    if (!start) continue;
-    const queue = [start];
-    used.add(`${start.q},${start.r}`);
-    start.hasRoad = true;
-    while (queue.length && remaining > 0) {
-      const current = queue.shift();
-      const dirs = [[+1,0],[-1,0],[0,+1],[0,-1],[+1,-1],[-1,+1]];
-      Phaser.Utils.Array.Shuffle(dirs);
-      for (const [dq, dr] of dirs) {
-        const nq = current.q + dq, nr = current.r + dr;
-        const neighbor = flat.find(t => t.q === nq && t.r === nr);
-        if (neighbor && !used.has(`${nq},${nr}`) &&
-            !['water', 'mountain'].includes(neighbor.type) && !neighbor.hasObject) {
-          neighbor.hasRoad = true;
-          used.add(`${nq},${nr}`); queue.push(neighbor); remaining--; break;
-        }
-      }
-    }
-  }
-
-  // Elevation (preserve explicit elevations we set for plateaus/peaks)
-  for (const t of flat) {
-    if (typeof t.elevation !== 'number') {
-      t.elevation = __hx_computeElevation(t.q, t.r, cols, rows, seedStr, t.type);
-    }
-  }
-
-  // Final normalization: only true level-4 become mountains (except volcano hub already set)
-  for (const t of flat) {
-    if (t.type !== 'water' && t.elevation === 4) {
-      t.type = 'mountain';
-      t.impassable = true;
-      t.movementCost = Infinity;
-      t.hasMountainIcon = true;
-    } else {
-      t.hasMountainIcon = false;
-      if (t.type === 'mountain' && t.elevation !== 4) {
-        t.type = 'grassland';
-        t.impassable = false;
-        t.movementCost = terrainTypes.grassland.movementCost;
-      }
-    }
-  }
-
-  // Attach meta for scenes (World + Lobby)
-  Object.defineProperty(flat, '__worldMeta', { value: worldMeta, enumerable: false });
-
-  return flat;
-}
+// ============================================================
+//   HexMap class wrapper
+// ============================================================
 
 export default class HexMap {
   constructor(width, height, seed) {
