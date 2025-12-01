@@ -1,231 +1,211 @@
 // src/scenes/WorldSceneMapLocations.js
-// Roads + POIs rendering. Geography (landmarks + UI/overlay) is delegated
-// to WorldSceneGeography.js.
+//
+// FULLY DETERMINISTIC version.
+// Everything must match across ALL clients that share the same seed.
+// All POIs, roads, forests, and icons come ONLY from mapInfo generated in HexMap.js.
+//
+// NO randomness remains. No Phaser.Math.Between. No mulberry32 RNG here.
+// All tile flags (hasForest, hasRuin, etc.) come from HexMap.js.
+// All POI objects come from mapInfo.objects.
 
-import Geography, {
-  resolveBiome,
+import {
   effectiveElevationLocal,
   initOrUpdateGeography,
   drawGeographyOverlay,
   getNoPOISet,
+  resolveBiome,
 } from './WorldSceneGeography.js';
 
-function mulberry32(a) {
-  let t = a >>> 0;
-  return function () {
-    t += 0x6D2B79F5;
-    let r = Math.imul(t ^ (t >>> 15), 1 | t);
-    r ^= r + Math.imul(r ^ (r >>> 7), 61 | r);
-    return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
-  };
-}
-const rndInt = (rnd, min, max) => Math.floor(rnd() * (max - min + 1)) + min;
-const chance = (rnd, p) => rnd() < p;
 const keyOf = (q, r) => `${q},${r}`;
 
-function inBounds(q, r, w, h) { return q >= 0 && q < w && r >= 0 && r < h; }
+/* ==========================
+   Deterministic neighbors
+   ========================== */
 function neighborsOddR(q, r) {
   const even = (r % 2 === 0);
   return even
     ? [[+1,0],[0,-1],[-1,-1],[-1,0],[-1,+1],[0,+1]]
     : [[+1,0],[+1,-1],[0,-1],[-1,0],[0,+1],[+1,+1]];
 }
-function neighborTiles(byKey, width, height, q, r, skipWater = true) {
-  const out = [];
-  for (const [dq, dr] of neighborsOddR(q, r)) {
-    const nq = q + dq, nr = r + dr;
-    if (!inBounds(nq, nr, width, height)) continue;
-    const t = byKey.get(keyOf(nq, nr));
-    if (!t) continue;
-    if (skipWater && t.type === 'water') continue;
-    out.push(t);
-  }
-  return out;
+
+function inBounds(q, r, w, h) {
+  return q >= 0 && r >= 0 && q < w && r < h;
 }
 
-/* --------------------- Biome + POI helpers --------------------- */
-function treeEmojiFor(biome, tileType) {
-  if (tileType === 'volcano_ash') return '🌴';
-  if (tileType === 'sand')        return '🌴';
-  if (tileType === 'swamp')       return '🌳';
-  if (tileType === 'ice' || tileType === 'snow') return '🌲';
-  const b = (biome || '').toLowerCase();
-  if (b.includes('volcan'))  return '🌴';
-  if (b.includes('desert'))  return '🌴';
-  if (b.includes('icy'))     return '🌲';
-  if (b.includes('swamp'))   return '🌳';
-  return '🌳';
+/* ============================================================================
+   POIs + Forest Flags Binding
+   ============================================================================
+
+   IMPORTANT:
+   - NO randomness here.
+   - mapInfo.objects already contains deterministic POIs (fish, ruins, crash sites, vehicles, etc.)
+   - mapData tiles have flags pre-set by HexMap.js (hasForest, hasRuin, hasCrashSite, etc.)
+   ============================================================================ */
+
+export function applyLocationFlags(mapData, width, height, seed) {
+  // Nothing to do. All POIs are now seed-generated in HexMap.js.
+  // This function is retained only for compatibility.
+  return mapData;
 }
 
-/* ================= Placement & flags (POIs) ================= */
-function placeLocations(mapData, width, height, rnd) {
-  for (const t of mapData) {
-    if (t.type === 'water') {
-      t.hasForest = t.hasRuin = t.hasCrashSite = t.hasVehicle = false;
-      t.hasMountainIcon = false;
-      continue;
-    }
-    const elev = typeof t.elevation === 'number' ? t.elevation : 0;
-    t.hasMountainIcon = (elev === 4);
+/* ============================================================================
+   Deterministic Road Generation
+   ============================================================================
 
-    if (t.type === 'forest') t.hasForest = true;
-    else if (!t.hasForest && chance(rnd, 0.06)) t.hasForest = true;
+   Roads now work as follows:
+   - For every pair of POIs of significance (ruin, crash site, vehicle):
+   - Connect POIs in sorted order.
+   - Use deterministic A* (no random tie breaks).
+   ============================================================================ */
 
-    if (!t.hasRuin && t.type !== 'mountain' && chance(rnd, 0.010)) t.hasRuin = true;
-    if (!t.hasCrashSite && chance(rnd, 0.006)) t.hasCrashSite = true;
-
-    if (!t.hasVehicle &&
-        (t.type === 'plains' || t.type === 'desert' || t.type === 'sand' || t.type === 'grassland' || t.type === '') &&
-        chance(rnd, 0.008)) {
-      t.hasVehicle = true;
-    }
-  }
-
-  // forest spreading
-  const byKey = new Map(mapData.map(tt => [keyOf(tt.q, tt.r), tt]));
-  for (const t of mapData) {
-    if (!t.hasForest) continue;
-    const localRnd = mulberry32((t.q * 73856093) ^ (t.r * 19349663));
-    for (const n of neighborTiles(byKey, width, height, t.q, t.r, true)) {
-      if (!n.hasForest && chance(localRnd, 0.15)) n.hasForest = true;
-    }
-  }
-}
-
-/* ================= Roads (graph-based, with A*) ================= */
-function markRoadEdge(a, b, type = 'countryside') {
-  if (!a || !b) return;
-  if (a.type === 'water' || b.type === 'water') return;
-  a.hasRoad = b.hasRoad = true;
-  a.roadType = a.roadType === 'asphalt' || type === 'asphalt' ? 'asphalt' : (a.roadType || 'countryside');
-  b.roadType = b.roadType === 'asphalt' || type === 'asphalt' ? 'asphalt' : (b.roadType || 'countryside');
-  a.roadLinks = a.roadLinks || new Set();
-  b.roadLinks = b.roadLinks || new Set();
-  a.roadLinks.add(keyOf(b.q, b.r));
-  b.roadLinks.add(keyOf(a.q, a.r));
-}
-function astar(byKey, width, height, start, goal) {
+function deterministicAStar(byKey, width, height, start, goal) {
   const startK = keyOf(start.q, start.r);
   const goalK  = keyOf(goal.q, goal.r);
-  const open = new Map([[startK, {k:startK,q:start.q,r:start.r,g:0,f:0,parent:null}]]);
+
+  const open = new Map([[startK, {
+    k: startK, q: start.q, r: start.r,
+    g: 0,
+    f: 0,
+    parent: null
+  }]]);
+
   const closed = new Set();
-  const h = (q, r) => Math.abs(q - goal.q) + Math.abs(r - goal.r);
-  while (open.size) {
+
+  const heuristic = (q, r) =>
+    Math.abs(q - goal.q) + Math.abs(r - goal.r);
+
+  while (open.size > 0) {
+    // deterministic: choose smallest f, then lexicographically smallest key
     let cur = null;
-    for (const n of open.values()) if (!cur || n.f < cur.f) cur = n;
+    for (const n of open.values()) {
+      if (!cur ||
+          n.f < cur.f ||
+          (n.f === cur.f && n.k < cur.k)) {
+        cur = n;
+      }
+    }
+
     open.delete(cur.k);
+
     if (cur.k === goalK) {
       const path = [];
-      for (let n = cur; n; n = n.parent) path.push(byKey.get(keyOf(n.q, n.r)));
-      path.reverse();
-      return path;
+      let n = cur;
+      while (n) {
+        path.push(byKey.get(keyOf(n.q, n.r)));
+        n = n.parent;
+      }
+      return path.reverse();
     }
+
     closed.add(cur.k);
+
     for (const [dq, dr] of neighborsOddR(0, 0)) {
-      const nq = cur.q + dq, nr = cur.r + dr;
+      const nq = cur.q + dq;
+      const nr = cur.r + dr;
+      if (!inBounds(nq, nr, width, height)) continue;
+
       const nk = keyOf(nq, nr);
       if (!byKey.has(nk) || closed.has(nk)) continue;
-      const t = byKey.get(nk);
-      if (!t || t.type === 'water') continue;
+
+      const nTile = byKey.get(nk);
+      if (!nTile || nTile.type === "water") continue;
+
       const g = cur.g + 1;
-      const f = g + h(nq, nr);
-      const ex = open.get(nk);
-      if (!ex || g < ex.g) open.set(nk, {k:nk,q:nq,r:nr,g,f,parent:cur});
+      const f = g + heuristic(nq, nr);
+
+      const existing = open.get(nk);
+      if (!existing || g < existing.g) {
+        open.set(nk, {
+          k: nk,
+          q: nq,
+          r: nr,
+          g,
+          f,
+          parent: cur
+        });
+      }
     }
   }
   return null;
 }
-function generateRoads(mapData, width, height, seed) {
-  const rnd = mulberry32(seed >>> 0);
+
+function addRoad(mapData, a, b) {
+  if (!a || !b) return;
+  if (!a.roadLinks) a.roadLinks = new Set();
+  if (!b.roadLinks) b.roadLinks = new Set();
+  a.roadLinks.add(keyOf(b.q, b.r));
+  b.roadLinks.add(keyOf(a.q, a.r));
+  a.hasRoad = true;
+  b.hasRoad = true;
+}
+
+function generateDeterministicRoads(mapData, width, height, mapObjects) {
   const byKey = new Map(mapData.map(t => [keyOf(t.q, t.r), t]));
-  const at = (q, r) => byKey.get(keyOf(q, r));
 
-  const numTrunks = rndInt(rnd, 0, 2);
-  const maxLen    = Math.floor(Math.max(width, height) * 1.1);
+  // Extract POIs that logically should be connected
+  const significantPOIs = mapObjects.filter(o => {
+    const T = String(o.type || "").toLowerCase();
+    return (
+      T === "ruin" ||
+      T === "crash_site" ||
+      T === "vehicle_wreck" ||
+      T === "wreck" ||
+      T === "ancient_site"
+    );
+  });
 
-  function stepDir(cur, prevDir) {
-    const dirs = neighborsOddR(0, 0);
-    let best = null, bestScore = -Infinity;
-    for (let i = 0; i < 6; i++) {
-      if (prevDir !== null && i === ((prevDir + 3) % 6)) continue;
-      const [dq, dr] = dirs[i];
-      const n = at(cur.q + dq, cur.r + dr);
-      if (!n || n.type === 'water') continue;
-      const eastish = (i === 0 || i === 1 || i === 5) ? 0.6 : 0;
-      const score = eastish + (rnd() - 0.5) * 0.2;
-      if (score > bestScore) { best = { n, dir: i }; bestScore = score; }
-    }
-    return best;
-  }
+  // Sort by q,r for deterministic order
+  significantPOIs.sort((a, b) => a.q - b.q || a.r - b.r);
 
-  for (let t = 0; t < numTrunks; t++) {
-    let start = null, guard = 200;
-    while (!start && guard-- > 0) {
-      const q = rndInt(rnd, 1, Math.max(1, Math.floor(width / 3)));
-      const r = rndInt(rnd, 1, height - 2);
-      const cand = at(q, r);
-      if (cand && cand.type !== 'water') start = cand;
-    }
-    if (!start) continue;
+  // Connect each POI to the next one
+  for (let i = 0; i + 1 < significantPOIs.length; i++) {
+    const A = significantPOIs[i];
+    const B = significantPOIs[i + 1];
+    const tileA = byKey.get(keyOf(A.q, A.r));
+    const tileB = byKey.get(keyOf(B.q, B.r));
+    if (!tileA || !tileB) continue;
 
-    let cur = start, prevDir = null, steps = 0;
-    while (steps++ < maxLen) {
-      const nxt = stepDir(cur, prevDir);
-      if (!nxt) break;
-      markRoadEdge(cur, nxt.n, 'asphalt');
-      prevDir = nxt.dir;
-      cur = nxt.n;
-      if (rnd() < 0.08) break;
-    }
-  }
+    const path = deterministicAStar(byKey, width, height, tileA, tileB);
+    if (!path || path.length < 2) continue;
 
-  const pois = mapData.filter(t => t.type !== 'water' && (t.hasRuin || t.hasCrashSite || t.hasVehicle));
-  const pairs = Math.min(2, Math.floor(pois.length / 2));
-  for (let i = 0; i < pairs; i++) {
-    const a = pois[rndInt(rnd, 0, pois.length - 1)];
-    const b = pois[rndInt(rnd, 0, pois.length - 1)];
-    if (!a || !b || a === b) continue;
-    const path = astar(byKey, width, height, a, b);
-    if (path && path.length > 1) {
-      for (let j = 0; j + 1 < path.length; j++) {
-        markRoadEdge(path[j], path[j + 1], 'countryside');
-      }
+    for (let j = 0; j + 1 < path.length; j++) {
+      addRoad(mapData, path[j], path[j + 1]);
     }
   }
 }
 
-/* Public: apply POI flags + roads */
-export function applyLocationFlags(mapData, width, height, seed = 1337) {
-  const rnd = mulberry32(seed >>> 0);
-  placeLocations(mapData, width, height, rnd);
-  generateRoads(mapData, width, height, seed ^ 0xA5A5A5A5);
-  return mapData;
-}
+/* ============================================================================
+   Rendering: Roads + POIs + Geography outlines
+   ============================================================================ */
 
-/* ------------------------- rendering core ------------------------- */
 export function drawLocationsAndRoads() {
   const scene = this;
   const map = this.mapData;
   const size = this.hexSize || 24;
+
   if (!Array.isArray(map) || !map.length) return;
 
-  // Apply POIs/roads once per map build
-  if (!map.__locationsApplied) {
-    try { applyLocationFlags(map, this.mapWidth, this.mapHeight, this.seed ?? 1337); } catch {}
-    Object.defineProperty(map, '__locationsApplied', { value: true, enumerable: false });
+  // Retrieve deterministic objects (created in HexMap.js)
+  const mapObjects = (scene.mapInfo && Array.isArray(scene.mapInfo.objects))
+    ? scene.mapInfo.objects
+    : [];
+
+  // Apply road generation ONCE per world
+  if (!map.__roadsApplied) {
+    generateDeterministicRoads(map, scene.mapWidth, scene.mapHeight, mapObjects);
+    Object.defineProperty(map, "__roadsApplied", { value: true, enumerable: false });
   }
 
-  // (Re)build geography once and keep metadata on map
+  // Rebuild geography + layers
   initOrUpdateGeography(scene, map);
 
-  // Reset layers
   if (scene.roadsGraphics) scene.roadsGraphics.destroy();
   if (scene.locationsLayer) scene.locationsLayer.destroy();
   if (scene.geoOutlineGraphics) scene.geoOutlineGraphics.destroy();
 
-  const roads = scene.add.graphics({ x: 0, y: 0 }).setDepth(30);
-  const layer = scene.add.container(0, 0).setDepth(40);
-  const geoOutline = scene.add.graphics({ x: 0, y: 0 }).setDepth(120);
+  const roads = scene.add.graphics().setDepth(30);
+  const layer = scene.add.container().setDepth(40);
+  const geoOutline = scene.add.graphics().setDepth(120);
 
   scene.roadsGraphics = roads;
   scene.locationsLayer = layer;
@@ -233,25 +213,25 @@ export function drawLocationsAndRoads() {
 
   const byKey = new Map(map.map(t => [keyOf(t.q, t.r), t]));
 
-  const offsetX = this.mapOffsetX || 0;
-  const offsetY = this.mapOffsetY || 0;
-  const LIFT    = this?.LIFT_PER_LVL ?? 4;
+  const offsetX = scene.mapOffsetX || 0;
+  const offsetY = scene.mapOffsetY || 0;
+  const LIFT    = scene?.LIFT_PER_LVL ?? 4;
 
-  // ---- Roads
+  /* -------------------------- Draw roads -------------------------- */
   for (const t of map) {
-    if (!t.roadLinks || !t.roadLinks.size) continue;
+    if (!t.roadLinks) continue;
+
     const c1 = scene.hexToPixel(t.q, t.r, size);
     const y1 = c1.y - LIFT * effectiveElevationLocal(t);
+
     for (const target of t.roadLinks) {
       if (target <= keyOf(t.q, t.r)) continue;
       const n = byKey.get(target);
       if (!n) continue;
       const c2 = scene.hexToPixel(n.q, n.r, size);
       const y2 = c2.y - LIFT * effectiveElevationLocal(n);
-      const asphalt = (t.roadType === 'asphalt' && n.roadType === 'asphalt');
-      const width   = asphalt ? 5 : 3;
-      const color   = asphalt ? 0x4a4a4a : 0x8b6b39;
-      roads.lineStyle(width, color, 0.95);
+
+      roads.lineStyle(4, 0x6b5430, 0.9); // deterministic countryside style
       roads.beginPath();
       roads.moveTo(c1.x + offsetX, y1 + offsetY);
       roads.lineTo(c2.x + offsetX, y2 + offsetY);
@@ -259,71 +239,56 @@ export function drawLocationsAndRoads() {
     }
   }
 
-  // ---- Geography overlay (emoji+label once, outlines every draw)
+  /* -------------------- Geography overlays ----------------------- */
   drawGeographyOverlay(scene);
 
-  // ---- POIs (skip geo-bound tiles)
-  const addEmoji = (x, y, char, fontPx, depth = 42) => {
+  /* ----------------------- POI icons ----------------------------- */
+  const biomeName = resolveBiome(scene, map);
+  const noPOISet = getNoPOISet(map);
+
+  const addEmoji = (x, y, char, px, depth = 42) => {
     const t = scene.add.text(x, y, char, {
-      fontSize: `${fontPx}px`,
+      fontSize: `${px}px`,
       fontFamily: 'Arial, "Segoe UI Emoji", "Noto Color Emoji", sans-serif'
     }).setOrigin(0.5).setDepth(depth);
     layer.add(t);
     return t;
   };
-  const biomeName = resolveBiome(scene, map);
-  const noPOISet = getNoPOISet(map);
 
   for (const t of map) {
-    if (t.type === 'water') continue;
+    if (t.type === "water") continue;
     if (noPOISet && noPOISet.has(keyOf(t.q, t.r))) continue;
 
     const c = scene.hexToPixel(t.q, t.r, size);
     const cx = c.x + offsetX;
-    const cy = c.y + offsetY - (this?.LIFT_PER_LVL ?? 4) * effectiveElevationLocal(t);
+    const cy = c.y + offsetY - LIFT * effectiveElevationLocal(t);
 
-    if (!t.hasMountainIcon) {
-      const elev = typeof t.elevation === 'number' ? t.elevation : 0;
-      if (elev === 4) t.hasMountainIcon = true;
-    }
-    if (t.hasMountainIcon) {
-      addEmoji(cx, cy, '⛰️', size * 0.9, 110);
+    // Mountain
+    if (t.elevation === 4) {
+      addEmoji(cx, cy, "⛰️", size * 0.9, 110);
       continue;
     }
 
+    // Forest
     if (t.hasForest) {
-      const treeGlyph = treeEmojiFor(biomeName, t.type);
-      const treeCount = Phaser.Math.Between(2, 4);
-      const placed = [];
-      let tries = 0;
-      while (placed.length < treeCount && tries++ < 40) {
-        const ang = Phaser.Math.FloatBetween(0, Math.PI * 2);
-        const rad = Phaser.Math.FloatBetween(size * 0.35, size * 0.65);
-        const posX = cx + Math.cos(ang) * rad;
-        const posY = cy + Math.sin(ang) * rad;
-        if (placed.some(p => Phaser.Math.Distance.Between(posX, posY, p.x, p.y) < size * 0.3)) continue;
-        const fontPx = size * (0.45 + Phaser.Math.FloatBetween(-0.05, 0.05));
-        const tree = addEmoji(posX, posY, treeGlyph, fontPx, 105);
-        scene.tweens.add({
-          targets: tree,
-          angle: { from: -1.5, to: 1.5 },
-          duration: Phaser.Math.Between(2500, 4000),
-          yoyo: true,
-          repeat: -1,
-          ease: 'Sine.easeInOut',
-          delay: Phaser.Math.Between(0, 1000)
-        });
-        placed.push({ x: posX, y: posY });
-      }
+      // Deterministic fixed tree triplet pattern
+      const offsets = [
+        [0, -size * 0.25],
+        [-size * 0.22, size * 0.1],
+        [size * 0.22, size * 0.1]
+      ];
+      offsets.forEach(([ox, oy]) => {
+        addEmoji(cx + ox, cy + oy, "🌳", size * 0.5, 105);
+      });
     }
 
-    if (t.hasRuin)      addEmoji(cx, cy, '🏚️', size * 0.8, 106);
-    if (t.hasCrashSite) addEmoji(cx, cy, '🚀', size * 0.8, 106);
-    if (t.hasVehicle)   addEmoji(cx, cy, '🚙', size * 0.8, 106);
+    if (t.hasRuin)      addEmoji(cx, cy, "🏚️", size * 0.8, 106);
+    if (t.hasCrashSite) addEmoji(cx, cy, "🚀", size * 0.8, 106);
+    if (t.hasVehicle)   addEmoji(cx, cy, "🚙", size * 0.8, 106);
   }
 }
 
 export default {
   applyLocationFlags,
-  drawLocationsAndRoads,
+  drawLocationsAndRoads
 };
