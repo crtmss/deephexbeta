@@ -9,7 +9,7 @@ const inBounds = (q, r, w, h) => q >= 0 && q < w && r >= 0 && r < h;
 function neighborsOddR(q, r) {
   const even = (r % 2 === 0);
   return even
-    ? [[+1,0],[0,-1],[-1,-1],[-1,0],[-1,+1],[0,+1]]
+    ? [[+1,0],[0,-1],[-1,-1],[-1,0],[+0,+1],[-1,+1]]
     : [[+1,0],[+1,-1],[0,-1],[-1,0],[0,+1],[+1,+1]];
 }
 function classifyBiomeFromTiles(tiles) {
@@ -117,7 +117,11 @@ function classifyGeographyFromTiles(tiles, width, height) {
 /* ------------------------------ LOBBY SCENE -------------------------------- */
 
 export default class LobbyScene extends Phaser.Scene {
-  constructor() { super('LobbyScene'); }
+  constructor() {
+    super('LobbyScene');
+    this.waitEvent = null;
+    this.waitStatusText = null;
+  }
 
   async create() {
     // DOM overlay non-blocking
@@ -207,6 +211,69 @@ export default class LobbyScene extends Phaser.Scene {
       '🎲 Random Seed'
     ).setOrigin(0.5).setDepth(1250).setScrollFactor(0);
 
+    /* --- Players selector --- */
+    this.add.text(400, 330, 'Select players (1–4):', {
+      fontSize: '18px', fill: '#ffffff'
+    }).setScrollFactor(0);
+
+    const playersSelect = this.add.dom(640, 330, 'select')
+      .setOrigin(0.5).setDepth(1200).setScrollFactor(0);
+
+    ['1', '2', '3', '4'].forEach(n => {
+      const opt = document.createElement('option');
+      opt.value = n;
+      opt.textContent = `${n} player${n === '1' ? '' : 's'}`;
+      if (n === '2') opt.selected = true;
+      playersSelect.node.appendChild(opt);
+    });
+
+    Object.assign(playersSelect.node.style, {
+      pointerEvents: 'auto',
+      width: '160px',
+      height: '32px',
+      fontSize: '16px',
+      borderRadius: '8px',
+      border: '1px solid #88a',
+      background: '#0b0f1a',
+      color: '#e7f1ff',
+      outline: 'none'
+    });
+
+    /* --- Mission selector --- */
+    this.add.text(400, 380, 'Select mission:', {
+      fontSize: '18px', fill: '#ffffff'
+    }).setScrollFactor(0);
+
+    const missionSelect = this.add.dom(640, 380, 'select')
+      .setOrigin(0.5).setDepth(1200).setScrollFactor(0);
+
+    const missionOptions = [
+      { value: 'big_construction',    label: 'Big construction' },
+      { value: 'resource_extraction', label: 'Resource extraction' },
+      { value: 'elimination',         label: 'Elimination' },
+      { value: 'control_point',       label: 'Control point' },
+    ];
+
+    missionOptions.forEach((m, idx) => {
+      const opt = document.createElement('option');
+      opt.value = m.value;
+      opt.textContent = m.label;
+      if (idx === 0) opt.selected = true;
+      missionSelect.node.appendChild(opt);
+    });
+
+    Object.assign(missionSelect.node.style, {
+      pointerEvents: 'auto',
+      width: '220px',
+      height: '32px',
+      fontSize: '16px',
+      borderRadius: '8px',
+      border: '1px solid #88a',
+      background: '#0b0f1a',
+      color: '#e7f1ff',
+      outline: 'none'
+    });
+
     /* --- Preview panel --- */
     this.add.text(870, 130, 'Map Preview', {
       fontSize: '18px', fill: '#ffffff'
@@ -249,7 +316,11 @@ export default class LobbyScene extends Phaser.Scene {
       const biome = meta?.biome
         || classifyBiomeFromTiles(this.currentTiles);
 
-      this.geographyText.setText(`🌍 Geography: ${geography}`);
+      const geoLabel = typeof geography === 'string'
+        ? geography
+        : (geography?.label || JSON.stringify(geography));
+
+      this.geographyText.setText(`🌍 Geography: ${geoLabel}`);
       this.biomeText.setText(`🌿 Biome: ${biome}`);
     };
 
@@ -284,7 +355,7 @@ export default class LobbyScene extends Phaser.Scene {
 
     const hostBtn = this.add.dom(
       540,
-      330,
+      450,
       'button',
       {
         backgroundColor: '#006400',
@@ -301,7 +372,7 @@ export default class LobbyScene extends Phaser.Scene {
 
     const joinBtn = this.add.dom(
       720,
-      330,
+      450,
       'button',
       {
         backgroundColor: '#1E90FF',
@@ -320,6 +391,12 @@ export default class LobbyScene extends Phaser.Scene {
     hostBtn.addListener('click');
     joinBtn.addListener('click');
 
+    // Waiting status text (hidden until needed)
+    this.waitStatusText = this.add.text(480, 500, '', {
+      fontSize: '18px',
+      fill: '#ffd27f'
+    }).setScrollFactor(0);
+
     /* =========================
        Host Game handler
        ========================= */
@@ -337,9 +414,17 @@ export default class LobbyScene extends Phaser.Scene {
       const seed = code;
       const hostPlayerId = 'p1';
 
+      let maxPlayers = parseInt(playersSelect.node.value, 10);
+      if (!Number.isFinite(maxPlayers)) maxPlayers = 2;
+      maxPlayers = Math.min(4, Math.max(1, maxPlayers));
+
+      const missionType = missionSelect.node.value || 'big_construction';
+
       const initialState = {
         seed,
         mapConfig: { width: 25, height: 25 },
+        maxPlayers,
+        missionType,
         players: [{
           id: hostPlayerId,
           name,
@@ -359,11 +444,12 @@ export default class LobbyScene extends Phaser.Scene {
         buildings: [],
         haulers: [],
         enemies: [],
+        status: 'waiting', // lobby waiting for all players
         lastUpdatedAt: new Date().toISOString(),
       };
 
       try {
-        const { data, error } = await supabase
+        const { error } = await supabase
           .from('lobbies')
           .upsert(
             {
@@ -371,9 +457,7 @@ export default class LobbyScene extends Phaser.Scene {
               state: initialState,
             },
             { onConflict: 'room_code' }
-          )
-          .select('state')
-          .single();
+          );
 
         if (error) {
           console.error('[Supabase ERROR] Create lobby:', error.message);
@@ -381,17 +465,15 @@ export default class LobbyScene extends Phaser.Scene {
           return;
         }
 
-        const lobbyState = data?.state || initialState;
-
-        this.scene.start('WorldScene', {
+        // Host now waits until all players connect
+        this.startWaitingForFullLobby({
           seed,
           playerName: name,
           playerId: hostPlayerId,
           roomCode,
           isHost: true,
-          supabase,
-          lobbyState,
         });
+
       } catch (err) {
         console.error('[Supabase EXCEPTION] Create lobby failed:', err.message);
         alert('Failed to create lobby (exception).');
@@ -432,38 +514,42 @@ export default class LobbyScene extends Phaser.Scene {
           state.players = [];
         }
 
-        if (state.players.length >= 4) {
-          alert('This game already has 4 players (maximum).');
+        let maxPlayers = Math.min(4, Math.max(1, state.maxPlayers || 1));
+        if (state.players.length >= maxPlayers) {
+          alert(`This game already has ${maxPlayers} players (maximum).`);
           return;
         }
 
-        const newId = `p${state.players.length + 1}`;
-        const newPlayer = {
-          id: newId,
-          name,
-          slot: state.players.length,
-          isHost: false,
-          isConnected: true,
-          resources: {
-            food: 200,
-            scrap: 200,
-            money: 200,
-            influence: 200,
-          },
-        };
+        // If the same name already exists, reuse that slot
+        const existing = state.players.find(p => p.name === name);
+        let newId;
+        if (existing) {
+          newId = existing.id;
+          existing.isConnected = true;
+        } else {
+          newId = `p${state.players.length + 1}`;
+          const newPlayer = {
+            id: newId,
+            name,
+            slot: state.players.length,
+            isHost: false,
+            isConnected: true,
+            resources: {
+              food: 200,
+              scrap: 200,
+              money: 200,
+              influence: 200,
+            },
+          };
+          state.players = [...state.players, newPlayer];
+        }
 
-        state = {
-          ...state,
-          players: [...state.players, newPlayer],
-          lastUpdatedAt: new Date().toISOString(),
-        };
+        state.lastUpdatedAt = new Date().toISOString();
 
-        const { data: updateData, error: updateError } = await supabase
+        const { error: updateError } = await supabase
           .from('lobbies')
           .update({ state })
-          .eq('room_code', roomCode)
-          .select('state')
-          .single();
+          .eq('room_code', roomCode);
 
         if (updateError) {
           console.error('[Supabase ERROR] Join lobby update:', updateError.message);
@@ -471,22 +557,89 @@ export default class LobbyScene extends Phaser.Scene {
           return;
         }
 
-        const lobbyState = updateData?.state || state;
-        const seed = lobbyState.seed || code;
+        const seed = state.seed || code;
 
-        this.scene.start('WorldScene', {
+        // Joiner also waits until lobby is full
+        this.startWaitingForFullLobby({
           seed,
           playerName: name,
           playerId: newId,
           roomCode,
           isHost: false,
-          supabase,
-          lobbyState,
         });
+
       } catch (err) {
         console.error('[Supabase EXCEPTION] Join lobby failed:', err.message);
         alert('Failed to join lobby (exception).');
       }
+    });
+  }
+
+  /**
+   * Polls Supabase until lobby has players.length === maxPlayers,
+   * then transitions to WorldScene with the final lobby state.
+   */
+  startWaitingForFullLobby(cfg) {
+    const { seed, playerName, playerId, roomCode, isHost } = cfg;
+
+    if (this.waitEvent) {
+      this.waitEvent.remove(false);
+      this.waitEvent = null;
+    }
+
+    if (this.waitStatusText) {
+      this.waitStatusText.setText('Waiting for players…');
+    }
+
+    this.waitEvent = this.time.addEvent({
+      delay: 1500,
+      loop: true,
+      callback: async () => {
+        try {
+          const { data, error } = await supabase
+            .from('lobbies')
+            .select('state')
+            .eq('room_code', roomCode)
+            .single();
+
+          if (error || !data?.state) {
+            console.error('[Supabase ERROR] Poll lobby:', error?.message);
+            return;
+          }
+
+          const state = data.state;
+          const players = Array.isArray(state.players) ? state.players : [];
+          const maxPlayers = Math.min(4, Math.max(1, state.maxPlayers || 1));
+          const missionType = state.missionType || 'big_construction';
+
+          if (this.waitStatusText) {
+            this.waitStatusText.setText(
+              `Waiting for players ${players.length}/${maxPlayers}…`
+            );
+          }
+
+          if (players.length >= maxPlayers) {
+            // stop polling
+            if (this.waitEvent) {
+              this.waitEvent.remove(false);
+              this.waitEvent = null;
+            }
+
+            this.scene.start('WorldScene', {
+              seed: state.seed || seed,
+              playerName,
+              playerId,
+              roomCode,
+              isHost,
+              supabase,
+              lobbyState: state,
+              missionType,
+            });
+          }
+        } catch (err) {
+          console.error('[Supabase EXCEPTION] Poll lobby failed:', err.message);
+        }
+      },
     });
   }
 
