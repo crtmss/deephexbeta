@@ -1,156 +1,134 @@
-// deephexbeta/src/scenes/WorldSceneResources.js
-//
-// Fully deterministic resource spawning.
-// NOTHING is generated randomly — we only read:
-//   scene.mapInfo.objects   (from HexMap.js generation)
-//   scene.mapData           (tiles for terrain checks)
-//
-// Supported object types in __worldObjects:
-//   - fish
-//   - ruin
-//   - crash_site
-//   - ancient_site
-//   - vehicle_wreck
-//   - scrap_node    (optional future)
-//   - anything else you define
-//
-// All objects are placed in the same order on all clients with the same seed.
+// src/scenes/WorldSceneResources.js
 
-export function spawnWorldResourcesDeterministic() {
-    const scene = /** @type {Phaser.Scene & any} */ (this);
-    if (!scene.mapInfo || !Array.isArray(scene.mapInfo.objects)) return;
+/* =========================================================================
+   Resource spawner & helpers
+   - Places 5 🐟 fish resources on random water hexes
+   - Enforces minimum hex distance of 8 between fish
+   - Safe to call multiple times (won’t duplicate existing fish at same hex)
+   - Fully deterministic for a given seed (uses scene.hexMap.rand)
+   ======================================================================= */
 
-    scene.resources = scene.resources || [];
+export function spawnFishResources() {
+  const scene = /** @type {Phaser.Scene & any} */ (this);
 
-    // Clear any previous objects (important on re-entry)
-    for (const r of scene.resources) {
-        if (r.obj?.destroy) r.obj.destroy();
-    }
-    scene.resources = [];
+  if (!scene || !Array.isArray(scene.mapData) || !scene.mapData.length) {
+    console.warn('[Resources] spawnFishResources(): no mapData on scene.');
+    return;
+  }
 
-    const objects = scene.mapInfo.objects;
+  // init holder
+  scene.resources = scene.resources || [];
 
-    for (const obj of objects) {
-        if (typeof obj.q !== "number" || typeof obj.r !== "number") continue;
+  // Already have 5+ fish? do nothing.
+  const existingFish = scene.resources.filter(r => r.type === 'fish');
+  if (existingFish.length >= 5) return;
 
-        const { q, r } = obj;
-        const pos = scene.axialToWorld(q, r);
+  // Build list of candidate *water* tiles
+  const waterTiles = (scene.mapData || []).filter(isWaterTile);
+  if (!waterTiles.length) {
+    console.warn('[Resources] spawnFishResources(): no water tiles found.');
+    return;
+  }
 
-        let sprite = null;
-        let type = obj.type;
+  // Gather already-placed fish coordinates to respect min distance
+  const placed = existingFish.map(f => ({ q: f.q, r: f.r }));
 
-        // Normalize type (lowercase)
-        const T = String(type || "").toLowerCase();
+  // We’ll try to place up to (5 - existing) new fish
+  const need = 5 - existingFish.length;
+  const rnd = getRng(scene);
 
-        /* ===========================================================
-           FISH
-        ============================================================ */
-        if (T === "fish") {
-            sprite = scene.add.text(pos.x, pos.y, "🐟", {
-                fontSize: "18px",
-                color: "#ffffff"
-            })
-            .setOrigin(0.5)
-            .setDepth(2050);
+  // Shuffle candidates for variety (but deterministic with seed RNG)
+  const shuffled = [...waterTiles];
+  shuffleInPlace(shuffled, rnd);
 
-            scene.resources.push({
-                type: "fish",
-                q, r,
-                obj: sprite
-            });
-            continue;
-        }
+  let created = 0;
 
-        /* ===========================================================
-           RUIN
-        ============================================================ */
-        if (T === "ruin" || T === "ancient_ruin") {
-            sprite = scene.add.text(pos.x, pos.y, "🏚️", {
-                fontSize: "18px",
-                color: "#d6c7a1"
-            })
-            .setOrigin(0.5)
-            .setDepth(2050);
+  for (const tile of shuffled) {
+    if (created >= need) break;
 
-            scene.resources.push({
-                type: "ruin",
-                q, r,
-                obj: sprite
-            });
-            continue;
-        }
+    const { q, r } = tile;
+    if (!inBounds(scene, q, r)) continue;
 
-        /* ===========================================================
-           CRASH SITE
-        ============================================================ */
-        if (T === "crash_site" || T === "crashsite") {
-            sprite = scene.add.text(pos.x, pos.y, "🔥", {
-                fontSize: "20px",
-                color: "#ff8844"
-            })
-            .setOrigin(0.5)
-            .setDepth(2050);
+    // Enforce minimum hex distance to all already placed fish
+    const ok = placed.every(p => hexDistanceAxial(p.q, p.r, q, r) >= 8);
+    if (!ok) continue;
 
-            scene.resources.push({
-                type: "crash_site",
-                q, r,
-                obj: sprite
-            });
-            continue;
-        }
+    // Avoid duplicates on same hex if something already placed there
+    const already = scene.resources.find(o => o.type === 'fish' && o.q === q && o.r === r);
+    if (already) continue;
 
-        /* ===========================================================
-           ANCIENT SITE / ARTEFACT
-        ============================================================ */
-        if (T === "ancient_site" || T === "artefact") {
-            sprite = scene.add.text(pos.x, pos.y, "🗿", {
-                fontSize: "20px",
-                color: "#bbb"
-            })
-            .setOrigin(0.5)
-            .setDepth(2050);
+    // Create visible emoji
+    const pos = scene.axialToWorld
+      ? scene.axialToWorld(q, r)
+      : fallbackAxialToWorld(scene, q, r); // fallback includes offset
 
-            scene.resources.push({
-                type: "ancient_site",
-                q, r,
-                obj: sprite
-            });
-            continue;
-        }
+    const obj = scene.add.text(pos.x, pos.y, '🐟', {
+      fontSize: '18px',
+      color: '#ffffff',
+    }).setOrigin(0.5).setDepth(2050);
 
-        /* ===========================================================
-           VEHICLE WRECK
-        ============================================================ */
-        if (T === "vehicle_wreck" || T === "wreck" || T === "vehicle") {
-            sprite = scene.add.text(pos.x, pos.y, "🚙", {
-                fontSize: "18px",
-                color: "#cccccc"
-            })
-            .setOrigin(0.5)
-            .setDepth(2050);
+    scene.resources.push({ type: 'fish', q, r, obj });
+    placed.push({ q, r });
+    created += 1;
+  }
 
-            scene.resources.push({
-                type: "vehicle_wreck",
-                q, r,
-                obj: sprite
-            });
-            continue;
-        }
-
-        /* ===========================================================
-           FALLBACK: unknown resource type
-           (Won’t break multiplayer, but logs a warning)
-        ============================================================ */
-        console.warn("[Resources] Unrecognized object type:", type, obj);
-    }
-
-    console.log(`[Resources] Deterministic spawn complete: ${scene.resources.length} objects.`);
+  console.log(
+    `[Resources] spawnFishResources(): waterTiles=${waterTiles.length}, existing=${existingFish.length}, createdNow=${created}`
+  );
 }
 
-/* ===========================================================
-   Backward compatibility: alias old function name
-   =========================================================== */
-export function spawnFishResources() {
-    console.warn("[Resources] spawnFishResources() was called — now deterministic.");
-    spawnWorldResourcesDeterministic.call(this);
+/* =========================
+   Helpers
+   ========================= */
+
+// Robust water check: takes a *tile* object.
+function isWaterTile(tile) {
+  if (!tile) return false;
+  const type = (tile.type || '').toString().toLowerCase();
+  // support future variants like 'ocean', 'sea'
+  return type === 'water' || type === 'ocean' || type === 'sea';
+}
+
+function getRng(scene) {
+  // Use the seeded RNG from HexMap if available
+  if (scene?.hexMap && typeof scene.hexMap.rand === 'function') {
+    return scene.hexMap.rand;
+  }
+  // Fallback: non-deterministic
+  return Math.random;
+}
+
+function inBounds(scene, q, r) {
+  const W = scene.mapWidth ?? 25;
+  const H = scene.mapHeight ?? 25;
+  return q >= 0 && r >= 0 && q < W && r < H;
+}
+
+// Fisher–Yates, but with injectable RNG for determinism
+function shuffleInPlace(arr, rnd) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(rnd() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+}
+
+// Axial distance using cube conversion
+function hexDistanceAxial(q1, r1, q2, r2) {
+  const x1 = q1, z1 = r1, y1 = -x1 - z1;
+  const x2 = q2, z2 = r2, y2 = -x2 - z2;
+  return (Math.abs(x1 - x2) + Math.abs(y1 - y2) + Math.abs(z1 - z2)) / 2;
+}
+
+// Only used if scene.axialToWorld isn’t bound yet
+function fallbackAxialToWorld(scene, q, r) {
+  const size = scene.hexSize || 24;
+  const p = scene.hexToPixel
+    ? scene.hexToPixel(q, r, size)
+    : { x: q * size, y: r * size };
+
+  // include map offset here so behaviour matches axialToWorld
+  return {
+    x: p.x + (scene.mapOffsetX || 0),
+    y: p.y + (scene.mapOffsetY || 0),
+  };
 }
