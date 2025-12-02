@@ -25,8 +25,8 @@ const ENEMY_COLOR = 0xaa66ff;
 function neighborsOddR(q, r) {
   const even = (r % 2 === 0);
   return even
-    ? [[+1,0],[0,-1],[-1,-1],[-1,0],[-1,+1],[0,+1]]
-    : [[+1,0],[+1,-1],[0,-1],[-1,0],[0,+1],[+1,+1]];
+    ? [[+1,0],[0,-1],[-1,-1],[−1,0],[−1,+1],[0,+1]]
+    : [[+1,0],[+1,-1],[0,-1],[−1,0],[0,+1],[+1,+1]];
 }
 
 function keyOf(q, r) {
@@ -51,16 +51,14 @@ function pickSpawnTiles(scene, count) {
   const cx = w / 2;
   const cy = h / 2;
 
-  // score tiles by angle sector + distance
   const tilesWithMeta = land.map(t => {
     const dx = t.q - cx;
     const dy = t.r - cy;
-    const angle = Math.atan2(dy, dx); // -PI..PI
+    const angle = Math.atan2(dy, dx);
     const dist2 = dx * dx + dy * dy;
     return { tile: t, angle, dist2 };
   });
 
-  // Split map into angular sectors and pick best from each
   const sectors = count;
   const buckets = Array.from({ length: sectors }, () => []);
 
@@ -75,13 +73,11 @@ function pickSpawnTiles(scene, count) {
   for (let i = 0; i < sectors; i++) {
     const bucket = buckets[i];
     if (!bucket.length) continue;
-    // prefer tiles a bit away from center (larger dist2)
     bucket.sort((a, b) => b.dist2 - a.dist2);
     result.push(bucket[0].tile);
     if (result.length >= count) break;
   }
 
-  // Fallback if not enough unique buckets
   while (result.length < count && result.length < land.length) {
     const candidate = land[result.length];
     if (!result.includes(candidate)) result.push(candidate);
@@ -96,7 +92,6 @@ function pickSpawnTiles(scene, count) {
 function createMobileBase(scene, spawnTile, playerName, color, playerIndex) {
   const { x, y } = scene.axialToWorld(spawnTile.q, spawnTile.r);
 
-  // Use a simple circle for now – can be swapped to sprite later
   const unit = scene.add.circle(x, y, 16, color)
     .setDepth(UNIT_Z.player);
 
@@ -109,9 +104,7 @@ function createMobileBase(scene, spawnTile, playerName, color, playerIndex) {
 
   unit.playerName = playerName;
   unit.name = playerName || 'Player';
-
-  // index in lobby state (0..3), useful for deterministic ordering
-  unit.playerIndex = playerIndex;
+  unit.playerIndex = playerIndex; // deterministic ordering
 
   unit.movementPoints = 4;
   unit.maxMovementPoints = 4;
@@ -119,7 +112,6 @@ function createMobileBase(scene, spawnTile, playerName, color, playerIndex) {
   unit.hp = 10;
   unit.maxHp = 10;
 
-  // Used by orientation helper
   unit.facingAngle = 0;
   unit.setStrokeStyle?.(2, 0x000000, 0.7);
 
@@ -134,7 +126,7 @@ function createEnemyUnit(scene, spawnTile) {
 
   const enemy = scene.add.triangle(
     x, y,
-    0,  18,
+    0, 18,
     -16, -14,
     16, -14,
     ENEMY_COLOR
@@ -153,27 +145,24 @@ function createEnemyUnit(scene, spawnTile) {
   enemy.hp = 5;
   enemy.maxHp = 5;
 
-  // Face "down" by default
   enemy.rotation = Math.PI;
-
   return enemy;
 }
 
 /**
  * Main entry: called from WorldScene.create().
  *
- * Responsibility in the multiplayer model:
- * - Read the lobby state (if any) from Supabase via LobbyManager.
- * - Infer the list of players (up to 4).
- * - Map that to concrete Phaser units on the map.
- * - Spawn a few neutral enemies (host only).
+ * Multiplayer rules:
+ * - Spawn EXACTLY lobbyState.maxPlayers bases.
+ * - Base i belongs to player i.
+ * - If a client connects but lobby has no slot for them, they DO NOT spawn.
  */
 export async function spawnUnitsAndEnemies() {
   const scene = /** @type {any} */ (this);
 
-  scene.units   = scene.units   || [];
-  scene.players = scene.players || [];
-  scene.enemies = scene.enemies || [];
+  scene.units   = [];
+  scene.players = [];
+  scene.enemies = [];
 
   let lobbyPlayers = null;
 
@@ -188,45 +177,42 @@ export async function spawnUnitsAndEnemies() {
     }
   }
 
+  // Local fallback
   const localName = scene.playerName || (scene.isHost ? 'Host' : 'Player');
+  if (!lobbyPlayers) lobbyPlayers = [{ name: localName }];
 
-  // If we don't have remote lobby data, treat this as local / singleplayer.
-  if (!lobbyPlayers || lobbyPlayers.length === 0) {
-    lobbyPlayers = [localName];
-  }
+  // Determine required number of units
+  const lobbyMaxPlayers = (() => {
+    const raw = scene.lobbyState?.maxPlayers;
+    if (typeof raw === 'number') return Math.max(1, Math.min(4, raw));
+    return 1;
+  })();
 
-  // Ensure local player is included (if lobby has room for them).
-  if (!lobbyPlayers.includes(localName) && lobbyPlayers.length < 4) {
-    lobbyPlayers = [...lobbyPlayers, localName];
-  }
+  // Sort lobby players by slot (0..3)
+  const sortedLobby = lobbyPlayers
+    .slice()
+    .sort((a, b) => (a.slot ?? 999) - (b.slot ?? 999))
+    .slice(0, lobbyMaxPlayers);
 
-  // Limit to 4 players, keep order from lobby state
-  const maxPlayers = 4;
-  const uniquePlayers = Array.from(new Set(lobbyPlayers)).slice(0, maxPlayers);
-
-  const spawnTiles = pickSpawnTiles(scene, uniquePlayers.length);
-  if (spawnTiles.length === 0) {
-    console.warn('[Units] No valid spawn tiles found – map may be all water.');
+  const spawnTiles = pickSpawnTiles(scene, sortedLobby.length);
+  if (!spawnTiles.length) {
+    console.warn('[Units] No valid spawn tiles.');
     return;
   }
 
-  // --- Spawn players ---
-  scene.players.length = 0;
+  // Spawn bases in deterministic slot order
+  sortedLobby.forEach((player, index) => {
+    const tile = spawnTiles[index];
+    const color = PLAYER_COLORS[index % PLAYER_COLORS.length];
 
-  uniquePlayers.forEach((name, idx) => {
-    const tile = spawnTiles[idx] || spawnTiles[spawnTiles.length - 1];
-    const color = PLAYER_COLORS[idx % PLAYER_COLORS.length];
-
-    const unit = createMobileBase(scene, tile, name, color, idx);
-
-    // Mark which unit belongs to the local player
-    unit.isLocalPlayer = (name === localName);
+    const unit = createMobileBase(scene, tile, player.name, color, index);
+    unit.isLocalPlayer = (player.name === localName);
 
     scene.units.push(unit);
     scene.players.push(unit);
   });
 
-  // --- Spawn enemies (host only, so they don't multiply) ---
+  // Host spawns enemies
   if (scene.isHost) {
     const map = scene.mapData || [];
     const byKey = new Map(map.map(t => [keyOf(t.q, t.r), t]));
@@ -235,22 +221,19 @@ export async function spawnUnitsAndEnemies() {
 
     const originTile = byKey.get(keyOf(centerQ, centerR)) || map[0];
     if (originTile) {
-      const enemySpawnCandidates = [];
+      const candidate = [];
 
-      // simple BFS from center, looking for non-water/non-mountain
       const seen = new Set();
       const qd = [originTile];
       seen.add(keyOf(originTile.q, originTile.r));
 
-      while (qd.length && enemySpawnCandidates.length < 6) {
+      while (qd.length && candidate.length < 6) {
         const cur = qd.shift();
         if (cur.type !== 'water' && cur.type !== 'mountain') {
-          enemySpawnCandidates.push(cur);
+          candidate.push(cur);
         }
         for (const [dq, dr] of neighborsOddR(cur.q, cur.r)) {
-          const nq = cur.q + dq;
-          const nr = cur.r + dr;
-          const k = keyOf(nq, nr);
+          const nq = cur.q + dq, nr = cur.r + dr, k = keyOf(nq, nr);
           if (seen.has(k)) continue;
           const nt = byKey.get(k);
           if (!nt) continue;
@@ -259,8 +242,7 @@ export async function spawnUnitsAndEnemies() {
         }
       }
 
-      scene.enemies.length = 0;
-      enemySpawnCandidates.slice(0, 3).forEach(tile => {
+      candidate.slice(0, 3).forEach(tile => {
         const enemy = createEnemyUnit(scene, tile);
         scene.units.push(enemy);
         scene.enemies.push(enemy);
@@ -269,59 +251,48 @@ export async function spawnUnitsAndEnemies() {
   }
 
   console.log(
-    `[Units] Spawn complete: ${scene.players.length} players, ${scene.enemies.length} enemies.`
+    `[Units] Spawn complete: ${scene.players.length} players, ` +
+    `${scene.enemies.length} enemies.`
   );
 }
 
 /**
  * Update unit orientation based on movement direction.
- * Called from WorldScene.startStepMovement().
- *
- * Keeps the rule you wanted:
- * - "Facing along the path" and flipping / rotating accordingly.
  */
 export function updateUnitOrientation(scene, unit, fromQ, fromR, toQ, toR) {
   if (!unit) return;
 
   const dq = toQ - fromQ;
   const dr = toR - fromR;
-
   if (dq === 0 && dr === 0) return;
 
-  // Convert axial step to an angle in screen space.
-  // For pointy-top odd-r, we can use a small lookup.
-  const key = `${dq},${dr}`;
   const ANGLES = {
-    '1,0':   0,                  // east
-    '1,-1':  -Math.PI / 3,       // NE
-    '0,-1':  -2 * Math.PI / 3,   // NW
-    '-1,0':  Math.PI,            // W
-    '-1,1':  2 * Math.PI / 3,    // SW
-    '0,1':   Math.PI / 3,        // SE
+    '1,0':   0,
+    '1,-1': -Math.PI / 3,
+    '0,-1': -2 * Math.PI / 3,
+    '-1,0': Math.PI,
+    '-1,1':  2 * Math.PI / 3,
+    '0,1':   Math.PI / 3,
   };
 
+  const key = `${dq},${dr}`;
   const angle = ANGLES[key] ?? 0;
 
-  // If the unit is a triangle / image, set rotation.
   if (typeof unit.rotation === 'number') {
     unit.rotation = angle;
   }
-
-  // If it's a sprite with flipX, approximate left/right
   if (typeof unit.setFlipX === 'function') {
-    const goingLeft = (dq < 0);
-    unit.setFlipX(goingLeft);
+    unit.setFlipX(dq < 0);
   }
 
   unit.facingAngle = angle;
 }
 
 /**
- * Placeholder for future real-time sync subscription (step 4).
- * For now this is a no-op so imports are safe.
+ * Placeholder for future real-time sync subscription.
  */
 export async function subscribeToGameUpdates(_scene, _roomCode) {
   return {
-    unsubscribe() { /* no-op for now */ }
+    unsubscribe() {}
   };
 }
