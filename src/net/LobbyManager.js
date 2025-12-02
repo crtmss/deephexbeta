@@ -1,43 +1,49 @@
 // src/net/LobbyManager.js
 import { supabase } from './SupabaseClient.js';
 
-const MAX_PLAYERS = 4;
-const PLAYER_COLS = ['player_1', 'player_2', 'player_3', 'player_4'];
-
 /**
- * Create initial game state when the host creates a lobby.
+ * Mission options we support in the lobby UI.
+ * Stored in state as both id + label for convenience.
  */
-function createInitialState(roomCode, hostName) {
-  return {
-    seed: roomCode,          // used for map generation
-    players: [hostName],     // list of player names
-    currentTurn: hostName,   // whose turn it is
-    turnNumber: 1,           // start at turn 1
-  };
-}
-
-/**
- * Make sure `state` always has a sane shape.
- */
-function normalizeState(rawState, roomCode) {
-  const state = rawState || {};
-  const players = Array.isArray(state.players) ? [...state.players] : [];
-
-  return {
-    seed: state.seed || roomCode,
-    players,
-    currentTurn: state.currentTurn || (players[0] ?? null),
-    turnNumber:
-      typeof state.turnNumber === 'number' ? state.turnNumber : 1,
-  };
-}
+export const MISSION_TYPES = {
+  BIG_CONSTRUCTION: { id: 'big_construction', label: 'Big construction' },
+  RESOURCE_EXTRACTION: { id: 'resource_extraction', label: 'Resource extraction' },
+  ELIMINATION: { id: 'elimination', label: 'Elimination' },
+  CONTROL_POINT: { id: 'control_point', label: 'Control point' },
+};
 
 /**
  * Creates a lobby with a 6-digit numeric code.
  * The code itself is also used as the world seed.
+ *
+ * NEW:
+ *  - options.maxPlayers (1–4), default 2
+ *  - options.missionType (one of MISSION_TYPES ids), default 'big_construction'
+ *
+ * Signature is backwards-compatible:
+ *   createLobby(playerName, roomCode)
+ *   createLobby(playerName, roomCode, { maxPlayers, missionType })
  */
-export async function createLobby(playerName, roomCode) {
-  const state = createInitialState(roomCode, playerName);
+export async function createLobby(playerName, roomCode, options = {}) {
+  // The roomCode is a 6-digit numeric string — use as seed
+  const seed = roomCode;
+
+  const maxPlayers = Math.min(4, Math.max(1, options.maxPlayers ?? 2));
+
+  // Normalize missionType to a known id
+  const missionId = (options.missionType || '').toLowerCase();
+  let missionType = MISSION_TYPES.BIG_CONSTRUCTION.id;
+  if (missionId === MISSION_TYPES.RESOURCE_EXTRACTION.id) missionType = missionId;
+  else if (missionId === MISSION_TYPES.ELIMINATION.id)    missionType = missionId;
+  else if (missionId === MISSION_TYPES.CONTROL_POINT.id)  missionType = missionId;
+
+  const state = {
+    seed,                     // numeric string used for map generation
+    players: [playerName],    // host is always the first player
+    currentTurn: playerName,  // simple: host starts
+    maxPlayers,               // NEW: lobby target size
+    missionType,              // NEW: mission id string
+  };
 
   console.log('[Supabase] Creating lobby with:', {
     roomCode,
@@ -51,11 +57,10 @@ export async function createLobby(playerName, roomCode) {
       {
         room_code: roomCode,
         player_1: playerName,
+        // we keep all extra info inside the JSON state to avoid migrations
         state,
       },
-    ])
-    .select()
-    .single();
+    ]);
 
   if (error) {
     console.error('[Supabase ERROR] Failed to create lobby:', error.message);
@@ -65,83 +70,61 @@ export async function createLobby(playerName, roomCode) {
 }
 
 /**
- * Joins an existing lobby (up to 4 players).
+ * Joins an existing lobby.
+ *
+ * NEW:
+ *  - Honors state.maxPlayers (if present): refuses joins beyond that.
+ *  - Keeps players list unique and capped at maxPlayers.
  */
 export async function joinLobby(playerName, roomCode) {
-  const { data: lobbyRow, error: fetchError } = await supabase
+  const { data: lobbyData, error: fetchError } = await supabase
     .from('lobbies')
-    .select('id, room_code, state, player_1, player_2, player_3, player_4')
+    .select('state')
     .eq('room_code', roomCode)
     .single();
 
-  if (fetchError || !lobbyRow) {
+  if (fetchError || !lobbyData) {
     console.error('[Supabase ERROR] Failed to fetch lobby for join:', fetchError);
-    return { data: null, error: fetchError || new Error('Lobby not found') };
+    return { error: fetchError || new Error('Lobby not found') };
   }
 
-  let state = normalizeState(lobbyRow.state, roomCode);
-  const players = state.players;
+  const prevState = lobbyData.state || {};
+  const prevPlayers = Array.isArray(prevState.players) ? prevState.players : [];
 
-  // Already in lobby: no-op
-  if (players.includes(playerName)) {
-    console.log('[Supabase] Player already in lobby, nothing to update:', {
-      roomCode,
-      playerName,
-      players,
-    });
-    return { data: { ...lobbyRow, state }, error: null };
+  const maxPlayers = Math.min(
+    4,
+    Math.max(1, typeof prevState.maxPlayers === 'number' ? prevState.maxPlayers : 2)
+  );
+
+  // Build a unique player list
+  const nextPlayers = Array.from(new Set([...prevPlayers, playerName]));
+
+  // If lobby is already full, reject the join
+  if (nextPlayers.length > maxPlayers) {
+    console.warn(
+      '[Supabase] joinLobby: lobby is full',
+      { roomCode, maxPlayers, nextPlayers }
+    );
+    return {
+      error: new Error('Lobby is full'),
+    };
   }
 
-  // Lobby full (4 players)
-  if (players.length >= MAX_PLAYERS) {
-    const err = new Error('Lobby is full');
-    console.warn('[Supabase] Join rejected, lobby is full:', {
-      roomCode,
-      players,
-    });
-    return { data: null, error: err };
-  }
-
-  // Add to players list in state
-  players.push(playerName);
-  state = {
-    ...state,
-    players,
-    currentTurn: state.currentTurn || players[0],
+  const updatedState = {
+    ...prevState,
+    players: nextPlayers,
+    maxPlayers, // keep normalized
   };
 
-  // Decide which player_N column to fill
-  let slotToFill = -1;
-  for (let i = 0; i < PLAYER_COLS.length; i++) {
-    if (!lobbyRow[PLAYER_COLS[i]]) {
-      slotToFill = i;
-      break;
-    }
-  }
-
-  // If all columns are non-empty but players <4, just map by index
-  if (slotToFill === -1 && players.length <= MAX_PLAYERS) {
-    slotToFill = players.length - 1; // 0-based index
-  }
-
-  const updatePatch = { state };
-  if (slotToFill >= 0 && slotToFill < PLAYER_COLS.length) {
-    updatePatch[PLAYER_COLS[slotToFill]] = playerName;
-  }
-
-  console.log('[Supabase] Joining lobby with:', {
-    roomCode,
-    playerName,
-    state,
-    slotToFill,
-  });
+  console.log('[Supabase] Joining lobby with:', { roomCode, playerName, updatedState });
 
   const { data, error } = await supabase
     .from('lobbies')
-    .update(updatePatch)
-    .eq('room_code', roomCode)
-    .select('id, room_code, state, player_1, player_2, player_3, player_4')
-    .single();
+    .update({
+      player_2: playerName, // legacy column; still set, even if more players in state.players
+      state: updatedState,
+    })
+    .eq('room_code', roomCode);
 
   if (error) {
     console.error('[Supabase ERROR] Failed to join lobby:', error.message);
@@ -151,7 +134,9 @@ export async function joinLobby(playerName, roomCode) {
 }
 
 /**
- * Fetches a lobby's game state (seed, players, etc.)
+ * Fetches a lobby's game state (seed, players, maxPlayers, missionType, etc.)
+ *
+ * NOTE: we still only select `state` – that’s where all the new fields live.
  */
 export async function getLobbyState(roomCode) {
   const { data, error } = await supabase
