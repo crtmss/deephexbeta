@@ -1,5 +1,7 @@
+// src/engine/HexMap.js
+
 // ============================================================
-//  Seeded PRNG
+//   Seeded PRNG helpers (deterministic for same seed string)
 // ============================================================
 
 function cyrb128(str) {
@@ -16,318 +18,346 @@ function cyrb128(str) {
   h2 = Math.imul(h4 ^ (h2 >>> 22), 2869860233);
   h3 = Math.imul(h1 ^ (h3 >>> 17), 951274213);
   h4 = Math.imul(h2 ^ (h4 >>> 19), 2716044179);
-  return [(h1 ^ h2 ^ h3 ^ h4) >>> 0,
-          (h2 ^ h1) >>> 0,
-          (h3 ^ h1) >>> 0,
-          (h4 ^ h1) >>> 0];
+  return [
+    (h1 ^ h2 ^ h3 ^ h4) >>> 0,
+    (h2 ^ h1) >>> 0,
+    (h3 ^ h1) >>> 0,
+    (h4 ^ h1) >>> 0,
+  ];
 }
 
-function sfc32(a,b,c,d){
-  return function(){
-    a>>>=0;b>>>=0;c>>>=0;d>>>=0;
-    let t=(a+b)|0;
-    a=b^(b>>>9);
-    b=(c+(c<<3))|0;
-    c=(c<<21|c>>>11);
-    d=(d+1)|0;
-    t=(t+d)|0;
-    c=(c+t)|0;
-    return (t>>>0)/4294967296;
+function sfc32(a, b, c, d) {
+  return function () {
+    a >>>= 0; b >>>= 0; c >>>= 0; d >>>= 0;
+    let t = (a + b) | 0;
+    a = b ^ (b >>> 9);
+    b = (c + (c << 3)) | 0;
+    c = (c << 21) | (c >>> 11);
+    d = (d + 1) | 0;
+    t = (t + d) | 0;
+    c = (c + t) | 0;
+    return (t >>> 0) / 4294967296;
   };
 }
 
 // ============================================================
-//  Minimal terrain presets
+//   Terrain type presets
 // ============================================================
 
 const terrainTypes = {
-  water:    { movementCost:999, defense:0 },
-  plains:   { movementCost:1, defense:0 },
-  forest:   { movementCost:2, defense:1 },
-  mountain: { movementCost:999, defense:3 },
-  swamp:    { movementCost:3, defense:-1 }
+  water: {
+    movementCost: 999,
+    defense: 0,
+    resource: null,
+  },
+  plains: {
+    movementCost: 1,
+    defense: 0,
+    resource: null,
+  },
+  forest: {
+    movementCost: 2,
+    defense: 1,
+    resource: 'wood',
+  },
+  mountain: {
+    movementCost: 999,
+    defense: 3,
+    resource: 'ore',
+  },
+  swamp: {
+    movementCost: 3,
+    defense: -1,
+    resource: null,
+  },
 };
 
 // ============================================================
-//  Helper functions
+//   World summary (for lobby preview / badge)
+//   (must be defined BEFORE generateMap uses it)
 // ============================================================
 
-const keyOf = (q,r)=>`${q},${r}`;
-const clamp = (v,a,b)=>v<a?a:v>b?b:v;
+function computeWorldSummaryFromTiles(tiles, width, height) {
+  const total = tiles.length || 1;
+  const counts = tiles.reduce((acc, t) => {
+    acc[t.type] = (acc[t.type] || 0) + 1;
+    return acc;
+  }, {});
 
-function neighborsOddR(q,r){
-  const even=(r%2===0);
-  return even
-  ? [[+1,0],[0,-1],[-1,-1],[-1,0],[-1,+1],[0,+1]]
-  : [[+1,0],[+1,-1],[0,-1],[-1,0],[0,+1],[+1,+1]];
-}
+  const pct = (type) => (counts[type] || 0) / total;
 
-function inBounds(q,r,w,h){
-  return q>=0 && q<w && r>=0 && r<h;
-}
+  const waterRatio = pct('water');
+  const forestRatio = pct('forest');
+  const mountainRatio = pct('mountain');
 
-// ============================================================
-//  Noise fields (simple value noise)
-// ============================================================
+  const roughness = 0.4 + Math.abs(forestRatio - waterRatio);
+  const elevationVar = 0.5 + mountainRatio;
 
-function makeValueNoise(width,height,rand,scale){
-  const g=[];
-  for(let r=0;r<height;r++){
-    g[r]=[];
-    for(let q=0;q<width;q++){
-      const nx=q/width, ny=r/height;
-      const n = (
-        rand()*0.7 +
-        rand()*0.2*Math.sin((nx+ny*2)*scale*3.1) +
-        rand()*0.1*Math.cos((ny-nx)*scale*2.7)
-      );
-      g[r][q]=n;
-    }
-  }
-  return g;
-}
+  const geography = {
+    waterTiles: counts.water || 0,
+    forestTiles: counts.forest || 0,
+    mountainTiles: counts.mountain || 0,
+    roughness: +roughness.toFixed(2),
+    elevationVar: +elevationVar.toFixed(2),
+  };
 
-// ============================================================
-//  HexMap class wrapper
-// ============================================================
+  const biomes = [];
+  if (waterRatio > 0.3)      biomes.push('Archipelago');
+  else if (waterRatio < 0.22) biomes.push('Continental');
 
-export default class HexMap {
-  constructor(width,height,seed){
-    this.width=width;
-    this.height=height;
-    this.seed=String(seed??'defaultseed');
-    this.map=[];
-    this.worldMeta=null;
-    this.generateMap();
-  }
+  if (forestRatio > 0.28)      biomes.push('Dense Forests');
+  else if (forestRatio < 0.20) biomes.push('Sparse Forests');
 
-  generateMap(){
-    const rngSeed=cyrb128(this.seed);
-    const rand=sfc32(...rngSeed);
-    const tiles=generateMap(this.height,this.width,this.seed,rand);
-    this.map=tiles;
-    this.worldMeta=tiles.__worldMeta||{};
-  }
+  if (mountainRatio > 0.12) biomes.push('Mountainous');
+  if (roughness > 0.6)      biomes.push('Rugged Terrain');
+  if (elevationVar > 0.7)   biomes.push('High Elevation Contrast');
 
-  getMap(){ return this.map; }
+  const biome = biomes.length > 0 ? biomes.join(', ') : 'Mixed Terrain';
+
+  return { geography, biome };
 }
 
 // ============================================================
-//  CORE ISLAND GENERATOR (E1)
+//   Core map generation
 // ============================================================
 
 function generateMap(height, width, seedStr, rand) {
   const tiles = [];
 
-  // -------------------------------
-  // Base grid init
-  // -------------------------------
+  // --- base grid
   for (let r = 0; r < height; r++) {
     for (let q = 0; q < width; q++) {
       tiles.push({
-        q, r,
+        q,
+        r,
         type: 'plains',
         elevation: 0,
         movementCost: terrainTypes.plains.movementCost,
         defense: terrainTypes.plains.defense,
         resource: null,
-
-        hasForest: false,
+        feature: null,
         hasRuin: false,
         hasCrashSite: false,
         hasVehicle: false,
+        hasForest: false,
         hasRoad: false,
-        feature: null
       });
     }
   }
 
+  const keyOf = (q, r) => `${q},${r}`;
   const byKey = new Map(tiles.map(t => [keyOf(t.q, t.r), t]));
-  const inB = (q,r)=>inBounds(q,r,width,height);
+  const inBounds = (q, r) => q >= 0 && q < width && r >= 0 && r < height;
 
-  // ============================================================
-  // 1. ISLAND SHAPE (radial + noise)
-  // ============================================================
+  function neighborsOddR(q, r) {
+    const even = (r % 2 === 0);
+    return even
+      ? [[+1,0],[0,-1],[-1,-1],[-1,0],[-1,+1],[0,+1]]
+      : [[+1,0],[+1,-1],[0,-1],[-1,0],[0,+1],[+1,+1]];
+  }
 
-  const noise1 = makeValueNoise(width, height, rand, 1.0);
-  const noise2 = makeValueNoise(width, height, rand, 2.3);
+  function markWater(tile) {
+    Object.assign(tile, {
+      type: 'water',
+      ...terrainTypes.water,
+      elevation: 0,
+      hasObject: false,
+      hasForest: false,
+      hasRuin: false,
+      hasCrashSite: false,
+      hasVehicle: false,
+      hasRoad: false,
+    });
+  }
 
-  const cx = width / 2;
-  const cy = height / 2;
-  const maxDist = Math.hypot(cx, cy);
+  function markMountain(tile, elev = 2) {
+    Object.assign(tile, {
+      type: 'mountain',
+      ...terrainTypes.mountain,
+      elevation: elev,
+    });
+  }
 
-  for (const t of tiles) {
-    const nx = t.q;
-    const ny = t.r;
-    const dist = Math.hypot(nx - cx, ny - cy) / maxDist; // 0 center → 1 edge
-
-    // island mask, soft falloff
-    let mask =
-      (1 - dist) * 0.9 +
-      (noise1[ny][nx] - 0.5) * 0.25 +
-      (noise2[ny][nx] - 0.5) * 0.15;
-
-    // clamp 0..1
-    mask = clamp(mask, 0, 1);
-
-    // convert to elevation bands
-    if (mask < 0.28) {
-      // WATER
-      t.type = 'water';
-      t.elevation = 0;
-    } else if (mask < 0.40) {
-      // COAST
-      t.type = 'plains';
-      t.elevation = 0;
-    } else if (mask < 0.75) {
-      // INLAND PLAINS / FOREST
-      t.type = 'plains';
-      t.elevation = 1;
-    } else if (mask < 0.88) {
-      // HILLS
-      t.type = 'plains';
-      t.elevation = 2;
-    } else {
-      // MOUNTAINS
-      t.type = 'mountain';
-      t.elevation = 3 + (rand() < 0.3 ? 1 : 0); // 3–4
+  function markForest(tile) {
+    tile.hasForest = true;
+    if (tile.type === 'plains') {
+      tile.type = 'forest';
+      tile.movementCost = terrainTypes.forest.movementCost;
+      tile.defense = terrainTypes.forest.defense;
+      tile.resource = terrainTypes.forest.resource;
     }
   }
 
-  // Apply terrain presets
-  for (const t of tiles) {
-    if (t.type === 'water') {
-      Object.assign(t, terrainTypes.water);
-      continue;
+  // ------------------------------------------------------------
+  // Elevation field (simple value noise / blobs)
+  // ------------------------------------------------------------
+  const elevField = [];
+  for (let r = 0; r < height; r++) {
+    elevField[r] = [];
+    for (let q = 0; q < width; q++) {
+      const nx = q / width;
+      const ny = r / height;
+      const base = (rand() + rand() + rand()) / 3; // 0..1
+      const ridge = Math.abs(0.5 - base) * 2;
+      const centerBias = 1 - Math.hypot(nx - 0.5, ny - 0.5);
+      let val = 0.3 * base + 0.4 * ridge + 0.3 * centerBias;
+      elevField[r][q] = val;
     }
-    if (t.type === 'mountain') {
-      Object.assign(t, terrainTypes.mountain);
-      continue;
-    }
-
-    Object.assign(t, terrainTypes.plains);
   }
 
-  // ============================================================
-  // 2. SECONDARY TERRAIN: swamps, sand, biome shifts
-  // ============================================================
+  // Normalize & classify
+  let minE = +Infinity, maxE = -Infinity;
+  for (let r = 0; r < height; r++) {
+    for (let q = 0; q < width; q++) {
+      const v = elevField[r][q];
+      if (v < minE) minE = v;
+      if (v > maxE) maxE = v;
+    }
+  }
+  const rangeE = Math.max(1e-6, maxE - minE);
 
-  for (const t of tiles) {
-    if (t.type === 'plains') {
-      if (t.elevation === 0 && rand() < 0.10) {
-        t.type = 'sand';            // beaches / shallow coastlines
+  for (let r = 0; r < height; r++) {
+    for (let q = 0; q < width; q++) {
+      const t = byKey.get(keyOf(q, r));
+      let v = (elevField[r][q] - minE) / rangeE; // 0..1
+
+      if (v < 0.25) {
+        // deep water / sea
+        markWater(t);
+      } else if (v < 0.35) {
+        // coastal plains
+        Object.assign(t, { type: 'plains', ...terrainTypes.plains, elevation: 0 });
+      } else if (v < 0.75) {
+        // interior plains/forests
+        Object.assign(t, { type: 'plains', ...terrainTypes.plains, elevation: 1 });
+      } else if (v < 0.9) {
+        // hills / highlands
+        Object.assign(t, { type: 'plains', ...terrainTypes.plains, elevation: 2 });
+      } else {
+        // mountains
+        markMountain(t, 3);
       }
-      if (t.elevation === 1 && rand() < 0.06) {
-        t.type = 'swamp';           // wetlands
-        Object.assign(t, terrainTypes.swamp);
-      }
     }
   }
 
-  // ============================================================
-  // 3. RIVER NETWORK (multiple rivers, deterministic)
-  // ============================================================
+  // ------------------------------------------------------------
+  // Add a main river / lakes (seeded)
+  // ------------------------------------------------------------
 
-  const mountains = tiles.filter(t => t.type === 'mountain');
-  if (mountains.length > 0) {
-    const riverSources = Math.min(3, 1 + Math.floor(rand() * 3));
-    for (let i = 0; i < riverSources; i++) {
-      const src = mountains[Math.floor(rand() * mountains.length)];
-      carveRiverFrom(src);
-    }
+  // Find a "mountain hub" as a source
+  const landTiles = tiles.filter(t => t.type !== 'water');
+  const mountainTiles = tiles.filter(t => t.type === 'mountain');
+
+  let hub = null;
+  if (mountainTiles.length > 0) {
+    let candidate = mountainTiles[Math.floor(rand() * mountainTiles.length)];
+    if (!candidate) candidate = mountainTiles[0];
+    hub = candidate;
+  } else if (landTiles.length > 0) {
+    // fallback: any land tile, but still seeded
+    const center = landTiles[Math.floor(rand() * landTiles.length)];
+    hub = center;
   }
 
-  function carveRiverFrom(startTile) {
-    let cur = startTile;
-    const steps = 50 + Math.floor(rand() * 60);
+  if (hub) {
+    const steps = 40 + Math.floor(rand() * 40);
+    let current = hub;
 
     for (let i = 0; i < steps; i++) {
-      const neigh = neighborsOddR(cur.q, cur.r)
-        .map(([dq,dr]) => byKey.get(keyOf(cur.q + dq, cur.r + dr)))
-        .filter(n => n && inB(n.q,n.r));
+      const nbs = neighborsOddR(current.q, current.r)
+        .map(([dq, dr]) => [current.q + dq, current.r + dr])
+        .filter(([qq, rr]) => inBounds(qq, rr));
 
-      if (!neigh.length) break;
+      if (!nbs.length) break;
 
+      // bias flow roughly "down-hill" with small seeded jitter
+      const downhill = [];
       let best = null;
-      let bestScore = Infinity;
+      let bestVal = Infinity;
 
-      for (const n of neigh) {
-        const elev = n.elevation ?? 0;
-        const jitter = (rand() - 0.5) * 0.2;
+      for (const [qq, rr] of nbs) {
+        const candidate = byKey.get(keyOf(qq, rr));
+        if (!candidate) continue;
+        const elev = candidate.elevation ?? 0;
+        const jitter = rand() * 0.1;
         const score = elev + jitter;
-
-        if (score < bestScore) {
-          bestScore = score;
-          best = n;
+        if (score < bestVal) {
+          bestVal = score;
+          best = candidate;
+        }
+        if (elev <= (current.elevation ?? 0)) {
+          downhill.push(candidate);
         }
       }
 
-      if (!best) break;
+      const next = (downhill.length > 0)
+        ? downhill[Math.floor(rand() * downhill.length)]
+        : best;
 
-      if (best.type !== 'water') {
-        best.type = 'water';
-        best.elevation = 0;
+      if (!next) break;
+      if (next.type === 'water') {
+        current = next;
+        continue;
       }
-      cur = best;
+
+      // mark current → river / lake
+      if (current.type !== 'water') {
+        markWater(current);
+      }
+      current = next;
     }
   }
 
-  // ============================================================
-  // 4. FOREST BLOBS
-  // ============================================================
-
-  const forestCount = 8 + Math.floor(rand() * 12);
-  const candidates = tiles.filter(t =>
-    t.type !== 'water' && t.type !== 'mountain'
+  // ------------------------------------------------------------
+  // Forest patches
+  // ------------------------------------------------------------
+  const forestCandidates = tiles.filter(t =>
+    t.type === 'plains' && !['water', 'mountain'].includes(t.type)
   );
+  const forestPatchCount = Math.floor(4 + rand() * 6);
 
-  for (let i = 0; i < forestCount; i++) {
-    if (!candidates.length) break;
-    const center = candidates[Math.floor(rand() * candidates.length)];
-    floodForest(center, 4 + Math.floor(rand() * 6));
-  }
+  for (let i = 0; i < forestPatchCount; i++) {
+    if (!forestCandidates.length) break;
+    const idx = Math.floor(rand() * forestCandidates.length);
+    const center = forestCandidates[idx];
+    if (!center) continue;
 
-  function floodForest(center, size) {
+    // small blob
+    const blobSize = 4 + Math.floor(rand() * 6);
     const queue = [center];
-    const visited = new Set([keyOf(center.q, center.r)]);
-    while (queue.length && size-- > 0) {
+    const seen = new Set([keyOf(center.q, center.r)]);
+
+    for (let j = 0; j < blobSize && queue.length; j++) {
       const cur = queue.shift();
       if (!cur) break;
 
-      cur.type = 'forest';
-      cur.hasForest = true;
-      Object.assign(cur, terrainTypes.forest);
+      markForest(cur);
 
-      for (const [dq,dr] of neighborsOddR(cur.q, cur.r)) {
-        const qq = cur.q + dq;
-        const rr = cur.r + dr;
-        if (!inB(qq,rr)) continue;
-        const k = keyOf(qq,rr);
-        if (visited.has(k)) continue;
-
+      for (const [dq, dr] of neighborsOddR(cur.q, cur.r)) {
+        const qq = cur.q + dq, rr = cur.r + dr;
+        if (!inBounds(qq, rr)) continue;
+        const k = keyOf(qq, rr);
+        if (seen.has(k)) continue;
         const n = byKey.get(k);
-        if (!n || n.type === 'water' || n.type === 'mountain') continue;
-
-        if (rand() < 0.5) {
-          visited.add(k);
+        if (!n || n.type !== 'plains') continue;
+        if (rand() < 0.6) {
+          seen.add(k);
           queue.push(n);
         }
       }
     }
   }
 
-  // ============================================================
-  // 5. WORLD OBJECTS (POIs, ruins, vehicles, crash sites)
-  // ============================================================
-
+  // ------------------------------------------------------------
+  // Roads & world objects (delegated, but still seeded)
+  // ------------------------------------------------------------
   const { objects, roads } = generateWorldObjectsForSeed(tiles, width, height, rand);
+
+  // Attach helper so callers can access objects/roads
   tiles.__worldObjects = objects;
   tiles.__roads = roads;
 
-  // ============================================================
-  // 6. SUMMARY META
-  // ============================================================
-
+  // Summarize world meta (for lobby preview)
   const worldMeta = computeWorldSummaryFromTiles(tiles, width, height);
   Object.defineProperty(tiles, '__worldMeta', { value: worldMeta, enumerable: false });
 
@@ -335,8 +365,8 @@ function generateMap(height, width, seedStr, rand) {
 }
 
 // ============================================================
-//  WORLD OBJECTS (RUINS, CRASHSITES, VEHICLES) + ROADS
-//  Fully seed-based and deterministic
+//   Objects / POIs (forests/ruins/vehicles/roads)
+//   All seeded via the `rand` passed from generateMap.
 // ============================================================
 
 function generateWorldObjectsForSeed(tiles, width, height, rand) {
@@ -347,162 +377,124 @@ function generateWorldObjectsForSeed(tiles, width, height, rand) {
   function neighborsOddR(q, r) {
     const even = (r % 2 === 0);
     return even
-      ? [[+1,0],[0,-1],[-1,-1],[-1,0],[ -1,+1],[0,+1]]
+      ? [[+1,0],[0,-1],[-1,-1],[-1,0],[-1,+1],[0,+1]]
       : [[+1,0],[+1,-1],[0,-1],[-1,0],[0,+1],[+1,+1]];
   }
 
   const objects = [];
   const roads = [];
 
-  // ------------------------------------------------------------
-  // LAND POIs (ruins, crash sites, vehicle wrecks)
-  // ------------------------------------------------------------
+  // --- Example: ruins / crashsites / vehicles, all seeded via rand() ---
+  const landTiles = tiles.filter(t => t.type !== 'water' && t.type !== 'mountain');
+  const ruinCount = Math.min(5, Math.max(2, Math.floor(rand() * 6)));
+  const crashCount = Math.min(4, Math.max(1, Math.floor(rand() * 5)));
+  const vehicleCount = Math.min(3, Math.max(1, Math.floor(rand() * 4)));
 
-  const landTiles = tiles.filter(t =>
-    t.type !== 'water' && t.type !== 'mountain'
-  );
-
-  function pickRandomLand() {
+  function pickRandomLandTile() {
     if (!landTiles.length) return null;
-    return landTiles[Math.floor(rand() * landTiles.length)];
+    const idx = Math.floor(rand() * landTiles.length);
+    return landTiles[idx] || null;
   }
 
-  const ruinCount = 3 + Math.floor(rand() * 4);      // 3–6
-  const crashCount = 2 + Math.floor(rand() * 4);     // 2–5
-  const vehicleCount = 1 + Math.floor(rand() * 3);   // 1–3
-
-  // RUINS
+  // Ruins
   for (let i = 0; i < ruinCount; i++) {
-    const tile = pickRandomLand();
+    const tile = pickRandomLandTile();
     if (!tile) break;
     tile.hasRuin = true;
-    objects.push({ type: 'ruin', q: tile.q, r: tile.r });
+    objects.push({
+      type: 'ruin',
+      q: tile.q,
+      r: tile.r,
+    });
   }
 
-  // CRASH SITES
+  // Crash sites
   for (let i = 0; i < crashCount; i++) {
-    const tile = pickRandomLand();
+    const tile = pickRandomLandTile();
     if (!tile) break;
     tile.hasCrashSite = true;
-    objects.push({ type: 'crash_site', q: tile.q, r: tile.r });
+    objects.push({
+      type: 'crash_site',
+      q: tile.q,
+      r: tile.r,
+    });
   }
 
-  // VEHICLE WRECKS
+  // Vehicles
   for (let i = 0; i < vehicleCount; i++) {
-    const tile = pickRandomLand();
+    const tile = pickRandomLandTile();
     if (!tile) break;
     tile.hasVehicle = true;
-    objects.push({ type: 'vehicle_wreck', q: tile.q, r: tile.r });
+    objects.push({
+      type: 'vehicle_wreck',
+      q: tile.q,
+      r: tile.r,
+    });
   }
 
-  // ------------------------------------------------------------
-  // ROADS — seeded A* connectors + radial stubs
-  // ------------------------------------------------------------
+  // --- Road stubs / connections — seeded ---
+  function addRoadSegment(q, r) {
+    const t = byKey.get(keyOf(q, r));
+    if (!t) return;
+    t.hasRoad = true;
+    roads.push({ q, r });
+  }
 
-  // 1) Radial tree from a random land center
+  // simple radial roads from center
   if (landTiles.length > 0) {
-    const c = landTiles[Math.floor(rand() * landTiles.length)];
+    const centerIdx = Math.floor(rand() * landTiles.length);
+    const center = landTiles[centerIdx] || landTiles[0];
 
-    const queue = [c];
-    const visited = new Set([keyOf(c.q, c.r)]);
-    const maxRoads = 60 + Math.floor(rand() * 40);
+    const queue = [center];
+    const seen = new Set([keyOf(center.q, center.r)]);
+    const maxRoads = 80 + Math.floor(rand() * 40);
 
     while (queue.length && roads.length < maxRoads) {
       const cur = queue.shift();
-      if (!cur) break;
-
-      roads.push({ q: cur.q, r: cur.r });
-      cur.hasRoad = true;
+      addRoadSegment(cur.q, cur.r);
 
       for (const [dq, dr] of neighborsOddR(cur.q, cur.r)) {
-        const qq = cur.q + dq;
-        const rr = cur.r + dr;
+        const qq = cur.q + dq, rr = cur.r + dr;
         if (!inBounds(qq, rr)) continue;
-
         const k = keyOf(qq, rr);
-        if (visited.has(k)) continue;
+        if (seen.has(k)) continue;
+        const tt = byKey.get(k);
+        if (!tt || tt.type === 'water' || tt.type === 'mountain') continue;
 
-        const nt = byKey.get(k);
-        if (!nt || nt.type === 'water' || nt.type === 'mountain') continue;
-
-        if (rand() < 0.45) { // branching
-          visited.add(k);
-          queue.push(nt);
+        if (rand() < 0.5) {
+          seen.add(k);
+          queue.push(tt);
         }
-      }
-    }
-  }
-
-  // 2) Connect POIs with short seeded A* roads
-  const poiTiles = tiles.filter(t =>
-    t.hasRuin || t.hasCrashSite || t.hasVehicle
-  );
-
-  function astar(start, goal) {
-    const open = new Map();
-    const closed = new Set();
-    const kStart = keyOf(start.q, start.r);
-    const kGoal = keyOf(goal.q, goal.r);
-
-    open.set(kStart, { q: start.q, r: start.r, g: 0, f: 0, parent: null });
-
-    const heur = (q,r)=>Math.abs(q-goal.q) + Math.abs(r-goal.r);
-
-    while (open.size) {
-      let cur = null;
-      for (const n of open.values()) if (!cur || n.f < cur.f) cur = n;
-      open.delete(keyOf(cur.q,cur.r));
-      const ck = keyOf(cur.q,cur.r);
-
-      if (ck === kGoal) {
-        const path = [];
-        let n = cur;
-        while (n) {
-          path.push(byKey.get(keyOf(n.q,n.r)));
-          n = n.parent;
-        }
-        return path.reverse();
-      }
-
-      closed.add(ck);
-
-      for (const [dq, dr] of neighborsOddR(cur.q, cur.r)) {
-        const qq = cur.q + dq;
-        const rr = cur.r + dr;
-        if (!inBounds(qq, rr)) continue;
-
-        const k = keyOf(qq, rr);
-        if (closed.has(k)) continue;
-
-        const t = byKey.get(k);
-        if (!t || t.type === 'water' || t.type === 'mountain') continue;
-
-        const g = cur.g + 1;
-        const f = g + heur(qq,rr);
-
-        const ex = open.get(k);
-        if (!ex || g < ex.g) {
-          open.set(k, { q: qq, r: rr, g, f, parent: cur });
-        }
-      }
-    }
-
-    return null;
-  }
-
-  for (let i = 0; i < poiTiles.length - 1; i++) {
-    const a = poiTiles[i];
-    const b = poiTiles[i + 1];
-    const path = astar(a, b);
-    if (!path) continue;
-
-    for (const t of path) {
-      if (t.type !== 'water' && t.type !== 'mountain') {
-        t.hasRoad = true;
-        roads.push({ q: t.q, r: t.r });
       }
     }
   }
 
   return { objects, roads };
+}
+
+// ============================================================
+//   HexMap class wrapper
+// ============================================================
+
+export default class HexMap {
+  constructor(width, height, seed) {
+    this.width = width;
+    this.height = height;
+    this.seed = String(seed ?? 'defaultseed');
+    this.map = [];
+    this.worldMeta = null;
+    this.generateMap();
+  }
+
+  generateMap() {
+    const rngSeed = cyrb128(this.seed);
+    const rand = sfc32(...rngSeed);
+    const tiles = generateMap(this.height, this.width, this.seed, rand);
+    this.map = tiles;
+    this.worldMeta = tiles.__worldMeta || {};
+  }
+
+  getMap() {
+    return this.map;
+  }
 }
