@@ -373,10 +373,9 @@ function applyGeoObject(map, cols, rows, rand, biome, worldMeta) {
       let bestScore = -1;
       for (const m of mountains) {
         const ns = neighbors(m.q, m.r, map).map(([x, y]) => map[y][x]);
-        // 🔁 use seeded rand() instead of Math.random()
         const score = ns.filter(n =>
           n && (n.type === 'mountain' || (n.elevation === 4))
-        ).length + rand() * 0.1;
+        ).length + rand() * 0.1;   // ✅ seeded
         if (score > bestScore) { bestScore = score; hub = m; }
       }
     } else {
@@ -675,6 +674,7 @@ export default class HexMap {
     this.seed = String(seed ?? 'defaultseed');
     this.map = [];
     this.worldMeta = null;
+    this.rand = null;          // ✅ exposes seeded RNG instance
     this.generateMap();
   }
 
@@ -684,6 +684,7 @@ export default class HexMap {
     const tiles = generateMap(this.height, this.width, this.seed, rand);
     this.map = tiles;
     this.worldMeta = tiles.__worldMeta || {};
+    this.rand = rand;          // ✅ save PRNG so scenes can reuse it
   }
 
   getMap() {
