@@ -5,8 +5,10 @@
    - Places 5 🐟 fish resources on random water hexes
    - Enforces minimum hex distance of 8 between fish
    - Safe to call multiple times (won’t duplicate existing fish at same hex)
-   - Fully deterministic for a given seed (uses scene.hexMap.rand)
+   - Fully deterministic for a given seed (derives its own PRNG from seed)
    ======================================================================= */
+
+import { cyrb128, sfc32 } from '../engine/PRNG.js';
 
 export function spawnFishResources() {
   const scene = /** @type {Phaser.Scene & any} */ (this);
@@ -89,13 +91,19 @@ function isWaterTile(tile) {
   return type === 'water' || type === 'ocean' || type === 'sea';
 }
 
+/**
+ * Deterministic RNG for fish, derived from map seed.
+ * This avoids depending on the *current* state of hexMap.rand,
+ * so different call orders on different clients don't desync fish.
+ */
 function getRng(scene) {
-  // Use the seeded RNG from HexMap if available
-  if (scene?.hexMap && typeof scene.hexMap.rand === 'function') {
-    return scene.hexMap.rand;
-  }
-  // Fallback: non-deterministic
-  return Math.random;
+  const baseSeed =
+    (scene && scene.seed) ||
+    (scene && scene.hexMap && scene.hexMap.seed) ||
+    'defaultseed';
+
+  const state = cyrb128(String(baseSeed) + '|fish');
+  return sfc32(state[0], state[1], state[2], state[3]);
 }
 
 function inBounds(scene, q, r) {
