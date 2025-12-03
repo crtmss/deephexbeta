@@ -17,7 +17,7 @@ export function getColorForTerrain(terrain) {
     case 'mud':         return 0xB48A78; // #B48A78
     case 'swamp':       return 0x8AA18A; // #8AA18A
     case 'mountain':    return 0xC9C9C9; // #C9C9C9
-    case 'water':       return 0x7CC4FF; // #7CC4FF
+    case 'water':       return 0x7CC4FF; // base water
     case 'volcano_ash': return 0x9A9A9A; // grey
     case 'ice':         return 0xCFEFFF; // light blue
     case 'snow':        return 0xF7FBFF; // very light
@@ -27,14 +27,14 @@ export function getColorForTerrain(terrain) {
 
 /* ---------- elevation helpers ---------- */
 /**
- * Game elevation model:
+ * Elevation model:
  *   1–3 : water levels (isCoveredByWater = true)
- *   4   : shoreline land (no vertical step vs water)
+ *   4   : shoreline land on the same visual plane as water
  *   5–7 : raised land (terrain cliffs)
  *
- * effectiveElevation() controls visual extrusion:
- *   - water + level 4 land => 0 (flat)
- *   - level 5,6,7 land     => 1,2,3 respectively
+ * effectiveElevation() is "visual height":
+ *   - water and level-4 land => 0
+ *   - 5, 6, 7 land => 1, 2, 3
  */
 export function effectiveElevation(tile) {
   if (!tile) return 0;
@@ -42,7 +42,7 @@ export function effectiveElevation(tile) {
   const eRaw = typeof tile.elevation === 'number' ? tile.elevation : 0;
   const covered = !!tile.isCoveredByWater;
 
-  // Water (1–3) and shoreline (4) are on the same visual plane.
+  // Water & shoreline sit on same visual plane
   if (covered || eRaw <= 4) return 0;
 
   // Levels 5–7 become 1–3 visually.
@@ -56,7 +56,6 @@ function darkenRGBInt(baseInt, factor) {
   const b = Math.round(c.b * factor);
   return Phaser.Display.Color.GetColor(r, g, b);
 }
-// slightly darker walls for better contrast vs. pastel face
 function tintWallFromBase(baseInt, amount = 0.72) {
   return darkenRGBInt(baseInt, amount);
 }
@@ -87,16 +86,6 @@ function neighborsOddR(q, r) {
   return even
     ? [[+1,0],[0,-1],[-1,-1],[-1,0],[-1,+1],[0,+1]]
     : [[+1,0],[+1,-1],[0,-1],[-1,0],[0,+1],[+1,+1]];
-}
-
-/* ---------- small hash for deterministic per-tile noise ---------- */
-function hash32FromQR(q, r) {
-  let x = (q * 374761393) ^ (r * 668265263);
-  x |= 0;
-  x ^= x >>> 13;
-  x = (x * 1274126177) | 0;
-  x ^= x >>> 16;
-  return x >>> 0;
 }
 
 /* ---------- projection utilities ---------- */
@@ -182,9 +171,16 @@ export function drawHex(q, r, xIso, yIso, size, fillColor, effElevation, tile) {
 
   const walls = [];
 
-  // Helper to detect water-ish tiles
   const isWaterTile = (t) =>
     !!t && (t.type === 'water' || t.isCoveredByWater);
+
+  const rawSelf = typeof tile?.elevation === 'number' ? tile.elevation : 0;
+  const selfWetPlane = isWaterTile(tile) || rawSelf <= 4;
+
+  const getRawElev = (t) =>
+    typeof t?.elevation === 'number' ? t.elevation : 0;
+  const isWetPlane = (t) =>
+    isWaterTile(t) || getRawElev(t) <= 4;
 
   // Helper to draw cliff if neighbor lower
   const maybeCliff = (edgeIndex, neighborTile) => {
@@ -193,12 +189,12 @@ export function drawHex(q, r, xIso, yIso, size, fillColor, effElevation, tile) {
     const effN = effectiveElevation(neighborTile);
     const diff = effElevation - effN;
 
-    // NEW HARD RULE (Option A):
-    // No cliffs at all when we touch water while we are visually on sea level.
-    // This covers level-4 beaches against any water depth.
-    if (isWaterTile(neighborTile) && effElevation === 0) return;
+    // If both tiles are on the wet plane (water or <=4),
+    // there MUST NOT be any cliff (beach rule).
+    if (selfWetPlane && isWetPlane(neighborTile)) return;
 
     if (diff <= 0) return;
+
     const A = ring[edgeIndex];
     const B = ring[(edgeIndex + 1) % 6];
     walls.push(drawEdgeQuad(this, A, B, diff * dropPerLvl, wallColor, 3));
@@ -211,10 +207,9 @@ export function drawHex(q, r, xIso, yIso, size, fillColor, effElevation, tile) {
     const effN = effectiveElevation(neighborTile);
     const diff = effElevation - effN;
 
-    // Same rule as above for beaches: no vertical hint vs water on level 0.
-    if (isWaterTile(neighborTile) && effElevation === 0) return;
-
+    if (selfWetPlane && isWetPlane(neighborTile)) return;
     if (diff <= 0) return;
+
     const A = ring[edgeIndex];
     const B = ring[(edgeIndex + 1) % 6];
     const skirt = Math.min(2, Math.max(1.2, diff * 0.8));
@@ -258,40 +253,30 @@ export function drawHex(q, r, xIso, yIso, size, fillColor, effElevation, tile) {
 /**
  * waterDistance:
  *   0 for land tiles (we don't use it there)
- *   1 => shallow (light)
+ *   1 => shallow
  *   2–3 => medium
- *   4+ => deep (dark)
+ *   4+ => deep
  *
- * Plus deterministic per-tile noise so water bands aren’t *too* perfect,
- * but still clearly 3 main depth levels.
+ * EXACTLY 3 water colors: shallow / medium / deep.
  */
+const WATER_SHALLOW_COLOR = 0x8FD4FF; // slightly lighter
+const WATER_MEDIUM_COLOR  = 0x7CC4FF; // base
+const WATER_DEEP_COLOR    = 0x4B90D6; // darker
+
 function getFillForTile(tile, waterDistance) {
   const isWater = tile.type === 'water' || tile.isCoveredByWater;
-  const baseColor = getColorForTerrain(isWater ? 'water' : tile.type);
 
   if (isWater) {
     const d = Number.isFinite(waterDistance) ? waterDistance : 999;
 
-    // Base factor by ring
-    let factor;
-    if (d <= 1)      factor = 1.05; // shallow
-    else if (d <= 3) factor = 1.0;  // medium
-    else             factor = 0.75; // deep
-
-    // Deterministic per-tile noise: +/- up to ~8%
-    const h = hash32FromQR(tile.q, tile.r);
-    const noise = ((h & 0xffff) / 65535) * 0.16 - 0.08; // -0.08..+0.08
-    factor *= (1 + noise);
-    factor = Math.max(0.6, Math.min(1.15, factor));
-
-    const base = Phaser.Display.Color.IntegerToColor(baseColor);
-    const r = Math.max(0, Math.min(255, Math.round(base.r * factor)));
-    const g = Math.max(0, Math.min(255, Math.round(base.g * factor)));
-    const b = Math.max(0, Math.min(255, Math.round(base.b * factor)));
-    return Phaser.Display.Color.GetColor(r, g, b);
+    // Choose ONE of 3 discrete colors
+    if (d <= 1)      return WATER_SHALLOW_COLOR;
+    else if (d <= 3) return WATER_MEDIUM_COLOR;
+    else             return WATER_DEEP_COLOR;
   }
 
   // --- Land tinting by *effective* elevation (above water plane) ---
+  const baseColor = getColorForTerrain(tile.type);
   const eff = effectiveElevation(tile);
 
   // Clear per-level stepping toward white (stronger contrast)
@@ -398,7 +383,7 @@ export function drawHexMap() {
     const ea = effectiveElevation(a);
     const eb = effectiveElevation(b);
     if (ea !== eb) return ea - eb;               // lower levels first
-    const da = (a.q + a.r) - (b.q + b.r);        // correct diagonal bias
+    const da = (a.q + a.r) - (b.q + b.r);
     if (da !== 0) return da;
     if (a.r !== b.r) return a.r - b.r;
     return a.q - b.q;
