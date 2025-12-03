@@ -17,7 +17,7 @@ export function getColorForTerrain(terrain) {
     case 'mud':         return 0xB48A78; // #B48A78
     case 'swamp':       return 0x8AA18A; // #8AA18A
     case 'mountain':    return 0xC9C9C9; // #C9C9C9
-    case 'water':       return 0x7CC4FF; // #7CC4FF
+    case 'water':       return 0x7CC4FF; // base water
     case 'volcano_ash': return 0x9A9A9A; // grey
     case 'ice':         return 0xCFEFFF; // light blue
     case 'snow':        return 0xF7FBFF; // very light
@@ -192,9 +192,9 @@ export function drawHex(q, r, xIso, yIso, size, fillColor, effElevation, tile) {
     const effN = effectiveElevation(neighborTile);
     const diff = effElevation - effN;
 
-    // HARD RULE: level-4 terrain should NOT have cliffs vs water.
+    // HARD RULE: land with elevation <= 4 should NOT have cliffs vs water.
     const neighborIsWater = neighborTile.type === 'water' || neighborTile.isCoveredByWater;
-    if (selfRawElev === 4 && neighborIsWater) return;
+    if (neighborIsWater && selfRawElev <= 4) return;
 
     if (diff <= 0) return;
     const A = ring[edgeIndex];
@@ -209,9 +209,8 @@ export function drawHex(q, r, xIso, yIso, size, fillColor, effElevation, tile) {
     const effN = effectiveElevation(neighborTile);
     const diff = effElevation - effN;
 
-    // Same rule as above: level-4 vs water => no skirt either.
     const neighborIsWater = neighborTile.type === 'water' || neighborTile.isCoveredByWater;
-    if (selfRawElev === 4 && neighborIsWater) return;
+    if (neighborIsWater && selfRawElev <= 4) return;
 
     if (diff <= 0) return;
     const A = ring[edgeIndex];
@@ -257,11 +256,14 @@ export function drawHex(q, r, xIso, yIso, size, fillColor, effElevation, tile) {
 /**
  * waterDistance:
  *   0 for land tiles (we don't use it there)
- *   1 => shallow (light)
- *   2–3 => medium
- *   4+ => deep (dark)
+ *   >=1 for water:
+ *     depthBand 1 => shallow
+ *     depthBand 2 => medium
+ *     depthBand 3 => deep
  *
- * Plus per-tile deterministic noise so water bands aren’t too perfect.
+ * We still use a tiny deterministic jitter *only to pick the band*,
+ * but each band maps to a single color – so there are exactly 3
+ * water colors on the whole map.
  */
 function getFillForTile(tile, waterDistance) {
   const isWater = tile.type === 'water' || tile.isCoveredByWater;
@@ -270,24 +272,24 @@ function getFillForTile(tile, waterDistance) {
   if (isWater) {
     const d = Number.isFinite(waterDistance) ? waterDistance : 999;
 
-    // Base factor by ring
-    let factor;
-    if (d <= 1)      factor = 1.05; // shallow
-    else if (d <= 3) factor = 1.0;  // medium
-    else             factor = 0.75; // deep
-
-    // Deterministic per-tile noise: +/- up to ~8%
+    // Slight jitter in band *classification* so rings aren't perfect
     const h = hash32FromQR(tile.q, tile.r);
-    const noise = ((h & 0xffff) / 65535) * 0.16 - 0.08; // -0.08..+0.08
-    factor *= (1 + noise);
-    // clamp factor to avoid weird extremes
-    factor = Math.max(0.6, Math.min(1.15, factor));
+    const jitter = (((h & 0xff) / 255) - 0.5) * 0.6; // -0.3..+0.3
+    const dj = d + jitter;
 
-    const base = Phaser.Display.Color.IntegerToColor(baseColor);
-    const r = Math.max(0, Math.min(255, Math.round(base.r * factor)));
-    const g = Math.max(0, Math.min(255, Math.round(base.g * factor)));
-    const b = Math.max(0, Math.min(255, Math.round(base.b * factor)));
-    return Phaser.Display.Color.GetColor(r, g, b);
+    let band;
+    if (dj <= 1.5)      band = 1; // shallow
+    else if (dj <= 3.0) band = 2; // medium
+    else                band = 3; // deep
+
+    // Three fixed colors for water
+    const SHALLOW = 0x9bdcff; // light
+    const MEDIUM  = 0x7cc4ff; // mid
+    const DEEP    = 0x4b86d9; // dark
+
+    if (band === 1) return SHALLOW;
+    if (band === 2) return MEDIUM;
+    return DEEP;
   }
 
   // --- Land tinting by *effective* elevation (above water plane) ---
@@ -395,7 +397,7 @@ export function drawHexMap() {
     const eb = effectiveElevation(b);
     if (ea !== eb) return ea - eb;
 
-    const da = (a.q + a.r) - (b.q + b.r); // ✅ fixed (was b.q + b.q)
+    const da = (a.q + a.r) - (b.q + b.r); // fixed (was b.q + b.q)
     if (da !== 0) return da;
 
     if (a.r !== b.r) return a.r - b.r;
