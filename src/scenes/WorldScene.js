@@ -37,6 +37,9 @@ import {
 
 import { supabase as sharedSupabase } from '../net/SupabaseClient.js';
 
+// 🔧 NEW: debug water menu
+import { initDebugMenu } from './WorldSceneDebug.js';
+
 /* =========================
    Deterministic world summary (UI-only)
    ========================= */
@@ -208,6 +211,9 @@ export default class WorldScene extends Phaser.Scene {
     drawHexMap.call(this);
     drawLocationsAndRoads.call(this);
     spawnFishResources.call(this);
+
+    // 🔧 DEBUG WATER MENU (top-center buttons)
+    initDebugMenu.call(this);
 
     /* =========================
        UNITS & ENEMIES SPAWN (multiplayer-aware)
