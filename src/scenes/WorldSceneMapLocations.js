@@ -1,12 +1,8 @@
 // src/scenes/WorldSceneMapLocations.js
 //
 // FULLY DETERMINISTIC version.
-// Everything must match across ALL clients that share the same seed.
-// All POIs, roads, forests, and icons come ONLY from mapInfo generated in HexMap.js.
-//
-// NO randomness remains. No Phaser.Math.Between. No mulberry32 RNG here.
-// All tile flags (hasForest, hasRuin, etc.) come from HexMap.js.
-// All POI objects come from mapInfo.objects.
+// All POIs, roads, forests, mountain icons come only from mapInfo + mapData.
+// NO randomness here.
 
 import {
   effectiveElevationLocal,
@@ -14,15 +10,15 @@ import {
   drawGeographyOverlay,
   getNoPOISet,
   resolveBiome,
-} from './WorldSceneGeography.js';
+} from "./WorldSceneGeography.js";
 
 const keyOf = (q, r) => `${q},${r}`;
 
-/* ==========================
-   Deterministic neighbors
-   ========================== */
+/* ---------------------------------------------------------------
+   Deterministic neighbor helpers
+   --------------------------------------------------------------- */
 function neighborsOddR(q, r) {
-  const even = (r % 2 === 0);
+  const even = r % 2 === 0;
   return even
     ? [[+1,0],[0,-1],[-1,-1],[-1,0],[-1,+1],[0,+1]]
     : [[+1,0],[+1,-1],[0,-1],[-1,0],[0,+1],[+1,+1]];
@@ -32,42 +28,33 @@ function inBounds(q, r, w, h) {
   return q >= 0 && r >= 0 && q < w && r < h;
 }
 
-/* ============================================================================
-   POIs + Forest Flags Binding
-   ============================================================================
-
-   IMPORTANT:
-   - NO randomness here.
-   - mapInfo.objects already contains deterministic POIs (fish, ruins, crash sites, vehicles, etc.)
-   - mapData tiles have flags pre-set by HexMap.js (hasForest, hasRuin, hasCrashSite, etc.)
-   ============================================================================ */
-
-export function applyLocationFlags(mapData, width, height, seed) {
-  // Nothing to do. All POIs are now seed-generated in HexMap.js.
-  // This function is retained only for compatibility.
-  return mapData;
+/* ---------------------------------------------------------------
+   POI flags (NOOP — deterministic now)
+   --------------------------------------------------------------- */
+export function applyLocationFlags(mapData) {
+  return mapData; // nothing needed
 }
 
-/* ============================================================================
-   Deterministic Road Generation
-   ============================================================================
-
-   Roads now work as follows:
-   - For every pair of POIs of significance (ruin, crash site, vehicle):
-   - Connect POIs in sorted order.
-   - Use deterministic A* (no random tie breaks).
-   ============================================================================ */
-
+/* ---------------------------------------------------------------
+   Deterministic ASTAR roads
+   --------------------------------------------------------------- */
 function deterministicAStar(byKey, width, height, start, goal) {
   const startK = keyOf(start.q, start.r);
-  const goalK  = keyOf(goal.q, goal.r);
+  const goalK = keyOf(goal.q, goal.r);
 
-  const open = new Map([[startK, {
-    k: startK, q: start.q, r: start.r,
-    g: 0,
-    f: 0,
-    parent: null
-  }]]);
+  const open = new Map([
+    [
+      startK,
+      {
+        k: startK,
+        q: start.q,
+        r: start.r,
+        g: 0,
+        f: 0,
+        parent: null,
+      },
+    ],
+  ]);
 
   const closed = new Set();
 
@@ -75,16 +62,11 @@ function deterministicAStar(byKey, width, height, start, goal) {
     Math.abs(q - goal.q) + Math.abs(r - goal.r);
 
   while (open.size > 0) {
-    // deterministic: choose smallest f, then lexicographically smallest key
+    // pick smallest f, then lexicographically smallest key
     let cur = null;
     for (const n of open.values()) {
-      if (!cur ||
-          n.f < cur.f ||
-          (n.f === cur.f && n.k < cur.k)) {
-        cur = n;
-      }
+      if (!cur || n.f < cur.f || (n.f === cur.f && n.k < cur.k)) cur = n;
     }
-
     open.delete(cur.k);
 
     if (cur.k === goalK) {
@@ -112,8 +94,8 @@ function deterministicAStar(byKey, width, height, start, goal) {
 
       const g = cur.g + 1;
       const f = g + heuristic(nq, nr);
-
       const existing = open.get(nk);
+
       if (!existing || g < existing.g) {
         open.set(nk, {
           k: nk,
@@ -121,7 +103,7 @@ function deterministicAStar(byKey, width, height, start, goal) {
           r: nr,
           g,
           f,
-          parent: cur
+          parent: cur,
         });
       }
     }
@@ -140,32 +122,30 @@ function addRoad(mapData, a, b) {
 }
 
 function generateDeterministicRoads(mapData, width, height, mapObjects) {
-  const byKey = new Map(mapData.map(t => [keyOf(t.q, t.r), t]));
+  const byKey = new Map(mapData.map((t) => [keyOf(t.q, t.r), t]));
 
-  // Extract POIs that logically should be connected
-  const significantPOIs = mapObjects.filter(o => {
+  // Significant POIs
+  const pts = mapObjects.filter((o) => {
     const T = String(o.type || "").toLowerCase();
     return (
       T === "ruin" ||
       T === "crash_site" ||
-      T === "vehicle_wreck" ||
-      T === "wreck" ||
-      T === "ancient_site"
+      T === "vehicle" ||
+      T === "wreck"
     );
   });
 
-  // Sort by q,r for deterministic order
-  significantPOIs.sort((a, b) => a.q - b.q || a.r - b.r);
+  pts.sort((a, b) => a.q - b.q || a.r - b.r);
 
-  // Connect each POI to the next one
-  for (let i = 0; i + 1 < significantPOIs.length; i++) {
-    const A = significantPOIs[i];
-    const B = significantPOIs[i + 1];
-    const tileA = byKey.get(keyOf(A.q, A.r));
-    const tileB = byKey.get(keyOf(B.q, B.r));
-    if (!tileA || !tileB) continue;
+  for (let i = 0; i + 1 < pts.length; i++) {
+    const A = pts[i];
+    const B = pts[i + 1];
+    const tA = byKey.get(keyOf(A.q, A.r));
+    const tB = byKey.get(keyOf(B.q, B.r));
 
-    const path = deterministicAStar(byKey, width, height, tileA, tileB);
+    if (!tA || !tB) continue;
+
+    const path = deterministicAStar(byKey, width, height, tA, tB);
     if (!path || path.length < 2) continue;
 
     for (let j = 0; j + 1 < path.length; j++) {
@@ -174,10 +154,9 @@ function generateDeterministicRoads(mapData, width, height, mapObjects) {
   }
 }
 
-/* ============================================================================
-   Rendering: Roads + POIs + Geography outlines
-   ============================================================================ */
-
+/* ---------------------------------------------------------------
+   Rendering: Roads + POIs + Geography
+   --------------------------------------------------------------- */
 export function drawLocationsAndRoads() {
   const scene = this;
   const map = this.mapData;
@@ -185,18 +164,19 @@ export function drawLocationsAndRoads() {
 
   if (!Array.isArray(map) || !map.length) return;
 
-  // Retrieve deterministic objects (created in HexMap.js)
-  const mapObjects = (scene.mapInfo && Array.isArray(scene.mapInfo.objects))
-    ? scene.mapInfo.objects
-    : [];
+  const mapObjects =
+    scene.mapInfo && Array.isArray(scene.mapInfo.objects)
+      ? scene.mapInfo.objects
+      : [];
 
-  // Apply road generation ONCE per world
   if (!map.__roadsApplied) {
     generateDeterministicRoads(map, scene.mapWidth, scene.mapHeight, mapObjects);
-    Object.defineProperty(map, "__roadsApplied", { value: true, enumerable: false });
+    Object.defineProperty(map, "__roadsApplied", {
+      value: true,
+      enumerable: false,
+    });
   }
 
-  // Rebuild geography + layers
   initOrUpdateGeography(scene, map);
 
   if (scene.roadsGraphics) scene.roadsGraphics.destroy();
@@ -211,13 +191,13 @@ export function drawLocationsAndRoads() {
   scene.locationsLayer = layer;
   scene.geoOutlineGraphics = geoOutline;
 
-  const byKey = new Map(map.map(t => [keyOf(t.q, t.r), t]));
+  const byKey = new Map(map.map((t) => [keyOf(t.q, t.r), t]));
 
   const offsetX = scene.mapOffsetX || 0;
   const offsetY = scene.mapOffsetY || 0;
-  const LIFT    = scene?.LIFT_PER_LVL ?? 4;
+  const LIFT = scene?.LIFT_PER_LVL ?? 4;
 
-  /* -------------------------- Draw roads -------------------------- */
+  /* ------------------- Roads ------------------- */
   for (const t of map) {
     if (!t.roadLinks) continue;
 
@@ -228,10 +208,11 @@ export function drawLocationsAndRoads() {
       if (target <= keyOf(t.q, t.r)) continue;
       const n = byKey.get(target);
       if (!n) continue;
+
       const c2 = scene.hexToPixel(n.q, n.r, size);
       const y2 = c2.y - LIFT * effectiveElevationLocal(n);
 
-      roads.lineStyle(4, 0x6b5430, 0.9); // deterministic countryside style
+      roads.lineStyle(4, 0x6b5430, 0.9);
       roads.beginPath();
       roads.moveTo(c1.x + offsetX, y1 + offsetY);
       roads.lineTo(c2.x + offsetX, y2 + offsetY);
@@ -239,18 +220,18 @@ export function drawLocationsAndRoads() {
     }
   }
 
-  /* -------------------- Geography overlays ----------------------- */
+  /* ------------------- Geography overlays ------------------- */
   drawGeographyOverlay(scene);
 
-  /* ----------------------- POI icons ----------------------------- */
-  const biomeName = resolveBiome(scene, map);
+  /* ------------------- POI Icons ------------------- */
   const noPOISet = getNoPOISet(map);
 
   const addEmoji = (x, y, char, px, depth = 42) => {
     const t = scene.add.text(x, y, char, {
       fontSize: `${px}px`,
-      fontFamily: 'Arial, "Segoe UI Emoji", "Noto Color Emoji", sans-serif'
-    }).setOrigin(0.5).setDepth(depth);
+      fontFamily: 'Arial, "Segoe UI Emoji", "Noto Color Emoji", sans-serif',
+    });
+    t.setOrigin(0.5).setDepth(depth);
     layer.add(t);
     return t;
   };
@@ -263,32 +244,31 @@ export function drawLocationsAndRoads() {
     const cx = c.x + offsetX;
     const cy = c.y + offsetY - LIFT * effectiveElevationLocal(t);
 
-    // Mountain
-    if (t.elevation === 4) {
+    /* ---------------- Mountain icons (FIXED!) ---------------- */
+    if (t.type === "mountain" || t.elevation === 7) {
       addEmoji(cx, cy, "⛰️", size * 0.9, 110);
       continue;
     }
 
-    // Forest
+    /* ---------------- Forests ---------------- */
     if (t.hasForest) {
-      // Deterministic fixed tree triplet pattern
       const offsets = [
         [0, -size * 0.25],
         [-size * 0.22, size * 0.1],
-        [size * 0.22, size * 0.1]
+        [size * 0.22, size * 0.1],
       ];
       offsets.forEach(([ox, oy]) => {
         addEmoji(cx + ox, cy + oy, "🌳", size * 0.5, 105);
       });
     }
 
-    if (t.hasRuin)      addEmoji(cx, cy, "🏚️", size * 0.8, 106);
+    if (t.hasRuin) addEmoji(cx, cy, "🏚️", size * 0.8, 106);
     if (t.hasCrashSite) addEmoji(cx, cy, "🚀", size * 0.8, 106);
-    if (t.hasVehicle)   addEmoji(cx, cy, "🚙", size * 0.8, 106);
+    if (t.hasVehicle) addEmoji(cx, cy, "🚙", size * 0.8, 106);
   }
 }
 
 export default {
   applyLocationFlags,
-  drawLocationsAndRoads
+  drawLocationsAndRoads,
 };
