@@ -491,7 +491,7 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
       type: 'grassland',
       movementCost: terrainTypes.grassland.movementCost,
       impassable: false,
-      // NEW: default elevation + water flag; will be overwritten in final pass
+      // default elevation + water flag; will be overwritten in final pass
       elevation: 4,
       isCoveredByWater: false,
     }))
@@ -647,10 +647,9 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
   // ============================================================
   // FINAL ELEVATION + WATER OVERLAY
   // - Elevation levels 1..7
-  // - 1..3 => by default "under water level"
+  // - 1..3 => under water level (sea floor)
   // - 4..7 => land, 7 is mountains
-  // - isCoveredByWater set based on elevation band
-  //   (start waterLevel = 3)
+  // - isCoveredByWater set based on elevation band (start WATER_LEVEL = 3)
   // ============================================================
   const WATER_LEVEL = 3;
 
@@ -667,9 +666,9 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
     if (t.type === 'water') {
       // Sea floor depth 1..3
       let lvl;
-      if (shape < 0.33) lvl = 1;         // deep
-      else if (shape < 0.66) lvl = 2;    // medium
-      else lvl = 3;                      // shallow
+      if (shape < 0.33)      lvl = 1;  // deep
+      else if (shape < 0.66) lvl = 2;  // medium
+      else                   lvl = 3;  // shallow
 
       t.elevation = lvl;
       t.isCoveredByWater = true;
@@ -677,10 +676,10 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
     } else {
       // Land 4..7
       let lvl;
-      if (shape < 0.25) lvl = 4;
-      else if (shape < 0.5) lvl = 5;
-      else if (shape < 0.8) lvl = 6;
-      else lvl = 7;
+      if (shape < 0.25)      lvl = 4;
+      else if (shape < 0.5)  lvl = 5;
+      else if (shape < 0.8)  lvl = 6;
+      else                   lvl = 7;
 
       t.elevation = lvl;
       t.isCoveredByWater = (lvl <= WATER_LEVEL);  // at start: only 1..3 covered
@@ -699,6 +698,32 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
           t.hasMountainIcon = false;
         }
       }
+    }
+  }
+
+  // ------------------------------------------------------------
+  // EXTRA PASS: FORCE A TRUE LEVEL-4 SHORELINE BAND
+  // Any non-mountain land tile that directly touches water
+  // is clamped to elevation 4. This guarantees we have "beach"
+  // tiles with raw elevation 4 next to water, so WorldSceneMap's
+  // special rule ("no cliffs for level-4 vs water") actually triggers.
+  // ------------------------------------------------------------
+  for (const t of flat) {
+    if (t.type === 'water') continue;
+    if (t.hasMountainIcon) continue; // keep peaks high
+
+    let touchesWater = false;
+    for (const [nq, nr] of neighbors(t.q, t.r, map)) {
+      const nt = map[nr][nq];
+      if (!nt) continue;
+      if (nt.type === 'water' || nt.isCoveredByWater) {
+        touchesWater = true;
+        break;
+      }
+    }
+    if (touchesWater && t.elevation > 4) {
+      t.elevation = 4;
+      t.isCoveredByWater = false;
     }
   }
 
