@@ -28,7 +28,7 @@ export function getColorForTerrain(terrain) {
 /* ---------- elevation helpers ---------- */
 /**
  * Game elevation model:
- *   1–3 : water levels
+ *   1–3 : water levels (isCoveredByWater = true)
  *   4   : shoreline land (no vertical step vs water)
  *   5–7 : raised land (terrain cliffs)
  *
@@ -42,10 +42,10 @@ export function effectiveElevation(tile) {
   const eRaw = typeof tile.elevation === 'number' ? tile.elevation : 0;
   const covered = !!tile.isCoveredByWater;
 
-  // Water (1–3) and shoreline (4) are on the same visual plane
+  // Water (1–3) and shoreline (4) are on the same visual plane.
   if (covered || eRaw <= 4) return 0;
 
-  // Levels 5–7 become 1–3 visually
+  // Levels 5–7 become 1–3 visually.
   return Math.min(3, Math.max(1, eRaw - 4));
 }
 
@@ -87,6 +87,16 @@ function neighborsOddR(q, r) {
   return even
     ? [[+1,0],[0,-1],[-1,-1],[-1,0],[-1,+1],[0,+1]]
     : [[+1,0],[+1,-1],[0,-1],[-1,0],[0,+1],[+1,+1]];
+}
+
+/* ---------- small hash for deterministic per-tile noise ---------- */
+function hash32FromQR(q, r) {
+  let x = (q * 374761393) ^ (r * 668265263);
+  x |= 0;
+  x ^= x >>> 13;
+  x = (x * 1274126177) | 0;
+  x ^= x >>> 16;
+  return x >>> 0;
 }
 
 /* ---------- projection utilities ---------- */
@@ -140,7 +150,7 @@ function drawEdgeQuad(scene, A, B, dropPx, color, depth = 3) {
 }
 
 /* ---------- face + cliffs ---------- */
-export function drawHex(q, r, xIso, yIso, size, fillColor, effElevation/*, terrain*/ ) {
+export function drawHex(q, r, xIso, yIso, size, fillColor, effElevation, tile) {
   const w = size * Math.sqrt(3) / 2;
   const h = size / 2;
 
@@ -172,21 +182,36 @@ export function drawHex(q, r, xIso, yIso, size, fillColor, effElevation/*, terra
 
   const walls = [];
 
+  const selfRawElev = typeof tile?.elevation === 'number' ? tile.elevation : 0;
+
   // Helper to draw cliff if neighbor lower
   const maybeCliff = (edgeIndex, neighborTile) => {
+    if (!neighborTile) return;
+
     const effN = effectiveElevation(neighborTile);
     const diff = effElevation - effN;
+
+    // HARD RULE: level-4 terrain should NOT have cliffs vs water.
+    const neighborIsWater = neighborTile.type === 'water' || neighborTile.isCoveredByWater;
+    if (selfRawElev === 4 && neighborIsWater) return;
+
     if (diff <= 0) return;
     const A = ring[edgeIndex];
     const B = ring[(edgeIndex + 1) % 6];
-    // full opaque cliff
     walls.push(drawEdgeQuad(this, A, B, diff * dropPerLvl, wallColor, 3));
   };
 
   // Helper to draw micro-skirt (thin) for other edges if neighbor lower
   const maybeSkirt = (edgeIndex, neighborTile) => {
+    if (!neighborTile) return;
+
     const effN = effectiveElevation(neighborTile);
     const diff = effElevation - effN;
+
+    // Same rule as above: level-4 vs water => no skirt either.
+    const neighborIsWater = neighborTile.type === 'water' || neighborTile.isCoveredByWater;
+    if (selfRawElev === 4 && neighborIsWater) return;
+
     if (diff <= 0) return;
     const A = ring[edgeIndex];
     const B = ring[(edgeIndex + 1) % 6];
@@ -234,6 +259,8 @@ export function drawHex(q, r, xIso, yIso, size, fillColor, effElevation/*, terra
  *   1 => shallow (light)
  *   2–3 => medium
  *   4+ => deep (dark)
+ *
+ * Plus per-tile deterministic noise so water bands aren’t too perfect.
  */
 function getFillForTile(tile, waterDistance) {
   const isWater = tile.type === 'water' || tile.isCoveredByWater;
@@ -242,11 +269,18 @@ function getFillForTile(tile, waterDistance) {
   if (isWater) {
     const d = Number.isFinite(waterDistance) ? waterDistance : 999;
 
-    // distance-based shades
+    // Base factor by ring
     let factor;
-    if (d <= 1)      factor = 1.05; // shallow, slightly lighter
+    if (d <= 1)      factor = 1.05; // shallow
     else if (d <= 3) factor = 1.0;  // medium
-    else             factor = 0.75; // deep water, darker
+    else             factor = 0.75; // deep
+
+    // Deterministic per-tile noise: +/- up to ~8%
+    const h = hash32FromQR(tile.q, tile.r);
+    const noise = ((h & 0xffff) / 65535) * 0.16 - 0.08; // -0.08..+0.08
+    factor *= (1 + noise);
+    // clamp factor to avoid weird extremes
+    factor = Math.max(0.6, Math.min(1.15, factor));
 
     const base = Phaser.Display.Color.IntegerToColor(baseColor);
     const r = Math.max(0, Math.min(255, Math.round(base.r * factor)));
@@ -256,7 +290,6 @@ function getFillForTile(tile, waterDistance) {
   }
 
   // --- Land tinting by *effective* elevation (above water plane) ---
-  // effectiveElevation: 0..3 => 0..3
   const eff = effectiveElevation(tile);
 
   // Clear per-level stepping toward white (stronger contrast)
@@ -324,18 +357,18 @@ export function drawHexMap() {
   const waterDistance = new Map(); // key -> int distance, 0 for land
 
   // multi-source BFS from land tiles into water
-  const q = [];
+  const queue = [];
   for (const t of this.mapData) {
-    const k = `${t.q},${t.r}`;
+    const key = `${t.q},${t.r}`;
     const isWater = t.type === 'water' || t.isCoveredByWater;
     if (!isWater) {
-      waterDistance.set(k, 0);
-      q.push(t);
+      waterDistance.set(key, 0);
+      queue.push(t);
     }
   }
 
-  while (q.length) {
-    const cur = q.shift();
+  while (queue.length) {
+    const cur = queue.shift();
     const ck = `${cur.q},${cur.r}`;
     const d  = waterDistance.get(ck) ?? 0;
 
@@ -352,7 +385,7 @@ export function drawHexMap() {
 
       const nd = d + 1;
       waterDistance.set(nk, nd);
-      q.push(nt);
+      queue.push(nt);
     }
   }
 
@@ -360,24 +393,24 @@ export function drawHexMap() {
     const ea = effectiveElevation(a);
     const eb = effectiveElevation(b);
     if (ea !== eb) return ea - eb;
-    const da = (a.q + a.r) - (b.q + b.r);
+    const da = (a.q + a.r) - (b.q + b.q);
     if (da !== 0) return da;
     if (a.r !== b.r) return a.r - b.r;
     return a.q - b.q;
   });
 
   for (const hex of sorted) {
-    const { q: hq, r: hr } = hex;
+    const { q, r } = hex;
     const eff = effectiveElevation(hex);
-    const p  = hexToPixel(hq, hr, this.hexSize);
+    const p  = hexToPixel(q, r, this.hexSize);
     const x  = p.x + offsetX;
     const y  = p.y + offsetY - LIFT_PER_LVL * eff;
 
-    const key = `${hq},${hr}`;
+    const key = `${q},${r}`;
     const dist = waterDistance.get(key);
     const fillColor = getFillForTile(hex, dist);
 
-    const { face, rim } = drawHex.call(this, hq, hr, x, y, this.hexSize, fillColor, eff, hex.type);
+    const { face, rim } = drawHex.call(this, q, r, x, y, this.hexSize, fillColor, eff, hex);
     this.mapContainer.add(face);                   // face
     if (rim._walls) rim._walls.forEach(w => this.mapContainer.add(w)); // cliffs/skirts
     this.mapContainer.add(rim);                    // rim on top
@@ -403,28 +436,3 @@ export function drawHexMap() {
     const eff = effectiveElevation(tile);
     const p   = hexToPixel(axial.q, axial.r, this.hexSize);
     const x   = p.x + this.mapOffsetX;
-    const y   = p.y + this.mapOffsetY - LIFT_PER_LVL * eff;
-
-    if (this.hoverOutline) this.hoverOutline.destroy();
-    this.hoverOutline = drawHexOutline(this, x, y, this.hexSize, 0xffffff);
-    this.tweens.add({
-      targets: this.hoverOutline,
-      alpha: { from: 1, to: 0.25 },
-      duration: 160,
-      ease: 'Sine.easeOut'
-    });
-  });
-}
-
-export default {
-  LIFT_PER_LVL,
-  isoOffset,
-  hexToPixel,
-  pixelToHex,
-  roundHex,
-  effectiveElevation,
-  getColorForTerrain,
-  drawHex,
-  drawHexMap,
-  generateHexMap,
-};
