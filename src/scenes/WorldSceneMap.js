@@ -28,9 +28,9 @@ export function getColorForTerrain(terrain) {
 /* ---------- elevation helpers ---------- */
 /**
  * Game elevation model:
- *   1–3 : water levels (isCoveredByWater = true)
- *   4   : shoreline land (no vertical step vs water)
- *   5–7 : raised land (terrain cliffs)
+ *   elevation 1–3 : water levels (isCoveredByWater = true)
+ *   elevation 4   : shoreline land (no vertical step vs water)
+ *   elevation 5–7 : raised land (terrain cliffs)
  *
  * effectiveElevation() controls visual extrusion:
  *   - water + level 4 land => 0 (flat)
@@ -56,6 +56,7 @@ function darkenRGBInt(baseInt, factor) {
   const b = Math.round(c.b * factor);
   return Phaser.Display.Color.GetColor(r, g, b);
 }
+
 // slightly darker walls for better contrast vs. pastel face
 function tintWallFromBase(baseInt, amount = 0.72) {
   return darkenRGBInt(baseInt, amount);
@@ -354,7 +355,7 @@ export function drawHexMap() {
   this.tileAt = (q, r) => byKey.get(`${q},${r}`);
 
   /* --- compute water distance for shading (shallow/medium/deep) --- */
-  const waterDistance = new Map(); // key -> int distance, 0 for land
+  const waterDistance = new Map(); // key -> int distance (for water); 0 for land
 
   // multi-source BFS from land tiles into water
   const queue = [];
@@ -393,8 +394,10 @@ export function drawHexMap() {
     const ea = effectiveElevation(a);
     const eb = effectiveElevation(b);
     if (ea !== eb) return ea - eb;
-    const da = (a.q + a.r) - (b.q + b.q);
+
+    const da = (a.q + a.r) - (b.q + b.r); // ✅ fixed (was b.q + b.q)
     if (da !== 0) return da;
+
     if (a.r !== b.r) return a.r - b.r;
     return a.q - b.q;
   });
@@ -411,9 +414,9 @@ export function drawHexMap() {
     const fillColor = getFillForTile(hex, dist);
 
     const { face, rim } = drawHex.call(this, q, r, x, y, this.hexSize, fillColor, eff, hex);
-    this.mapContainer.add(face);                   // face
+    this.mapContainer.add(face);                               // face
     if (rim._walls) rim._walls.forEach(w => this.mapContainer.add(w)); // cliffs/skirts
-    this.mapContainer.add(rim);                    // rim on top
+    this.mapContainer.add(rim);                                // rim on top
   }
 
   // Draw locations & roads on top (emojis)
@@ -436,3 +439,28 @@ export function drawHexMap() {
     const eff = effectiveElevation(tile);
     const p   = hexToPixel(axial.q, axial.r, this.hexSize);
     const x   = p.x + this.mapOffsetX;
+    const y   = p.y + this.mapOffsetY - LIFT_PER_LVL * eff;
+
+    if (this.hoverOutline) this.hoverOutline.destroy();
+    this.hoverOutline = drawHexOutline(this, x, y, this.hexSize, 0xffffff);
+    this.tweens.add({
+      targets: this.hoverOutline,
+      alpha: { from: 1, to: 0.25 },
+      duration: 160,
+      ease: 'Sine.easeOut'
+    });
+  });
+}
+
+export default {
+  LIFT_PER_LVL,
+  isoOffset,
+  hexToPixel,
+  pixelToHex,
+  roundHex,
+  effectiveElevation,
+  getColorForTerrain,
+  drawHex,
+  drawHexMap,
+  generateHexMap,
+};
