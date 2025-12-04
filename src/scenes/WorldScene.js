@@ -30,8 +30,8 @@ import {
   hexToPixel,
   pixelToHex,
   roundHex,
-  getColorForTerrain,
-  isoOffset,
+  getColorForTerrain,      // still imported for compatibility if other modules read it
+  isoOffset,               // idem
   LIFT_PER_LVL,
 } from './WorldSceneMap.js';
 
@@ -171,6 +171,9 @@ export default class WorldScene extends Phaser.Scene {
       influence: 200,
     };
 
+    // Global water level (1..3 underwater bands, >=4 land by default)
+    this.worldWaterLevel = 3;
+
     /* =========================
        Deterministic map generation
        ========================= */
@@ -205,12 +208,11 @@ export default class WorldScene extends Phaser.Scene {
     this.pixelToHex = (x, y, sizeOverride) =>
       pixelToHex(x, y, sizeOverride ?? this.hexSize);
 
-    /* =========================
-       Draw terrain + POIs + roads + resources
-       ========================= */
-    drawHexMap.call(this);
-    drawLocationsAndRoads.call(this);
-    spawnFishResources.call(this);
+    // =========================
+    // Apply initial water level → sets tile.type from baseElevation/groundType
+    // and draws terrain + POIs + roads + resources once.
+    // =========================
+    this.recomputeWaterFromLevel();
 
     /* =========================
        UNITS & ENEMIES SPAWN (multiplayer-aware)
@@ -382,7 +384,7 @@ Biomes: ${biome}`;
       return;
     }
     console.log(
-      `Hex (${q},${r}) type=${tile.type}, elev=${tile.elevation}, movementCost=${tile.movementCost}, feature=${tile.feature}`
+      `Hex (${q},${r}) type=${tile.type}, elev=${tile.elevation}, baseElev=${tile.baseElevation}, groundType=${tile.groundType}, isUnderWater=${tile.isUnderWater}`
     );
   }
 
@@ -533,8 +535,54 @@ Biomes: ${biome}`;
   }
 
   /**
+   * Recompute which tiles are under water for the current worldWaterLevel.
+   * Uses baseElevation (or elevation) and groundType to set tile.type,
+   * then triggers a full redraw.
+   */
+  recomputeWaterFromLevel() {
+    if (!Array.isArray(this.mapData)) return;
+
+    const lvl = (typeof this.worldWaterLevel === 'number')
+      ? this.worldWaterLevel
+      : 3;
+
+    for (const t of this.mapData) {
+      const base =
+        (typeof t.baseElevation === 'number')
+          ? t.baseElevation
+          : (typeof t.elevation === 'number' ? t.elevation : 0);
+
+      // Ensure groundType is populated once if missing
+      if (!t.groundType) {
+        if (t.type && t.type !== 'water') {
+          t.groundType = t.type;
+        } else if (!t.groundType) {
+          t.groundType = 'grassland';
+        }
+      }
+
+      const under = base > 0 && base <= lvl;
+      t.isUnderWater = under;
+
+      if (under) {
+        t.type = 'water';
+      } else {
+        // restore underlying terrain
+        if (t.groundType) {
+          t.type = t.groundType;
+        } else if (t.type === 'water') {
+          t.type = 'grassland';
+        }
+      }
+    }
+
+    this.redrawWorld();
+  }
+
+  /**
    * Redraw the whole hex map & locations using current this.mapData.
-   * Called explicitly (e.g. by HexTransformTool) after terrain changes.
+   * Called explicitly (e.g. by HexTransformTool or recomputeWaterFromLevel)
+   * after terrain changes.
    */
   redrawWorld() {
     // Re-draw terrain
