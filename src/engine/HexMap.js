@@ -56,10 +56,7 @@ function __hx_fbm2D(x, y, seedStr, oct = 4, lac = 2.0, gain = 0.5) {
   return sum / (as || 1);
 }
 
-/**
- * Elevation "shape" 0..1
- * Later quantized to base elevation 1..7 (1–3 underwater bands, 4–7 land).
- */
+/** Elevation "shape" 0..1 (we'll quantize later to 1..7) */
 function __hx_computeElevationShape(q, r, cols, rows, rawSeed, terrainType) {
   const seedStr = (typeof rawSeed === 'string' && rawSeed) ? rawSeed : 'defaultseed';
   const x = q * 0.18 + 123.45;
@@ -72,7 +69,6 @@ function __hx_computeElevationShape(q, r, cols, rows, rawSeed, terrainType) {
   const maxd = Math.sqrt(cx * cx + cy * cy) || 1;
   const falloff = 1 - (dist / maxd);
 
-  // Island-ish: noise + radial falloff
   n = 0.75 * n + 0.25 * falloff;
 
   switch (terrainType) {
@@ -113,7 +109,7 @@ function markWater(tile) {
   Object.assign(tile, {
     type: 'water',
     ...terrainTypes.water,
-    // elevation & isCoveredByWater are set in final pass
+    // elevation & isCoveredByWater will be set in final pass
     hasObject: false,
     hasForest: false,
     hasRuin: false,
@@ -487,6 +483,46 @@ function applyGeoObject(map, cols, rows, rand, biome, worldMeta) {
   }
 }
 
+/* ================== Coastal elevation helper ================== */
+/**
+ * Re-bias coastal elevations:
+ *  - land tile with at least one water neighbour
+ *  - mountains stay lvl 7
+ *  - others get randomized:
+ *      ~55% -> lvl 4
+ *      ~25% -> lvl 5
+ *      ~15% -> lvl 6
+ *      ~ 5% -> lvl 7
+ */
+function reBiasCoastalElevations(map, rand) {
+  const rows = map.length;
+  const cols = map[0].length;
+
+  for (let r = 0; r < rows; r++) {
+    for (let q = 0; q < cols; q++) {
+      const t = map[r][q];
+      if (!t || t.type === 'water') continue;
+      if (!isCoastal(map, q, r)) continue;
+
+      if (t.type === 'mountain') {
+        // coastal mountains are allowed but always lvl 7
+        t.elevation = 7;
+        continue;
+      }
+
+      const roll = rand();
+      let lvl;
+      if (roll < 0.55)       lvl = 4; // beach majority
+      else if (roll < 0.80)  lvl = 5;
+      else if (roll < 0.95)  lvl = 6;
+      else                   lvl = 7;
+
+      if (lvl < 4) lvl = 4;
+      t.elevation = lvl;
+    }
+  }
+}
+
 /* ================= Map generation ================= */
 function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
   const map = Array.from({ length: rows }, (_, r) =>
@@ -495,11 +531,9 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
       type: 'grassland',
       movementCost: terrainTypes.grassland.movementCost,
       impassable: false,
-      // Will be overwritten in final pass
+      // elevation + water flags filled in final pass
       elevation: 4,
-      baseElevation: 4,
       isCoveredByWater: false,
-      hasMountainIcon: false,
     }))
   );
 
@@ -543,7 +577,7 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
   // Biome
   const biome = paintBiome(map.flat(), cols, rows, rand);
 
-  // Mountains (chains on land mask; type-only, elevation comes later)
+  // Mountains (chains on land mask)
   const mountainChains = 6 + Math.floor(rand() * 3);
   for (let i = 0; i < mountainChains; i++) {
     let q = Math.floor(rand() * (cols - 4)) + 2;
@@ -554,7 +588,7 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
       const distFromP1 = Math.sqrt((q - 2) ** 2 + (r - 2) ** 2);
       const distFromP2 = Math.sqrt((q - cols + 2) ** 2 + (r - rows + 2) ** 2);
       if (tile.type !== 'water' && distFromP1 > 3 && distFromP2 > 3) {
-        Object.assign(tile, { type: 'mountain' });
+        Object.assign(tile, { type: 'mountain', ...terrainTypes.mountain });
       }
       const nbs = neighbors(q, r, map);
       if (nbs.length) {
@@ -566,7 +600,9 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
   }
 
   // === Geo-object (one per map) ===
-  const worldMeta = { biome: biome[0].toUpperCase() + biome.slice(1) + ' Biome' };
+  const worldMeta = {
+    biome: biome[0].toUpperCase() + biome.slice(1) + ' Biome',
+  };
   applyGeoObject(map, cols, rows, rand, biome, worldMeta);
 
   // Objects / POIs (forests/ruins/vehicles/roads) — seeded
@@ -651,17 +687,15 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
   }
 
   // ============================================================
-  // FINAL ELEVATION + INITIAL WATER COVER
-  //
-  // - baseElevation (1..7) is stored in tile.elevation AND tile.baseElevation
-  // - 1..3 : underwater bands (depth)
-  // - 4..7 : land (4 shoreline, 5–6 hills, 7 mountains)
-  // - isCoveredByWater is derived from a single WATER_LEVEL = 3
+  // FINAL ELEVATION + WATER OVERLAY
+  // - Internal elevation 1..7
+  //   1..3 => sea floor (underwater at base waterLevel)
+  //   4..7 => land
+  // - isCoveredByWater reflects base water level (3)
   // ============================================================
-  const WATER_LEVEL = 3;
+  const BASE_WATER_LEVEL = 3;
 
   for (const t of flat) {
-    // 1) compute continuous shape 0..1
     const shape = __hx_computeElevationShape(
       t.q,
       t.r,
@@ -669,56 +703,48 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
       rows,
       seedStr,
       t.type
-    );
-
-    let baseElev;
+    ); // 0..1
 
     if (t.type === 'water') {
-      // Underwater relief: 1..3
-      if (shape < 0.33)      baseElev = 1; // deep
-      else if (shape < 0.66) baseElev = 2; // medium
-      else                   baseElev = 3; // shallow
+      // Sea floor depth 1..3
+      let lvl;
+      if (shape < 0.33) lvl = 1;         // deep
+      else if (shape < 0.66) lvl = 2;    // medium
+      else lvl = 3;                      // shallow
+
+      t.elevation = lvl;
+      t.isCoveredByWater = (lvl <= BASE_WATER_LEVEL);
+      t.hasMountainIcon = false;
     } else {
-      // Land relief: 4..7
-      if (shape < 0.25)      baseElev = 4;
-      else if (shape < 0.50) baseElev = 5;
-      else if (shape < 0.80) baseElev = 6;
-      else                   baseElev = 7;
-    }
+      // Land 4..7, biased so most tiles are 4–5 (not all 6)
+      let lvl;
+      if (shape < 0.40)      lvl = 4;
+      else if (shape < 0.70) lvl = 5;
+      else if (shape < 0.90) lvl = 6;
+      else                   lvl = 7;
 
-    t.baseElevation = baseElev;
-    t.elevation = baseElev;
+      if (t.type === 'mountain') {
+        // force high elevation for mountains
+        lvl = 7;
+      }
 
-    // 2) initial water cover: anything <= WATER_LEVEL starts submerged
-    t.isCoveredByWater = (baseElev <= WATER_LEVEL);
-
-    if (t.isCoveredByWater) {
-      // Under water at start → behave as water for pathfinding & rendering
-      t.type = 'water';
-      t.movementCost = terrainTypes.water.movementCost;
-      t.impassable = true;
-    } else {
-      // Land at start
-      if (baseElev >= 7) {
-        // True mountains: always impassable + icon
+      t.elevation = lvl;
+      t.isCoveredByWater = false;
+      t.hasMountainIcon = (lvl === 7);
+      if (lvl === 7) {
         t.type = 'mountain';
         t.impassable = true;
         t.movementCost = Infinity;
-        t.hasMountainIcon = true;
-      } else if (t.type === 'mountain') {
-        // Mountain chains generated earlier, but elevation too low -> bump up
-        if (baseElev < 7) {
-          t.baseElevation = 7;
-          t.elevation = 7;
-        }
-        t.impassable = true;
-        t.movementCost = Infinity;
-        t.hasMountainIcon = true;
-      } else {
-        t.hasMountainIcon = false;
       }
     }
   }
+
+  // Re-bias coastal elevations to create beaches + some random higher cliffs
+  reBiasCoastalElevations(map, rand);
+
+  // Attach water-level meta so UI/tools can raise/lower later
+  worldMeta.waterLevel = BASE_WATER_LEVEL;
+  worldMeta.baseWaterLevel = BASE_WATER_LEVEL;
 
   // Attach meta for scenes (World + Lobby)
   Object.defineProperty(flat, '__worldMeta', { value: worldMeta, enumerable: false });
@@ -733,6 +759,7 @@ export default class HexMap {
     this.seed = String(seed ?? 'defaultseed');
     this.map = [];
     this.worldMeta = null;
+    this.objects = []; // optional POI list for future use
     this.generateMap();
   }
 
@@ -742,6 +769,7 @@ export default class HexMap {
     const tiles = generateMap(this.height, this.width, this.seed, rand);
     this.map = tiles;
     this.worldMeta = tiles.__worldMeta || {};
+    return this.map;
   }
 
   getMap() {
