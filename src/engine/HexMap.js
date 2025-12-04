@@ -42,7 +42,7 @@ function __hx_valueNoise2D(x, y, seedStr) {
   const v00 = __hx_hash2D(x0, y0, seedStr), v10 = __hx_hash2D(x1, y0, seedStr);
   const v01 = __hx_hash2D(x0, y1, seedStr), v11 = __hx_hash2D(x1, y1, seedStr);
   const ix0 = v00 + sx * (v10 - v00);
-  const ix1 = v01 + sx * (v11 - ix0); // minor optimization bug in original, but we keep behaviour
+  const ix1 = v01 + sx * (v11 - v01);
   return ix0 + sy * (ix1 - ix0);
 }
 function __hx_fbm2D(x, y, seedStr, oct = 4, lac = 2.0, gain = 0.5) {
@@ -56,7 +56,10 @@ function __hx_fbm2D(x, y, seedStr, oct = 4, lac = 2.0, gain = 0.5) {
   return sum / (as || 1);
 }
 
-/** Elevation "shape" 0..1 (we'll quantize later to 1..7) */
+/**
+ * Elevation "shape" 0..1
+ * Later quantized to base elevation 1..7 (1–3 underwater bands, 4–7 land).
+ */
 function __hx_computeElevationShape(q, r, cols, rows, rawSeed, terrainType) {
   const seedStr = (typeof rawSeed === 'string' && rawSeed) ? rawSeed : 'defaultseed';
   const x = q * 0.18 + 123.45;
@@ -69,11 +72,13 @@ function __hx_computeElevationShape(q, r, cols, rows, rawSeed, terrainType) {
   const maxd = Math.sqrt(cx * cx + cy * cy) || 1;
   const falloff = 1 - (dist / maxd);
 
+  // Island-ish: noise + radial falloff
   n = 0.75 * n + 0.25 * falloff;
 
   switch (terrainType) {
     case 'water':
-      n = Math.min(n, 0.4); // keep low
+      // keep low
+      n = Math.min(n, 0.4);
       break;
     case 'mountain':
       n = Math.min(1, n * 0.7 + 0.5);
@@ -93,6 +98,7 @@ function __hx_computeElevationShape(q, r, cols, rows, rawSeed, terrainType) {
       n = Math.max(0, n * 0.98 - 0.01);
       break;
   }
+  // clamp to 0..1
   return Math.max(0, Math.min(0.9999, n));
 }
 
@@ -107,7 +113,7 @@ function markWater(tile) {
   Object.assign(tile, {
     type: 'water',
     ...terrainTypes.water,
-    // elevation & isCoveredByWater will be set in final pass
+    // elevation & isCoveredByWater are set in final pass
     hasObject: false,
     hasForest: false,
     hasRuin: false,
@@ -169,8 +175,7 @@ function applyGeography(map, cols, rows, seedStr, rand) {
   const cx = cols / 2, cy = rows / 2;
   const nx = x => (x - cx) / (cols * 0.5);
   const ny = y => (y - cy) / (rows * 0.5);
-  const fbm = (x, y, f = 1.0) =>
-    __hx_fbm2D(x * f + 41.2, y * f - 17.9, 'g-' + seedStr, 4, 2.0, 0.5);
+  const fbm = (x, y, f = 1.0) => __hx_fbm2D(x * f + 41.2, y * f - 17.9, 'g-' + seedStr, 4, 2.0, 0.5);
 
   switch (pickF) {
     case 2:
@@ -219,9 +224,7 @@ function applyGeography(map, cols, rows, seedStr, rand) {
     case 5:
       carveByMask(0.15, 0.30, (q, r) => {
         const X = nx(q), Y = ny(r);
-        const bands = 0.5 + 0.5 * Math.sin(
-          (X * 4.0 + Y * 3.0) + 6.28 * fbm(X, Y, 1.2)
-        );
+        const bands = 0.5 + 0.5 * Math.sin((X * 4.0 + Y * 3.0) + 6.28 * fbm(X, Y, 1.2));
         return bands * 0.8 + 0.4 * fbm(X, Y, 2.8);
       });
       break;
@@ -278,12 +281,7 @@ function paintBiome(flat, cols, rows, rand) {
     const remaining = land.filter(t => t.type === 'grassland');
     const remN = remaining.length;
     assignExact(remaining, 'mud',   Math.round(remN * 0.30), rand);
-    assignExact(
-      remaining.filter(t => t.type === 'grassland'),
-      'swamp',
-      Math.round(remN * 0.30),
-      rand
-    );
+    assignExact(remaining.filter(t => t.type === 'grassland'), 'swamp', Math.round(remN * 0.30), rand);
 
   } else if (biome === 'desert') {
     const sandN = Math.round(0.50 * N);
@@ -291,12 +289,7 @@ function paintBiome(flat, cols, rows, rand) {
     const remaining = land.filter(t => t.type !== 'sand');
     const remN = remaining.length;
     assignExact(remaining, 'mud',   Math.round(remN * 0.30), rand);
-    assignExact(
-      remaining.filter(t => t.type === 'grassland'),
-      'swamp',
-      Math.round(remN * 0.30),
-      rand
-    );
+    assignExact(remaining.filter(t => t.type === 'grassland'), 'swamp', Math.round(remN * 0.30), rand);
 
   } else if (biome === 'icy') {
     const frac = 0.60 + 0.10 * rand();
@@ -304,41 +297,21 @@ function paintBiome(flat, cols, rows, rand) {
     const iceN  = Math.round(coldN * 0.40);
     const snowN = coldN - iceN;
     assignExact(land, 'ice',  iceN, rand);
-    assignExact(
-      land.filter(t => t.type === 'grassland'),
-      'snow',
-      snowN,
-      rand
-    );
+    assignExact(land.filter(t => t.type === 'grassland'), 'snow', snowN, rand);
 
   } else if (biome === 'swamp') {
     const mudN  = Math.round(0.40 * N);
     const swpN  = Math.round(0.20 * N);
     assignExact(land, 'mud', mudN, rand);
-    assignExact(
-      land.filter(t => t.type === 'grassland'),
-      'swamp',
-      swpN,
-      rand
-    );
+    assignExact(land.filter(t => t.type === 'grassland'), 'swamp', swpN, rand);
 
   } else { // temperate
     const mudN  = Math.round(0.15 * N);
     const sandN = Math.round(0.15 * N);
     const swpN  = Math.round(0.15 * N);
     assignExact(land, 'mud', mudN, rand);
-    assignExact(
-      land.filter(t => t.type === 'grassland'),
-      'sand',
-      sandN,
-      rand
-    );
-    assignExact(
-      land.filter(t => t.type === 'grassland'),
-      'swamp',
-      swpN,
-      rand
-    );
+    assignExact(land.filter(t => t.type === 'grassland'), 'sand', sandN, rand);
+    assignExact(land.filter(t => t.type === 'grassland'), 'swamp', swpN, rand);
   }
 
   return biome;
@@ -394,8 +367,7 @@ function applyGeoObject(map, cols, rows, rand, biome, worldMeta) {
   if (biome === 'icy') {
     // Glacier: 9 ICE on coastal/lagoon/lake area
     const coastal = flat.filter(t => isCoastal(map, t.q, t.r));
-    const seed = pickClosest(coastal, cols, rows, () => true) ||
-                 coastal[Math.floor(rand() * coastal.length)];
+    const seed = pickClosest(coastal, cols, rows, () => true) || coastal[Math.floor(rand() * coastal.length)];
     if (seed) {
       const cluster = bfsCluster(seed.q, seed.r, map, (t) => t.type !== 'water', 9);
       cluster.forEach(t => {
@@ -409,23 +381,23 @@ function applyGeoObject(map, cols, rows, rand, biome, worldMeta) {
 
   } else if (biome === 'volcanic') {
     // Volcano: peak + adjacent ash
-    const mountains = flat.filter(t => t.type === 'mountain');
+    const mountains = flat.filter(t =>
+      t.type === 'mountain'
+    );
     let hub = null;
     if (mountains.length) {
+      // prefer one with many mountain neighbours
       let bestScore = -1;
       for (const m of mountains) {
         const ns = neighbors(m.q, m.r, map).map(([x, y]) => map[y][x]);
-        const score = ns.filter(n => n && n.type === 'mountain').length +
-                      rand() * 0.1;
+        const score = ns.filter(n =>
+          n && n.type === 'mountain'
+        ).length + rand() * 0.1;
         if (score > bestScore) { bestScore = score; hub = m; }
       }
     } else {
-      const c = pickClosest(
-        flat.filter(t => t.type !== 'water'),
-        cols,
-        rows,
-        () => true
-      );
+      // make one near center
+      const c = pickClosest(flat.filter(t => t.type !== 'water'), cols, rows, () => true);
       if (c) {
         hub = c;
         hub.type = 'mountain';
@@ -435,6 +407,7 @@ function applyGeoObject(map, cols, rows, rand, biome, worldMeta) {
     if (hub) {
       hub.type = 'mountain';
       hub.impassable = true;
+      // ring to ash
       for (const [x, y] of neighbors(hub.q, hub.r, map)) {
         const nt = map[y][x];
         if (nt && nt.type !== 'water' && nt.type !== 'mountain') {
@@ -490,6 +463,7 @@ function applyGeoObject(map, cols, rows, rand, biome, worldMeta) {
         t.impassable = false;
         t.movementCost = terrainTypes.grassland.movementCost;
       }
+      // ring
       const ringSet = new Set();
       for (const t of core) {
         for (const [x, y] of neighbors(t.q, t.r, map)) {
@@ -521,7 +495,9 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
       type: 'grassland',
       movementCost: terrainTypes.grassland.movementCost,
       impassable: false,
+      // Will be overwritten in final pass
       elevation: 4,
+      baseElevation: 4,
       isCoveredByWater: false,
       hasMountainIcon: false,
     }))
@@ -567,7 +543,7 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
   // Biome
   const biome = paintBiome(map.flat(), cols, rows, rand);
 
-  // Mountains (chains on land mask)
+  // Mountains (chains on land mask; type-only, elevation comes later)
   const mountainChains = 6 + Math.floor(rand() * 3);
   for (let i = 0; i < mountainChains; i++) {
     let q = Math.floor(rand() * (cols - 4)) + 2;
@@ -578,7 +554,7 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
       const distFromP1 = Math.sqrt((q - 2) ** 2 + (r - 2) ** 2);
       const distFromP2 = Math.sqrt((q - cols + 2) ** 2 + (r - rows + 2) ** 2);
       if (tile.type !== 'water' && distFromP1 > 3 && distFromP2 > 3) {
-        Object.assign(tile, { type: 'mountain', ...terrainTypes.mountain });
+        Object.assign(tile, { type: 'mountain' });
       }
       const nbs = neighbors(q, r, map);
       if (nbs.length) {
@@ -590,9 +566,7 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
   }
 
   // === Geo-object (one per map) ===
-  const worldMeta = {
-    biome: biome[0].toUpperCase() + biome.slice(1) + ' Biome'
-  };
+  const worldMeta = { biome: biome[0].toUpperCase() + biome.slice(1) + ' Biome' };
   applyGeoObject(map, cols, rows, rand, biome, worldMeta);
 
   // Objects / POIs (forests/ruins/vehicles/roads) — seeded
@@ -677,15 +651,17 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
   }
 
   // ============================================================
-  // FINAL ELEVATION + WATER OVERLAY
-  // - Elevation levels 1..3 for water tiles
-  // - Elevation levels 4..7 for land tiles
-  // - isCoveredByWater true ONLY for water tiles at start
-  // - Mountains/icons ONLY on elevation 7
+  // FINAL ELEVATION + INITIAL WATER COVER
+  //
+  // - baseElevation (1..7) is stored in tile.elevation AND tile.baseElevation
+  // - 1..3 : underwater bands (depth)
+  // - 4..7 : land (4 shoreline, 5–6 hills, 7 mountains)
+  // - isCoveredByWater is derived from a single WATER_LEVEL = 3
   // ============================================================
-  const WATER_LEVEL = 3; // future use when you move water up/down
+  const WATER_LEVEL = 3;
 
   for (const t of flat) {
+    // 1) compute continuous shape 0..1
     const shape = __hx_computeElevationShape(
       t.q,
       t.r,
@@ -693,43 +669,52 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
       rows,
       seedStr,
       t.type
-    ); // 0..1
+    );
+
+    let baseElev;
 
     if (t.type === 'water') {
-      // Sea floor depth 1..3
-      let lvl;
-      if (shape < 0.33)      lvl = 1;  // deep
-      else if (shape < 0.66) lvl = 2;  // medium
-      else                   lvl = 3;  // shallow
-
-      t.elevation = lvl;
-      t.isCoveredByWater = true;
-      t.hasMountainIcon = false;
-
+      // Underwater relief: 1..3
+      if (shape < 0.33)      baseElev = 1; // deep
+      else if (shape < 0.66) baseElev = 2; // medium
+      else                   baseElev = 3; // shallow
     } else {
-      // Land 4..7
-      let lvl;
-      if (shape < 0.25)      lvl = 4;
-      else if (shape < 0.5)  lvl = 5;
-      else if (shape < 0.8)  lvl = 6;
-      else                   lvl = 7;
+      // Land relief: 4..7
+      if (shape < 0.25)      baseElev = 4;
+      else if (shape < 0.50) baseElev = 5;
+      else if (shape < 0.80) baseElev = 6;
+      else                   baseElev = 7;
+    }
 
-      t.elevation = lvl;
-      t.isCoveredByWater = false; // land is dry at start
+    t.baseElevation = baseElev;
+    t.elevation = baseElev;
 
-      if (lvl === 7) {
-        // Only level-7 tiles are real mountains
+    // 2) initial water cover: anything <= WATER_LEVEL starts submerged
+    t.isCoveredByWater = (baseElev <= WATER_LEVEL);
+
+    if (t.isCoveredByWater) {
+      // Under water at start → behave as water for pathfinding & rendering
+      t.type = 'water';
+      t.movementCost = terrainTypes.water.movementCost;
+      t.impassable = true;
+    } else {
+      // Land at start
+      if (baseElev >= 7) {
+        // True mountains: always impassable + icon
         t.type = 'mountain';
         t.impassable = true;
         t.movementCost = Infinity;
         t.hasMountainIcon = true;
-      } else {
-        // Demote any pre-marked "mountain" tiles that aren't level 7
-        if (t.type === 'mountain') {
-          t.type = 'grassland';
-          t.impassable = false;
-          t.movementCost = terrainTypes.grassland.movementCost;
+      } else if (t.type === 'mountain') {
+        // Mountain chains generated earlier, but elevation too low -> bump up
+        if (baseElev < 7) {
+          t.baseElevation = 7;
+          t.elevation = 7;
         }
+        t.impassable = true;
+        t.movementCost = Infinity;
+        t.hasMountainIcon = true;
+      } else {
         t.hasMountainIcon = false;
       }
     }
