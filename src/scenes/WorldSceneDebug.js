@@ -3,17 +3,22 @@
 // Simple top-center debug menu for hydrology controls.
 //
 // Buttons:
-//   - Remove Water        → convert all type:"water" tiles to sand (lvl 4), no water overlay
-//   - + Water Level       → worldWaterLevel += 1   (clamped 0..7), reapply isCoveredByWater
-//   - - Water Level       → worldWaterLevel -= 1   (clamped 0..7), reapply isCoveredByWater
-//   - Fill Water @ 3      → worldWaterLevel = 3    (baseline flooding)
+//   - Remove Water        → permanently convert all current water/underwater tiles into sand land (baseElevation ≥ 4)
+//   - + Water Level       → worldWaterLevel += 1 (clamped 0..7), then scene.recomputeWaterFromLevel()
+//   - - Water Level       → worldWaterLevel -= 1 (clamped 0..7), then scene.recomputeWaterFromLevel()
+//   - Fill Water @ 3      → worldWaterLevel = 3, then scene.recomputeWaterFromLevel()
 //
-/**
- * We assume:
- *  - scene.mapData is an array of tiles { q, r, type, elevation, isCoveredByWater, ... }
- *  - scene.redrawWorld() exists and re-renders the map/locations/resources
- *  - Mountains are tiles with elevation === 7 (these get hasMountainIcon = true)
- */
+// Assumptions (new system):
+//   - Each tile has:
+//       baseElevation: number (1..7; 1–3 underwater bands, 4–7 land)
+//       elevation:     number (kept in sync with baseElevation for now)
+//       groundType:    string (terrain type when NOT under water; e.g. 'grassland', 'sand')
+//       type:          string (actual rendered type; becomes 'water' when tile is underwater)
+//       isUnderWater:  boolean (true if currently flooded at worldWaterLevel)
+//   - WorldScene defines:
+//       worldWaterLevel: number
+//       recomputeWaterFromLevel(): void   // converts tiles to water/non-water based on baseElevation & groundType
+//       redrawWorld(): void               // full terrain+POI redraw (called by recomputeWaterFromLevel)
 
 function getTiles(scene) {
   if (Array.isArray(scene?.mapData)) return scene.mapData;
@@ -25,56 +30,60 @@ function clamp(v, lo, hi) {
   return Math.max(lo, Math.min(hi, v));
 }
 
-// --- WATER LOGIC ------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// WATER LOGIC
+// -----------------------------------------------------------------------------
 
-// Option A: permanently convert "real" water tiles into land (sand, level 4).
+/**
+ * Permanently convert all currently water/underwater tiles into sand land.
+ * - Sets baseElevation to at least 4 (shoreline+).
+ * - Sets groundType & type to 'sand'.
+ * - Clears isUnderWater.
+ * - Then sets worldWaterLevel = 0 and calls scene.recomputeWaterFromLevel().
+ */
 function removeAllWaterToSand(scene) {
   const tiles = getTiles(scene);
 
   for (const t of tiles) {
     if (!t) continue;
 
-    if (t.type === 'water') {
-      // Convert to sand shoreline
-      t.type = 'sand';
-      t.elevation = 4;
-      t.isCoveredByWater = false;
-      t.impassable = false;
-      t.movementCost = 2; // same as terrainTypes.sand in HexMap
-    }
+    const isWaterNow =
+      t.type === 'water' ||
+      t.isUnderWater === true ||
+      (typeof t.baseElevation === 'number' && t.baseElevation <= (scene.worldWaterLevel ?? 3));
 
-    // Recompute mountain icon: only for lvl 7
-    t.hasMountainIcon = (t.elevation === 7);
+    if (!isWaterNow) continue;
+
+    // Boost anything that was "sea floor" up to land band
+    const currentBase = (typeof t.baseElevation === 'number') ? t.baseElevation : 0;
+    const newBase = currentBase > 0 ? Math.max(4, currentBase) : 4;
+
+    t.baseElevation = newBase;
+    t.elevation = newBase;
+
+    // Permanently convert to sand land
+    t.groundType = 'sand';
+    t.type = 'sand';
+    t.isUnderWater = false;
+    t.impassable = false;
+    t.movementCost = 2;        // matches terrainTypes.sand
+
+    // Mountain icon only for real high peaks
+    t.hasMountainIcon = (newBase >= 7);
   }
 
-  // After removing all ocean, treat overlay water as turned off
   scene.worldWaterLevel = 0;
-}
 
-// Re-apply overlay flooding based on worldWaterLevel and elevation.
-function reapplyWaterOverlay(scene) {
-  const tiles = getTiles(scene);
-  const wl = Number.isFinite(scene.worldWaterLevel) ? scene.worldWaterLevel : 3;
-
-  for (const t of tiles) {
-    if (!t) continue;
-
-    const elev = typeof t.elevation === 'number' ? t.elevation : 4;
-
-    if (t.type === 'water') {
-      // "True" water tiles are always covered by water
-      t.isCoveredByWater = true;
-    } else {
-      // Land tiles can be flooded if low enough
-      t.isCoveredByWater = elev <= wl;
-    }
-
-    // Only elevation 7 should show mountain icon
-    t.hasMountainIcon = (elev === 7);
+  if (typeof scene.recomputeWaterFromLevel === 'function') {
+    scene.recomputeWaterFromLevel();
+  } else {
+    scene.redrawWorld?.();
   }
 }
 
-// --- UI HELPERS -------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// UI HELPERS
+// -----------------------------------------------------------------------------
 
 function makeButton(scene, label, onClick) {
   const txt = scene.add.text(0, 0, label, {
@@ -82,7 +91,7 @@ function makeButton(scene, label, onClick) {
     fontSize: '12px',
     color: '#e7f7ff',
     backgroundColor: '#0b1a28',
-    padding: { x: 8, y: 5 }
+    padding: { x: 8, y: 5 },
   })
     .setOrigin(0.5, 0)
     .setDepth(20000)
@@ -112,7 +121,9 @@ function updateWaterLabel(scene) {
   scene.__waterLevelLabel.setText(`Water Lvl: ${wl}`);
 }
 
-// --- PUBLIC API -------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// PUBLIC API
+// -----------------------------------------------------------------------------
 
 export function initDebugMenu(scene) {
   // Clean up old menu if it exists
@@ -139,7 +150,7 @@ export function initDebugMenu(scene) {
     fontSize: '12px',
     color: '#a6edff',
     backgroundColor: '#062033',
-    padding: { x: 8, y: 5 }
+    padding: { x: 8, y: 5 },
   }).setOrigin(0.5, 0).setDepth(20000);
 
   scene.__waterLevelLabel = badge;
@@ -149,28 +160,36 @@ export function initDebugMenu(scene) {
   const btnRemove = makeButton(scene, 'Remove Water', () => {
     removeAllWaterToSand(scene);
     updateWaterLabel(scene);
-    scene.redrawWorld?.();
   });
 
   const btnInc = makeButton(scene, '+ Water Level', () => {
     scene.worldWaterLevel = clamp((scene.worldWaterLevel ?? 3) + 1, 0, 7);
-    reapplyWaterOverlay(scene);
+    if (typeof scene.recomputeWaterFromLevel === 'function') {
+      scene.recomputeWaterFromLevel();
+    } else {
+      scene.redrawWorld?.();
+    }
     updateWaterLabel(scene);
-    scene.redrawWorld?.();
   });
 
   const btnDec = makeButton(scene, '- Water Level', () => {
     scene.worldWaterLevel = clamp((scene.worldWaterLevel ?? 3) - 1, 0, 7);
-    reapplyWaterOverlay(scene);
+    if (typeof scene.recomputeWaterFromLevel === 'function') {
+      scene.recomputeWaterFromLevel();
+    } else {
+      scene.redrawWorld?.();
+    }
     updateWaterLabel(scene);
-    scene.redrawWorld?.();
   });
 
   const btnFill3 = makeButton(scene, 'Fill Water @ 3', () => {
     scene.worldWaterLevel = 3;
-    reapplyWaterOverlay(scene);
+    if (typeof scene.recomputeWaterFromLevel === 'function') {
+      scene.recomputeWaterFromLevel();
+    } else {
+      scene.redrawWorld?.();
+    }
     updateWaterLabel(scene);
-    scene.redrawWorld?.();
   });
 
   // Simple manual layout: center row, fixed spacing
@@ -196,7 +215,10 @@ export function initDebugMenu(scene) {
 // OPTIONAL helper if you want to tweak water level from other systems.
 export function setWaterLevel(scene, level) {
   scene.worldWaterLevel = clamp(level, 0, 7);
-  reapplyWaterOverlay(scene);
+  if (typeof scene.recomputeWaterFromLevel === 'function') {
+    scene.recomputeWaterFromLevel();
+  } else {
+    scene.redrawWorld?.();
+  }
   updateWaterLabel(scene);
-  scene.redrawWorld?.();
 }
