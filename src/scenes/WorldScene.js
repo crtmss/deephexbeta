@@ -35,10 +35,10 @@ import {
   LIFT_PER_LVL,
 } from './WorldSceneMap.js';
 
-import { supabase as sharedSupabase } from '../net/SupabaseClient.js';
-
-// 🔧 NEW: debug water menu
+// Debug menu (hydrology controls)
 import { initDebugMenu } from './WorldSceneDebug.js';
+
+import { supabase as sharedSupabase } from '../net/SupabaseClient.js';
 
 /* =========================
    Deterministic world summary (UI-only)
@@ -212,9 +212,6 @@ export default class WorldScene extends Phaser.Scene {
     drawLocationsAndRoads.call(this);
     spawnFishResources.call(this);
 
-    // 🔧 DEBUG WATER MENU (top-center buttons)
-    initDebugMenu.call(this);
-
     /* =========================
        UNITS & ENEMIES SPAWN (multiplayer-aware)
        ========================= */
@@ -249,6 +246,9 @@ export default class WorldScene extends Phaser.Scene {
 
     // Input (selection + path preview + movement)
     setupWorldInputUI(this);
+
+    // ---- Debug menu (top-center hydrology controls) ----
+    initDebugMenu(this);
 
     /* =========================
        Supabase sync bridge stub
