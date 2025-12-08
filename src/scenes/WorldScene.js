@@ -111,7 +111,7 @@ export default class WorldScene extends Phaser.Scene {
   preload() {}
 
   async create() {
-    this.hexSize = 24;
+    this.hexSize = 20;
     this.mapWidth = 29;
     this.mapHeight = 29;
 
