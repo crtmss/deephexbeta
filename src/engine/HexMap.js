@@ -763,6 +763,44 @@ export default class HexMap {
     this.generateMap();
   }
 
+// Guarantee a 1–3-hex deep-water ring around the map edges.
+// borderDist = 0 → baseElevation = 1 (deep)
+// borderDist = 1 → baseElevation = 2
+// borderDist = 2 → baseElevation = 3
+function enforceEdgeSeaFloor(map, cols, rows) {
+  const maxRing = 2; // 0, 1, 2 from the border
+
+  const flat = map.flat ? map.flat() : [].concat(...map);
+
+  for (const t of flat) {
+    if (!t) continue;
+    const { q, r } = t;
+
+    const distToBorder = Math.min(
+      q,
+      r,
+      cols - 1 - q,
+      rows - 1 - r
+    );
+
+    if (distToBorder > maxRing) continue;
+
+    // 0 → 1, 1 → 2, 2 → 3
+    const newBase = Math.max(1, Math.min(3, 1 + distToBorder));
+
+    // Set strictly for hydrology: baseElevation drives water logic.
+    t.baseElevation = newBase;
+    // Keep elevation in sync so visuals & cliffs remain coherent.
+    t.elevation = newBase;
+
+    // Mark underlying terrain as seafloor-type; water rendering will use baseElevation
+    // for blue shading, not groundType, so this is mostly for when it emerges.
+    if (!t.groundType || t.groundType === 'water') {
+      t.groundType = 'sand';
+    }
+  }
+}
+  
   generateMap() {
     const rngSeed = cyrb128(this.seed);
     const rand = sfc32(...rngSeed);
