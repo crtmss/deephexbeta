@@ -7,13 +7,8 @@ export const LIFT_PER_LVL = 4;
 const ISO_SHEAR  = 0.15;
 const ISO_YSCALE = 0.95;
 
-// In the base model, "sea floor" is level 3.
-// 1–3  = underwater bands
-// 4–7  = land
+// “Default” sea level used when no dynamic waterLevel is set on the scene.
 const DEFAULT_SEA_FLOOR = 3;
-
-// Dynamic water surface (in levels). Used to shrink cliffs when water rises.
-let CURRENT_WATER_LEVEL = DEFAULT_SEA_FLOOR;
 
 const pt = (x, y) => ({ x, y });
 
@@ -33,31 +28,49 @@ export function getColorForTerrain(terrain) {
   }
 }
 
-/* ---------- water / elevation helpers ---------- */
+/* ---------- global water helpers ---------- */
 
-// Unified “is water” predicate, tolerant to old fields.
+// unified “is water” predicate, tolerant to old fields.
 function isWaterTile(t) {
   if (!t) return false;
-  if (t.isWater === true) return true;                         // new model
+  if (t.isWater === true) return true;
   if (typeof t.waterDepth === 'number' && t.waterDepth > 0) return true;
-  if (t.type === 'water') return true;                         // old model
-  if (t.isCoveredByWater) return true;                         // legacy flag
+  if (t.type === 'water') return true;
+  if (t.isCoveredByWater) return true;
   return false;
 }
 
+// read current water level from the scene, with safe fallback
+function getCurrentWaterLevel(scene) {
+  const wl = scene && typeof scene.waterLevel === 'number'
+    ? scene.waterLevel
+    : DEFAULT_SEA_FLOOR;
+  return wl;
+}
+
+/* ---------- elevation helpers ---------- */
 /**
- * Absolute visual elevation above fixed sea floor (level 3).
+ * Effective visual elevation above sea level (used for cliffs & lift).
  *
- * IMPORTANT:
- * - This is independent of the current water level.
- * - Water tiles always return 0 (flat surface).
+ * Data model:
+ *   - baseElevation: 1..7 absolute
+ *       1–3: underwater bands
+ *       4–7: land
+ *   - waterLevel (scene-level): current sea level 1..7
  *
- * Cliffs vs water will be reduced later based on CURRENT_WATER_LEVEL.
+ * Visual rule:
+ *   eff = max(0, baseElevation - waterLevel)
+ *
+ * So every time waterLevel increases by 1, all cliffs visually shrink by 1.
+ * Example: at waterLevel=3 a level-7 mountain has eff=4; at waterLevel=6 it
+ * has eff=1 (same “visual step” as shoreline at the start).
+ *
+ * We also tolerate old maps where only elevation + isCoveredByWater exist.
  */
-export function effectiveElevation(tile) {
+export function effectiveElevation(tile, waterLevel = DEFAULT_SEA_FLOOR) {
   if (!tile) return 0;
 
-  // If some other system pre-computed a visual elevation, honour it.
+  // if something explicitly set visualElevation, respect it
   if (typeof tile.visualElevation === 'number') {
     const ve = tile.visualElevation | 0;
     return ve > 0 ? ve : 0;
@@ -67,21 +80,26 @@ export function effectiveElevation(tile) {
     ? tile.baseElevation
     : (typeof tile.elevation === 'number' ? tile.elevation : 0);
 
-  // Any water tile is visually flat.
+  // any water tile is visually flat
   if (isWaterTile(tile)) return 0;
 
-  // New model: land stands above fixed sea floor (3).
+  const wl = (typeof waterLevel === 'number') ? waterLevel : DEFAULT_SEA_FLOOR;
+
   if (typeof tile.baseElevation === 'number') {
-    const eff = base - DEFAULT_SEA_FLOOR;
+    // new model: pure “height above sea level”
+    const eff = base - wl;
     return eff > 0 ? eff : 0;
   }
 
-  // Fallback to the older “4 = shoreline, 5–7 = raised” logic.
+  // --- fallback for old maps (elevation + isCoveredByWater) ---
   const covered = !!tile.isCoveredByWater;
   const eRaw = typeof tile.elevation === 'number' ? tile.elevation : 0;
 
-  if (covered || eRaw <= 4) return 0;
-  return Math.min(3, Math.max(1, eRaw - 4));
+  // baseline shoreline moves up with waterLevel as well
+  const baseline = 4 + (wl - DEFAULT_SEA_FLOOR); // 4 at wl=3, 5 at wl=4, etc.
+  if (covered || eRaw <= baseline) return 0;
+
+  return Math.min(3, Math.max(1, eRaw - baseline));
 }
 
 function darkenRGBInt(baseInt, factor) {
@@ -204,51 +222,36 @@ export function drawHex(q, r, xIso, yIso, size, fillColor, effElevationValue, ti
     ? tile.baseElevation
     : (typeof tile?.elevation === 'number' ? tile.elevation : 0);
 
-  // how many “levels” of water have risen above the sea floor
-  const waterRise = Math.max(0, CURRENT_WATER_LEVEL - DEFAULT_SEA_FLOOR);
+  // local water level for this scene
+  const waterLevel = getCurrentWaterLevel(this);
 
-  // Helper to draw cliff if neighbor lower
   const maybeCliff = (edgeIndex, neighborTile) => {
     if (!neighborTile) return;
 
-    const effN = effectiveElevation(neighborTile); // absolute (above sea floor)
-    let diff   = effElevationValue - effN;
+    const effN = effectiveElevation(neighborTile, waterLevel);
+    const diff = effElevationValue - effN;
 
     const neighborIsWater = isWaterTile(neighborTile);
 
-    // KEY RULE:
     // Level-4 coastal *land* tiles should NOT have cliffs vs water → beaches.
     if (!isWaterTile(tile) && baseSelf === 4 && neighborIsWater) return;
 
-    // If neighbour is water, reduce visible cliff height by waterRise.
-    // This means every time water level increases by 1, all coastal cliffs
-    // visually lose 1 level of height (until they reach 0).
-    if (neighborIsWater) {
-      diff -= waterRise;
-    }
-
     if (diff <= 0) return;
-
     const A = ring[edgeIndex];
     const B = ring[(edgeIndex + 1) % 6];
     walls.push(drawEdgeQuad(this, A, B, diff * dropPerLvl, wallColor, 3));
   };
 
-  // Helper to draw micro-skirt (thin) for other edges if neighbor lower
   const maybeSkirt = (edgeIndex, neighborTile) => {
     if (!neighborTile) return;
 
-    const effN = effectiveElevation(neighborTile);
-    let diff   = effElevationValue - effN;
+    const effN = effectiveElevation(neighborTile, waterLevel);
+    const diff = effElevationValue - effN;
 
     const neighborIsWater = isWaterTile(neighborTile);
 
     // Same rule as above: shoreline (4) vs water => no skirts either.
     if (!isWaterTile(tile) && baseSelf === 4 && neighborIsWater) return;
-
-    if (neighborIsWater) {
-      diff -= waterRise;
-    }
 
     if (diff <= 0) return;
     const A = ring[edgeIndex];
@@ -257,7 +260,6 @@ export function drawHex(q, r, xIso, yIso, size, fillColor, effElevationValue, ti
     walls.push(drawEdgeQuad(this, A, B, skirt, wallColor, 3));
   };
 
-  // === Neighbors by your side numbering ===
   // sides: 0=NE, 1=E, 2=SE, 3=SW, 4=W, 5=NW
   const n0 = neighborBySide(this.tileAt, q, r, 0);
   const n1 = neighborBySide(this.tileAt, q, r, 1);
@@ -302,13 +304,13 @@ export function drawHex(q, r, xIso, yIso, size, fillColor, effElevationValue, ti
  * Land tint:
  *   level steps toward white based on effectiveElevation() (0..4).
  */
-function getFillForTile(tile) {
+function getFillForTile(tile, waterLevel) {
   const water = isWaterTile(tile);
 
   if (water) {
     const base = getColorForTerrain('water');
 
-    // Prefer explicit waterDepth. Fallback to baseElevation 1..3 or elevation.
+    // Prefer explicit waterDepth; fallback to baseElevation/elevation.
     let depth = 0;
     if (typeof tile.waterDepth === 'number') {
       depth = tile.waterDepth;
@@ -321,7 +323,6 @@ function getFillForTile(tile) {
     // clamp to 1..3 to ensure exactly 3 shades
     const d = Math.max(1, Math.min(3, depth || 2));
 
-    // factors: shallow brightest, deep darkest
     let factor;
     if (d === 3)      factor = 1.05; // shallow
     else if (d === 2) factor = 1.00; // medium
@@ -336,7 +337,7 @@ function getFillForTile(tile) {
 
   // Land
   const baseColor = getColorForTerrain(tile.type);
-  const eff = effectiveElevation(tile); // 0..4 for land (above sea floor)
+  const eff = effectiveElevation(tile, waterLevel); // 0..4 for land
 
   // Clear per-level stepping toward white (0..4)
   const LEVEL_TINTS = [0.00, 0.18, 0.34, 0.50, 0.66]; // index = eff 0..4
@@ -398,37 +399,13 @@ export function drawHexMap() {
   const byKey = new Map(this.mapData.map(t => [`${t.q},${t.r}`, t]));
   this.tileAt = (q, r) => byKey.get(`${q},${r}`);
 
-  // ---- determine current water level (global) ----
-  let waterLevel = DEFAULT_SEA_FLOOR;
+  const waterLevel = getCurrentWaterLevel(this);
 
-  // Prefer scene-level debug value if present
-  if (typeof this.currentWaterLevel === 'number') {
-    waterLevel = this.currentWaterLevel;
-  } else if (typeof this.waterLevel === 'number') {
-    waterLevel = this.waterLevel;
-  } else {
-    // Fallback: infer from any water tile that has waterDepth + baseElevation
-    const sample = this.mapData.find(
-      t => isWaterTile(t) && typeof t.waterDepth === 'number'
-    );
-    if (sample) {
-      const base = (typeof sample.baseElevation === 'number')
-        ? sample.baseElevation
-        : (typeof sample.elevation === 'number' ? sample.elevation : DEFAULT_SEA_FLOOR);
-      waterLevel = base + sample.waterDepth - 1;
-    }
-  }
-  CURRENT_WATER_LEVEL = waterLevel;
-
-  const waterRise = Math.max(0, CURRENT_WATER_LEVEL - DEFAULT_SEA_FLOOR);
-
-  // Sort by *screen* elevation so lower tiles draw first (proper stacking).
+  // Sort by effectiveElevation so lower tiles draw first (proper stacking).
   const sorted = [...this.mapData].sort((a, b) => {
-    const ea = effectiveElevation(a);
-    const eb = effectiveElevation(b);
-    const sa = Math.max(0, ea - waterRise);
-    const sb = Math.max(0, eb - waterRise);
-    if (sa !== sb) return sa - sb;
+    const ea = effectiveElevation(a, waterLevel);
+    const eb = effectiveElevation(b, waterLevel);
+    if (ea !== eb) return ea - eb;
     const da = (a.q + a.r) - (b.q + b.r);
     if (da !== 0) return da;
     if (a.r !== b.r) return a.r - b.r;
@@ -437,15 +414,13 @@ export function drawHexMap() {
 
   for (const hex of sorted) {
     const { q, r } = hex;
-    const effBase   = effectiveElevation(hex);             // above floor
-    const effScreen = Math.max(0, effBase - waterRise);    // above current water
-
+    const eff = effectiveElevation(hex, waterLevel);
     const p  = hexToPixel(q, r, this.hexSize);
     const x  = p.x + offsetX;
-    const y  = p.y + offsetY - LIFT_PER_LVL * effScreen;
+    const y  = p.y + offsetY - LIFT_PER_LVL * eff;
 
-    const fillColor = getFillForTile(hex);
-    const { face, rim } = drawHex.call(this, q, r, x, y, this.hexSize, fillColor, effBase, hex);
+    const fillColor = getFillForTile(hex, waterLevel);
+    const { face, rim } = drawHex.call(this, q, r, x, y, this.hexSize, fillColor, eff, hex);
     this.mapContainer.add(face);                   // face
     if (rim._walls) rim._walls.forEach(w => this.mapContainer.add(w)); // cliffs/skirts
     this.mapContainer.add(rim);                    // rim on top
@@ -468,11 +443,10 @@ export function drawHexMap() {
       return;
     }
 
-    const effBase   = effectiveElevation(tile);
-    const effScreen = Math.max(0, effBase - waterRise);
+    const eff = effectiveElevation(tile, waterLevel);
     const p   = hexToPixel(axial.q, axial.r, this.hexSize);
     const x   = p.x + this.mapOffsetX;
-    const y   = p.y + this.mapOffsetY - LIFT_PER_LVL * effScreen;
+    const y   = p.y + this.mapOffsetY - LIFT_PER_LVL * eff;
 
     if (this.hoverOutline) this.hoverOutline.destroy();
     this.hoverOutline = drawHexOutline(this, x, y, this.hexSize, 0xffffff);
