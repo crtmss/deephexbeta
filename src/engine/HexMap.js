@@ -73,7 +73,7 @@ function __hx_computeElevationShape(q, r, cols, rows, rawSeed, terrainType) {
 
   switch (terrainType) {
     case 'water':
-      // keep low
+      // keep low-ish to favour deeper sea away from island
       n = Math.min(n, 0.4);
       break;
     case 'mountain':
@@ -109,13 +109,12 @@ function markWater(tile) {
   Object.assign(tile, {
     type: 'water',
     ...terrainTypes.water,
-    // elevation & isCoveredByWater / baseElevation will be set in final pass
     hasObject: false,
     hasForest: false,
     hasRuin: false,
     hasCrashSite: false,
     hasVehicle: false,
-    hasRoad: false
+    hasRoad: false,
   });
 }
 function coverageRatio(flat) {
@@ -127,15 +126,6 @@ function distToCenter(cols, rows, q, r) {
   return Math.hypot(q - cx, r - cy);
 }
 const keyOf = (q, r) => `${q},${r}`;
-
-/** NEW: distance (in tiles) to the map border, used for deep-water probability. */
-function edgeRingDistance(cols, rows, q, r) {
-  const dLeft   = q;
-  const dRight  = cols - 1 - q;
-  const dTop    = r;
-  const dBottom = rows - 1 - r;
-  return Math.min(dLeft, dRight, dTop, dBottom);
-}
 
 /* ================= RNG helpers ================= */
 function shuffleInPlace(a, rand) {
@@ -370,7 +360,6 @@ function applyGeoObject(map, cols, rows, rand, biome, worldMeta) {
   };
 
   if (biome === 'icy') {
-    // Glacier: 9 ICE on coastal/lagoon/lake area
     const coastal = flat.filter(t => isCoastal(map, t.q, t.r));
     const seed = pickClosest(coastal, cols, rows, () => true) || coastal[Math.floor(rand() * coastal.length)];
     if (seed) {
@@ -385,23 +374,16 @@ function applyGeoObject(map, cols, rows, rand, biome, worldMeta) {
     }
 
   } else if (biome === 'volcanic') {
-    // Volcano: peak + adjacent ash
-    const mountains = flat.filter(t =>
-      t.type === 'mountain'
-    );
+    const mountains = flat.filter(t => t.type === 'mountain');
     let hub = null;
     if (mountains.length) {
-      // prefer one with many mountain neighbours
       let bestScore = -1;
       for (const m of mountains) {
         const ns = neighbors(m.q, m.r, map).map(([x, y]) => map[y][x]);
-        const score = ns.filter(n =>
-          n && n.type === 'mountain'
-        ).length + rand() * 0.1;
+        const score = ns.filter(n => n && n.type === 'mountain').length + rand() * 0.1;
         if (score > bestScore) { bestScore = score; hub = m; }
       }
     } else {
-      // make one near center
       const c = pickClosest(flat.filter(t => t.type !== 'water'), cols, rows, () => true);
       if (c) {
         hub = c;
@@ -412,7 +394,6 @@ function applyGeoObject(map, cols, rows, rand, biome, worldMeta) {
     if (hub) {
       hub.type = 'mountain';
       hub.impassable = true;
-      // ring to ash
       for (const [x, y] of neighbors(hub.q, hub.r, map)) {
         const nt = map[y][x];
         if (nt && nt.type !== 'water' && nt.type !== 'mountain') {
@@ -425,7 +406,6 @@ function applyGeoObject(map, cols, rows, rand, biome, worldMeta) {
     }
 
   } else if (biome === 'desert') {
-    // Desert patch: 9 sand
     const landish = flat.filter(t => t.type !== 'water');
     const seed = pickClosest(landish, cols, rows, () => true) ||
                  landish[Math.floor(rand() * landish.length)];
@@ -441,7 +421,6 @@ function applyGeoObject(map, cols, rows, rand, biome, worldMeta) {
     }
 
   } else if (biome === 'swamp') {
-    // Bog: 9 swamp in coastal/lagoon/lake
     const coastal = flat.filter(t => isCoastal(map, t.q, t.r));
     const seed = pickClosest(coastal, cols, rows, () => true) ||
                  coastal[Math.floor(rand() * coastal.length)];
@@ -457,7 +436,6 @@ function applyGeoObject(map, cols, rows, rand, biome, worldMeta) {
     }
 
   } else { // temperate
-    // Plateau: 6 grassland core, neighbours lower
     const land = flat.filter(t => t.type !== 'water');
     const seed = pickClosest(land, cols, rows, () => true) ||
                  land[Math.floor(rand() * land.length)];
@@ -468,7 +446,6 @@ function applyGeoObject(map, cols, rows, rand, biome, worldMeta) {
         t.impassable = false;
         t.movementCost = terrainTypes.grassland.movementCost;
       }
-      // ring
       const ringSet = new Set();
       for (const t of core) {
         for (const [x, y] of neighbors(t.q, t.r, map)) {
@@ -500,12 +477,12 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
       type: 'grassland',
       movementCost: terrainTypes.grassland.movementCost,
       impassable: false,
+      // elevation model will be set in the final pass
       elevation: 4,
-      baseElevation: 4,      // NEW: absolute elevation band 1..7
+      baseElevation: 4,
+      waterDepth: 0,
       isCoveredByWater: false,
       isUnderWater: false,
-      groundType: 'grassland',
-      waterDepth: 0,
     }))
   );
 
@@ -657,24 +634,12 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
   }
 
   // ============================================================
-  // FINAL ELEVATION + WATER OVERLAY (with probabilistic depths)
-  //
-  // 1..3 => underwater bands (deep=1, mid=2, shallow=3)
-  // 4..7 => land, 7 is mountains
-  //
-  // Deep water distribution:
-  //   - edgeRing = 0 → always deep (1)
-  //   - edgeRing = 1 → 50% deep (1), else mid (2)
-  //   - edgeRing = 2 → 2% deep, else mid (2)
-  //
-  // Shallow water (baseElevation=3):
-  //   - 30% of coastal water tiles (adjacent to land)
-  //   - 10% of water tiles at hex distance 2 from land
+  // FINAL ELEVATION + WATER DEPTH
   // ============================================================
+  const cx = cols / 2, cy = rows / 2;
+  const maxd = Math.hypot(cx, cy) || 1;
+  const depthSeed = 'depth-' + seedStr;
 
-  const WATER_LEVEL = 3;
-
-  // 1) Initial elevation from noise (land + generic water bands)
   for (const t of flat) {
     const shape = __hx_computeElevationShape(
       t.q,
@@ -685,167 +650,86 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
       t.type
     ); // 0..1
 
+    const borderDist = Math.min(t.q, t.r, cols - 1 - t.q, rows - 1 - t.r);
+    const distCenter = Math.hypot(t.q - cx, t.r - cy);
+    const centerFactor = 1 - (distCenter / maxd); // 1 at centre, 0 at corners
+    const noise = __hx_hash2D(t.q, t.r, depthSeed);
+
     if (t.type === 'water') {
-      // provisional depth from noise 1..3
-      let lvl;
-      if (shape < 0.33) lvl = 1;
-      else if (shape < 0.66) lvl = 2;
-      else lvl = 3;
+      // ----- WATER: assign depth 1..3 with spatial bias -----
+      let depth;
 
-      t.baseElevation = lvl;
-      t.elevation = lvl;
-      t.isCoveredByWater = true;
-      t.isUnderWater = true;
-      t.waterDepth = lvl;
-      // groundType = what this hex would be if water recedes; keep previous or default grass
-      if (!t.groundType || t.groundType === 'grassland') {
-        t.groundType = 'grassland';
+      if (borderDist <= 1) {
+        // Always deep on the very edge
+        depth = 1;
+      } else if (borderDist <= 3) {
+        // Rings 2–3: strongly prefer deep
+        if (noise < 0.65)      depth = 1;
+        else if (noise < 0.90) depth = 2;
+        else                   depth = 3;
+      } else {
+        // Inside: distribution depends on distance to centre
+        if (centerFactor > 0.66) {
+          // Near centre ⇒ more shallow
+          if (noise < 0.50)      depth = 3;
+          else if (noise < 0.80) depth = 2;
+          else                   depth = 1;
+        } else if (centerFactor > 0.33) {
+          // Mid ring
+          if (noise < 0.30)      depth = 3;
+          else if (noise < 0.65) depth = 2;
+          else                   depth = 1;
+        } else {
+          // Outer ring (but not the 1–3 edge bands) ⇒ deeper
+          if (noise < 0.15)      depth = 3;
+          else if (noise < 0.45) depth = 2;
+          else                   depth = 1;
+        }
       }
+
+      t.baseElevation = depth;      // sea "floor" band 1..3
+      t.elevation     = depth;
+      t.waterDepth    = depth;
+      t.isCoveredByWater = true;
+      t.isUnderWater  = true;
+
     } else {
-      // Land 4..7
+      // ----- LAND: levels 4..7 with biased distribution -----
       let lvl;
-      if (shape < 0.25) lvl = 4;
-      else if (shape < 0.5) lvl = 5;
-      else if (shape < 0.8) lvl = 6;
-      else lvl = 7;
+      // Level 4 should dominate: target ≈ 55% of land
+      if (shape < 0.55) {
+        lvl = 4;
+      } else if (shape < 0.82) {
+        // ~27% → level 5
+        lvl = 5;
+      } else if (shape < 0.95) {
+        // ~13% → level 6
+        lvl = 6;
+      } else {
+        // top ~5% → level 7 peaks
+        lvl = 7;
+      }
 
-      t.baseElevation = lvl;
-      t.elevation = lvl;
-      t.isCoveredByWater = (lvl <= WATER_LEVEL);
-      t.isUnderWater = false;
-      t.waterDepth = 0;
-      t.groundType = t.type;
+      // Ensure explicit mountain tiles are level 7
+      if (t.type === 'mountain') {
+        lvl = 7;
+      }
 
-      if (lvl === 7) {
+      t.baseElevation   = lvl;
+      t.elevation       = lvl;
+      t.isCoveredByWater = false;
+      t.isUnderWater     = false;
+
+      if (lvl === 7 || t.type === 'mountain') {
         t.type = 'mountain';
         t.impassable = true;
         t.movementCost = Infinity;
         t.hasMountainIcon = true;
+        t.baseElevation = 7;
+        t.elevation = 7;
       } else {
-        if (t.type === 'mountain') {
-          t.hasMountainIcon = true;
-          if (t.baseElevation < 7) {
-            t.baseElevation = 7;
-            t.elevation = 7;
-          }
-        } else {
-          t.hasMountainIcon = false;
-        }
+        t.hasMountainIcon = false;
       }
-    }
-  }
-
-  // 2) Deep water distribution based on distance to edge
-  for (const t of flat) {
-    if (t.type !== 'water') continue;
-    const ring = edgeRingDistance(cols, rows, t.q, t.r);
-
-    let lvl = t.baseElevation || 2;
-
-    if (ring === 0) {
-      // strict deep-water border
-      lvl = 1;
-    } else if (ring === 1) {
-      // 50% chance deep vs mid
-      lvl = (rand() < 0.5) ? 1 : 2;
-    } else if (ring === 2) {
-      // 2% chance deep, otherwise mid
-      lvl = (rand() < 0.02) ? 1 : 2;
-    } else {
-      // inner ocean: keep previous band but clamp 1..3
-      lvl = Math.max(1, Math.min(3, lvl));
-    }
-
-    t.baseElevation = lvl;
-    t.elevation = lvl;
-    t.waterDepth = lvl;
-    t.isCoveredByWater = true;
-    t.isUnderWater = true;
-  }
-
-  // 3) Shallow water near coasts
-  const dirAxial = [[1,0],[1,-1],[0,-1],[-1,0],[-1,1],[0,1]];
-  const byKey = new Map(flat.map(t => [keyOf(t.q, t.r), t]));
-
-  const isWater = tile => tile && tile.type === 'water';
-  const isLand  = tile => tile && tile.type !== 'water';
-
-  const coastal = [];
-  const coastalKeys = new Set();
-
-  for (const t of flat) {
-    if (!isWater(t)) continue;
-    // skip strict border ring from shallow logic (keep deep)
-    const ring = edgeRingDistance(cols, rows, t.q, t.r);
-    if (ring === 0) continue;
-
-    for (const [dq, dr] of dirAxial) {
-      const nq = t.q + dq;
-      const nr = t.r + dr;
-      if (nr < 0 || nr >= rows || nq < 0 || nq >= cols) continue;
-      const nt = map[nr][nq];
-      if (isLand(nt)) {
-        coastal.push(t);
-        coastalKeys.add(keyOf(t.q, t.r));
-        break;
-      }
-    }
-  }
-
-  // 30% shallow on coastal water
-  for (const t of coastal) {
-    if (rand() < 0.30) {
-      t.baseElevation = 3;
-      t.elevation = 3;
-      t.waterDepth = 3;
-    }
-  }
-
-  // Second ring from coast: neighbours of coastal that are water, not coastal
-  const secondRingKeys = new Set();
-  for (const t of coastal) {
-    for (const [dq, dr] of dirAxial) {
-      const nq = t.q + dq;
-      const nr = t.r + dr;
-      const key = keyOf(nq, nr);
-      if (nr < 0 || nr >= rows || nq < 0 || nq >= cols) continue;
-      if (coastalKeys.has(key)) continue;
-      const nt = map[nr][nq];
-      if (isWater(nt)) {
-        secondRingKeys.add(key);
-      }
-    }
-  }
-
-  for (const key of secondRingKeys) {
-    const t = byKey.get(key);
-    if (!t) continue;
-    // again skip strict border ring
-    const ring = edgeRingDistance(cols, rows, t.q, t.r);
-    if (ring === 0) continue;
-    if (rand() < 0.10) {
-      t.baseElevation = 3;
-      t.elevation = 3;
-      t.waterDepth = 3;
-    }
-  }
-
-  // 4) Final consistency pass
-  for (const t of flat) {
-    if (t.type === 'water') {
-      let lvl = t.baseElevation;
-      if (!(lvl >= 1 && lvl <= 3)) lvl = 2;
-      t.baseElevation = lvl;
-      t.elevation = lvl;
-      t.waterDepth = lvl;
-      t.isUnderWater = true;
-      t.isCoveredByWater = true;
-    } else {
-      let lvl = t.baseElevation;
-      if (!(lvl >= 4 && lvl <= 7)) lvl = Math.max(4, Math.min(7, t.elevation || 4));
-      t.baseElevation = lvl;
-      t.elevation = lvl;
-      t.isUnderWater = false;
     }
   }
 
@@ -877,3 +761,4 @@ export default class HexMap {
     return this.map;
   }
 }
+
