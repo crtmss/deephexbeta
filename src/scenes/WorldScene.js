@@ -112,8 +112,8 @@ export default class WorldScene extends Phaser.Scene {
 
   async create() {
     this.hexSize = 24;
-    this.mapWidth = 25;
-    this.mapHeight = 25;
+    this.mapWidth = 29;
+    this.mapHeight = 29;
 
     this.input.setDefaultCursor('grab');
     this.isDragging = false;
