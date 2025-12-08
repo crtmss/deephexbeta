@@ -171,7 +171,7 @@ export default class WorldScene extends Phaser.Scene {
       influence: 200,
     };
 
-    // Global water level (1..3 underwater bands, >=4 land by default)
+    // Global water level (1..7; tiles with baseElevation <= level are flooded)
     this.worldWaterLevel = 3;
 
     /* =========================
@@ -384,7 +384,7 @@ Biomes: ${biome}`;
       return;
     }
     console.log(
-      `Hex (${q},${r}) type=${tile.type}, elev=${tile.elevation}, baseElev=${tile.baseElevation}, groundType=${tile.groundType}, isUnderWater=${tile.isUnderWater}, visualElevation=${tile.visualElevation}, waterDepth=${tile.waterDepth}`
+      `Hex (${q},${r}) type=${tile.type}, elev=${tile.elevation}, baseElev=${tile.baseElevation}, groundType=${tile.groundType}, isUnderWater=${tile.isUnderWater}, visualElevation=${tile.visualElevation}`
     );
   }
 
@@ -542,38 +542,41 @@ Biomes: ${biome}`;
    * Rules:
    *  - Underwater if baseElevation <= worldWaterLevel.
    *  - Underwater tiles:
-   *      type        = 'water'
-   *      isUnderWater/isWater = true
-   *      waterDepth  = 1 (deep) .. 3 (shallow) based mostly on baseElevation
-   *      visualElevation = 0
+   *      type              = 'water'
+   *      isUnderWater      = true
+   *      isWater           = true
+   *      isCoveredByWater  = true
+   *      waterDepth        = 1 (deep) .. 3 (shallow)
+   *      visualElevation   = 0
    *  - Land tiles:
-   *      type        = groundType
-   *      isUnderWater/isWater = false
-   *      waterDepth  = 0
-   *      visualElevation = max(0, baseElevation - worldWaterLevel)
-   *    → so every time water level rises by 1, all cliffs shrink by 1.
+   *      type              = groundType
+   *      clear water flags
+   *      waterDepth        = 0
+   *      visualElevation   = max(0, baseElevation - worldWaterLevel)
+   *    → every +1 water level shrinks all cliffs by 1.
    */
   recomputeWaterFromLevel() {
     if (!Array.isArray(this.mapData)) return;
 
-    const lvl = (typeof this.worldWaterLevel === 'number')
+    // clamp and store
+    const lvlRaw = (typeof this.worldWaterLevel === 'number')
       ? this.worldWaterLevel
       : 3;
+    const lvl = Math.max(0, Math.min(7, lvlRaw));
+    this.worldWaterLevel = lvl;
 
     for (const t of this.mapData) {
       if (!t) continue;
 
-      // Canonical base elevation (1..7)
-      let base =
-        (typeof t.baseElevation === 'number')
-          ? t.baseElevation
-          : (typeof t.elevation === 'number' ? t.elevation : 0);
+      // Canonical base elevation 1..7
+      let base = (typeof t.baseElevation === 'number')
+        ? t.baseElevation
+        : (typeof t.elevation === 'number' ? t.elevation : 0);
+      if (base <= 0) base = 1;
+      t.baseElevation = base;
+      t.elevation = base;
 
-      if (!t.baseElevation && base > 0) {
-        t.baseElevation = base;
-      }
-
-      // Ensure groundType is populated once if missing
+      // Ensure groundType once
       if (!t.groundType) {
         if (t.type && t.type !== 'water') {
           t.groundType = t.type;
@@ -582,33 +585,31 @@ Biomes: ${biome}`;
         }
       }
 
-      const under = base > 0 && base <= lvl;
+      const under = (lvl > 0) && (base <= lvl);
 
-      // --- Underwater ---
       if (under) {
+        // --- Underwater tile ---
+        t.type = 'water';
         t.isUnderWater = true;
         t.isWater = true;
-        t.type = 'water';
+        t.isCoveredByWater = true;
 
-        // depth 1..3: 1=deep, 2=medium, 3=shallow
-        // base 1..3 keep their depth; higher flooded land treated as shallow
-        if (base <= 1)      t.waterDepth = 1;
-        else if (base === 2) t.waterDepth = 2;
-        else                t.waterDepth = 3;
+        // 1..3 depth for the three water shades
+        let depth = base;
+        if (depth < 1) depth = 1;
+        if (depth > 3) depth = 3;
+        t.waterDepth = depth;
 
-        t.visualElevation = 0;   // cliffs hidden under water
-      }
-
-      // --- Above water ---
-      else {
+        t.visualElevation = 0; // all water is flat visually
+      } else {
+        // --- Land tile ---
+        t.type = t.groundType || 'grassland';
         t.isUnderWater = false;
         t.isWater = false;
+        t.isCoveredByWater = false;
         t.waterDepth = 0;
 
-        // restore underlying terrain
-        t.type = t.groundType || 'grassland';
-
-        // visual height above current sea level
+        // visual height above *current* sea level
         const eff = base - lvl;
         t.visualElevation = eff > 0 ? eff : 0;
       }
