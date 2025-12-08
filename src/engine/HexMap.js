@@ -109,15 +109,13 @@ function markWater(tile) {
   Object.assign(tile, {
     type: 'water',
     ...terrainTypes.water,
-    // elevation & isCoveredByWater will be set in final pass
+    // elevation & isCoveredByWater / baseElevation will be set in final pass
     hasObject: false,
     hasForest: false,
     hasRuin: false,
     hasCrashSite: false,
     hasVehicle: false,
-    hasRoad: false,
-    // new water flags – will be finalized later
-    isUnderWater: true
+    hasRoad: false
   });
 }
 function coverageRatio(flat) {
@@ -129,6 +127,15 @@ function distToCenter(cols, rows, q, r) {
   return Math.hypot(q - cx, r - cy);
 }
 const keyOf = (q, r) => `${q},${r}`;
+
+/** NEW: distance (in tiles) to the map border, used for deep-water probability. */
+function edgeRingDistance(cols, rows, q, r) {
+  const dLeft   = q;
+  const dRight  = cols - 1 - q;
+  const dTop    = r;
+  const dBottom = rows - 1 - r;
+  return Math.min(dLeft, dRight, dTop, dBottom);
+}
 
 /* ================= RNG helpers ================= */
 function shuffleInPlace(a, rand) {
@@ -358,8 +365,8 @@ function applyGeoObject(map, cols, rows, rand, biome, worldMeta) {
   const byKey = new Map(flat.map(t => [keyOf(t.q, t.r), t]));
   let landmark = null;
 
-  const labelAndStore = (q, r, emoji, label, type) => {
-    landmark = { q, r, emoji, label, type };
+  const labelAndStore = (q, r, emoji, label) => {
+    landmark = { q, r, emoji, label };
   };
 
   if (biome === 'icy') {
@@ -374,7 +381,7 @@ function applyGeoObject(map, cols, rows, rand, biome, worldMeta) {
         t.impassable = false;
       });
       const c = pickClosest(cluster, cols, rows, () => true) || seed;
-      labelAndStore(c.q, c.r, '❄️', 'Glacier', 'glacier');
+      labelAndStore(c.q, c.r, '❄️', 'Glacier');
     }
 
   } else if (biome === 'volcanic') {
@@ -414,7 +421,7 @@ function applyGeoObject(map, cols, rows, rand, biome, worldMeta) {
           nt.movementCost = terrainTypes.volcano_ash.movementCost;
         }
       }
-      labelAndStore(hub.q, hub.r, '🌋', 'Volcano', 'volcano');
+      labelAndStore(hub.q, hub.r, '🌋', 'Volcano');
     }
 
   } else if (biome === 'desert') {
@@ -430,7 +437,7 @@ function applyGeoObject(map, cols, rows, rand, biome, worldMeta) {
         t.movementCost = terrainTypes.sand.movementCost;
       });
       const c = pickClosest(cluster, cols, rows, () => true) || seed;
-      labelAndStore(c.q, c.r, '🌵', 'Dune Field', 'desert');
+      labelAndStore(c.q, c.r, '🌵', 'Dune Field');
     }
 
   } else if (biome === 'swamp') {
@@ -446,7 +453,7 @@ function applyGeoObject(map, cols, rows, rand, biome, worldMeta) {
         t.movementCost = terrainTypes.swamp.movementCost;
       });
       const c = pickClosest(cluster, cols, rows, () => true) || seed;
-      labelAndStore(c.q, c.r, '🌾', 'Bog', 'bog');
+      labelAndStore(c.q, c.r, '🌾', 'Bog');
     }
 
   } else { // temperate
@@ -476,7 +483,7 @@ function applyGeoObject(map, cols, rows, rand, biome, worldMeta) {
         }
       }
       const c = pickClosest(core, cols, rows, () => true) || seed;
-      labelAndStore(c.q, c.r, '🌄', 'Plateau', 'plateau');
+      labelAndStore(c.q, c.r, '🌄', 'Plateau');
     }
   }
 
@@ -485,54 +492,20 @@ function applyGeoObject(map, cols, rows, rand, biome, worldMeta) {
   }
 }
 
-/* ==================== Edge deep-water enforcement ==================== */
-/**
- * Force a ring (1–2 tiles from the outer edge) to be deep sea floor:
- * - type = 'water'
- * - baseElevation = 1 (deep)
- * - isUnderWater = true
- * - groundType = 'sand' (what emerges if dried)
- */
-function enforceEdgeSeaFloor(map, cols, rows) {
-  const ringWidth = 2; // 1–2 tiles from edges
-
-  for (let r = 0; r < rows; r++) {
-    for (let q = 0; q < cols; q++) {
-      const isEdge =
-        q < ringWidth || q >= cols - ringWidth ||
-        r < ringWidth || r >= rows - ringWidth;
-      if (!isEdge) continue;
-      const t = map[r][q];
-      if (!t) continue;
-
-      t.type = 'water';
-      t.movementCost = terrainTypes.water.movementCost;
-      t.impassable = !!terrainTypes.water.impassable;
-
-      t.baseElevation = 1;
-      t.elevation = 1;
-      t.isUnderWater = true;
-      t.isCoveredByWater = true;
-
-      if (!t.groundType) t.groundType = 'sand';
-    }
-  }
-}
-
 /* ================= Map generation ================= */
-function generateMap(rows = 29, cols = 29, seedStr = 'defaultseed', rand) {
+function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
   const map = Array.from({ length: rows }, (_, r) =>
     Array.from({ length: cols }, (_, q) => ({
       q, r,
       type: 'grassland',
       movementCost: terrainTypes.grassland.movementCost,
       impassable: false,
-      // default elevation + water flags; will be overwritten in final pass
       elevation: 4,
-      baseElevation: 4,
+      baseElevation: 4,      // NEW: absolute elevation band 1..7
       isCoveredByWater: false,
       isUnderWater: false,
       groundType: 'grassland',
+      waterDepth: 0,
     }))
   );
 
@@ -684,16 +657,24 @@ function generateMap(rows = 29, cols = 29, seedStr = 'defaultseed', rand) {
   }
 
   // ============================================================
-  // FINAL ELEVATION + WATER OVERLAY
-  // - baseElevation & elevation levels 1..7
-  // - 1..3 => underwater bands (depth)
-  // - 4..7 => land, 7 is mountains
-  // - isUnderWater set based on WATER_LEVEL (initial sea level)
-  //   (start waterLevel = 3)
-  // - groundType = underlying terrain when NOT under water
+  // FINAL ELEVATION + WATER OVERLAY (with probabilistic depths)
+  //
+  // 1..3 => underwater bands (deep=1, mid=2, shallow=3)
+  // 4..7 => land, 7 is mountains
+  //
+  // Deep water distribution:
+  //   - edgeRing = 0 → always deep (1)
+  //   - edgeRing = 1 → 50% deep (1), else mid (2)
+  //   - edgeRing = 2 → 2% deep, else mid (2)
+  //
+  // Shallow water (baseElevation=3):
+  //   - 30% of coastal water tiles (adjacent to land)
+  //   - 10% of water tiles at hex distance 2 from land
   // ============================================================
+
   const WATER_LEVEL = 3;
 
+  // 1) Initial elevation from noise (land + generic water bands)
   for (const t of flat) {
     const shape = __hx_computeElevationShape(
       t.q,
@@ -705,18 +686,21 @@ function generateMap(rows = 29, cols = 29, seedStr = 'defaultseed', rand) {
     ); // 0..1
 
     if (t.type === 'water') {
-      // Sea floor depth 1..3
+      // provisional depth from noise 1..3
       let lvl;
-      if (shape < 0.33) lvl = 1;         // deep
-      else if (shape < 0.66) lvl = 2;    // medium
-      else lvl = 3;                      // shallow
+      if (shape < 0.33) lvl = 1;
+      else if (shape < 0.66) lvl = 2;
+      else lvl = 3;
 
-      t.elevation = lvl;
       t.baseElevation = lvl;
-      t.isUnderWater = true;
+      t.elevation = lvl;
       t.isCoveredByWater = true;
-      if (!t.groundType) t.groundType = 'sand';
-
+      t.isUnderWater = true;
+      t.waterDepth = lvl;
+      // groundType = what this hex would be if water recedes; keep previous or default grass
+      if (!t.groundType || t.groundType === 'grassland') {
+        t.groundType = 'grassland';
+      }
     } else {
       // Land 4..7
       let lvl;
@@ -725,12 +709,12 @@ function generateMap(rows = 29, cols = 29, seedStr = 'defaultseed', rand) {
       else if (shape < 0.8) lvl = 6;
       else lvl = 7;
 
-      t.elevation = lvl;
       t.baseElevation = lvl;
-
-      const under = (lvl <= WATER_LEVEL);
-      t.isUnderWater = under;
-      t.isCoveredByWater = under;
+      t.elevation = lvl;
+      t.isCoveredByWater = (lvl <= WATER_LEVEL);
+      t.isUnderWater = false;
+      t.waterDepth = 0;
+      t.groundType = t.type;
 
       if (lvl === 7) {
         t.type = 'mountain';
@@ -739,24 +723,131 @@ function generateMap(rows = 29, cols = 29, seedStr = 'defaultseed', rand) {
         t.hasMountainIcon = true;
       } else {
         if (t.type === 'mountain') {
-          // keep mountain type but ensure it's high
           t.hasMountainIcon = true;
-          if (t.elevation < 7) {
-            t.elevation = 7;
+          if (t.baseElevation < 7) {
             t.baseElevation = 7;
+            t.elevation = 7;
           }
         } else {
           t.hasMountainIcon = false;
         }
       }
-
-      // store underlying land type for hydrology system
-      t.groundType = t.type || t.groundType || 'grassland';
     }
   }
 
-  // Enforce deep-water ring at map edges (guaranteed ocean border)
-  enforceEdgeSeaFloor(map, cols, rows);
+  // 2) Deep water distribution based on distance to edge
+  for (const t of flat) {
+    if (t.type !== 'water') continue;
+    const ring = edgeRingDistance(cols, rows, t.q, t.r);
+
+    let lvl = t.baseElevation || 2;
+
+    if (ring === 0) {
+      // strict deep-water border
+      lvl = 1;
+    } else if (ring === 1) {
+      // 50% chance deep vs mid
+      lvl = (rand() < 0.5) ? 1 : 2;
+    } else if (ring === 2) {
+      // 2% chance deep, otherwise mid
+      lvl = (rand() < 0.02) ? 1 : 2;
+    } else {
+      // inner ocean: keep previous band but clamp 1..3
+      lvl = Math.max(1, Math.min(3, lvl));
+    }
+
+    t.baseElevation = lvl;
+    t.elevation = lvl;
+    t.waterDepth = lvl;
+    t.isCoveredByWater = true;
+    t.isUnderWater = true;
+  }
+
+  // 3) Shallow water near coasts
+  const dirAxial = [[1,0],[1,-1],[0,-1],[-1,0],[-1,1],[0,1]];
+  const byKey = new Map(flat.map(t => [keyOf(t.q, t.r), t]));
+
+  const isWater = tile => tile && tile.type === 'water';
+  const isLand  = tile => tile && tile.type !== 'water';
+
+  const coastal = [];
+  const coastalKeys = new Set();
+
+  for (const t of flat) {
+    if (!isWater(t)) continue;
+    // skip strict border ring from shallow logic (keep deep)
+    const ring = edgeRingDistance(cols, rows, t.q, t.r);
+    if (ring === 0) continue;
+
+    for (const [dq, dr] of dirAxial) {
+      const nq = t.q + dq;
+      const nr = t.r + dr;
+      if (nr < 0 || nr >= rows || nq < 0 || nq >= cols) continue;
+      const nt = map[nr][nq];
+      if (isLand(nt)) {
+        coastal.push(t);
+        coastalKeys.add(keyOf(t.q, t.r));
+        break;
+      }
+    }
+  }
+
+  // 30% shallow on coastal water
+  for (const t of coastal) {
+    if (rand() < 0.30) {
+      t.baseElevation = 3;
+      t.elevation = 3;
+      t.waterDepth = 3;
+    }
+  }
+
+  // Second ring from coast: neighbours of coastal that are water, not coastal
+  const secondRingKeys = new Set();
+  for (const t of coastal) {
+    for (const [dq, dr] of dirAxial) {
+      const nq = t.q + dq;
+      const nr = t.r + dr;
+      const key = keyOf(nq, nr);
+      if (nr < 0 || nr >= rows || nq < 0 || nq >= cols) continue;
+      if (coastalKeys.has(key)) continue;
+      const nt = map[nr][nq];
+      if (isWater(nt)) {
+        secondRingKeys.add(key);
+      }
+    }
+  }
+
+  for (const key of secondRingKeys) {
+    const t = byKey.get(key);
+    if (!t) continue;
+    // again skip strict border ring
+    const ring = edgeRingDistance(cols, rows, t.q, t.r);
+    if (ring === 0) continue;
+    if (rand() < 0.10) {
+      t.baseElevation = 3;
+      t.elevation = 3;
+      t.waterDepth = 3;
+    }
+  }
+
+  // 4) Final consistency pass
+  for (const t of flat) {
+    if (t.type === 'water') {
+      let lvl = t.baseElevation;
+      if (!(lvl >= 1 && lvl <= 3)) lvl = 2;
+      t.baseElevation = lvl;
+      t.elevation = lvl;
+      t.waterDepth = lvl;
+      t.isUnderWater = true;
+      t.isCoveredByWater = true;
+    } else {
+      let lvl = t.baseElevation;
+      if (!(lvl >= 4 && lvl <= 7)) lvl = Math.max(4, Math.min(7, t.elevation || 4));
+      t.baseElevation = lvl;
+      t.elevation = lvl;
+      t.isUnderWater = false;
+    }
+  }
 
   // Attach meta for scenes (World + Lobby)
   Object.defineProperty(flat, '__worldMeta', { value: worldMeta, enumerable: false });
@@ -780,10 +871,6 @@ export default class HexMap {
     const tiles = generateMap(this.height, this.width, this.seed, rand);
     this.map = tiles;
     this.worldMeta = tiles.__worldMeta || {};
-    return {
-      tiles: this.map,
-      objects: [], // kept for compatibility with older code that expects mapInfo.objects
-    };
   }
 
   getMap() {
