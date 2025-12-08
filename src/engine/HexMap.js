@@ -640,6 +640,7 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
   const maxd = Math.hypot(cx, cy) || 1;
   const depthSeed = 'depth-' + seedStr;
 
+  // --- First pass: assign depth & elevation based on shape/border/centre ---
   for (const t of flat) {
     const shape = __hx_computeElevationShape(
       t.q,
@@ -687,11 +688,11 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
         }
       }
 
-      t.baseElevation = depth;      // sea "floor" band 1..3
-      t.elevation     = depth;
-      t.waterDepth    = depth;
+      t.baseElevation    = depth;      // sea "floor" band 1..3
+      t.elevation        = depth;
+      t.waterDepth       = depth;
       t.isCoveredByWater = true;
-      t.isUnderWater  = true;
+      t.isUnderWater     = true;
 
     } else {
       // ----- LAND: levels 4..7 with biased distribution -----
@@ -715,10 +716,10 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
         lvl = 7;
       }
 
-      t.baseElevation   = lvl;
-      t.elevation       = lvl;
-      t.isCoveredByWater = false;
-      t.isUnderWater     = false;
+      t.baseElevation     = lvl;
+      t.elevation         = lvl;
+      t.isCoveredByWater  = false;
+      t.isUnderWater      = false;
 
       if (lvl === 7 || t.type === 'mountain') {
         t.type = 'mountain';
@@ -729,6 +730,103 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
         t.elevation = 7;
       } else {
         t.hasMountainIcon = false;
+      }
+    }
+  }
+
+  // ----------------------------------------------------------------
+  // SECOND PASS: SHALLOW WATER CHUNKS ALONG COAST
+  // ----------------------------------------------------------------
+  // Goal:
+  //  - Shallow water (baseElevation = 3) appears in 1–4 *clusters*
+  //    hugging the coast, not scattered.
+  //  - Rough target: ~30% of water tiles shallow, but formed as patches.
+  // ----------------------------------------------------------------
+  const waterTiles = flat.filter(t => t.type === 'water');
+  if (waterTiles.length > 0) {
+    const targetShallowRatio = 0.30;          // around 30% of water tiles
+    const maxShallow = Math.floor(waterTiles.length * targetShallowRatio);
+    let currentShallow = waterTiles.filter(t => t.baseElevation === 3).length;
+
+    if (currentShallow < maxShallow) {
+      // Coastal water = water tiles with at least one land neighbour
+      const coastalWater = waterTiles.filter(t => {
+        for (const [nq, nr] of neighbors(t.q, t.r, map)) {
+          const nt = map[nr][nq];
+          if (nt && nt.type !== 'water') return true;
+        }
+        return false;
+      });
+
+      if (coastalWater.length > 0) {
+        shuffleInPlace(coastalWater, rand);
+
+        const clusterCount = Math.min(
+          randInt(rand, 1, 4),  // 1–4 clusters
+          coastalWater.length
+        );
+
+        const markShallow = (tile) => {
+          if (tile.type === 'water' && tile.baseElevation !== 3) {
+            tile.baseElevation = 3;
+            tile.elevation = 3;
+            tile.waterDepth = 3;
+          }
+        };
+
+        let usedSeeds = 0;
+        const usedSeedKeys = new Set();
+
+        for (let i = 0; i < coastalWater.length && usedSeeds < clusterCount && currentShallow < maxShallow; i++) {
+          const seed = coastalWater[i];
+          const seedKey = keyOf(seed.q, seed.r);
+          if (usedSeedKeys.has(seedKey)) continue;
+          usedSeedKeys.add(seedKey);
+          usedSeeds++;
+
+          // chunk size 8–24 tiles
+          const maxSize = randInt(rand, 8, 24);
+          const queue = [[seed.q, seed.r]];
+          const seenCluster = new Set();
+
+          while (queue.length && seenCluster.size < maxSize && currentShallow < maxShallow) {
+            const [cq, cr] = queue.shift();
+            const ck = keyOf(cq, cr);
+            if (seenCluster.has(ck)) continue;
+            seenCluster.add(ck);
+
+            const tile = map[cr][cq];
+            if (!tile || tile.type !== 'water') continue;
+
+            markShallow(tile);
+            currentShallow++;
+
+            // Expand the patch along water that is near land
+            for (const [nq, nr] of neighbors(cq, cr, map)) {
+              const nt = map[nr][nq];
+              if (!nt || nt.type !== 'water') continue;
+
+              const nk = keyOf(nq, nr);
+              if (seenCluster.has(nk)) continue;
+
+              // keep the patch hugging the coast:
+              // prefer neighbours that are coastal or adjacent to land
+              let nearCoast = false;
+              for (const [mq, mr] of neighbors(nq, nr, map)) {
+                const mt = map[mr][mq];
+                if (mt && mt.type !== 'water') {
+                  nearCoast = true;
+                  break;
+                }
+              }
+
+              // Mostly stay near coast; occasionally allow one step seaward
+              if (!nearCoast && rand() > 0.4) continue;
+
+              queue.push([nq, nr]);
+            }
+          }
+        }
       }
     }
   }
@@ -761,4 +859,3 @@ export default class HexMap {
     return this.map;
   }
 }
-
