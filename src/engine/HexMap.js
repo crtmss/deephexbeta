@@ -524,7 +524,7 @@ function reBiasCoastalElevations(map, rand) {
 }
 
 /* ================= Map generation ================= */
-function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
+function generateMap(rows = 29, cols = 29, seedStr = 'defaultseed', rand) {
   const map = Array.from({ length: rows }, (_, r) =>
     Array.from({ length: cols }, (_, q) => ({
       q, r,
@@ -747,6 +747,8 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
   worldMeta.baseWaterLevel = BASE_WATER_LEVEL;
 
   // Attach meta for scenes (World + Lobby)
+  enforceEdgeSeaFloor(map, cols, rows);
+  
   Object.defineProperty(flat, '__worldMeta', { value: worldMeta, enumerable: false });
 
   return flat;
