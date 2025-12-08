@@ -384,7 +384,7 @@ Biomes: ${biome}`;
       return;
     }
     console.log(
-      `Hex (${q},${r}) type=${tile.type}, elev=${tile.elevation}, baseElev=${tile.baseElevation}, groundType=${tile.groundType}, isUnderWater=${tile.isUnderWater}`
+      `Hex (${q},${r}) type=${tile.type}, elev=${tile.elevation}, baseElev=${tile.baseElevation}, groundType=${tile.groundType}, isUnderWater=${tile.isUnderWater}, visualElevation=${tile.visualElevation}, waterDepth=${tile.waterDepth}`
     );
   }
 
@@ -537,7 +537,21 @@ Biomes: ${biome}`;
   /**
    * Recompute which tiles are under water for the current worldWaterLevel.
    * Uses baseElevation (or elevation) and groundType to set tile.type,
-   * then triggers a full redraw.
+   * waterDepth and visualElevation, then triggers a full redraw.
+   *
+   * Rules:
+   *  - Underwater if baseElevation <= worldWaterLevel.
+   *  - Underwater tiles:
+   *      type        = 'water'
+   *      isUnderWater/isWater = true
+   *      waterDepth  = 1 (deep) .. 3 (shallow) based mostly on baseElevation
+   *      visualElevation = 0
+   *  - Land tiles:
+   *      type        = groundType
+   *      isUnderWater/isWater = false
+   *      waterDepth  = 0
+   *      visualElevation = max(0, baseElevation - worldWaterLevel)
+   *    → so every time water level rises by 1, all cliffs shrink by 1.
    */
   recomputeWaterFromLevel() {
     if (!Array.isArray(this.mapData)) return;
@@ -547,32 +561,56 @@ Biomes: ${biome}`;
       : 3;
 
     for (const t of this.mapData) {
-      const base =
+      if (!t) continue;
+
+      // Canonical base elevation (1..7)
+      let base =
         (typeof t.baseElevation === 'number')
           ? t.baseElevation
           : (typeof t.elevation === 'number' ? t.elevation : 0);
+
+      if (!t.baseElevation && base > 0) {
+        t.baseElevation = base;
+      }
 
       // Ensure groundType is populated once if missing
       if (!t.groundType) {
         if (t.type && t.type !== 'water') {
           t.groundType = t.type;
-        } else if (!t.groundType) {
+        } else {
           t.groundType = 'grassland';
         }
       }
 
       const under = base > 0 && base <= lvl;
-      t.isUnderWater = under;
 
+      // --- Underwater ---
       if (under) {
+        t.isUnderWater = true;
+        t.isWater = true;
         t.type = 'water';
-      } else {
+
+        // depth 1..3: 1=deep, 2=medium, 3=shallow
+        // base 1..3 keep their depth; higher flooded land treated as shallow
+        if (base <= 1)      t.waterDepth = 1;
+        else if (base === 2) t.waterDepth = 2;
+        else                t.waterDepth = 3;
+
+        t.visualElevation = 0;   // cliffs hidden under water
+      }
+
+      // --- Above water ---
+      else {
+        t.isUnderWater = false;
+        t.isWater = false;
+        t.waterDepth = 0;
+
         // restore underlying terrain
-        if (t.groundType) {
-          t.type = t.groundType;
-        } else if (t.type === 'water') {
-          t.type = 'grassland';
-        }
+        t.type = t.groundType || 'grassland';
+
+        // visual height above current sea level
+        const eff = base - lvl;
+        t.visualElevation = eff > 0 ? eff : 0;
       }
     }
 
