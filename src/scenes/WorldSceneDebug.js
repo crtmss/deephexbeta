@@ -4,9 +4,9 @@
 //
 // Buttons:
 //   - Remove Water        → permanently convert all current water/underwater tiles into sand land (baseElevation ≥ 4)
-//   - + Water Level       → worldWaterLevel += 1 (clamped 0..7), then scene.recomputeWaterFromLevel()
-//   - - Water Level       → worldWaterLevel -= 1 (clamped 0..7), then scene.recomputeWaterFromLevel()
-//   - Fill Water @ 3      → worldWaterLevel = 3, then scene.recomputeWaterFromLevel()
+//   - + Water Level       → waterLevel += 1 (clamped 0..7), then scene.recomputeWaterFromLevel()
+//   - - Water Level       → waterLevel -= 1 (clamped 0..7), then scene.recomputeWaterFromLevel()
+//   - Fill Water @ 3      → waterLevel = 3, then scene.recomputeWaterFromLevel()
 //
 // Assumptions (new system):
 //   - Each tile has:
@@ -14,9 +14,9 @@
 //       elevation:     number (kept in sync with baseElevation for now)
 //       groundType:    string (terrain type when NOT under water; e.g. 'grassland', 'sand')
 //       type:          string (actual rendered type; becomes 'water' when tile is underwater)
-//       isUnderWater:  boolean (true if currently flooded at worldWaterLevel)
+//       isUnderWater:  boolean (true if currently flooded at waterLevel)
 //   - WorldScene defines:
-//       worldWaterLevel: number
+//       waterLevel: number
 //       recomputeWaterFromLevel(): void   // converts tiles to water/non-water based on baseElevation & groundType
 //       redrawWorld(): void               // full terrain+POI redraw (called by recomputeWaterFromLevel)
 
@@ -30,6 +30,13 @@ function clamp(v, lo, hi) {
   return Math.max(lo, Math.min(hi, v));
 }
 
+function currentWaterLevel(scene) {
+  const wl = scene && typeof scene.waterLevel === 'number'
+    ? scene.waterLevel
+    : 3;
+  return wl;
+}
+
 // -----------------------------------------------------------------------------
 // WATER LOGIC
 // -----------------------------------------------------------------------------
@@ -39,10 +46,11 @@ function clamp(v, lo, hi) {
  * - Sets baseElevation to at least 4 (shoreline+).
  * - Sets groundType & type to 'sand'.
  * - Clears isUnderWater.
- * - Then sets worldWaterLevel = 0 and calls scene.recomputeWaterFromLevel().
+ * - Then sets waterLevel = 0 and calls scene.recomputeWaterFromLevel().
  */
 function removeAllWaterToSand(scene) {
   const tiles = getTiles(scene);
+  const wl = currentWaterLevel(scene);
 
   for (const t of tiles) {
     if (!t) continue;
@@ -50,7 +58,7 @@ function removeAllWaterToSand(scene) {
     const isWaterNow =
       t.type === 'water' ||
       t.isUnderWater === true ||
-      (typeof t.baseElevation === 'number' && t.baseElevation <= (scene.worldWaterLevel ?? 3));
+      (typeof t.baseElevation === 'number' && t.baseElevation <= wl);
 
     if (!isWaterNow) continue;
 
@@ -72,7 +80,7 @@ function removeAllWaterToSand(scene) {
     t.hasMountainIcon = (newBase >= 7);
   }
 
-  scene.worldWaterLevel = 0;
+  scene.waterLevel = 0;
 
   if (typeof scene.recomputeWaterFromLevel === 'function') {
     scene.recomputeWaterFromLevel();
@@ -117,7 +125,7 @@ function makeButton(scene, label, onClick) {
 
 function updateWaterLabel(scene) {
   if (!scene.__waterLevelLabel) return;
-  const wl = Number.isFinite(scene.worldWaterLevel) ? scene.worldWaterLevel : 3;
+  const wl = currentWaterLevel(scene);
   scene.__waterLevelLabel.setText(`Water Lvl: ${wl}`);
 }
 
@@ -132,9 +140,9 @@ export function initDebugMenu(scene) {
     scene.__debugMenuContainer = null;
   }
 
-  // Ensure worldWaterLevel has a sane default
-  if (!Number.isFinite(scene.worldWaterLevel)) {
-    scene.worldWaterLevel = 3;
+  // Ensure waterLevel has a sane default
+  if (typeof scene.waterLevel !== 'number' || !Number.isFinite(scene.waterLevel)) {
+    scene.waterLevel = 3;
   }
 
   const cam = scene.cameras && scene.cameras.main;
@@ -163,7 +171,7 @@ export function initDebugMenu(scene) {
   });
 
   const btnInc = makeButton(scene, '+ Water Level', () => {
-    scene.worldWaterLevel = clamp((scene.worldWaterLevel ?? 3) + 1, 0, 7);
+    scene.waterLevel = clamp(currentWaterLevel(scene) + 1, 0, 7);
     if (typeof scene.recomputeWaterFromLevel === 'function') {
       scene.recomputeWaterFromLevel();
     } else {
@@ -173,7 +181,7 @@ export function initDebugMenu(scene) {
   });
 
   const btnDec = makeButton(scene, '- Water Level', () => {
-    scene.worldWaterLevel = clamp((scene.worldWaterLevel ?? 3) - 1, 0, 7);
+    scene.waterLevel = clamp(currentWaterLevel(scene) - 1, 0, 7);
     if (typeof scene.recomputeWaterFromLevel === 'function') {
       scene.recomputeWaterFromLevel();
     } else {
@@ -183,7 +191,7 @@ export function initDebugMenu(scene) {
   });
 
   const btnFill3 = makeButton(scene, 'Fill Water @ 3', () => {
-    scene.worldWaterLevel = 3;
+    scene.waterLevel = 3;
     if (typeof scene.recomputeWaterFromLevel === 'function') {
       scene.recomputeWaterFromLevel();
     } else {
@@ -214,7 +222,7 @@ export function initDebugMenu(scene) {
 
 // OPTIONAL helper if you want to tweak water level from other systems.
 export function setWaterLevel(scene, level) {
-  scene.worldWaterLevel = clamp(level, 0, 7);
+  scene.waterLevel = clamp(level, 0, 7);
   if (typeof scene.recomputeWaterFromLevel === 'function') {
     scene.recomputeWaterFromLevel();
   } else {
