@@ -459,6 +459,8 @@ export function drawHexMap() {
   });
 }
 
+export { getFillForTile };
+
 export default {
   LIFT_PER_LVL,
   isoOffset,
