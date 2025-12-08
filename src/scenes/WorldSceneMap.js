@@ -7,10 +7,13 @@ export const LIFT_PER_LVL = 4;
 const ISO_SHEAR  = 0.15;
 const ISO_YSCALE = 0.95;
 
-// In the new model, "sea floor" is baseElevation 3.
+// In the base model, "sea floor" is level 3.
 // 1–3  = underwater bands
 // 4–7  = land
 const DEFAULT_SEA_FLOOR = 3;
+
+// Dynamic water surface (in levels). This is what cliffs should measure against.
+let CURRENT_WATER_LEVEL = DEFAULT_SEA_FLOOR;
 
 const pt = (x, y) => ({ x, y });
 
@@ -35,15 +38,15 @@ export function getColorForTerrain(terrain) {
 // Unified “is water” predicate, tolerant to old fields.
 function isWaterTile(t) {
   if (!t) return false;
-  if (t.isWater === true) return true;                 // new model
+  if (t.isWater === true) return true;                         // new model
   if (typeof t.waterDepth === 'number' && t.waterDepth > 0) return true;
-  if (t.type === 'water') return true;                 // old model
-  if (t.isCoveredByWater) return true;                 // very old flag
+  if (t.type === 'water') return true;                         // old model
+  if (t.isCoveredByWater) return true;                         // very old flag
   return false;
 }
 
 /**
- * Effective visual elevation above sea floor (used for cliffs & lift).
+ * Effective visual elevation above *current water surface* (used for cliffs & lift).
  *
  * Data model (Option A):
  *   - baseElevation: 1..7 absolute
@@ -71,9 +74,14 @@ export function effectiveElevation(tile) {
   // Any water tile is visually flat.
   if (isWaterTile(tile)) return 0;
 
-  // New model: land stands above sea floor (3).
+  // When we have a dynamic water level, measure from that.
   if (typeof tile.baseElevation === 'number') {
-    const eff = base - DEFAULT_SEA_FLOOR;
+    const waterLevel =
+      typeof CURRENT_WATER_LEVEL === 'number'
+        ? CURRENT_WATER_LEVEL
+        : DEFAULT_SEA_FLOOR;
+
+    const eff = base - waterLevel;
     return eff > 0 ? eff : 0;
   }
 
@@ -383,6 +391,28 @@ export function drawHexMap() {
 
   const byKey = new Map(this.mapData.map(t => [`${t.q},${t.r}`, t]));
   this.tileAt = (q, r) => byKey.get(`${q},${r}`);
+
+  // ---- determine current water level (global) ----
+  let waterLevel = DEFAULT_SEA_FLOOR;
+
+  // Prefer scene-level debug value if present
+  if (typeof this.currentWaterLevel === 'number') {
+    waterLevel = this.currentWaterLevel;
+  } else if (typeof this.waterLevel === 'number') {
+    waterLevel = this.waterLevel;
+  } else {
+    // Fallback: infer from any water tile that has waterDepth + baseElevation
+    const sample = this.mapData.find(
+      t => isWaterTile(t) && typeof t.waterDepth === 'number'
+    );
+    if (sample) {
+      const base = (typeof sample.baseElevation === 'number')
+        ? sample.baseElevation
+        : (typeof sample.elevation === 'number' ? sample.elevation : DEFAULT_SEA_FLOOR);
+      waterLevel = base + sample.waterDepth - 1;
+    }
+  }
+  CURRENT_WATER_LEVEL = waterLevel;
 
   // Sort by effectiveElevation so lower tiles draw first (proper stacking).
   const sorted = [...this.mapData].sort((a, b) => {
