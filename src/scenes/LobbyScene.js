@@ -422,7 +422,7 @@ export default class LobbyScene extends Phaser.Scene {
 
       const initialState = {
         seed,
-        mapConfig: { width: 25, height: 25 },
+        mapConfig: { width: 29, height: 29 },
         maxPlayers,
         missionType,
         players: [{
