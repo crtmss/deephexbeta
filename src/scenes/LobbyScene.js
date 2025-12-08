@@ -1,17 +1,21 @@
 // deephexbeta/src/scenes/LobbyScene.js
 import { supabase } from '../net/SupabaseClient.js';
 import HexMap from '../engine/HexMap.js';
-import { getColorForTerrain } from './WorldSceneMap.js';
+
+// CHANGED: import proper renderer for preview (Option A)
+import { getFillForTile } from './WorldSceneMap.js';
 
 /* ---------- fallback helpers (used only if worldMeta is missing) ---------- */
 const keyOf = (q, r) => `${q},${r}`;
 const inBounds = (q, r, w, h) => q >= 0 && q < w && r >= 0 && r < h;
+
 function neighborsOddR(q, r) {
   const even = (r % 2 === 0);
   return even
     ? [[+1,0],[0,-1],[-1,-1],[-1,0],[+0,+1],[-1,+1]]
     : [[+1,0],[+1,-1],[0,-1],[-1,0],[0,+1],[+1,+1]];
 }
+
 function classifyBiomeFromTiles(tiles) {
   const land = tiles.filter(t => t.type !== 'water');
   const total = land.length || 1;
@@ -30,6 +34,7 @@ function classifyBiomeFromTiles(tiles) {
 
   return 'Temperate Biome';
 }
+
 function classifyGeographyFromTiles(tiles, width, height) {
   const byKey = new Map(tiles.map(t => [keyOf(t.q, t.r), t]));
   const seen = new Set();
@@ -59,7 +64,7 @@ function classifyGeographyFromTiles(tiles, width, height) {
 
   if (comps >= 2) return 'Multiple Islands';
 
-  // inner-water heuristic
+  // Inner water density → lagoon detection
   const innerQ0 = Math.floor(width * 0.2),  innerQ1 = Math.ceil(width * 0.8);
   const innerR0 = Math.floor(height * 0.2), innerR1 = Math.ceil(height * 0.8);
   let innerWater = 0, innerTot = 0;
@@ -75,7 +80,7 @@ function classifyGeographyFromTiles(tiles, width, height) {
   const innerRatio = innerTot ? innerWater / innerTot : 0;
   if (innerRatio >= 0.12) return innerRatio >= 0.18 ? 'Big Lagoon' : 'Central Lake';
 
-  // riveriness
+  // Riveriness
   let riverEdges = 0;
   let landCount = 0;
   for (const t of tiles) {
@@ -89,7 +94,7 @@ function classifyGeographyFromTiles(tiles, width, height) {
 
   if ((riverEdges / Math.max(1, landCount)) >= 1.2) return 'Scattered Terrain';
 
-  // diagonal PCA check
+  // PCA orientation classification
   const land2 = tiles.filter(t => t.type !== 'water');
   const cx = land2.reduce((s, t) => s + t.q, 0) / Math.max(1, land2.length);
   const cy = land2.reduce((s, t) => s + t.r, 0) / Math.max(1, land2.length);
@@ -124,7 +129,8 @@ export default class LobbyScene extends Phaser.Scene {
   }
 
   async create() {
-    // DOM overlay non-blocking
+
+    /* ===== UI Creation (unchanged) ===== */
     if (this.game && this.game.domContainer) {
       const dc = this.game.domContainer;
       dc.style.pointerEvents = 'none';
@@ -132,12 +138,10 @@ export default class LobbyScene extends Phaser.Scene {
       dc.style.background = 'transparent';
     }
 
-    // Title
     this.add.text(500, 60, 'DeepHex Multiplayer Lobby', {
       fontSize: '28px', fill: '#ffffff'
     }).setScrollFactor(0);
 
-    // Supabase connectivity check (optional but useful)
     try {
       const { error: pingError } =
         await supabase.from('lobbies').select('id').limit(1);
@@ -148,7 +152,7 @@ export default class LobbyScene extends Phaser.Scene {
       console.error('[Supabase EXCEPTION] Connection check failed:', err.message);
     }
 
-    /* --- Input fields --- */
+    /* ===== Name + Seed ===== */
     this.add.text(460, 130, 'Your Name:', { fontSize: '18px', fill: '#ffffff' });
     const nameInput = this.add.dom(640, 160, 'input')
       .setOrigin(0.5).setDepth(1200).setScrollFactor(0);
@@ -171,7 +175,7 @@ export default class LobbyScene extends Phaser.Scene {
 
     this.add.text(400, 220, 'Map Seed (6 digits):', {
       fontSize: '18px', fill: '#ffffff'
-    }).setScrollFactor(0);
+    });
 
     const codeInput = this.add.dom(640, 250, 'input')
       .setOrigin(0.5).setDepth(1200).setScrollFactor(0);
@@ -193,7 +197,7 @@ export default class LobbyScene extends Phaser.Scene {
       outline: 'none'
     });
 
-    /* --- Random Seed --- */
+    /* === RANDOM SEED === */
     const randomBtn = this.add.dom(
       640,
       290,
@@ -209,15 +213,15 @@ export default class LobbyScene extends Phaser.Scene {
         pointerEvents: 'auto'
       },
       '🎲 Random Seed'
-    ).setOrigin(0.5).setDepth(1250).setScrollFactor(0);
+    ).setOrigin(0.5).setDepth(1250);
 
-    /* --- Players selector --- */
+    /* ===== Players Selector ===== */
     this.add.text(400, 330, 'Select players (1–4):', {
       fontSize: '18px', fill: '#ffffff'
-    }).setScrollFactor(0);
+    });
 
     const playersSelect = this.add.dom(640, 330, 'select')
-      .setOrigin(0.5).setDepth(1200).setScrollFactor(0);
+      .setOrigin(0.5).setDepth(1200);
 
     ['1', '2', '3', '4'].forEach(n => {
       const opt = document.createElement('option');
@@ -239,22 +243,20 @@ export default class LobbyScene extends Phaser.Scene {
       outline: 'none'
     });
 
-    /* --- Mission selector --- */
+    /* ===== Mission Selector ===== */
     this.add.text(400, 380, 'Select mission:', {
       fontSize: '18px', fill: '#ffffff'
-    }).setScrollFactor(0);
+    });
 
     const missionSelect = this.add.dom(640, 380, 'select')
-      .setOrigin(0.5).setDepth(1200).setScrollFactor(0);
+      .setOrigin(0.5).setDepth(1200);
 
-    const missionOptions = [
+    [
       { value: 'big_construction',    label: 'Big construction' },
       { value: 'resource_extraction', label: 'Resource extraction' },
       { value: 'elimination',         label: 'Elimination' },
       { value: 'control_point',       label: 'Control point' },
-    ];
-
-    missionOptions.forEach((m, idx) => {
+    ].forEach((m, idx) => {
       const opt = document.createElement('option');
       opt.value = m.value;
       opt.textContent = m.label;
@@ -274,14 +276,18 @@ export default class LobbyScene extends Phaser.Scene {
       outline: 'none'
     });
 
-    /* --- Preview panel --- */
+    /* ==============================
+       PREVIEW FIXES (Option A)
+       ============================== */
+
     this.add.text(870, 130, 'Map Preview', {
       fontSize: '18px', fill: '#ffffff'
-    }).setScrollFactor(0);
+    });
 
+    // CHANGED: 29×29 preview instead of 25×25
     this.previewSize = 80;
-    this.previewWidth = 25;
-    this.previewHeight = 25;
+    this.previewWidth = 29;
+    this.previewHeight = 29;
 
     this.previewContainer = this.add.container(900, 200).setScrollFactor(0);
     this.previewGraphics = this.add.graphics();
@@ -289,12 +295,15 @@ export default class LobbyScene extends Phaser.Scene {
 
     this.geographyText = this.add.text(820, 380, '', {
       fontSize: '18px', fill: '#aadfff'
-    }).setScrollFactor(0);
+    });
     this.biomeText = this.add.text(820, 410, '', {
       fontSize: '18px', fill: '#aadfff'
-    }).setScrollFactor(0);
+    });
 
-    /* --- Seed Init --- */
+    /* ==============================
+       SEED INIT AND PREVIEW
+       ============================== */
+
     this.currentHexMap = null;
     this.currentTiles = null;
 
@@ -302,6 +311,7 @@ export default class LobbyScene extends Phaser.Scene {
     codeInput.node.value = firstSeed;
 
     const regenerateAndPreview = (seed) => {
+      // CHANGED to 29×29
       this.currentHexMap = new HexMap(this.previewWidth, this.previewHeight, seed);
       this.currentTiles = this.currentHexMap.getMap();
       this.drawPreviewFromTiles(this.currentTiles);
@@ -328,9 +338,7 @@ export default class LobbyScene extends Phaser.Scene {
       let v = codeInput.node.value.replace(/\D/g, '');
       v = v.slice(0, 6);
       codeInput.node.value = v;
-      if (v) {
-        regenerateAndPreview(v.padStart(6, '0'));
-      }
+      if (v) regenerateAndPreview(v.padStart(6, '0'));
     });
 
     codeInput.node.addEventListener('blur', () => {
@@ -340,7 +348,6 @@ export default class LobbyScene extends Phaser.Scene {
       regenerateAndPreview(codeInput.node.value);
     });
 
-    // 🔧 IMPORTANT: register click listener before .on
     randomBtn.addListener('click');
     randomBtn.on('click', () => {
       const seed = String(Math.floor(Math.random() * 1_000_000)).padStart(6, '0');
@@ -348,15 +355,12 @@ export default class LobbyScene extends Phaser.Scene {
       regenerateAndPreview(seed);
     });
 
-    // First run
     regenerateAndPreview(firstSeed);
 
-    /* --- Host / Join Buttons --- */
+    /* ========================= HOST GAME ========================= */
 
     const hostBtn = this.add.dom(
-      540,
-      450,
-      'button',
+      540, 450, 'button',
       {
         backgroundColor: '#006400',
         color: '#fff',
@@ -368,12 +372,10 @@ export default class LobbyScene extends Phaser.Scene {
         pointerEvents: 'auto'
       },
       'Host Game'
-    ).setDepth(1200).setScrollFactor(0);
+    ).setDepth(1200);
 
     const joinBtn = this.add.dom(
-      720,
-      450,
-      'button',
+      720, 450, 'button',
       {
         backgroundColor: '#1E90FF',
         color: '#fff',
@@ -385,21 +387,17 @@ export default class LobbyScene extends Phaser.Scene {
         pointerEvents: 'auto'
       },
       'Join Game'
-    ).setDepth(1200).setScrollFactor(0);
+    ).setDepth(1200);
 
-    // 🔧 IMPORTANT: register click listeners
     hostBtn.addListener('click');
     joinBtn.addListener('click');
 
-    // Waiting status text (hidden until needed)
-    this.waitStatusText = this.add.text(480, 500, '', {
-      fontSize: '18px',
-      fill: '#ffd27f'
-    }).setScrollFactor(0);
+    this.waitStatusText = this.add.text(
+      480, 500, '',
+      { fontSize: '18px', fill: '#ffd27f' }
+    );
 
-    /* =========================
-       Host Game handler
-       ========================= */
+    /* ===== HOST HANDLER ===== */
     hostBtn.on('click', async () => {
       const name = nameInput.node.value.trim();
       let code = codeInput.node.value.trim().replace(/\D/g, '');
@@ -420,6 +418,7 @@ export default class LobbyScene extends Phaser.Scene {
 
       const missionType = missionSelect.node.value || 'big_construction';
 
+      // CHANGED: mapConfig → 29x29
       const initialState = {
         seed,
         mapConfig: { width: 29, height: 29 },
@@ -431,12 +430,7 @@ export default class LobbyScene extends Phaser.Scene {
           slot: 0,
           isHost: true,
           isConnected: true,
-          resources: {
-            food: 200,
-            scrap: 200,
-            money: 200,
-            influence: 200,
-          },
+          resources: { food: 200, scrap: 200, money: 200, influence: 200 },
         }],
         currentTurnPlayerId: hostPlayerId,
         turnNumber: 1,
@@ -444,7 +438,7 @@ export default class LobbyScene extends Phaser.Scene {
         buildings: [],
         haulers: [],
         enemies: [],
-        status: 'waiting', // lobby waiting for all players
+        status: 'waiting',
         lastUpdatedAt: new Date().toISOString(),
       };
 
@@ -465,7 +459,6 @@ export default class LobbyScene extends Phaser.Scene {
           return;
         }
 
-        // Host now waits until all players connect
         this.startWaitingForFullLobby({
           seed,
           playerName: name,
@@ -480,9 +473,7 @@ export default class LobbyScene extends Phaser.Scene {
       }
     });
 
-    /* =========================
-       Join Game handler
-       ========================= */
+    /* ===== JOIN HANDLER ===== */
     joinBtn.on('click', async () => {
       const name = nameInput.node.value.trim();
       let code = codeInput.node.value.trim().replace(/\D/g, '');
@@ -510,9 +501,7 @@ export default class LobbyScene extends Phaser.Scene {
 
         let state = data.state;
 
-        if (!Array.isArray(state.players)) {
-          state.players = [];
-        }
+        if (!Array.isArray(state.players)) state.players = [];
 
         let maxPlayers = Math.min(4, Math.max(1, state.maxPlayers || 1));
         if (state.players.length >= maxPlayers) {
@@ -520,7 +509,6 @@ export default class LobbyScene extends Phaser.Scene {
           return;
         }
 
-        // If the same name already exists, reuse that slot
         const existing = state.players.find(p => p.name === name);
         let newId;
         if (existing) {
@@ -528,20 +516,14 @@ export default class LobbyScene extends Phaser.Scene {
           existing.isConnected = true;
         } else {
           newId = `p${state.players.length + 1}`;
-          const newPlayer = {
+          state.players.push({
             id: newId,
             name,
             slot: state.players.length,
             isHost: false,
             isConnected: true,
-            resources: {
-              food: 200,
-              scrap: 200,
-              money: 200,
-              influence: 200,
-            },
-          };
-          state.players = [...state.players, newPlayer];
+            resources: { food: 200, scrap: 200, money: 200, influence: 200 },
+          });
         }
 
         state.lastUpdatedAt = new Date().toISOString();
@@ -559,7 +541,6 @@ export default class LobbyScene extends Phaser.Scene {
 
         const seed = state.seed || code;
 
-        // Joiner also waits until lobby is full
         this.startWaitingForFullLobby({
           seed,
           playerName: name,
@@ -575,21 +556,16 @@ export default class LobbyScene extends Phaser.Scene {
     });
   }
 
-  /**
-   * Polls Supabase until lobby has players.length === maxPlayers,
-   * then transitions to WorldScene with the final lobby state.
-   */
+  /* ==========================
+     WAITING FOR PLAYERS LOOP
+     ========================== */
+
   startWaitingForFullLobby(cfg) {
     const { seed, playerName, playerId, roomCode, isHost } = cfg;
 
-    if (this.waitEvent) {
-      this.waitEvent.remove(false);
-      this.waitEvent = null;
-    }
+    if (this.waitEvent) this.waitEvent.remove(false);
 
-    if (this.waitStatusText) {
-      this.waitStatusText.setText('Waiting for players…');
-    }
+    this.waitStatusText?.setText('Waiting for players…');
 
     this.waitEvent = this.time.addEvent({
       delay: 1500,
@@ -612,18 +588,13 @@ export default class LobbyScene extends Phaser.Scene {
           const maxPlayers = Math.min(4, Math.max(1, state.maxPlayers || 1));
           const missionType = state.missionType || 'big_construction';
 
-          if (this.waitStatusText) {
-            this.waitStatusText.setText(
-              `Waiting for players ${players.length}/${maxPlayers}…`
-            );
-          }
+          this.waitStatusText?.setText(
+            `Waiting for players ${players.length}/${maxPlayers}…`
+          );
 
           if (players.length >= maxPlayers) {
-            // stop polling
-            if (this.waitEvent) {
-              this.waitEvent.remove(false);
-              this.waitEvent = null;
-            }
+            this.waitEvent?.remove(false);
+            this.waitEvent = null;
 
             this.scene.start('WorldScene', {
               seed: state.seed || seed,
@@ -643,6 +614,10 @@ export default class LobbyScene extends Phaser.Scene {
     });
   }
 
+  /* ==========================
+     PREVIEW RENDERER (Option A)
+     ========================== */
+
   drawPreviewFromTiles(tiles) {
     this.previewGraphics.clear();
     const size = 6;
@@ -660,9 +635,9 @@ export default class LobbyScene extends Phaser.Scene {
 
     for (const t of tiles) {
       const { x, y } = hexToPixel(t.q, t.r, size);
-      const color = getColorForTerrain
-        ? getColorForTerrain(t.type, t.elevation)
-        : 0x999999;
+
+      // KEY FIX: use EXACT same map renderer
+      const color = getFillForTile(t);
 
       this.drawHex(this.previewGraphics, x + offsetX, y + offsetY, size, color);
     }
@@ -672,10 +647,7 @@ export default class LobbyScene extends Phaser.Scene {
     const corners = [];
     for (let i = 0; i < 6; i++) {
       const a = Phaser.Math.DegToRad(60 * i - 30);
-      corners.push({
-        x: x + size * Math.cos(a),
-        y: y + size * Math.sin(a)
-      });
+      corners.push({ x: x + size * Math.cos(a), y: y + size * Math.sin(a) });
     }
     g.fillStyle(color, 1);
     g.beginPath();
