@@ -115,7 +115,9 @@ function markWater(tile) {
     hasRuin: false,
     hasCrashSite: false,
     hasVehicle: false,
-    hasRoad: false
+    hasRoad: false,
+    // new water flags – will be finalized later
+    isUnderWater: true
   });
 }
 function coverageRatio(flat) {
@@ -356,8 +358,8 @@ function applyGeoObject(map, cols, rows, rand, biome, worldMeta) {
   const byKey = new Map(flat.map(t => [keyOf(t.q, t.r), t]));
   let landmark = null;
 
-  const labelAndStore = (q, r, emoji, label) => {
-    landmark = { q, r, emoji, label };
+  const labelAndStore = (q, r, emoji, label, type) => {
+    landmark = { q, r, emoji, label, type };
   };
 
   if (biome === 'icy') {
@@ -372,7 +374,7 @@ function applyGeoObject(map, cols, rows, rand, biome, worldMeta) {
         t.impassable = false;
       });
       const c = pickClosest(cluster, cols, rows, () => true) || seed;
-      labelAndStore(c.q, c.r, '❄️', 'Glacier');
+      labelAndStore(c.q, c.r, '❄️', 'Glacier', 'glacier');
     }
 
   } else if (biome === 'volcanic') {
@@ -412,7 +414,7 @@ function applyGeoObject(map, cols, rows, rand, biome, worldMeta) {
           nt.movementCost = terrainTypes.volcano_ash.movementCost;
         }
       }
-      labelAndStore(hub.q, hub.r, '🌋', 'Volcano');
+      labelAndStore(hub.q, hub.r, '🌋', 'Volcano', 'volcano');
     }
 
   } else if (biome === 'desert') {
@@ -428,7 +430,7 @@ function applyGeoObject(map, cols, rows, rand, biome, worldMeta) {
         t.movementCost = terrainTypes.sand.movementCost;
       });
       const c = pickClosest(cluster, cols, rows, () => true) || seed;
-      labelAndStore(c.q, c.r, '🌵', 'Dune Field');
+      labelAndStore(c.q, c.r, '🌵', 'Dune Field', 'desert');
     }
 
   } else if (biome === 'swamp') {
@@ -444,7 +446,7 @@ function applyGeoObject(map, cols, rows, rand, biome, worldMeta) {
         t.movementCost = terrainTypes.swamp.movementCost;
       });
       const c = pickClosest(cluster, cols, rows, () => true) || seed;
-      labelAndStore(c.q, c.r, '🌾', 'Bog');
+      labelAndStore(c.q, c.r, '🌾', 'Bog', 'bog');
     }
 
   } else { // temperate
@@ -474,7 +476,7 @@ function applyGeoObject(map, cols, rows, rand, biome, worldMeta) {
         }
       }
       const c = pickClosest(core, cols, rows, () => true) || seed;
-      labelAndStore(c.q, c.r, '🌄', 'Plateau');
+      labelAndStore(c.q, c.r, '🌄', 'Plateau', 'plateau');
     }
   }
 
@@ -483,42 +485,36 @@ function applyGeoObject(map, cols, rows, rand, biome, worldMeta) {
   }
 }
 
-/* ================== Coastal elevation helper ================== */
+/* ==================== Edge deep-water enforcement ==================== */
 /**
- * Re-bias coastal elevations:
- *  - land tile with at least one water neighbour
- *  - mountains stay lvl 7
- *  - others get randomized:
- *      ~55% -> lvl 4
- *      ~25% -> lvl 5
- *      ~15% -> lvl 6
- *      ~ 5% -> lvl 7
+ * Force a ring (1–2 tiles from the outer edge) to be deep sea floor:
+ * - type = 'water'
+ * - baseElevation = 1 (deep)
+ * - isUnderWater = true
+ * - groundType = 'sand' (what emerges if dried)
  */
-function reBiasCoastalElevations(map, rand) {
-  const rows = map.length;
-  const cols = map[0].length;
+function enforceEdgeSeaFloor(map, cols, rows) {
+  const ringWidth = 2; // 1–2 tiles from edges
 
   for (let r = 0; r < rows; r++) {
     for (let q = 0; q < cols; q++) {
+      const isEdge =
+        q < ringWidth || q >= cols - ringWidth ||
+        r < ringWidth || r >= rows - ringWidth;
+      if (!isEdge) continue;
       const t = map[r][q];
-      if (!t || t.type === 'water') continue;
-      if (!isCoastal(map, q, r)) continue;
+      if (!t) continue;
 
-      if (t.type === 'mountain') {
-        // coastal mountains are allowed but always lvl 7
-        t.elevation = 7;
-        continue;
-      }
+      t.type = 'water';
+      t.movementCost = terrainTypes.water.movementCost;
+      t.impassable = !!terrainTypes.water.impassable;
 
-      const roll = rand();
-      let lvl;
-      if (roll < 0.55)       lvl = 4; // beach majority
-      else if (roll < 0.80)  lvl = 5;
-      else if (roll < 0.95)  lvl = 6;
-      else                   lvl = 7;
+      t.baseElevation = 1;
+      t.elevation = 1;
+      t.isUnderWater = true;
+      t.isCoveredByWater = true;
 
-      if (lvl < 4) lvl = 4;
-      t.elevation = lvl;
+      if (!t.groundType) t.groundType = 'sand';
     }
   }
 }
@@ -531,9 +527,12 @@ function generateMap(rows = 29, cols = 29, seedStr = 'defaultseed', rand) {
       type: 'grassland',
       movementCost: terrainTypes.grassland.movementCost,
       impassable: false,
-      // elevation + water flags filled in final pass
+      // default elevation + water flags; will be overwritten in final pass
       elevation: 4,
+      baseElevation: 4,
       isCoveredByWater: false,
+      isUnderWater: false,
+      groundType: 'grassland',
     }))
   );
 
@@ -600,9 +599,7 @@ function generateMap(rows = 29, cols = 29, seedStr = 'defaultseed', rand) {
   }
 
   // === Geo-object (one per map) ===
-  const worldMeta = {
-    biome: biome[0].toUpperCase() + biome.slice(1) + ' Biome',
-  };
+  const worldMeta = { biome: biome[0].toUpperCase() + biome.slice(1) + ' Biome' };
   applyGeoObject(map, cols, rows, rand, biome, worldMeta);
 
   // Objects / POIs (forests/ruins/vehicles/roads) — seeded
@@ -688,12 +685,14 @@ function generateMap(rows = 29, cols = 29, seedStr = 'defaultseed', rand) {
 
   // ============================================================
   // FINAL ELEVATION + WATER OVERLAY
-  // - Internal elevation 1..7
-  //   1..3 => sea floor (underwater at base waterLevel)
-  //   4..7 => land
-  // - isCoveredByWater reflects base water level (3)
+  // - baseElevation & elevation levels 1..7
+  // - 1..3 => underwater bands (depth)
+  // - 4..7 => land, 7 is mountains
+  // - isUnderWater set based on WATER_LEVEL (initial sea level)
+  //   (start waterLevel = 3)
+  // - groundType = underlying terrain when NOT under water
   // ============================================================
-  const BASE_WATER_LEVEL = 3;
+  const WATER_LEVEL = 3;
 
   for (const t of flat) {
     const shape = __hx_computeElevationShape(
@@ -713,42 +712,53 @@ function generateMap(rows = 29, cols = 29, seedStr = 'defaultseed', rand) {
       else lvl = 3;                      // shallow
 
       t.elevation = lvl;
-      t.isCoveredByWater = (lvl <= BASE_WATER_LEVEL);
-      t.hasMountainIcon = false;
-    } else {
-      // Land 4..7, biased so most tiles are 4–5 (not all 6)
-      let lvl;
-      if (shape < 0.40)      lvl = 4;
-      else if (shape < 0.70) lvl = 5;
-      else if (shape < 0.90) lvl = 6;
-      else                   lvl = 7;
+      t.baseElevation = lvl;
+      t.isUnderWater = true;
+      t.isCoveredByWater = true;
+      if (!t.groundType) t.groundType = 'sand';
 
-      if (t.type === 'mountain') {
-        // force high elevation for mountains
-        lvl = 7;
-      }
+    } else {
+      // Land 4..7
+      let lvl;
+      if (shape < 0.25) lvl = 4;
+      else if (shape < 0.5) lvl = 5;
+      else if (shape < 0.8) lvl = 6;
+      else lvl = 7;
 
       t.elevation = lvl;
-      t.isCoveredByWater = false;
-      t.hasMountainIcon = (lvl === 7);
+      t.baseElevation = lvl;
+
+      const under = (lvl <= WATER_LEVEL);
+      t.isUnderWater = under;
+      t.isCoveredByWater = under;
+
       if (lvl === 7) {
         t.type = 'mountain';
         t.impassable = true;
         t.movementCost = Infinity;
+        t.hasMountainIcon = true;
+      } else {
+        if (t.type === 'mountain') {
+          // keep mountain type but ensure it's high
+          t.hasMountainIcon = true;
+          if (t.elevation < 7) {
+            t.elevation = 7;
+            t.baseElevation = 7;
+          }
+        } else {
+          t.hasMountainIcon = false;
+        }
       }
+
+      // store underlying land type for hydrology system
+      t.groundType = t.type || t.groundType || 'grassland';
     }
   }
 
-  // Re-bias coastal elevations to create beaches + some random higher cliffs
-  reBiasCoastalElevations(map, rand);
-
-  // Attach water-level meta so UI/tools can raise/lower later
-  worldMeta.waterLevel = BASE_WATER_LEVEL;
-  worldMeta.baseWaterLevel = BASE_WATER_LEVEL;
+  // Enforce deep-water ring at map edges (guaranteed ocean border)
+  enforceEdgeSeaFloor(map, cols, rows);
 
   // Attach meta for scenes (World + Lobby)
-  enforceEdgeSeaFloor(map, cols, rows);
-  
   Object.defineProperty(flat, '__worldMeta', { value: worldMeta, enumerable: false });
 
   return flat;
@@ -761,55 +771,19 @@ export default class HexMap {
     this.seed = String(seed ?? 'defaultseed');
     this.map = [];
     this.worldMeta = null;
-    this.objects = []; // optional POI list for future use
     this.generateMap();
   }
 
-// Guarantee a 1–3-hex deep-water ring around the map edges.
-// borderDist = 0 → baseElevation = 1 (deep)
-// borderDist = 1 → baseElevation = 2
-// borderDist = 2 → baseElevation = 3
-function enforceEdgeSeaFloor(map, cols, rows) {
-  const maxRing = 2; // 0, 1, 2 from the border
-
-  const flat = map.flat ? map.flat() : [].concat(...map);
-
-  for (const t of flat) {
-    if (!t) continue;
-    const { q, r } = t;
-
-    const distToBorder = Math.min(
-      q,
-      r,
-      cols - 1 - q,
-      rows - 1 - r
-    );
-
-    if (distToBorder > maxRing) continue;
-
-    // 0 → 1, 1 → 2, 2 → 3
-    const newBase = Math.max(1, Math.min(3, 1 + distToBorder));
-
-    // Set strictly for hydrology: baseElevation drives water logic.
-    t.baseElevation = newBase;
-    // Keep elevation in sync so visuals & cliffs remain coherent.
-    t.elevation = newBase;
-
-    // Mark underlying terrain as seafloor-type; water rendering will use baseElevation
-    // for blue shading, not groundType, so this is mostly for when it emerges.
-    if (!t.groundType || t.groundType === 'water') {
-      t.groundType = 'sand';
-    }
-  }
-}
-  
   generateMap() {
     const rngSeed = cyrb128(this.seed);
     const rand = sfc32(...rngSeed);
     const tiles = generateMap(this.height, this.width, this.seed, rand);
     this.map = tiles;
     this.worldMeta = tiles.__worldMeta || {};
-    return this.map;
+    return {
+      tiles: this.map,
+      objects: [], // kept for compatibility with older code that expects mapInfo.objects
+    };
   }
 
   getMap() {
