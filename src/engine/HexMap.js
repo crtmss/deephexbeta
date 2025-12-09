@@ -757,7 +757,6 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
 
     if (shallowCount < targetShallow) {
 
-      // pick only water tiles that touch land and are NOT in outer deep rim
       const coastalWater = waterTiles.filter(t => {
         const bd = Math.min(t.q, t.r, cols - 1 - t.q, rows - 1 - t.r);
         if (bd <= 1) return false;
@@ -771,7 +770,6 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
 
       if (coastalWater.length > 0) {
 
-        // bias shallow water toward map centre
         coastalWater.sort((a, b) => {
           const da = (a.q - cx) ** 2 + (a.r - cy) ** 2;
           const db = (b.q - cx) ** 2 + (b.r - cy) ** 2;
@@ -861,13 +859,14 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
     }
   }
 
-  // Attach meta for scenes (World + Lobby)
   Object.defineProperty(flat, '__worldMeta', {
     value: worldMeta,
     enumerable: false
   });
 
   return flat;
+}  // <-- MISSING BRACE FIXED HERE
+
 
 // ------------------------------------------------------------
 //  EXPORT CLASS
