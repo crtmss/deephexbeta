@@ -209,9 +209,7 @@ export function drawHex(q, r, xIso, yIso, size, fillColor, effElevationValue, ti
     : (typeof tile?.elevation === 'number' ? tile.elevation : 0);
 
   const selfIsWater = isWaterTile(tile);
-
-  // local water level for this scene
-  const waterLevel = getCurrentWaterLevel(this);
+  const waterLevel  = getCurrentWaterLevel(this);
 
   const maybeCliff = (edgeIndex, neighborTile, isEdge) => {
     let effN;
@@ -219,7 +217,7 @@ export function drawHex(q, r, xIso, yIso, size, fillColor, effElevationValue, ti
     let baseNeighbor = 0;
 
     if (!neighborTile && isEdge) {
-      // off-map edge: treat like deep water at eff=0 so background is hidden
+      // off-map edge: treat like sea at eff=0 so background is hidden
       effN = 0;
       neighborIsWater = true;
     } else if (!neighborTile) {
@@ -232,15 +230,13 @@ export function drawHex(q, r, xIso, yIso, size, fillColor, effElevationValue, ti
         : (typeof neighborTile.elevation === 'number' ? neighborTile.elevation : 0);
     }
 
-    // “Beach” rule: no verticals between level-4 land and adjacent water
+    // Beach rule ONLY for level-4 shoreline:
+    // land(4) vs water (any) gets no verticals, so smooth beach.
     const beachPair =
       (!selfIsWater && baseSelf === 4 && neighborIsWater) ||
       (selfIsWater && !neighborIsWater && baseNeighbor === 4);
 
-    // NEW: remove all cliffs where at least one side is water,
-    // except for off-map edges (isEdge=true) which we keep to hide background.
-    if (!isEdge && (selfIsWater || neighborIsWater)) return;
-    if (beachPair) return;
+    if (beachPair) return;          // but REAL cliffs (5+ vs water) are allowed
 
     const diff = effElevationValue - effN;
     if (diff <= 0) return;
@@ -272,7 +268,6 @@ export function drawHex(q, r, xIso, yIso, size, fillColor, effElevationValue, ti
       (!selfIsWater && baseSelf === 4 && neighborIsWater) ||
       (selfIsWater && !neighborIsWater && baseNeighbor === 4);
 
-    if (!isEdge && (selfIsWater || neighborIsWater)) return;
     if (beachPair) return;
 
     const diff = effElevationValue - effN;
@@ -292,25 +287,41 @@ export function drawHex(q, r, xIso, yIso, size, fillColor, effElevationValue, ti
   const n4 = neighborBySide(this.tileAt, q, r, 4);
   const n5 = neighborBySide(this.tileAt, q, r, 5);
 
-  // Screen-facing edges: 2 & 3 → big cliffs; keep them even vs edge-of-map
+  // Screen-facing edges: 2 & 3 → big cliffs
   maybeCliff(2, n2, !n2);
   maybeCliff(3, n3, !n3);
 
-  // Thin skirts on other edges for AA seam sealing / map edges
+  // Thin skirts on other edges for AA seam sealing / map edge
   maybeSkirt(0, n0, !n0);
   maybeSkirt(1, n1, !n1);
   maybeSkirt(4, n4, !n4);
   maybeSkirt(5, n5, !n5);
 
-  // thin rim on top to cover any remaining AA
+  // ----------------------------------------------------
+  // RIM: remove “circles” on coastline
+  //  - Water tiles: no rim at all.
+  //  - Coastal land (land with at least one water neighbour): no rim.
+  //  - Inland land: keep rim as before.
+  // ----------------------------------------------------
+  let isCoastalLand = false;
+  if (!selfIsWater) {
+    const ns = [n0, n1, n2, n3, n4, n5];
+    for (const nt of ns) {
+      if (isWaterTile(nt)) { isCoastalLand = true; break; }
+    }
+  }
+
   const rim = this.add.graphics().setDepth(4);
-  const rimColor = darkenRGBInt(fillColor, 0.75);
-  rim.lineStyle(1.6, rimColor, 1);
-  rim.beginPath();
-  rim.moveTo(ring[0].x, ring[0].y);
-  for (let i = 1; i < 6; i++) rim.lineTo(ring[i].x, ring[i].y);
-  rim.closePath();
-  rim.strokePath();
+  if (!selfIsWater && !isCoastalLand) {
+    const rimColor = darkenRGBInt(fillColor, 0.75);
+    rim.lineStyle(1.6, rimColor, 1);
+    rim.beginPath();
+    rim.moveTo(ring[0].x, ring[0].y);
+    for (let i = 1; i < 6; i++) rim.lineTo(ring[i].x, ring[i].y);
+    rim.closePath();
+    rim.strokePath();
+  }
+  // if water or coastal land → no stroke, rim stays invisible
 
   rim._walls = walls;
   return { face, rim, ring };
