@@ -156,8 +156,38 @@ function enforceIslandMargin(map, cols, rows, marginRings = 3) {
 }
 
 /* ================= Geography presets ================ */
+/* ================= Geography presets ================ */
 function applyGeography(map, cols, rows, seedStr, rand) {
-  const pickF = 2 + Math.floor(rand() * 5); // 2..6
+
+  // ==========================================================
+  // NEW WEIGHTED SELECTION
+  //
+  // Goal:
+  //   - Reduce donut/central-lagoon shapes (cases 2 and 3)
+  //     from ~30–40% down to ~10% total.
+  //
+  // Weight distribution:
+  //   0–0.05  → case 2 (5%)
+  //   0.05–0.10 → case 3 (5%)   => donut maps total ≈10%
+  //   0.10–0.40 → case 4 (30%)
+  //   0.40–0.70 → case 5 (30%)
+  //   0.70–1.00 → case 6 (30%)
+  // ==========================================================
+  let pickF;
+  const roll = rand(); // 0..1
+
+  if (roll < 0.05) {
+    pickF = 2; // donut-ish
+  } else if (roll < 0.10) {
+    pickF = 3; // donut-ish
+  } else if (roll < 0.40) {
+    pickF = 4;
+  } else if (roll < 0.70) {
+    pickF = 5;
+  } else {
+    pickF = 6;
+  }
+
   const WATER_SCALE = 0.85;
 
   function carveByMask(min, max, maskFn) {
@@ -165,6 +195,7 @@ function applyGeography(map, cols, rows, seedStr, rand) {
     const baseTarget = Math.round(total * (min + rand() * (max - min)));
     const target = Math.round(baseTarget * WATER_SCALE);
     const cand = [];
+
     for (let r = 0; r < rows; r++) {
       for (let q = 0; q < cols; q++) {
         const t = map[r][q];
@@ -172,8 +203,10 @@ function applyGeography(map, cols, rows, seedStr, rand) {
         cand.push({ q, r, m: maskFn(q, r) });
       }
     }
+
     cand.sort((a, b) => b.m - a.m);
     let carved = 0;
+
     for (let i = 0; i < cand.length && carved < target; i++) {
       const { q, r } = cand[i];
       const t = map[r][q];
@@ -187,9 +220,19 @@ function applyGeography(map, cols, rows, seedStr, rand) {
   const cx = cols / 2, cy = rows / 2;
   const nx = x => (x - cx) / (cols * 0.5);
   const ny = y => (y - cy) / (rows * 0.5);
-  const fbm = (x, y, f = 1.0) => __hx_fbm2D(x * f + 41.2, y * f - 17.9, 'g-' + seedStr, 4, 2.0, 0.5);
 
+  const fbm = (x, y, f = 1.0) =>
+    __hx_fbm2D(x * f + 41.2, y * f - 17.9, "g-" + seedStr, 4, 2.0, 0.5);
+
+  // ==========================================================
+  // GEOGRAPHY PRESET BEHAVIOR
+  // ==========================================================
   switch (pickF) {
+
+    // --------------------------------------------------------
+    // 2 → Roundish island with stronger central depression
+    // (one of the donut-shape sources)
+    // --------------------------------------------------------
     case 2:
       carveByMask(0.15, 0.35, (q, r) => {
         const X = nx(q), Y = ny(r);
@@ -197,6 +240,11 @@ function applyGeography(map, cols, rows, seedStr, rand) {
         return 1.2 - r2 + 0.4 * fbm(X, Y, 3.0);
       });
       break;
+
+    // --------------------------------------------------------
+    // 3 → Radial falloff with center hollow
+    // (the stronger donut-shape preset)
+    // --------------------------------------------------------
     case 3:
       carveByMask(0.10, 0.20, (q, r) => {
         const X = nx(q), Y = ny(r);
@@ -204,9 +252,14 @@ function applyGeography(map, cols, rows, seedStr, rand) {
         return 1.0 - d + 0.35 * fbm(X, Y, 2.5);
       });
       break;
+
+    // --------------------------------------------------------
+    // 4 → Bays and inlets carved from edges
+    // --------------------------------------------------------
     case 4: {
       const bays = 2 + Math.floor(rand() * 2);
       const bayParams = [];
+
       for (let i = 0; i < bays; i++) {
         bayParams.push({
           side: Math.floor(rand() * 4),
@@ -215,50 +268,72 @@ function applyGeography(map, cols, rows, seedStr, rand) {
           d: rand() * 0.35 + 0.25
         });
       }
+
       carveByMask(0.20, 0.30, (q, r) => {
         const X = nx(q), Y = ny(r);
         let m = 0.0;
+
         for (const b of bayParams) {
           let ax = 0, ay = 0;
+
           if (b.side === 0) { ax = (b.t - 0.5) * 2; ay = -1; }
           if (b.side === 2) { ax = (b.t - 0.5) * 2; ay = +1; }
           if (b.side === 1) { ax = +1; ay = (b.t - 0.5) * 2; }
           if (b.side === 3) { ax = -1; ay = (b.t - 0.5) * 2; }
+
           const dx = X - ax * (1 - b.d);
           const dy = Y - ay * (1 - b.d);
           const r2 = (dx * dx) / (b.w * b.w) + (dy * dy) / (b.d * b.d);
           m = Math.max(m, 1.1 - r2);
         }
+
         return m + 0.25 * fbm(X, Y, 3.5);
       });
       break;
     }
+
+    // --------------------------------------------------------
+    // 5 → Banding / ridges / irregular shapes
+    // --------------------------------------------------------
     case 5:
       carveByMask(0.15, 0.30, (q, r) => {
         const X = nx(q), Y = ny(r);
-        const bands = 0.5 + 0.5 * Math.sin((X * 4.0 + Y * 3.0) + 6.28 * fbm(X, Y, 1.2));
+        const bands =
+          0.5 + 0.5 * Math.sin((X * 4.0 + Y * 3.0) + 6.28 * fbm(X, Y, 1.2));
         return bands * 0.8 + 0.4 * fbm(X, Y, 2.8);
       });
       break;
+
+    // --------------------------------------------------------
+    // 6 → Multi-island / archipelago
+    // --------------------------------------------------------
     case 6: {
       const islands = 2 + Math.floor(rand() * 2);
       const centers = [];
+
       for (let i = 0; i < islands; i++) {
-        centers.push({ x: (rand() * 1.6 - 0.8), y: (rand() * 1.6 - 0.8) });
+        centers.push({
+          x: rand() * 1.6 - 0.8,
+          y: rand() * 1.6 - 0.8
+        });
       }
+
       carveByMask(0.15, 0.35, (q, r) => {
         const X = nx(q), Y = ny(r);
         let dmin = 10;
+
         for (const c of centers) {
           const d = Math.hypot(X - c.x, Y - c.y);
           if (d < dmin) dmin = d;
         }
+
         return dmin + 0.35 * fbm(X, Y, 2.3);
       });
       break;
     }
   }
 }
+
 
 /* ================= Biome helpers ================= */
 function assignExact(pool, type, count, rand) {
