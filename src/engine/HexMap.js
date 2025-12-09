@@ -741,6 +741,8 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
   //  - Shallow water (baseElevation = 3) appears in 1–4 *clusters*
   //    hugging the coast, not scattered.
   //  - Rough target: ~30% of water tiles shallow, but formed as patches.
+  //  - BUT: the 2 hexes closest to the edge (borderDist 0 and 1)
+  //    must remain deep water (depth 1).
   // ----------------------------------------------------------------
   const waterTiles = flat.filter(t => t.type === 'water');
   if (waterTiles.length > 0) {
@@ -750,7 +752,11 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
 
     if (currentShallow < maxShallow) {
       // Coastal water = water tiles with at least one land neighbour
+      // AND not in the 2-hex rim (borderDist <= 1 stays deep).
       const coastalWater = waterTiles.filter(t => {
+        const borderDist = Math.min(t.q, t.r, cols - 1 - t.q, rows - 1 - t.r);
+        if (borderDist <= 1) return false; // keep 2 closest rings deep
+
         for (const [nq, nr] of neighbors(t.q, t.r, map)) {
           const nt = map[nr][nq];
           if (nt && nt.type !== 'water') return true;
@@ -767,6 +773,10 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
         );
 
         const markShallow = (tile) => {
+          const borderDist = Math.min(tile.q, tile.r, cols - 1 - tile.q, rows - 1 - tile.r);
+          // Do NOT change the 2-hex rim
+          if (borderDist <= 1) return;
+
           if (tile.type === 'water' && tile.baseElevation !== 3) {
             tile.baseElevation = 3;
             tile.elevation = 3;
@@ -798,16 +808,23 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
             const tile = map[cr][cq];
             if (!tile || tile.type !== 'water') continue;
 
+            // again, never touch borderDist <= 1
+            const borderDist = Math.min(cq, cr, cols - 1 - cq, rows - 1 - cr);
+            if (borderDist <= 1) continue;
+
             markShallow(tile);
-            currentShallow++;
+            if (tile.baseElevation === 3) currentShallow++;
 
             // Expand the patch along water that is near land
             for (const [nq, nr] of neighbors(cq, cr, map)) {
+              const nk = keyOf(nq, nr);
+              if (seenCluster.has(nk)) continue;
+
               const nt = map[nr][nq];
               if (!nt || nt.type !== 'water') continue;
 
-              const nk = keyOf(nq, nr);
-              if (seenCluster.has(nk)) continue;
+              const nBorderDist = Math.min(nq, nr, cols - 1 - nq, rows - 1 - nr);
+              if (nBorderDist <= 1) continue; // keep 2-hex rim deep
 
               // keep the patch hugging the coast:
               // prefer neighbours that are coastal or adjacent to land
@@ -835,7 +852,7 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
   Object.defineProperty(flat, '__worldMeta', { value: worldMeta, enumerable: false });
 
   return flat;
-}
+
 
 export default class HexMap {
   constructor(width, height, seed) {
