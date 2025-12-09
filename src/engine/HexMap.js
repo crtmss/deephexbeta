@@ -868,8 +868,6 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
   });
 
   return flat;
-}
-
 
 // ------------------------------------------------------------
 //  EXPORT CLASS
