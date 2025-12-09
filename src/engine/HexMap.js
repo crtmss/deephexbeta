@@ -9,6 +9,9 @@ const terrainTypes = {
   water:       { movementCost: Infinity, color: '#4da6ff', impassable: true },
   swamp:       { movementCost: 3, color: '#4E342E' },
 
+  // NEW: undersea ground under water (clay / brownish)
+  undersea:    { movementCost: 2, color: '#B08B6A' },
+
   // NEW biomes
   volcano_ash: { movementCost: 2, color: '#9A9A9A' },   // grey, mildly slow
   ice:         { movementCost: 2, color: '#CFEFFF' },   // slippery/light blue
@@ -109,6 +112,7 @@ function markWater(tile) {
   Object.assign(tile, {
     type: 'water',
     ...terrainTypes.water,
+    groundType: 'undersea',
     hasObject: false,
     hasForest: false,
     hasRuin: false,
@@ -136,6 +140,19 @@ function shuffleInPlace(a, rand) {
 }
 function randInt(rand, min, max) {
   return Math.floor(rand() * (max - min + 1)) + min;
+}
+
+/* =============== Island margin helper (3-hex water gap) =============== */
+function enforceIslandMargin(map, cols, rows, marginRings = 3) {
+  const flat = map.flat();
+  for (const t of flat) {
+    const borderDist = Math.min(t.q, t.r, cols - 1 - t.q, rows - 1 - t.r);
+    if (borderDist < marginRings) {
+      if (t.type !== 'water') {
+        markWater(t);
+      }
+    }
+  }
 }
 
 /* ================= Geography presets ================ */
@@ -264,6 +281,7 @@ function paintBiome(flat, cols, rows, rand) {
   const land = flat.filter(t => t.type !== 'water' && t.type !== 'mountain');
   for (const t of land) {
     t.type = 'grassland';
+    t.groundType = 'grassland';
     t.movementCost = terrainTypes.grassland.movementCost;
     t.impassable = false;
   }
@@ -307,6 +325,11 @@ function paintBiome(flat, cols, rows, rand) {
     assignExact(land, 'mud', mudN, rand);
     assignExact(land.filter(t => t.type === 'grassland'), 'sand', sandN, rand);
     assignExact(land.filter(t => t.type === 'grassland'), 'swamp', swpN, rand);
+  }
+
+  // keep groundType in sync for land
+  for (const t of land) {
+    t.groundType = t.type;
   }
 
   return biome;
@@ -366,6 +389,7 @@ function applyGeoObject(map, cols, rows, rand, biome, worldMeta) {
       const cluster = bfsCluster(seed.q, seed.r, map, (t) => t.type !== 'water', 9);
       cluster.forEach(t => {
         t.type = 'ice';
+        t.groundType = 'ice';
         t.movementCost = terrainTypes.ice.movementCost;
         t.impassable = false;
       });
@@ -388,16 +412,19 @@ function applyGeoObject(map, cols, rows, rand, biome, worldMeta) {
       if (c) {
         hub = c;
         hub.type = 'mountain';
+        hub.groundType = 'mountain';
         hub.impassable = true;
       }
     }
     if (hub) {
       hub.type = 'mountain';
+      hub.groundType = 'mountain';
       hub.impassable = true;
       for (const [x, y] of neighbors(hub.q, hub.r, map)) {
         const nt = map[y][x];
         if (nt && nt.type !== 'water' && nt.type !== 'mountain') {
           nt.type = 'volcano_ash';
+          nt.groundType = 'volcano_ash';
           nt.impassable = false;
           nt.movementCost = terrainTypes.volcano_ash.movementCost;
         }
@@ -413,6 +440,7 @@ function applyGeoObject(map, cols, rows, rand, biome, worldMeta) {
       const cluster = bfsCluster(seed.q, seed.r, map, (t) => t.type !== 'water', 9);
       cluster.forEach(t => {
         t.type = 'sand';
+        t.groundType = 'sand';
         t.impassable = false;
         t.movementCost = terrainTypes.sand.movementCost;
       });
@@ -428,6 +456,7 @@ function applyGeoObject(map, cols, rows, rand, biome, worldMeta) {
       const cluster = bfsCluster(seed.q, seed.r, map, (t) => t.type !== 'water', 9);
       cluster.forEach(t => {
         t.type = 'swamp';
+        t.groundType = 'swamp';
         t.impassable = false;
         t.movementCost = terrainTypes.swamp.movementCost;
       });
@@ -443,6 +472,7 @@ function applyGeoObject(map, cols, rows, rand, biome, worldMeta) {
       const core = bfsCluster(seed.q, seed.r, map, (t) => t.type !== 'water', 6);
       for (const t of core) {
         t.type = 'grassland';
+        t.groundType = 'grassland';
         t.impassable = false;
         t.movementCost = terrainTypes.grassland.movementCost;
       }
@@ -455,6 +485,7 @@ function applyGeoObject(map, cols, rows, rand, biome, worldMeta) {
           if (!nt || nt.type === 'water') continue;
           if (!core.includes(nt)) {
             nt.type = 'grassland';
+            nt.groundType = 'grassland';
           }
           ringSet.add(nk);
         }
@@ -475,6 +506,7 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
     Array.from({ length: cols }, (_, q) => ({
       q, r,
       type: 'grassland',
+      groundType: 'grassland',
       movementCost: terrainTypes.grassland.movementCost,
       impassable: false,
       // elevation model will be set in the final pass
@@ -508,7 +540,7 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
   // Geography and minimum coverage (still using type=water as mask)
   applyGeography(map, cols, rows, seedStr, rand);
   const flat0 = map.flat();
-  const MIN_COVER = 0.40;
+  const MIN_COVER = 0.30;   // ↓ 10% less land vs old 0.40
   if (coverageRatio(flat0) < MIN_COVER) {
     const waters = flat0
       .filter(t => t.type === 'water')
@@ -518,10 +550,14 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
     while (i < waters.length && coverageRatio(flat0) < MIN_COVER) {
       const w = waters[i++].t;
       w.type = 'grassland';
+      w.groundType = 'grassland';
       w.movementCost = terrainTypes.grassland.movementCost;
       w.impassable = false;
     }
   }
+
+  // Enforce a 3-hex water margin between land and map edge
+  enforceIslandMargin(map, cols, rows, 3);
 
   // Biome
   const biome = paintBiome(map.flat(), cols, rows, rand);
@@ -537,7 +573,11 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
       const distFromP1 = Math.sqrt((q - 2) ** 2 + (r - 2) ** 2);
       const distFromP2 = Math.sqrt((q - cols + 2) ** 2 + (r - rows + 2) ** 2);
       if (tile.type !== 'water' && distFromP1 > 3 && distFromP2 > 3) {
-        Object.assign(tile, { type: 'mountain', ...terrainTypes.mountain });
+        Object.assign(tile, {
+          type: 'mountain',
+          groundType: 'mountain',
+          ...terrainTypes.mountain
+        });
       }
       const nbs = neighbors(q, r, map);
       if (nbs.length) {
@@ -634,13 +674,13 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
   }
 
   // ============================================================
-  // FINAL ELEVATION + WATER DEPTH
+  // FINAL ELEVATION + BASE WATER DEPTH (all water starts deep)
   // ============================================================
   const cx = cols / 2, cy = rows / 2;
   const maxd = Math.hypot(cx, cy) || 1;
   const depthSeed = 'depth-' + seedStr;
 
-  // --- First pass: assign depth & elevation based on shape/border/centre ---
+  // First pass: land levels + base deep water (depth=1)
   for (const t of flat) {
     const shape = __hx_computeElevationShape(
       t.q,
@@ -652,48 +692,16 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
     ); // 0..1
 
     const borderDist = Math.min(t.q, t.r, cols - 1 - t.q, rows - 1 - t.r);
-    const distCenter = Math.hypot(t.q - cx, t.r - cy);
-    const centerFactor = 1 - (distCenter / maxd); // 1 at centre, 0 at corners
-    const noise = __hx_hash2D(t.q, t.r, depthSeed);
 
     if (t.type === 'water') {
-      // ----- WATER: assign depth 1..3 with spatial bias -----
-      let depth;
-
-      if (borderDist <= 1) {
-        // Always deep on the very edge (2-hex rim handled by depth rules)
-        depth = 1;
-      } else if (borderDist <= 3) {
-        // Rings 2–3: strongly prefer deep
-        if (noise < 0.65)      depth = 1;
-        else if (noise < 0.90) depth = 2;
-        else                   depth = 3;
-      } else {
-        // Inside: distribution depends on distance to centre
-        if (centerFactor > 0.66) {
-          // Near centre ⇒ more shallow
-          if (noise < 0.50)      depth = 3;
-          else if (noise < 0.80) depth = 2;
-          else                   depth = 1;
-        } else if (centerFactor > 0.33) {
-          // Mid ring
-          if (noise < 0.30)      depth = 3;
-          else if (noise < 0.65) depth = 2;
-          else                   depth = 1;
-        } else {
-          // Outer ring (but not the 1–3 edge bands) ⇒ deeper
-          if (noise < 0.15)      depth = 3;
-          else if (noise < 0.45) depth = 2;
-          else                   depth = 1;
-        }
-      }
-
-      t.baseElevation    = depth;      // sea "floor" band 1..3
+      // All water starts as deep (1); clustering will adjust shallows later.
+      const depth = 1;
+      t.baseElevation    = depth;
       t.elevation        = depth;
       t.waterDepth       = depth;
       t.isCoveredByWater = true;
       t.isUnderWater     = true;
-
+      t.groundType       = 'undersea';
     } else {
       // ----- LAND: levels 4..7 with biased distribution -----
       let lvl;
@@ -723,127 +731,143 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
 
       if (lvl === 7 || t.type === 'mountain') {
         t.type = 'mountain';
+        t.groundType = 'mountain';
         t.impassable = true;
         t.movementCost = Infinity;
         t.hasMountainIcon = true;
         t.baseElevation = 7;
         t.elevation = 7;
       } else {
+        // keep groundType for land
+        if (!t.groundType) t.groundType = t.type;
         t.hasMountainIcon = false;
       }
     }
   }
 
   // ----------------------------------------------------------------
-  // SECOND PASS: SHALLOW WATER CHUNKS ALONG COAST
-  // ----------------------------------------------------------------
-  // Goal:
-  //  - Shallow water (baseElevation = 3) appears in 1–4 *clusters*
-  //    hugging the coast, not scattered.
-  //  - Rough target: ~30% of water tiles shallow, but formed as patches.
-  //  - BUT: the 2 hexes closest to the edge (borderDist 0 and 1)
-  //    must remain deep water (depth 1).
+  // SECOND PASS: CLUSTERED SHALLOW/NORMAL WATER PATCHES (2–4 stains)
   // ----------------------------------------------------------------
   const waterTiles = flat.filter(t => t.type === 'water');
   if (waterTiles.length > 0) {
-    const targetShallowRatio = 0.30;          // around 30% of water tiles
-    const maxShallow = Math.floor(waterTiles.length * targetShallowRatio);
-    let currentShallow = waterTiles.filter(t => t.baseElevation === 3).length;
+    // About 30% shallow (depth 3) and 20% normal (depth 2)
+    const targetShallow = Math.floor(waterTiles.length * 0.30);
+    const targetNormal  = Math.floor(waterTiles.length * 0.20);
 
-    if (currentShallow < maxShallow) {
-      // Coastal water = water tiles with at least one land neighbour
-      // AND not in the 2-hex rim (borderDist <= 1 stays deep).
-      const coastalWater = waterTiles.filter(t => {
-        const bd = Math.min(t.q, t.r, cols - 1 - t.q, rows - 1 - t.r);
-        if (bd <= 1) return false; // keep 2 closest rings deep
+    let shallowCount = 0;
+    let normalCount  = 0;
 
-        for (const [nq, nr] of neighbors(t.q, t.r, map)) {
-          const nt = map[nr][nq];
-          if (nt && nt.type !== 'water') return true;
-        }
-        return false;
+    // Coastal water candidates (hugging land, not in 2-hex rim)
+    const coastalWater = waterTiles.filter(t => {
+      const bd = Math.min(t.q, t.r, cols - 1 - t.q, rows - 1 - t.r);
+      if (bd <= 1) return false; // keep 2 closest rings always deep
+
+      for (const [nq, nr] of neighbors(t.q, t.r, map)) {
+        const nt = map[nr][nq];
+        if (nt && nt.type !== 'water') return true;
+      }
+      return false;
+    });
+
+    if (coastalWater.length > 0) {
+      // Prefer seeds closer to center so patches cluster nearer island
+      coastalWater.sort((a, b) => {
+        const da = (a.q - cx) * (a.q - cx) + (a.r - cy) * (a.r - cy);
+        const db = (b.q - cx) * (b.q - cx) + (b.r - cy) * (b.r - cy);
+        return da - db;
       });
 
-      if (coastalWater.length > 0) {
-        shuffleInPlace(coastalWater, rand);
+      const seedsPool = [...coastalWater];
+      shuffleInPlace(seedsPool, rand);
 
-        const clusterCount = Math.min(
-          randInt(rand, 1, 4),  // 1–4 clusters
-          coastalWater.length
-        );
+      const clusterCount = Math.min(
+        randInt(rand, 2, 4), // 2–4 stains
+        seedsPool.length
+      );
 
-        const markShallow = (tile) => {
-          const bd = Math.min(tile.q, tile.r, cols - 1 - tile.q, rows - 1 - tile.r);
-          // Do NOT change the 2-hex rim
-          if (bd <= 1) return;
+      const usedSeedKeys = new Set();
 
-          if (tile.type === 'water' && tile.baseElevation !== 3) {
+      for (let cIdx = 0; cIdx < seedsPool.length && usedSeedKeys.size < clusterCount; cIdx++) {
+        const seed = seedsPool[cIdx];
+        const sk = keyOf(seed.q, seed.r);
+        if (usedSeedKeys.has(sk)) continue;
+        usedSeedKeys.add(sk);
+
+        const maxSize = randInt(rand, 12, 40); // chunk size 12–40 tiles
+        const queue = [[seed.q, seed.r]];
+        const seenCluster = new Set();
+
+        while (queue.length && seenCluster.size < maxSize) {
+          if (shallowCount >= targetShallow && normalCount >= targetNormal) break;
+
+          const [cq, cr] = queue.shift();
+          const ck = keyOf(cq, cr);
+          if (seenCluster.has(ck)) continue;
+          seenCluster.add(ck);
+
+          const tile = map[cr][cq];
+          if (!tile || tile.type !== 'water') continue;
+
+          const bd = Math.min(cq, cr, cols - 1 - cq, rows - 1 - cr);
+          if (bd <= 1) continue; // keep 2-hex rim deep
+
+          // Decide whether this tile becomes shallow or normal
+          if (shallowCount < targetShallow) {
             tile.baseElevation = 3;
-            tile.elevation = 3;
-            tile.waterDepth = 3;
+            tile.elevation     = 3;
+            tile.waterDepth    = 3;
+            shallowCount++;
+          } else if (normalCount < targetNormal) {
+            tile.baseElevation = 2;
+            tile.elevation     = 2;
+            tile.waterDepth    = 2;
+            normalCount++;
+          } else {
+            // nothing more to assign in this cluster
+            continue;
           }
-        };
 
-        let usedSeeds = 0;
-        const usedSeedKeys = new Set();
+          // Expand patch along water that stays near coast
+          for (const [nq, nr] of neighbors(cq, cr, map)) {
+            const nk = keyOf(nq, nr);
+            if (seenCluster.has(nk)) continue;
 
-        for (let i = 0; i < coastalWater.length && usedSeeds < clusterCount && currentShallow < maxShallow; i++) {
-          const seed = coastalWater[i];
-          const seedKey = keyOf(seed.q, seed.r);
-          if (usedSeedKeys.has(seedKey)) continue;
-          usedSeedKeys.add(seedKey);
-          usedSeeds++;
+            const nt = map[nr][nq];
+            if (!nt || nt.type !== 'water') continue;
 
-          // chunk size 8–24 tiles
-          const maxSize = randInt(rand, 8, 24);
-          const queue = [[seed.q, seed.r]];
-          const seenCluster = new Set();
+            const nBd = Math.min(nq, nr, cols - 1 - nq, rows - 1 - nr);
+            if (nBd <= 1) continue; // keep rim deep
 
-          while (queue.length && seenCluster.size < maxSize && currentShallow < maxShallow) {
-            const [cq, cr] = queue.shift();
-            const ck = keyOf(cq, cr);
-            if (seenCluster.has(ck)) continue;
-            seenCluster.add(ck);
-
-            const tile = map[cr][cq];
-            if (!tile || tile.type !== 'water') continue;
-
-            // again, never touch borderDist <= 1
-            const bd = Math.min(cq, cr, cols - 1 - cq, rows - 1 - cr);
-            if (bd <= 1) continue;
-
-            markShallow(tile);
-            if (tile.baseElevation === 3) currentShallow++;
-
-            // Expand the patch along water that is near land
-            for (const [nq, nr] of neighbors(cq, cr, map)) {
-              const nk = keyOf(nq, nr);
-              if (seenCluster.has(nk)) continue;
-
-              const nt = map[nr][nq];
-              if (!nt || nt.type !== 'water') continue;
-
-              const nBd = Math.min(nq, nr, cols - 1 - nq, rows - 1 - nr);
-              if (nBd <= 1) continue; // keep 2-hex rim deep
-
-              // keep the patch hugging the coast:
-              // prefer neighbours that are coastal or adjacent to land
-              let nearCoast = false;
-              for (const [mq, mr] of neighbors(nq, nr, map)) {
-                const mt = map[mr][mq];
-                if (mt && mt.type !== 'water') {
-                  nearCoast = true;
-                  break;
-                }
+            // keeps us mostly near coasts
+            let nearCoast = false;
+            for (const [mq, mr] of neighbors(nq, nr, map)) {
+              const mt = map[mr][mq];
+              if (mt && mt.type !== 'water') {
+                nearCoast = true;
+                break;
               }
-
-              // Mostly stay near coast; occasionally allow one step seaward
-              if (!nearCoast && rand() > 0.4) continue;
-
-              queue.push([nq, nr]);
             }
+
+            // Mostly stay near coast; occasionally one step seaward
+            if (!nearCoast && rand() > 0.35) continue;
+
+            queue.push([nq, nr]);
           }
         }
+
+        if (shallowCount >= targetShallow && normalCount >= targetNormal) break;
+      }
+    }
+
+    // Ensure all water tiles at least have undersea groundType
+    for (const t of waterTiles) {
+      t.groundType = 'undersea';
+      t.isCoveredByWater = true;
+      t.isUnderWater = true;
+      if (t.waterDepth == null || t.waterDepth < 1) {
+        t.waterDepth    = 1;
+        t.baseElevation = 1;
+        t.elevation     = 1;
       }
     }
   }
@@ -852,7 +876,7 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
   Object.defineProperty(flat, '__worldMeta', { value: worldMeta, enumerable: false });
 
   return flat;
-}   // <-- 🔥 THIS was missing: closes generateMap()
+}
 
 export default class HexMap {
   constructor(width, height, seed) {
