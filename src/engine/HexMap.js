@@ -745,29 +745,23 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
     }
   }
 
- // ----------------------------------------------------------------
-  // SECOND PASS: CLUSTERED SHALLOW WATER PATCHES (2–4 stains)
   // ----------------------------------------------------------------
-  // Goal:
-  //  - Shallow water (baseElevation = 3) appears in 2–4 *clusters*,
-  //    not scattered everywhere.
-  //  - Shallow water is biased toward the centre of the map.
-  //  - The 2 hexes closest to the edge (borderDist 0 and 1)
-  //    must remain deep water (depth 1).
+  // SECOND PASS: CLUSTERED SHALLOW WATER PATCHES (2–4 stains)
   // ----------------------------------------------------------------
   const waterTiles = flat.filter(t => t.type === 'water');
   if (waterTiles.length > 0) {
-    const targetShallowRatio = 0.30;                // ~30% of water tiles
+
+    const targetShallowRatio = 0.30;
     const targetShallow = Math.floor(waterTiles.length * targetShallowRatio);
     let shallowCount = waterTiles.filter(t => t.baseElevation === 3).length;
 
     if (shallowCount < targetShallow) {
-      // Candidate seeds: coastal water tiles that are not in the 2-hex deep rim.
+
+      // pick only water tiles that touch land and are NOT in outer deep rim
       const coastalWater = waterTiles.filter(t => {
         const bd = Math.min(t.q, t.r, cols - 1 - t.q, rows - 1 - t.r);
-        if (bd <= 1) return false; // keep 2 closest rings to the edge deep
+        if (bd <= 1) return false;
 
-        // coastal = water that touches land
         for (const [nq, nr] of neighbors(t.q, t.r, map)) {
           const nt = map[nr][nq];
           if (nt && nt.type !== 'water') return true;
@@ -776,39 +770,34 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
       });
 
       if (coastalWater.length > 0) {
-        // Sort by distance to centre so we bias toward central coast
+
+        // bias shallow water toward map centre
         coastalWater.sort((a, b) => {
-          const da = (a.q - cx) * (a.q - cx) + (a.r - cy) * (a.r - cy);
-          const db = (b.q - cx) * (b.q - cx) + (b.r - cy) * (b.r - cy);
+          const da = (a.q - cx) ** 2 + (a.r - cy) ** 2;
+          const db = (b.q - cx) ** 2 + (b.r - cy) ** 2;
           return da - db;
         });
 
-        // Take only the most central third (or at least a few tiles) as seeds,
-        // then shuffle for some randomness among those central candidates.
         const centralCount = Math.max(4, Math.floor(coastalWater.length * 0.33));
         const seedsPool = coastalWater.slice(0, centralCount);
         shuffleInPlace(seedsPool, rand);
 
-        // 2–4 separate stains
         const clusterCount = Math.min(randInt(rand, 2, 4), seedsPool.length);
-
         const usedSeedKeys = new Set();
 
-        // Controls how far from centre shallow water is allowed to appear.
-        // Smaller factor ⇒ more central.
         const maxCenterDist2 = (cols * cols + rows * rows) * 0.25;
 
         const markShallow = (tile) => {
           const bd = Math.min(tile.q, tile.r, cols - 1 - tile.q, rows - 1 - tile.r);
-          if (bd <= 1) return; // never touch the 2-hex rim
+          if (bd <= 1) return;
 
-          const d2 = (tile.q - cx) * (tile.q - cx) + (tile.r - cy) * (tile.r - cy);
-          if (d2 > maxCenterDist2) return; // too far from centre for shallow
+          const d2 = (tile.q - cx) ** 2 + (tile.r - cy) ** 2;
+          if (d2 > maxCenterDist2) return;
 
           if (tile.type === 'water' && tile.baseElevation !== 3) {
             tile.baseElevation = 3;
-            tile.elevation     = 3;
-            tile.waterDepth    = 3;
+            tile.elevation = 3;
+            tile.waterDepth = 3;
             shallowCount++;
           }
         };
@@ -824,9 +813,12 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
 
           const queue = [[seed.q, seed.r]];
           const seenCluster = new Set();
-          const maxSize = randInt(rand, 8, 24); // patch size
+          const maxSize = randInt(rand, 8, 24);
 
-          while (queue.length && seenCluster.size < maxSize && shallowCount < targetShallow) {
+          while (queue.length &&
+                 seenCluster.size < maxSize &&
+                 shallowCount < targetShallow) {
+
             const [cq, cr] = queue.shift();
             const ck = keyOf(cq, cr);
             if (seenCluster.has(ck)) continue;
@@ -836,12 +828,10 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
             if (!tile || tile.type !== 'water') continue;
 
             const bd = Math.min(cq, cr, cols - 1 - cq, rows - 1 - cr);
-            if (bd <= 1) continue; // keep edge + 1 ring deep
+            if (bd <= 1) continue;
 
-            // Try to mark this tile as shallow (with centre bias)
             markShallow(tile);
 
-            // Expand cluster: follow water that stays near the coast.
             for (const [nq, nr] of neighbors(cq, cr, map)) {
               const nk = keyOf(nq, nr);
               if (seenCluster.has(nk)) continue;
@@ -850,9 +840,8 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
               if (!nt || nt.type !== 'water') continue;
 
               const nbd = Math.min(nq, nr, cols - 1 - nq, rows - 1 - nr);
-              if (nbd <= 1) continue; // never invade the deep rim
+              if (nbd <= 1) continue;
 
-              // Prefer neighbours which themselves are coastal / near land
               let nearCoast = false;
               for (const [mq, mr] of neighbors(nq, nr, map)) {
                 const mt = map[mr] && map[mr][mq];
@@ -861,7 +850,7 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
                   break;
                 }
               }
-              // Mostly hug the coast; occasionally allow one step seaward
+
               if (!nearCoast && rand() > 0.35) continue;
 
               queue.push([nq, nr]);
@@ -871,3 +860,39 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
       }
     }
   }
+
+  // Attach meta for scenes (World + Lobby)
+  Object.defineProperty(flat, '__worldMeta', {
+    value: worldMeta,
+    enumerable: false
+  });
+
+  return flat;
+}
+
+
+// ------------------------------------------------------------
+//  EXPORT CLASS
+// ------------------------------------------------------------
+export default class HexMap {
+  constructor(width, height, seed) {
+    this.width = width;
+    this.height = height;
+    this.seed = String(seed ?? 'defaultseed');
+    this.map = [];
+    this.worldMeta = null;
+    this.generateMap();
+  }
+
+  generateMap() {
+    const rngSeed = cyrb128(this.seed);
+    const rand = sfc32(...rngSeed);
+    const tiles = generateMap(this.height, this.width, this.seed, rand);
+    this.map = tiles;
+    this.worldMeta = tiles.__worldMeta || {};
+  }
+
+  getMap() {
+    return this.map;
+  }
+}
