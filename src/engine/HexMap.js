@@ -745,158 +745,129 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
     }
   }
 
+ // ----------------------------------------------------------------
+  // SECOND PASS: CLUSTERED SHALLOW WATER PATCHES (2–4 stains)
   // ----------------------------------------------------------------
-  // SECOND PASS: CLUSTERED SHALLOW/NORMAL WATER PATCHES (2–4 stains)
+  // Goal:
+  //  - Shallow water (baseElevation = 3) appears in 2–4 *clusters*,
+  //    not scattered everywhere.
+  //  - Shallow water is biased toward the centre of the map.
+  //  - The 2 hexes closest to the edge (borderDist 0 and 1)
+  //    must remain deep water (depth 1).
   // ----------------------------------------------------------------
   const waterTiles = flat.filter(t => t.type === 'water');
   if (waterTiles.length > 0) {
-    // About 30% shallow (depth 3) and 20% normal (depth 2)
-    const targetShallow = Math.floor(waterTiles.length * 0.30);
-    const targetNormal  = Math.floor(waterTiles.length * 0.20);
+    const targetShallowRatio = 0.30;                // ~30% of water tiles
+    const targetShallow = Math.floor(waterTiles.length * targetShallowRatio);
+    let shallowCount = waterTiles.filter(t => t.baseElevation === 3).length;
 
-    let shallowCount = 0;
-    let normalCount  = 0;
+    if (shallowCount < targetShallow) {
+      // Candidate seeds: coastal water tiles that are not in the 2-hex deep rim.
+      const coastalWater = waterTiles.filter(t => {
+        const bd = Math.min(t.q, t.r, cols - 1 - t.q, rows - 1 - t.r);
+        if (bd <= 1) return false; // keep 2 closest rings to the edge deep
 
-    // Coastal water candidates (hugging land, not in 2-hex rim)
-    const coastalWater = waterTiles.filter(t => {
-      const bd = Math.min(t.q, t.r, cols - 1 - t.q, rows - 1 - t.r);
-      if (bd <= 1) return false; // keep 2 closest rings always deep
-
-      for (const [nq, nr] of neighbors(t.q, t.r, map)) {
-        const nt = map[nr][nq];
-        if (nt && nt.type !== 'water') return true;
-      }
-      return false;
-    });
-
-    if (coastalWater.length > 0) {
-      // Prefer seeds closer to center so patches cluster nearer island
-      coastalWater.sort((a, b) => {
-        const da = (a.q - cx) * (a.q - cx) + (a.r - cy) * (a.r - cy);
-        const db = (b.q - cx) * (b.q - cx) + (b.r - cy) * (b.r - cy);
-        return da - db;
+        // coastal = water that touches land
+        for (const [nq, nr] of neighbors(t.q, t.r, map)) {
+          const nt = map[nr][nq];
+          if (nt && nt.type !== 'water') return true;
+        }
+        return false;
       });
 
-      const seedsPool = [...coastalWater];
-      shuffleInPlace(seedsPool, rand);
+      if (coastalWater.length > 0) {
+        // Sort by distance to centre so we bias toward central coast
+        coastalWater.sort((a, b) => {
+          const da = (a.q - cx) * (a.q - cx) + (a.r - cy) * (a.r - cy);
+          const db = (b.q - cx) * (b.q - cx) + (b.r - cy) * (b.r - cy);
+          return da - db;
+        });
 
-      const clusterCount = Math.min(
-        randInt(rand, 2, 4), // 2–4 stains
-        seedsPool.length
-      );
+        // Take only the most central third (or at least a few tiles) as seeds,
+        // then shuffle for some randomness among those central candidates.
+        const centralCount = Math.max(4, Math.floor(coastalWater.length * 0.33));
+        const seedsPool = coastalWater.slice(0, centralCount);
+        shuffleInPlace(seedsPool, rand);
 
-      const usedSeedKeys = new Set();
+        // 2–4 separate stains
+        const clusterCount = Math.min(randInt(rand, 2, 4), seedsPool.length);
 
-      for (let cIdx = 0; cIdx < seedsPool.length && usedSeedKeys.size < clusterCount; cIdx++) {
-        const seed = seedsPool[cIdx];
-        const sk = keyOf(seed.q, seed.r);
-        if (usedSeedKeys.has(sk)) continue;
-        usedSeedKeys.add(sk);
+        const usedSeedKeys = new Set();
 
-        const maxSize = randInt(rand, 12, 40); // chunk size 12–40 tiles
-        const queue = [[seed.q, seed.r]];
-        const seenCluster = new Set();
+        // Controls how far from centre shallow water is allowed to appear.
+        // Smaller factor ⇒ more central.
+        const maxCenterDist2 = (cols * cols + rows * rows) * 0.25;
 
-        while (queue.length && seenCluster.size < maxSize) {
-          if (shallowCount >= targetShallow && normalCount >= targetNormal) break;
+        const markShallow = (tile) => {
+          const bd = Math.min(tile.q, tile.r, cols - 1 - tile.q, rows - 1 - tile.r);
+          if (bd <= 1) return; // never touch the 2-hex rim
 
-          const [cq, cr] = queue.shift();
-          const ck = keyOf(cq, cr);
-          if (seenCluster.has(ck)) continue;
-          seenCluster.add(ck);
+          const d2 = (tile.q - cx) * (tile.q - cx) + (tile.r - cy) * (tile.r - cy);
+          if (d2 > maxCenterDist2) return; // too far from centre for shallow
 
-          const tile = map[cr][cq];
-          if (!tile || tile.type !== 'water') continue;
-
-          const bd = Math.min(cq, cr, cols - 1 - cq, rows - 1 - cr);
-          if (bd <= 1) continue; // keep 2-hex rim deep
-
-          // Decide whether this tile becomes shallow or normal
-          if (shallowCount < targetShallow) {
+          if (tile.type === 'water' && tile.baseElevation !== 3) {
             tile.baseElevation = 3;
             tile.elevation     = 3;
             tile.waterDepth    = 3;
             shallowCount++;
-          } else if (normalCount < targetNormal) {
-            tile.baseElevation = 2;
-            tile.elevation     = 2;
-            tile.waterDepth    = 2;
-            normalCount++;
-          } else {
-            // nothing more to assign in this cluster
-            continue;
           }
+        };
 
-          // Expand patch along water that stays near coast
-          for (const [nq, nr] of neighbors(cq, cr, map)) {
-            const nk = keyOf(nq, nr);
-            if (seenCluster.has(nk)) continue;
+        for (let si = 0; si < seedsPool.length &&
+                        usedSeedKeys.size < clusterCount &&
+                        shallowCount < targetShallow; si++) {
 
-            const nt = map[nr][nq];
-            if (!nt || nt.type !== 'water') continue;
+          const seed = seedsPool[si];
+          const sk = keyOf(seed.q, seed.r);
+          if (usedSeedKeys.has(sk)) continue;
+          usedSeedKeys.add(sk);
 
-            const nBd = Math.min(nq, nr, cols - 1 - nq, rows - 1 - nr);
-            if (nBd <= 1) continue; // keep rim deep
+          const queue = [[seed.q, seed.r]];
+          const seenCluster = new Set();
+          const maxSize = randInt(rand, 8, 24); // patch size
 
-            // keeps us mostly near coasts
-            let nearCoast = false;
-            for (const [mq, mr] of neighbors(nq, nr, map)) {
-              const mt = map[mr][mq];
-              if (mt && mt.type !== 'water') {
-                nearCoast = true;
-                break;
+          while (queue.length && seenCluster.size < maxSize && shallowCount < targetShallow) {
+            const [cq, cr] = queue.shift();
+            const ck = keyOf(cq, cr);
+            if (seenCluster.has(ck)) continue;
+            seenCluster.add(ck);
+
+            const tile = map[cr] && map[cr][cq];
+            if (!tile || tile.type !== 'water') continue;
+
+            const bd = Math.min(cq, cr, cols - 1 - cq, rows - 1 - cr);
+            if (bd <= 1) continue; // keep edge + 1 ring deep
+
+            // Try to mark this tile as shallow (with centre bias)
+            markShallow(tile);
+
+            // Expand cluster: follow water that stays near the coast.
+            for (const [nq, nr] of neighbors(cq, cr, map)) {
+              const nk = keyOf(nq, nr);
+              if (seenCluster.has(nk)) continue;
+
+              const nt = map[nr] && map[nr][nq];
+              if (!nt || nt.type !== 'water') continue;
+
+              const nbd = Math.min(nq, nr, cols - 1 - nq, rows - 1 - nr);
+              if (nbd <= 1) continue; // never invade the deep rim
+
+              // Prefer neighbours which themselves are coastal / near land
+              let nearCoast = false;
+              for (const [mq, mr] of neighbors(nq, nr, map)) {
+                const mt = map[mr] && map[mr][mq];
+                if (mt && mt.type !== 'water') {
+                  nearCoast = true;
+                  break;
+                }
               }
+              // Mostly hug the coast; occasionally allow one step seaward
+              if (!nearCoast && rand() > 0.35) continue;
+
+              queue.push([nq, nr]);
             }
-
-            // Mostly stay near coast; occasionally one step seaward
-            if (!nearCoast && rand() > 0.35) continue;
-
-            queue.push([nq, nr]);
           }
         }
-
-        if (shallowCount >= targetShallow && normalCount >= targetNormal) break;
-      }
-    }
-
-    // Ensure all water tiles at least have undersea groundType
-    for (const t of waterTiles) {
-      t.groundType = 'undersea';
-      t.isCoveredByWater = true;
-      t.isUnderWater = true;
-      if (t.waterDepth == null || t.waterDepth < 1) {
-        t.waterDepth    = 1;
-        t.baseElevation = 1;
-        t.elevation     = 1;
       }
     }
   }
-
-  // Attach meta for scenes (World + Lobby)
-  Object.defineProperty(flat, '__worldMeta', { value: worldMeta, enumerable: false });
-
-  return flat;
-}
-
-export default class HexMap {
-  constructor(width, height, seed) {
-    this.width = width;
-    this.height = height;
-    this.seed = String(seed ?? 'defaultseed');
-    this.map = [];
-    this.worldMeta = null;
-    this.generateMap();
-  }
-
-  generateMap() {
-    const rngSeed = cyrb128(this.seed);
-    const rand = sfc32(...rngSeed);
-    const tiles = generateMap(this.height, this.width, this.seed, rand);
-    this.map = tiles;
-    this.worldMeta = tiles.__worldMeta || {};
-  }
-
-  getMap() {
-    return this.map;
-  }
-}
