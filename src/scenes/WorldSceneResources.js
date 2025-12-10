@@ -3,13 +3,18 @@
 /* =========================================================================
    Resource spawner & helpers
    - Places 5 🐟 fish resources on random water hexes
-   - Enforces minimum hex distance of 8 between fish
-   - Safe to call multiple times (won’t duplicate existing fish at same hex)
-   - Fully deterministic for a given seed (derives its own PRNG from seed)
+   - Places 5 🛢️ crude oil resources on *shallow* water hexes
+   - Enforces minimum hex distance of 8 between same-type resources
+   - Safe to call multiple times (won’t duplicate on same hex)
+   - Fully deterministic per seed (separate RNG stream per resource type)
    ======================================================================= */
 
 import { cyrb128, sfc32 } from '../engine/PRNG.js';
 
+/**
+ * Spawn up to 5 fish on water tiles.
+ * Deterministic per world seed; uses its own PRNG stream.
+ */
 export function spawnFishResources() {
   const scene = /** @type {Phaser.Scene & any} */ (this);
 
@@ -35,14 +40,14 @@ export function spawnFishResources() {
   // Gather already-placed fish coordinates to respect min distance
   const placed = existingFish.map(f => ({ q: f.q, r: f.r }));
 
-  // We’ll try to place up to (5 - existing) new fish
   const need = 5 - existingFish.length;
-  const rnd = getRng(scene);
+  const rnd  = getFishRng(scene);
 
-  // Shuffle candidates for variety (but deterministic with seed RNG)
-  const shuffled = [...waterTiles];
+  // Shuffle for variety, but deterministically
+  const shuffled = waterTiles.slice();
   shuffleInPlace(shuffled, rnd);
 
+  const MIN_DIST = 8;
   let created = 0;
 
   for (const tile of shuffled) {
@@ -52,11 +57,19 @@ export function spawnFishResources() {
     if (!inBounds(scene, q, r)) continue;
 
     // Enforce minimum hex distance to all already placed fish
-    const ok = placed.every(p => hexDistanceAxial(p.q, p.r, q, r) >= 8);
-    if (!ok) continue;
+    let tooClose = false;
+    for (const p of placed) {
+      if (hexDistanceAxial(p.q, p.r, q, r) < MIN_DIST) {
+        tooClose = true;
+        break;
+      }
+    }
+    if (tooClose) continue;
 
     // Avoid duplicates on same hex if something already placed there
-    const already = scene.resources.find(o => o.type === 'fish' && o.q === q && o.r === r);
+    const already = scene.resources.find(
+      o => o.type === 'fish' && o.q === q && o.r === r
+    );
     if (already) continue;
 
     // Create visible emoji
@@ -79,30 +92,148 @@ export function spawnFishResources() {
   );
 }
 
+/**
+ * Spawn up to 5 crude oil resources on *shallow* water tiles.
+ * Uses a separate deterministic RNG stream from fish.
+ */
+export function spawnCrudeOilResources() {
+  const scene = /** @type {Phaser.Scene & any} */ (this);
+
+  if (!scene || !Array.isArray(scene.mapData) || !scene.mapData.length) {
+    console.warn('[Resources] spawnCrudeOilResources(): no mapData on scene.');
+    return;
+  }
+
+  scene.resources = scene.resources || [];
+
+  // Already have 5+ oil? do nothing.
+  const existingOil = scene.resources.filter(r => r.type === 'crudeOil');
+  if (existingOil.length >= 5) return;
+
+  // Shallow water candidates only
+  const shallowTiles = (scene.mapData || []).filter(isShallowWaterTile);
+  if (!shallowTiles.length) {
+    console.warn('[Resources] spawnCrudeOilResources(): no shallow water tiles found.');
+    return;
+  }
+
+  const placed = existingOil.map(o => ({ q: o.q, r: o.r }));
+  const need   = 5 - existingOil.length;
+  const rnd    = getOilRng(scene);
+
+  const shuffled = shallowTiles.slice();
+  shuffleInPlace(shuffled, rnd);
+
+  const MIN_DIST = 8;
+  let created = 0;
+
+  for (const tile of shuffled) {
+    if (created >= need) break;
+
+    const { q, r } = tile;
+    if (!inBounds(scene, q, r)) continue;
+
+    // Minimum distance to other oil nodes
+    let tooClose = false;
+    for (const p of placed) {
+      if (hexDistanceAxial(p.q, p.r, q, r) < MIN_DIST) {
+        tooClose = true;
+        break;
+      }
+    }
+    if (tooClose) continue;
+
+    // Avoid duplicates on same hex
+    const already = scene.resources.find(
+      o => o.type === 'crudeOil' && o.q === q && o.r === r
+    );
+    if (already) continue;
+
+    const pos = scene.axialToWorld
+      ? scene.axialToWorld(q, r)
+      : fallbackAxialToWorld(scene, q, r);
+
+    const obj = scene.add.text(pos.x, pos.y, '🛢️', {
+      fontSize: '18px',
+      color: '#ffffff',
+    }).setOrigin(0.5).setDepth(2050);
+
+    scene.resources.push({ type: 'crudeOil', q, r, obj });
+    placed.push({ q, r });
+    created += 1;
+  }
+
+  console.log(
+    `[Resources] spawnCrudeOilResources(): shallowTiles=${shallowTiles.length}, existing=${existingOil.length}, createdNow=${created}`
+  );
+}
+
 /* =========================
    Helpers
    ========================= */
 
-// Robust water check: takes a *tile* object.
+// unified “is water” predicate, tolerant to old fields.
 function isWaterTile(tile) {
   if (!tile) return false;
+  if (tile.isWater === true) return true;
+  if (typeof tile.waterDepth === 'number' && tile.waterDepth > 0) return true;
+
   const type = (tile.type || '').toString().toLowerCase();
-  // support future variants like 'ocean', 'sea'
-  return type === 'water' || type === 'ocean' || type === 'sea';
+  if (type === 'water' || type === 'ocean' || type === 'sea') return true;
+
+  // Future-proof: treat any explicit groundType of water as water
+  const g = (tile.groundType || '').toString().toLowerCase();
+  if (g === 'water') return true;
+
+  return false;
 }
 
 /**
- * Deterministic RNG for fish, derived from map seed.
- * This avoids depending on the *current* state of hexMap.rand,
- * so different call orders on different clients don't desync fish.
+ * Shallow water = waterDepth 3 (or equivalent elevation fallback).
+ * Uses same semantics as WorldSceneMap water coloring.
  */
-function getRng(scene) {
+function isShallowWaterTile(tile) {
+  if (!isWaterTile(tile)) return false;
+
+  let depth = 0;
+  if (typeof tile.waterDepth === 'number') {
+    depth = tile.waterDepth;
+  } else if (typeof tile.baseElevation === 'number') {
+    depth = tile.baseElevation;
+  } else if (typeof tile.elevation === 'number') {
+    depth = tile.elevation;
+  }
+
+  if (!depth) depth = 2;
+  const d = Math.max(1, Math.min(3, depth));
+  return d === 3; // 1=deep, 2=medium, 3=shallow
+}
+
+/**
+ * Separate deterministic RNG stream for fish.
+ * Uses world seed + "|fish".
+ */
+function getFishRng(scene) {
   const baseSeed =
     (scene && scene.seed) ||
     (scene && scene.hexMap && scene.hexMap.seed) ||
     'defaultseed';
 
   const state = cyrb128(String(baseSeed) + '|fish');
+  return sfc32(state[0], state[1], state[2], state[3]);
+}
+
+/**
+ * Separate deterministic RNG stream for crude oil.
+ * Uses world seed + "|crudeOil".
+ */
+function getOilRng(scene) {
+  const baseSeed =
+    (scene && scene.seed) ||
+    (scene && scene.hexMap && scene.hexMap.seed) ||
+    'defaultseed';
+
+  const state = cyrb128(String(baseSeed) + '|crudeOil');
   return sfc32(state[0], state[1], state[2], state[3]);
 }
 
@@ -124,7 +255,10 @@ function shuffleInPlace(arr, rnd) {
 function hexDistanceAxial(q1, r1, q2, r2) {
   const x1 = q1, z1 = r1, y1 = -x1 - z1;
   const x2 = q2, z2 = r2, y2 = -x2 - z2;
-  return (Math.abs(x1 - x2) + Math.abs(y1 - y2) + Math.abs(z1 - z2)) / 2;
+  const dx = Math.abs(x1 - x2);
+  const dy = Math.abs(y1 - y2);
+  const dz = Math.abs(z1 - z2);
+  return Math.max(dx, dy, dz);
 }
 
 // Only used if scene.axialToWorld isn’t bound yet
