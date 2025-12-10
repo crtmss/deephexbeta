@@ -1,451 +1,690 @@
-// src/scenes/WorldSceneMap.js
+// src/scenes/WorldScene.js
+import Phaser from 'phaser';                           // ✅ ADDED BACK
 import HexMap from '../engine/HexMap.js';
+import { findPath as aStarFindPath } from '../engine/AStar.js';
 import { drawLocationsAndRoads } from './WorldSceneMapLocations.js';
-
-export const LIFT_PER_LVL = 4;
-
-const ISO_SHEAR  = 0.15;
-const ISO_YSCALE = 0.95;
-
-// “Default” sea level used when no dynamic waterLevel is set on the scene.
-const DEFAULT_SEA_FLOOR = 3;
-
-const pt = (x, y) => ({ x, y });
-
-/* ---------- terrain palette (base colors) ---------- */
-export function getColorForTerrain(terrain) {
-  switch (terrain) {
-    case 'grassland':   return 0x8bd17c; // #8BD17C
-    case 'sand':        return 0xF6E7A1; // #F6E7A1
-    case 'mud':         return 0xB48A78; // #B48A78
-    case 'swamp':       return 0x8AA18A; // #8AA18A
-    case 'mountain':    return 0xC9C9C9; // #C9C9C9
-    case 'water':       return 0x7CC4FF; // #7CC4FF (base; depth tint applied later)
-    case 'volcano_ash': return 0x9A9A9A; // grey
-    case 'ice':         return 0xCFEFFF; // light blue
-    case 'snow':        return 0xF7FBFF; // very light
-    default:            return 0xA7A7A7; // neutral gray
-  }
-}
-
-/* ---------- global water helpers ---------- */
-
-// unified “is water” predicate, tolerant to old fields.
-function isWaterTile(t) {
-  if (!t) return false;
-  if (t.isWater === true) return true;
-  if (typeof t.waterDepth === 'number' && t.waterDepth > 0) return true;
-  if (t.type === 'water') return true;
-  if (t.isCoveredByWater) return true;
-  return false;
-}
-
-// read current water level from the scene, with safe fallback
-function getCurrentWaterLevel(scene) {
-  const wl = scene && typeof scene.waterLevel === 'number'
-    ? scene.waterLevel
-    : DEFAULT_SEA_FLOOR;
-  return wl;
-}
-
-/* ---------- elevation helpers ---------- */
-/**
- * Effective visual elevation above sea level (used for cliffs & lift).
- *
- * Data model:
- *   - baseElevation: 1..7 absolute
- *       1–3: underwater bands
- *       4–7: land
- *   - waterLevel (scene-level): current sea level 1..7
- *
- * Visual rule:
- *   eff = max(0, baseElevation - waterLevel)
- */
-export function effectiveElevation(tile, waterLevel = DEFAULT_SEA_FLOOR) {
-  if (!tile) return 0;
-
-  // if something explicitly set visualElevation, respect it
-  if (typeof tile.visualElevation === 'number') {
-    const ve = tile.visualElevation | 0;
-    return ve > 0 ? ve : 0;
-  }
-
-  const base = (typeof tile.baseElevation === 'number')
-    ? tile.baseElevation
-    : (typeof tile.elevation === 'number' ? tile.elevation : 0);
-
-  // any water tile is visually flat
-  if (isWaterTile(tile)) return 0;
-
-  const wl = (typeof waterLevel === 'number') ? waterLevel : DEFAULT_SEA_FLOOR;
-
-  if (typeof tile.baseElevation === 'number') {
-    const eff = base - wl;
-    return eff > 0 ? eff : 0;
-  }
-
-  // --- fallback for old maps (elevation + isCoveredByWater) ---
-  const covered = !!tile.isCoveredByWater;
-  const eRaw = typeof tile.elevation === 'number' ? tile.elevation : 0;
-
-  const baseline = 4 + (wl - DEFAULT_SEA_FLOOR); // 4 at wl=3, 5 at wl=4, etc.
-  if (covered || eRaw <= baseline) return 0;
-
-  return Math.min(3, Math.max(1, eRaw - baseline));
-}
-
-function darkenRGBInt(baseInt, factor) {
-  const c = Phaser.Display.Color.IntegerToColor(baseInt);
-  const r = Math.round(c.r * factor);
-  const g = Math.round(c.g * factor);
-  const b = Math.round(c.b * factor);
-  return Phaser.Display.Color.GetColor(r, g, b);
-}
-
-// slightly darker walls for better contrast vs. pastel face
-function tintWallFromBase(baseInt, amount = 0.72) {
-  return darkenRGBInt(baseInt, amount);
-}
-
-/* ---------- axial odd-r neighbors (0=NE,1=E,2=SE,3=SW,4=W,5=NW) ---------- */
-function neighborBySide(tileAt, q, r, side) {
-  const isOdd = (r & 1) === 1;
-
-  // even row deltas
-  const evenNE = [0, -1], evenE = [+1, 0], evenSE = [0, +1];
-  const evenSW = [-1, +1], evenW = [-1, 0], evenNW = [-1, -1];
-
-  // odd row deltas
-  const oddNE = [+1, -1], oddE = [+1, 0], oddSE = [+1, +1];
-  const oddSW = [0, +1], oddW = [-1, 0], oddNW = [0, -1];
-
-  const deltas = isOdd
-    ? [oddNE, oddE, oddSE, oddSW, oddW, oddNW]
-    : [evenNE, evenE, evenSE, evenSW, evenW, evenNW];
-
-  const [dq, dr] = deltas[side];
-  return tileAt(q + dq, r + dr);
-}
-
-/* ---------- projection utilities ---------- */
-export function hexToPixel(q, r, size) {
-  const x = size * Math.sqrt(3) * (q + 0.5 * (r & 1));
-  const y = size * 1.5 * r;
-  const xIso = x - y * ISO_SHEAR;
-  const yIso = y * ISO_YSCALE;
-  return { x: xIso, y: yIso };
-}
-export function isoOffset(x, y) {
-  return { x: x - y * ISO_SHEAR, y: y * ISO_YSCALE };
-}
-export function pixelToHex(screenX, screenY, size) {
-  const y0 = screenY / ISO_YSCALE;
-  const x0 = screenX + y0 * ISO_SHEAR;
-  const r = y0 / (size * 1.5);
-  const q = (x0 / (Math.sqrt(3) * size)) - 0.5 * (Math.floor(r) & 1);
-  return { q, r };
-}
-export function roundHex(qf, rf) {
-  const x = qf, z = rf, y = -x - z;
-  let rx = Math.round(x), ry = Math.round(y), rz = Math.round(z);
-  const dx = Math.abs(rx - x), dy = Math.abs(ry - y), dz = Math.abs(rz - z);
-  if (dx > dy && dx > dz)      rx = -ry - rz;
-  else if (dy > dz)           ry = -rx - rz;
-  else                        rz = -rx - ry;
-  return { q: rx, r: rz };
-}
-
-/* ---------- generation wrapper (used by other scenes/tests) ---------- */
-export function generateHexMap(width, height, seed) {
-  const hexMap = new HexMap(width, height, seed);
-  return hexMap.getMap();
-}
-
-/* ---------- wall (cliff) quad ---------- */
-function drawEdgeQuad(scene, A, B, dropPx, color, depth = 3) {
-  const A2 = pt(A.x, A.y + dropPx);
-  const B2 = pt(B.x, B.y + dropPx);
-  const g = scene.add.graphics().setDepth(depth);
-  g.fillStyle(color, 1);
-  g.beginPath();
-  g.moveTo(A.x, A.y);
-  g.lineTo(B.x, B.y);
-  g.lineTo(B2.x, B2.y);
-  g.lineTo(A2.x, A2.y);
-  g.closePath();
-  g.fillPath();
-  return g;
-}
-
-/* ---------- face + cliffs + outline ---------- */
-export function drawHex(q, r, xIso, yIso, size, fillColor, effElevationValue, tile) {
-  const w = size * Math.sqrt(3) / 2;
-  const h = size / 2;
-
-  // vertices (flat-top)
-  const d = [
-    { dx: 0,  dy: -size }, // 0 top
-    { dx: +w, dy: -h    }, // 1 top-right
-    { dx: +w, dy: +h    }, // 2 bottom-right
-    { dx: 0,  dy: +size }, // 3 bottom
-    { dx: -w, dy: +h    }, // 4 bottom-left
-    { dx: -w, dy: -h    }, // 5 top-left
-  ];
-  const ring = d.map(({dx,dy}) => {
-    const off = isoOffset(dx, dy);
-    return pt(xIso + off.x, yIso + off.y);
-  });
-
-  // FACE
-  const face = this.add.graphics().setDepth(2);
-  face.fillStyle(fillColor, 1);
-  face.beginPath();
-  face.moveTo(ring[0].x, ring[0].y);
-  for (let i = 1; i < 6; i++) face.lineTo(ring[i].x, ring[i].y);
-  face.closePath();
-  face.fillPath();
-
-  // CLIFFS
-  const wallColor  = tintWallFromBase(fillColor, 0.72);
-  const dropPerLvl = LIFT_PER_LVL;
-  const walls = [];
-
-  const baseSelf = (typeof tile?.baseElevation === 'number')
-    ? tile.baseElevation
-    : (typeof tile?.elevation === 'number' ? tile.elevation : 0);
-
-  const waterLevel = getCurrentWaterLevel(this);
-
-  const maybeCliff = (edgeIndex, neighborTile) => {
-    if (!neighborTile) return;
-
-    const effN = effectiveElevation(neighborTile, waterLevel);
-    const diff = effElevationValue - effN;
-    const neighborIsWater = isWaterTile(neighborTile);
-
-    // Level-4 coastal *land* tiles -> beach (no vertical wall vs water)
-    if (!isWaterTile(tile) && baseSelf === 4 && neighborIsWater) return;
-
-    if (diff <= 0) return;
-    const A = ring[edgeIndex];
-    const B = ring[(edgeIndex + 1) % 6];
-    walls.push(drawEdgeQuad(this, A, B, diff * dropPerLvl, wallColor, 3));
-  };
-
-  const maybeSkirt = (edgeIndex, neighborTile) => {
-    if (!neighborTile) return;
-
-    const effN = effectiveElevation(neighborTile, waterLevel);
-    const diff = effElevationValue - effN;
-    const neighborIsWater = isWaterTile(neighborTile);
-
-    if (!isWaterTile(tile) && baseSelf === 4 && neighborIsWater) return;
-    if (diff <= 0) return;
-
-    const A = ring[edgeIndex];
-    const B = ring[(edgeIndex + 1) % 6];
-    const skirt = Math.min(2, Math.max(1.2, diff * 0.8));
-    walls.push(drawEdgeQuad(this, A, B, skirt, wallColor, 3));
-  };
-
-  const n0 = neighborBySide(this.tileAt, q, r, 0);
-  const n1 = neighborBySide(this.tileAt, q, r, 1);
-  const n2 = neighborBySide(this.tileAt, q, r, 2);
-  const n3 = neighborBySide(this.tileAt, q, r, 3);
-  const n4 = neighborBySide(this.tileAt, q, r, 4);
-  const n5 = neighborBySide(this.tileAt, q, r, 5);
-
-  // big cliffs on screen-facing edges
-  if (n2) maybeCliff(2, n2);
-  if (n3) maybeCliff(3, n3);
-
-  // thin skirts elsewhere
-  if (n0) maybeSkirt(0, n0);
-  if (n1) maybeSkirt(1, n1);
-  if (n4) maybeSkirt(4, n4);
-  if (n5) maybeSkirt(5, n5);
-
-  // OUTLINE (hex contour)
-  const rim = this.add.graphics().setDepth(4);
-  const rimColor = darkenRGBInt(fillColor, 0.75);
-  rim.lineStyle(1.6, rimColor, 1);
-  rim.beginPath();
-  rim.moveTo(ring[0].x, ring[0].y);
-  for (let i = 1; i < 6; i++) rim.lineTo(ring[i].x, ring[i].y);
-  rim.closePath();
-  rim.strokePath();
-
-  rim._walls = walls;
-  return { face, rim, ring };
-}
-
-/* ---------- elevation + water tint ---------- */
-/**
- * Water shades:
- *   waterDepth 1 => deep, darkest (same tone as camera background if you like)
- *   waterDepth 2 => medium
- *   waterDepth 3 => shallow, lightest / more pale
- */
-function getFillForTile(tile, waterLevel) {
-  const water = isWaterTile(tile);
-
-  if (water) {
-    const base = getColorForTerrain('water');
-
-    let depth = 0;
-    if (typeof tile.waterDepth === 'number') {
-      depth = tile.waterDepth;
-    } else if (typeof tile.baseElevation === 'number') {
-      depth = tile.baseElevation;
-    } else if (typeof tile.elevation === 'number') {
-      depth = tile.elevation;
-    }
-
-    const d = Math.max(1, Math.min(3, depth || 2));
-
-    let factor;
-    if (d === 3)      factor = 1.08; // shallow → a bit paler
-    else if (d === 2) factor = 1.00; // medium
-    else              factor = 0.78; // deep → darker, can match camera bg
-
-    const c = Phaser.Display.Color.IntegerToColor(base);
-    const r = Math.max(0, Math.min(255, Math.round(c.r * factor)));
-    const g = Math.max(0, Math.min(255, Math.round(c.g * factor)));
-    const b = Math.max(0, Math.min(255, Math.round(c.b * factor)));
-    return Phaser.Display.Color.GetColor(r, g, b);
-  }
-
-  // Land
-  const baseColor = getColorForTerrain(tile.type);
-  const eff = effectiveElevation(tile, waterLevel); // 0..4
-
-  const LEVEL_TINTS = [0.00, 0.18, 0.34, 0.50, 0.66];
-  const idx = Math.max(0, Math.min(LEVEL_TINTS.length - 1, eff));
-  const t   = LEVEL_TINTS[idx];
-
-  const base = Phaser.Display.Color.IntegerToColor(baseColor);
-  const r = Math.round(base.r + (255 - base.r) * t);
-  const g = Math.round(base.g + (255 - base.g) * t);
-  const b = Math.round(base.b + (255 - base.b) * t);
-  return Phaser.Display.Color.GetColor(r, g, b);
-}
-
-/* ---------- hover outline ---------- */
-function drawHexOutline(scene, xIso, yIso, size, color = 0xffffff) {
-  const w = size * Math.sqrt(3) / 2;
-  const h = size / 2;
-  const d = [
-    { dx: 0,  dy: -size },
-    { dx: +w, dy: -h    },
-    { dx: +w, dy: +h    },
-    { dx: 0,  dy: +size },
-    { dx: -w, dy: +h    },
-    { dx: -w, dy: -h    },
-  ];
-  const ring = d.map(({dx,dy}) => {
-    const off = isoOffset(dx, dy);
-    return pt(xIso + off.x, yIso + off.y);
-  });
-  const g = scene.add.graphics().setDepth(10002);
-  g.lineStyle(3, color, 1);
-  g.beginPath();
-  g.moveTo(ring[0].x, ring[0].y);
-  for (let i = 1; i < 6; i++) g.lineTo(ring[i].x, ring[i].y);
-  g.closePath();
-  g.strokePath();
-  return g;
-}
-
-/* ---------- renderer ---------- */
-export function drawHexMap() {
-  this.objects = this.objects || [];
-  if (this.mapContainer) { this.mapContainer.destroy(true); this.mapContainer = null; }
-  this.mapContainer = this.add.container(0, 0).setDepth(1);
-
-  const padX = this.hexSize * 2;
-  const padY = this.hexSize * 2;
-
-  const cam = this.cameras?.main;
-  const camW = cam?.width ?? 800;
-  const gridW = this.mapWidth * this.hexSize * Math.sqrt(3);
-  const isoW  = gridW + (this.mapHeight * this.hexSize * 1.5) * ISO_SHEAR;
-  const offsetX = Math.floor((camW - isoW) * 0.5) + padX;
-  const offsetY = 20 + padY;
-
-  this.mapOffsetX = offsetX;
-  this.mapOffsetY = offsetY;
-
-  const byKey = new Map(this.mapData.map(t => [`${t.q},${t.r}`, t]));
-  this.tileAt = (q, r) => byKey.get(`${q},${r}`);
-
-  const waterLevel = getCurrentWaterLevel(this);
-
-  const sorted = [...this.mapData].sort((a, b) => {
-    const ea = effectiveElevation(a, waterLevel);
-    const eb = effectiveElevation(b, waterLevel);
-    if (ea !== eb) return ea - eb;
-    const da = (a.q + a.r) - (b.q + b.r);
-    if (da !== 0) return da;
-    if (a.r !== b.r) return a.r - b.r;
-    return a.q - b.q;
-  });
-
-  for (const hex of sorted) {
-    const { q, r } = hex;
-    const eff = effectiveElevation(hex, waterLevel);
-    const p  = hexToPixel(q, r, this.hexSize);
-    const x  = p.x + offsetX;
-    const y  = p.y + offsetY - LIFT_PER_LVL * eff;
-
-    const fillColor = getFillForTile(hex, waterLevel);
-    const { face, rim } = drawHex.call(this, q, r, x, y, this.hexSize, fillColor, eff, hex);
-    this.mapContainer.add(face);
-    if (rim._walls) rim._walls.forEach(w => this.mapContainer.add(w));
-    this.mapContainer.add(rim);
-  }
-
-  drawLocationsAndRoads.call(this);
-
-  if (this.hoverOutline) { this.hoverOutline.destroy(); this.hoverOutline = null; }
-  this.input?.on('pointermove', (pointer) => {
-    const worldX = pointer.worldX - this.mapOffsetX;
-    const worldY = pointer.worldY - this.mapOffsetY;
-
-    const frac = pixelToHex(worldX, worldY, this.hexSize);
-    const axial = roundHex(frac.q, frac.r);
-    const tile = this.tileAt(axial.q, axial.r);
-    if (!tile) {
-      if (this.hoverOutline) { this.hoverOutline.destroy(); this.hoverOutline = null; }
-      return;
-    }
-
-    const eff = effectiveElevation(tile, waterLevel);
-    const p   = hexToPixel(axial.q, axial.r, this.hexSize);
-    const x   = p.x + this.mapOffsetX;
-    const y   = p.y + this.mapOffsetY - LIFT_PER_LVL * eff;
-
-    if (this.hoverOutline) this.hoverOutline.destroy();
-    this.hoverOutline = drawHexOutline(this, x, y, this.hexSize, 0xffffff);
-    this.tweens.add({
-      targets: this.hoverOutline,
-      alpha: { from: 1, to: 0.25 },
-      duration: 160,
-      ease: 'Sine.easeOut'
-    });
-  });
-}
-
-export { getFillForTile };
-
-export default {
-  LIFT_PER_LVL,
-  isoOffset,
+import { setupWorldMenus, attachSelectionHighlight } from './WorldSceneMenus.js';
+import { startHexTransformTool } from './HexTransformTool.js';
+import { setupBuildingsUI } from './WorldSceneBuildingsUI.js';
+
+// Haulers / ships
+import {
+  applyShipRoutesOnEndTurn,
+  applyHaulerBehaviorOnEndTurn as applyHaulerRoutesOnEndTurn,
+} from './WorldSceneHaulers.js';
+
+// Logistics (buildings + routes)
+import {
+  setupLogisticsPanel,
+  applyLogisticsOnEndTurn,
+} from './WorldSceneLogistics.js';
+import { applyLogisticsRoutesOnEndTurn } from './WorldSceneLogisticsRuntime.js';
+
+// UI (HUD, tabs, input)
+import { setupTurnUI, updateTurnText, setupWorldInputUI } from './WorldSceneUI.js';
+
+// Units / resources / map
+import { spawnUnitsAndEnemies, updateUnitOrientation } from './WorldSceneUnits.js';
+import { spawnFishResources } from './WorldSceneResources.js';
+import {
+  drawHexMap,
   hexToPixel,
   pixelToHex,
   roundHex,
-  effectiveElevation,
-  getColorForTerrain,
-  drawHex,
-  drawHexMap,
-  generateHexMap,
+  getColorForTerrain,      // still imported for compatibility if other modules read it
+  isoOffset,               // idem
+  LIFT_PER_LVL,
+} from './WorldSceneMap.js';
+
+// Debug menu (hydrology controls)
+import { initDebugMenu } from './WorldSceneDebug.js';
+
+import { supabase as sharedSupabase } from '../net/SupabaseClient.js';
+
+/* =========================
+   Deterministic world summary (UI-only)
+   ========================= */
+
+function __hashStr32(s) {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+function __xorshift32(seed) {
+  let x = (seed || 1) >>> 0;
+  return () => {
+    x ^= x << 13; x >>>= 0;
+    x ^= x >> 17; x >>>= 0;
+    x ^= x << 5;  x >>>= 0;
+    return (x >>> 0) / 4294967296;
+  };
+}
+function getWorldSummaryForSeed(seedStr, width, height) {
+  const seed = __hashStr32(seedStr);
+  const rng = __xorshift32(seed);
+
+  const totalTiles = width * height;
+  const waterRatio    = 0.28 + (rng() - 0.5) * 0.08;
+  const forestRatio   = 0.25 + (rng() - 0.5) * 0.10;
+  const mountainRatio = 0.10 + (rng() - 0.5) * 0.05;
+
+  const roughness    = 0.4 + rng() * 0.4;
+  const elevationVar = 0.6 + rng() * 0.4;
+
+  const geography = {
+    waterTiles:    Math.round(totalTiles * waterRatio),
+    forestTiles:   Math.round(totalTiles * forestRatio),
+    mountainTiles: Math.round(totalTiles * mountainRatio),
+    roughness:     +roughness.toFixed(2),
+    elevationVar:  +elevationVar.toFixed(2),
+  };
+
+  const biomes = [];
+  if (waterRatio > 0.3)        biomes.push('Archipelago');
+  else if (waterRatio < 0.22)  biomes.push('Continental');
+
+  if (forestRatio > 0.28)      biomes.push('Dense Forests');
+  else if (forestRatio < 0.20) biomes.push('Sparse Forests');
+
+  if (mountainRatio > 0.12) biomes.push('Mountainous');
+  if (roughness > 0.6)      biomes.push('Rugged Terrain');
+  if (elevationVar > 0.7)   biomes.push('High Elevation Contrast');
+
+  const biome = biomes.length > 0 ? biomes.join(', ') : 'Mixed Terrain';
+  return { geography, biome };
+}
+
+/* =========================
+   Small axial helpers
+   ========================= */
+function getTile(scene, q, r) {
+  return scene.mapData.find(h => h.q === q && h.r === r);
+}
+
+export default class WorldScene extends Phaser.Scene {
+  constructor() {
+    super('WorldScene');
+  }
+
+  preload() {}
+
+  async create() {
+    this.hexSize = 24;
+    this.mapWidth = 25;
+    this.mapHeight = 25;
+
+    this.input.setDefaultCursor('grab');
+    this.isDragging = false;
+    this.isUnitMoving = false;
+
+    // Make elevation lift constant visible to map-location renderer
+    this.LIFT_PER_LVL = LIFT_PER_LVL;
+
+    // Hex transform tool (X key edits terrain and then calls scene.redrawWorld())
+    startHexTransformTool(this, { defaultType: 'water', defaultLevel: 1 });
+
+    // collections
+    this.units = [];
+    this.enemies = [];
+    this.players = [];
+    this.buildings = [];
+    this.haulers = [];
+    this.ships = [];
+    this.resources = [];
+
+    // selection state
+    this.selectedUnit = null;
+    this.selectedHex = null;
+    this.pathPreviewTiles = [];
+    this.pathPreviewLabels = [];
+
+    this.uiLocked = false;
+
+    const {
+      seed,
+      playerName,
+      roomCode,
+      isHost,
+      supabase,
+      lobbyState,
+    } = this.scene.settings.data || {};
+
+    this.seed = seed || '000000';
+    this.playerName = playerName || 'Player';
+    this.roomCode = roomCode || this.seed;
+    this.isHost = !!isHost;
+
+    // Prefer instance passed via scene.start, fallback to global shared supabase
+    this.supabase = supabase || sharedSupabase || null;
+    this.lobbyState = lobbyState || { units: {}, enemies: [] };
+
+    this.turnOwner = null;
+    this.turnNumber = 1;
+
+    // Initial resources (kept in sync with Buildings / Haulers modules)
+    this.playerResources = {
+      food: 200,
+      scrap: 200,
+      money: 200,
+      influence: 200,
+    };
+
+    // Global water level (1..7; tiles with baseElevation <= level are flooded)
+    this.worldWaterLevel = 3;
+    this.waterLevel = this.worldWaterLevel;        // ✅ keep renderer-helper in sync
+
+    /* =========================
+       Deterministic map generation
+       ========================= */
+    this.hexMap = new HexMap(this.mapWidth, this.mapHeight, this.seed);
+
+    // HexMap.generateMap() returns either tiles[] or { tiles, objects }
+    let mapInfo = this.hexMap.generateMap && this.hexMap.generateMap();
+
+    if (Array.isArray(mapInfo)) {
+      mapInfo = {
+        tiles: mapInfo,
+        objects: this.hexMap.objects || [],
+      };
+    } else if (!mapInfo || !Array.isArray(mapInfo.tiles)) {
+      const tiles = this.hexMap.getMap ? this.hexMap.getMap() : (this.hexMap.map || []);
+      mapInfo = {
+        tiles,
+        objects: this.hexMap.objects || [],
+      };
+    } else if (!Array.isArray(mapInfo.objects)) {
+      mapInfo.objects = this.hexMap.objects || [];
+    }
+
+    // Store mapInfo so other systems (roads, POIs, resources) see the same data
+    this.mapInfo = mapInfo;
+    this.hexMap.mapInfo = mapInfo;
+    this.mapData = mapInfo.tiles;
+
+    // expose helpers; offset handling is centralized in axialToWorld/worldToAxial
+    this.hexToPixel = (q, r, sizeOverride) =>
+      hexToPixel(q, r, sizeOverride ?? this.hexSize);
+    this.pixelToHex = (x, y, sizeOverride) =>
+      pixelToHex(x, y, sizeOverride ?? this.hexSize);
+
+    // =========================
+    // Apply initial water level → sets tile.type from baseElevation/groundType
+    // and draws terrain + POIs + roads + resources once.
+    // =========================
+    this.recomputeWaterFromLevel();
+
+    /* =========================
+       UNITS & ENEMIES SPAWN (multiplayer-aware)
+       ========================= */
+    await spawnUnitsAndEnemies.call(this);
+
+    this.players = this.players && this.players.length
+      ? this.players
+      : this.units.filter(u => u.isPlayer);
+    this.enemies = this.enemies && this.enemies.length
+      ? this.enemies
+      : this.units.filter(u => u.isEnemy);
+
+    this.turnOwner =
+      this.players[0]?.playerName ||
+      this.players[0]?.name ||
+      null;
+
+    /* =========================
+       UI: menus, buildings, logistics, HUD
+       ========================= */
+    attachSelectionHighlight(this);
+    setupWorldMenus(this);
+    setupBuildingsUI(this);
+    setupTurnUI(this);
+    setupLogisticsPanel(this);
+
+    if (this.turnOwner) {
+      updateTurnText(this, this.turnOwner);
+    }
+
+    this.addWorldMetaBadge();
+
+    // Input (selection + path preview + movement)
+    setupWorldInputUI(this);
+
+    // ---- Debug menu (top-center hydrology controls) ----
+    initDebugMenu(this);
+
+    /* =========================
+       Supabase sync bridge stub
+       ========================= */
+    if (this.supabase && this.roomCode && this.playerName) {
+      this.syncPlayerMove = async unit => {
+        try {
+          const res = await this.supabase
+            .from('lobbies')
+            .select('state')
+            .eq('room_code', this.roomCode)
+            .single();
+
+          if (!res.data || !res.data.state || !Array.isArray(res.data.state.players)) return;
+
+          const state = res.data.state;
+          const nextPlayer = this.getNextPlayer(state.players, this.playerName);
+
+          await this.supabase
+            .from('lobbies')
+            .update({
+              state: {
+                ...state,
+                players: state.players.map(p =>
+                  p === this.playerName || p?.name === this.playerName
+                    ? { ...(typeof p === 'string' ? { name: p } : p), q: unit.q, r: unit.r }
+                    : p
+                ),
+                currentTurn: nextPlayer,
+              },
+            })
+            .eq('room_code', this.roomCode);
+        } catch (err) {
+          console.error('[Supabase syncPlayerMove] Error:', err);
+        }
+      };
+    }
+
+    this.printTurnSummary?.();
+  }
+
+  getNextPlayer(players, currentName) {
+    if (!players || players.length === 0) return null;
+
+    // players[] can be ["Vlad", "Alice"] or [{name:"Vlad"}, ...]
+    const norm = players.map(p => (typeof p === 'string' ? { name: p } : p));
+    const idx = norm.findIndex(p => p.name === currentName);
+
+    if (idx === -1) return norm[0].name;
+    return norm[(idx + 1) % norm.length].name;
+  }
+
+  addWorldMetaBadge() {
+    const { geography, biome } = getWorldSummaryForSeed(
+      String(this.seed),
+      this.mapWidth,
+      this.mapHeight
+    );
+
+    const text = `Seed: ${this.seed}
+Water: ~${geography.waterTiles}
+Forest: ~${geography.forestTiles}
+Mountains: ~${geography.mountainTiles}
+Roughness: ${geography.roughness}
+Elev.Var: ${geography.elevationVar}
+Biomes: ${biome}`;
+
+    const pad = { x: 8, y: 6 };
+
+    // moved to the right so it doesn't overlap the resource HUD
+    const x = 320;
+    const y = 16;
+
+    const tempText = this.add.text(0, 0, text, {
+      fontFamily: 'monospace',
+      fontSize: '11px',
+      color: '#d0f2ff',
+    }).setVisible(false);
+
+    const bounds = tempText.getBounds();
+    tempText.destroy();
+
+    const bgWidth = bounds.width + pad.x * 2;
+    const bgHeight = bounds.height + pad.y * 2;
+
+    const graphics = this.add.graphics();
+    graphics.fillStyle(0x050f1a, 0.85);
+    graphics.fillRoundedRect(x, y, bgWidth, bgHeight, 8);
+    graphics.lineStyle(1, 0x34d2ff, 0.9);
+    graphics.strokeRoundedRect(x, y, bgWidth, bgHeight, 8);
+    graphics.setDepth(100);
+
+    const label = this.add.text(
+      x + pad.x,
+      y + pad.y,
+      text,
+      {
+        fontFamily: 'monospace',
+        fontSize: '11px',
+        color: '#d0f2ff',
+      }
+    );
+    label.setDepth(101);
+  }
+
+  // === Centralized offset-aware conversions ===
+  axialToWorld(q, r) {
+    const size = this.hexSize;
+    const { x, y } = hexToPixel(q, r, size);
+
+    const ox = this.mapOffsetX || 0;
+    const oy = this.mapOffsetY || 0;
+
+    return { x: x + ox, y: y + oy };
+  }
+
+  worldToAxial(x, y) {
+    const size = this.hexSize;
+
+    const ox = this.mapOffsetX || 0;
+    const oy = this.mapOffsetY || 0;
+
+    const { q, r } = pixelToHex(x - ox, y - oy, size);
+    return roundHex(q, r);
+  }
+
+  debugHex(q, r) {
+    const tile = getTile(this, q, r);
+    if (!tile) {
+      console.log(`Clicked outside map at (${q},${r})`);
+      return;
+    }
+    console.log(
+      `Hex (${q},${r}) type=${tile.type}, elev=${tile.elevation}, baseElev=${tile.baseElevation}, groundType=${tile.groundType}, isUnderWater=${tile.isUnderWater}, visualElevation=${tile.visualElevation}`
+    );
+  }
+
+  clearPathPreview() {
+    if (this.pathPreviewTiles) {
+      this.pathPreviewTiles.forEach(g => g.destroy());
+      this.pathPreviewTiles = [];
+    }
+    if (this.pathPreviewLabels) {
+      this.pathPreviewLabels.forEach(l => l.destroy());
+      this.pathPreviewLabels = [];
+    }
+  }
+
+  checkCombat(unit, destHex) {
+    const enemy = this.enemies.find(e => e.q === destHex.q && e.r === destHex.r);
+    if (!enemy) return false;
+
+    console.log(
+      `[COMBAT] ${unit.name} engages enemy at (${destHex.q},${destHex.r}) — TODO: enter combat scene.`
+    );
+    return true;
+  }
+
+  startStepMovement(unit, path, onComplete) {
+    if (!path || path.length < 2) {
+      if (onComplete) onComplete();
+      return;
+    }
+
+    this.isUnitMoving = true;
+    const scene = this;
+    let index = 1; // start from second node
+
+    function stepNext() {
+      if (index >= path.length) {
+        const last = path[path.length - 1];
+        unit.q = last.q;
+        unit.r = last.r;
+        scene.isUnitMoving = false;
+        scene.updateSelectionHighlight?.();   // keep highlight on the new hex
+        if (onComplete) onComplete();
+        return;
+      }
+
+      const step = path[index];
+      const { x, y } = scene.axialToWorld(step.q, step.r);
+
+      scene.tweens.add({
+        targets: unit,
+        x,
+        y,
+        duration: 160,
+        ease: 'Sine.easeInOut',
+        onComplete: () => {
+          const prevQ = unit.q;
+          const prevR = unit.r;
+
+          unit.q = step.q;
+          unit.r = step.r;
+
+          // update facing direction towards this step
+          updateUnitOrientation(scene, unit, prevQ, prevR, unit.q, unit.r);
+
+          index += 1;
+          stepNext();
+        }
+      });
+    }
+
+    stepNext();
+  }
+
+  endTurn() {
+    if (this.uiLocked) return;
+    this.uiLocked = true;
+
+    console.log(`[TURN] Ending turn for ${this.turnOwner} (Turn ${this.turnNumber})`);
+
+    // 1) Ships (fish → docks)
+    applyShipRoutesOnEndTurn(this);
+    // 2) Ground haulers (legacy behavior, e.g. docks ↔ base)
+    applyHaulerRoutesOnEndTurn(this);
+    // 3) Buildings logistics (e.g. Mines produce scrap into local storage)
+    applyLogisticsOnEndTurn(this);
+    // 4) Factorio-style hauler routes (logisticsRoute on haulers / ships)
+    applyLogisticsRoutesOnEndTurn(this);
+
+    // Host moves enemies; clients will later be synced via Supabase (future step)
+    if (this.isHost) {
+      this.moveEnemies();
+    }
+
+    const idx = this.players.findIndex(p =>
+      p.playerName === this.turnOwner ||
+      p.name === this.turnOwner
+    );
+
+    const nextIdx = idx === -1
+      ? 0
+      : (idx + 1) % this.players.length;
+
+    const nextOwner =
+      this.players[nextIdx].playerName ||
+      this.players[nextIdx].name;
+
+    this.turnOwner = nextOwner;
+    this.turnNumber += 1;
+
+    console.log(`[TURN] New turn owner: ${this.turnOwner} (Turn ${this.turnNumber})`);
+
+    updateTurnText(this, this.turnOwner);
+    this.printTurnSummary?.();
+
+    this.uiLocked = false;
+  }
+
+  moveEnemies() {
+    if (!this.enemies || this.enemies.length === 0) return;
+
+    this.enemies.forEach(enemy => {
+      const dirsEven = [
+        { dq: +1, dr: 0 }, { dq: 0, dr: -1 }, { dq: -1, dr: -1 },
+        { dq: -1, dr: 0 }, { dq: -1, dr: +1 }, { dq: 0, dr: +1 },
+      ];
+      const dirsOdd = [
+        { dq: +1, dr: 0 }, { dq: +1, dr: -1 }, { dq: 0, dr: -1 },
+        { dq: -1, dr: 0 }, { dq: 0, dr: +1 }, { dq: +1, dr: +1 },
+      ];
+      const dirs = (enemy.r & 1) ? dirsOdd : dirsEven;
+
+      Phaser.Utils.Array.Shuffle(dirs);
+
+      for (const d of dirs) {
+        const nq = enemy.q + d.dq;
+        const nr = enemy.r + d.dr;
+        if (nq < 0 || nr < 0 || nq >= this.mapWidth || nr >= this.mapHeight) continue;
+        const tile = getTile(this, nq, nr);
+        if (tile && !['water', 'mountain'].includes(tile.type)) {
+          const { x, y } = this.axialToWorld(nq, nr);
+          enemy.setPosition(x, y);
+          enemy.q = nq;
+          enemy.r = nr;
+          break;
+        }
+      }
+    });
+  }
+
+  /**
+   * Recompute which tiles are under water for the current worldWaterLevel.
+   * Uses baseElevation (or elevation) and groundType to set tile.type,
+   * waterDepth and visualElevation, then triggers a full redraw.
+   *
+   * Rules:
+   *  - Underwater if baseElevation <= worldWaterLevel.
+   *  - Underwater tiles:
+   *      type              = 'water'
+   *      isUnderWater      = true
+   *      isWater           = true
+   *      isCoveredByWater  = true
+   *      waterDepth        = 1 (deep) .. 3 (shallow)
+   *      visualElevation   = 0
+   *  - Land tiles:
+   *      type              = groundType
+   *      clear water flags
+   *      waterDepth        = 0
+   *      visualElevation   = max(0, baseElevation - worldWaterLevel)
+   *    → every +1 water level shrinks all cliffs by 1.
+   */
+  recomputeWaterFromLevel() {
+    if (!Array.isArray(this.mapData)) return;
+
+    // clamp and store
+    const lvlRaw = (typeof this.worldWaterLevel === 'number')
+      ? this.worldWaterLevel
+      : 3;
+    const lvl = Math.max(0, Math.min(7, lvlRaw));
+    this.worldWaterLevel = lvl;
+    this.waterLevel = lvl;                       // ✅ keep used-by-renderer in sync
+
+    for (const t of this.mapData) {
+      if (!t) continue;
+
+      // Canonical base elevation 1..7
+      let base = (typeof t.baseElevation === 'number')
+        ? t.baseElevation
+        : (typeof t.elevation === 'number' ? t.elevation : 0);
+      if (base <= 0) base = 1;
+      t.baseElevation = base;
+      t.elevation = base;
+
+      // Ensure groundType once
+      if (!t.groundType) {
+        if (t.type && t.type !== 'water') {
+          t.groundType = t.type;
+        } else {
+          t.groundType = 'grassland';
+        }
+      }
+
+      const under = (lvl > 0) && (base <= lvl);
+
+      if (under) {
+        // --- Underwater tile ---
+        t.type = 'water';
+        t.isUnderWater = true;
+        t.isWater = true;
+        t.isCoveredByWater = true;
+
+        // 1..3 depth for the three water shades
+        let depth = base;
+        if (depth < 1) depth = 1;
+        if (depth > 3) depth = 3;
+        t.waterDepth = depth;
+
+        t.visualElevation = 0; // all water is flat visually
+      } else {
+        // --- Land tile ---
+        t.type = t.groundType || 'grassland';
+        t.isUnderWater = false;
+        t.isWater = false;
+        t.isCoveredByWater = false;
+        t.waterDepth = 0;
+
+        // visual height above *current* sea level
+        const eff = base - lvl;
+        t.visualElevation = eff > 0 ? eff : 0;
+      }
+    }
+
+    this.redrawWorld();
+  }
+
+  /**
+   * Redraw the whole hex map & locations using current this.mapData.
+   * Called explicitly (e.g. by HexTransformTool or recomputeWaterFromLevel)
+   * after terrain changes.
+   */
+  redrawWorld() {
+    // Re-draw terrain
+    drawHexMap.call(this);
+    // Re-draw roads & special locations
+    drawLocationsAndRoads.call(this);
+    // Re-bind resource visuals from deterministic mapInfo (fish etc.)
+    spawnFishResources.call(this);
+  }
+}
+
+/* =========================================================
+   Helpers defined outside the class
+   ========================================================= */
+
+// Wrapper to use shared A* pathfinding logic (kept for compatibility)
+function computePathWithAStar(unit, targetHex, mapData, blockedPred) {
+  const start = { q: unit.q, r: unit.r };
+  const goal = { q: targetHex.q, r: targetHex.r };
+
+  if (start.q === goal.q && start.r === goal.r) {
+    return [start];
+  }
+
+  const isBlocked = tile => {
+    if (!tile) return true;
+    return blockedPred ? blockedPred(tile) : false;
+  };
+
+  return aStarFindPath(start, goal, mapData, isBlocked);
+}
+
+WorldScene.prototype.setSelectedUnit = function (unit) {
+  this.selectedUnit = unit;
+  this.updateSelectionHighlight?.();
+
+  if (unit) {
+    // Open the root menu when a unit is selected
+    this.openRootUnitMenu?.(unit);
+  } else {
+    // Close menus when nothing is selected
+    this.closeAllMenus?.();
+  }
+};
+
+WorldScene.prototype.toggleSelectedUnitAtHex = function (q, r) {
+  // If the same unit is already selected – deselect it
+  if (this.selectedUnit && this.selectedUnit.q === q && this.selectedUnit.r === r) {
+    this.setSelectedUnit(null);
+    return;
+  }
+
+  // Find a unit/hauler on this hex
+  const unit =
+    (this.players || []).find(u => u.q === q && u.r === r) ||
+    (this.haulers || []).find(h => h.q === q && h.r === r);
+
+  this.setSelectedUnit(unit || null);
+};
+
+WorldScene.prototype.printTurnSummary = function () {
+  console.log(`[WORLD] Turn ${this.turnNumber} – Current player: ${this.turnOwner}`);
 };
