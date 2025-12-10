@@ -38,6 +38,9 @@ import {
 // Debug menu (hydrology controls)
 import { initDebugMenu } from './WorldSceneDebug.js';
 
+// NEW: History panel UI
+import { setupHistoryUI } from './WorldSceneHistory.js';
+
 import { supabase as sharedSupabase } from '../net/SupabaseClient.js';
 
 /* =========================
@@ -134,6 +137,10 @@ export default class WorldScene extends Phaser.Scene {
     this.haulers = [];
     this.ships = [];
     this.resources = [];
+
+    // NEW: history entries list for the History panel
+    // Each entry: { year, text, type, q, r }
+    this.historyEntries = [];
 
     // selection state
     this.selectedUnit = null;
@@ -242,6 +249,9 @@ export default class WorldScene extends Phaser.Scene {
     setupBuildingsUI(this);
     setupTurnUI(this);
     setupLogisticsPanel(this);
+
+    // NEW: History UI (panel to the left of resources panel)
+    setupHistoryUI(this);
 
     if (this.turnOwner) {
       updateTurnText(this, this.turnOwner);
@@ -639,4 +649,23 @@ WorldScene.prototype.toggleSelectedUnitAtHex = function (q, r) {
 
 WorldScene.prototype.printTurnSummary = function () {
   console.log(`[WORLD] Turn ${this.turnNumber} – Current player: ${this.turnOwner}`);
+};
+
+// NEW: add a history entry (ruins, etc.) and keep chronological order
+WorldScene.prototype.addHistoryEntry = function (entry) {
+  if (!this.historyEntries) this.historyEntries = [];
+  this.historyEntries.push(entry);
+  this.historyEntries.sort((a, b) => a.year - b.year);
+  // If the History panel is open, let it refresh itself
+  this.refreshHistoryPanel?.();
+};
+
+// NEW: simple year progression helper, starting at 5000
+WorldScene.prototype.getNextHistoryYear = function () {
+  const baseYear = 5000;
+  if (!this.historyEntries || this.historyEntries.length === 0) {
+    return baseYear;
+  }
+  const last = this.historyEntries[this.historyEntries.length - 1];
+  return (typeof last.year === 'number' ? last.year : baseYear) + 3;
 };
