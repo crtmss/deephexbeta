@@ -11,7 +11,10 @@ import {
   getNoPOISet,
   resolveBiome,
 } from "./WorldSceneGeography.js";
-import { generateRuinLoreForTile } from "./LoreGeneration.js";
+import {
+  generateRuinLoreForTile,
+  generateRoadLoreForExistingConnections,
+} from "./LoreGeneration.js";
 
 const keyOf = (q, r) => `${q},${r}`;
 
@@ -122,8 +125,15 @@ function addRoad(mapData, a, b) {
   b.hasRoad = true;
 }
 
-function generateDeterministicRoads(mapData, width, height, mapObjects) {
+/**
+ * Generate deterministic road network:
+ * - Connects significant POIs (ruins, crash sites, vehicles, wrecks)
+ * - Also records connections on scene.roadConnections for lore.
+ */
+function generateDeterministicRoads(scene, mapData, width, height, mapObjects) {
   const byKey = new Map(mapData.map((t) => [keyOf(t.q, t.r), t]));
+  const roadConns = scene.roadConnections || [];
+  scene.roadConnections = roadConns;
 
   // Significant POIs
   const pts = mapObjects.filter((o) => {
@@ -149,9 +159,17 @@ function generateDeterministicRoads(mapData, width, height, mapObjects) {
     const path = deterministicAStar(byKey, width, height, tA, tB);
     if (!path || path.length < 2) continue;
 
+    // Apply roads to tiles
     for (let j = 0; j + 1 < path.length; j++) {
       addRoad(mapData, path[j], path[j + 1]);
     }
+
+    // Record connection for lore (from POI A to POI B)
+    roadConns.push({
+      from: { q: A.q, r: A.r, type: String(A.type || "").toLowerCase() },
+      to:   { q: B.q, r: B.r, type: String(B.type || "").toLowerCase() },
+      path: path.map(t => ({ q: t.q, r: t.r })),
+    });
   }
 }
 
@@ -171,7 +189,7 @@ export function drawLocationsAndRoads() {
       : [];
 
   if (!map.__roadsApplied) {
-    generateDeterministicRoads(map, scene.mapWidth, scene.mapHeight, mapObjects);
+    generateDeterministicRoads(scene, map, scene.mapWidth, scene.mapHeight, mapObjects);
     Object.defineProperty(map, "__roadsApplied", {
       value: true,
       enumerable: false,
@@ -266,8 +284,6 @@ export function drawLocationsAndRoads() {
     /* ---------------- Ruins ---------------- */
     if (t.hasRuin) {
       addEmoji(cx, cy, "🏚️", size * 0.8, 106);
-
-      // Generate full lore timeline for this ruin (dedup handled inside)
       generateRuinLoreForTile(scene, t);
     }
 
@@ -275,6 +291,10 @@ export function drawLocationsAndRoads() {
     if (t.hasCrashSite) addEmoji(cx, cy, "🚀", size * 0.8, 106);
     if (t.hasVehicle) addEmoji(cx, cy, "🚙", size * 0.8, 106);
   }
+
+  // After POIs / ruins have had their city/faction lore assigned,
+  // generate road history entries for the connections we recorded earlier.
+  generateRoadLoreForExistingConnections(scene);
 }
 
 export default {
