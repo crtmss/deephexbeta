@@ -43,10 +43,10 @@ function isWaterTile(t) {
 
 // read current water level from the scene, with safe fallback
 function getCurrentWaterLevel(scene) {
-  const wl = scene && typeof scene.waterLevel === 'number'
-    ? scene.waterLevel
-    : DEFAULT_SEA_FLOOR;
-  return wl;
+  if (!scene) return DEFAULT_SEA_FLOOR;
+  if (typeof scene.waterLevel === 'number') return scene.waterLevel;
+  if (typeof scene.worldWaterLevel === 'number') return scene.worldWaterLevel;
+  return DEFAULT_SEA_FLOOR;
 }
 
 /* ---------- elevation helpers ---------- */
@@ -201,7 +201,6 @@ export function drawHex(q, r, xIso, yIso, size, fillColor, effElevationValue, ti
 
   const wallColor  = tintWallFromBase(fillColor, 0.72);
   const dropPerLvl = LIFT_PER_LVL;
-
   const walls = [];
 
   const baseSelf = (typeof tile?.baseElevation === 'number')
@@ -297,31 +296,17 @@ export function drawHex(q, r, xIso, yIso, size, fillColor, effElevationValue, ti
   maybeSkirt(4, n4, !n4);
   maybeSkirt(5, n5, !n5);
 
-  // ----------------------------------------------------
-  // RIM: remove “circles” on coastline
-  //  - Water tiles: no rim at all.
-  //  - Coastal land (land with at least one water neighbour): no rim.
-  //  - Inland land: keep rim as before.
-  // ----------------------------------------------------
-  let isCoastalLand = false;
-  if (!selfIsWater) {
-    const ns = [n0, n1, n2, n3, n4, n5];
-    for (const nt of ns) {
-      if (isWaterTile(nt)) { isCoastalLand = true; break; }
-    }
-  }
-
+  // -------- restored hex contour (all tiles, incl. water) --------
   const rim = this.add.graphics().setDepth(4);
-  if (!selfIsWater && !isCoastalLand) {
-    const rimColor = darkenRGBInt(fillColor, 0.75);
-    rim.lineStyle(1.6, rimColor, 1);
-    rim.beginPath();
-    rim.moveTo(ring[0].x, ring[0].y);
-    for (let i = 1; i < 6; i++) rim.lineTo(ring[i].x, ring[i].y);
-    rim.closePath();
-    rim.strokePath();
-  }
-  // if water or coastal land → no stroke, rim stays invisible
+  const rimBase = darkenRGBInt(fillColor, 0.75);
+
+  rim.lineStyle(1.6, rimBase, 1);
+  rim.beginPath();
+  rim.moveTo(ring[0].x, ring[0].y);
+  for (let i = 1; i < 6; i++) rim.lineTo(ring[i].x, ring[i].y);
+  rim.closePath();
+  rim.strokePath();
+  // ---------------------------------------------------------------
 
   rim._walls = walls;
   return { face, rim, ring };
