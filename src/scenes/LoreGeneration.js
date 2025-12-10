@@ -1,12 +1,22 @@
 // src/scenes/LoreGeneration.js
 //
-// Deterministic lore generation helpers for the world.
-// - Ruin / city lore
-// - Road lore connecting POIs
+// Deterministic lore generation for the whole island.
+// Instead of giving each ruin a tiny 4-line story, we now:
+// - Generate a single island-level storyline per world (per seed).
+// - Use 1–2 factions, an island name, and multiple outposts.
+// - Create events like:
+//    • faction arrives and founds first outpost
+//    • second faction arrives (optional)
+//    • tensions rise, expansion, trade, roads
+//    • war / plague / meteor wipes everything into ruins
 //
-// Public API:
+// Public API (kept for compatibility):
 //   generateRuinLoreForTile(scene, tile)
 //   generateRoadLoreForExistingConnections(scene)
+//
+// NOTE: generateRuinLoreForTile() now just ensures the world-level lore
+// has been generated once; it does NOT emit per-tile micro-stories anymore.
+// This way all ruins share a common history.
 
 function hashStr32(s) {
   let h = 2166136261 >>> 0;
@@ -22,175 +32,311 @@ function xorshift32(seed) {
   return () => {
     x ^= x << 13; x >>>= 0;
     x ^= x >> 17; x >>>= 0;
-    x ^= x << 5; x >>>= 0;
+    x ^= x << 5;  x >>>= 0;
     return (x >>> 0) / 4294967296;
   };
 }
 
-// Shared vocab so factions line up between ruins and roads
 const FACTIONS = [
-  'Azure Concord',
-  'Dust Mariners',
-  'Iron Compact',
-  'Verdant Covenant',
-  'Sable Court',
-  'Old Reef League',
+  "Azure Concord",
+  "Dust Mariners",
+  "Iron Compact",
+  "Verdant Covenant",
+  "Sable Court",
+  "Old Reef League",
+  "Marrow Tide Company",
 ];
 
-const ENEMIES = [
-  'Red Tide Raiders',
-  'Saltborn Nomads',
-  'Pale Plague',
-  'Seismic Choir',
-  'Falling Sky Cult',
+const ISLAND_PREFIX = [
+  "Isle of",
+  "Island of",
+  "Shoals of",
+  "Reach of",
+  "Haven of",
+  "Reef of",
 ];
 
-const CITY_PREFIX = [
-  'Harbor of',
-  'Citadel of',
-  'Port of',
-  'Watch of',
-  'Spire of',
-  'Haven of',
+const ISLAND_ROOT = [
+  "Brinefall",
+  "Nareth",
+  "Korvan",
+  "Greywatch",
+  "Solmere",
+  "Lowmar",
+  "Tiderest",
+  "Stormwake",
 ];
 
-const CITY_ROOT = [
-  'Nareth',
-  'Korvan',
-  'Brinefall',
-  'Greywatch',
-  'Solmere',
-  'Lowmar',
-  'Tiderest',
+const OUTPOST_PREFIX = [
+  "Outpost",
+  "Harbor",
+  "Fort",
+  "Watch",
+  "Camp",
+  "Dock",
+];
+
+const OUTPOST_ROOT = [
+  "Aster",
+  "Gale",
+  "Karn",
+  "Mire",
+  "Ridge",
+  "Pearl",
+  "Thorn",
 ];
 
 const DISASTER_TYPES = [
-  'war',
-  'abandonment',
-  'flooding',
-  'earthquake',
-  'meteor shower',
-  'plague',
+  "a meteor shower",
+  "a great plague",
+  "a black tide",
+  "rising seas",
+  "a chain of earthquakes",
 ];
 
 function pick(rng, arr) {
   return arr[Math.floor(rng() * arr.length)];
 }
 
-function deterministicFactionForCoord(seedStr, q, r) {
-  const h = hashStr32(`${seedStr}|faction|${q},${r}`);
-  const rng = xorshift32(h);
-  return pick(rng, FACTIONS);
+function pickMany(rng, arr, count) {
+  const pool = [...arr];
+  const res = [];
+  for (let i = 0; i < count && pool.length; i++) {
+    const idx = Math.floor(rng() * pool.length);
+    res.push(pool[idx]);
+    pool.splice(idx, 1);
+  }
+  return res;
 }
 
 /**
- * Generate a deterministic lore timeline for a ruin tile and push it
- * into scene.historyEntries via scene.addHistoryEntry().
- *
- * - Does nothing if tile.__loreGenerated is already true.
- * - Uses scene.seed + (q,r) to make the story deterministic per map.
- *
- * @param {Phaser.Scene & any} scene
- * @param {object} tile  expects {q, r, ...}
+ * Ensure that world-level lore for this scene is generated once.
+ * Uses:
+ *   - scene.seed
+ *   - scene.mapInfo.objects (for ruins/crash_sites)
+ *   - scene.mapData (to annotate tiles with meta)
  */
-export function generateRuinLoreForTile(scene, tile) {
-  if (!scene || !tile) return;
-  if (tile.__loreGenerated) return;
+function ensureWorldLoreGenerated(scene) {
+  if (!scene || scene.__worldLoreGenerated) return;
 
-  const seedStr = String(scene.seed || '000000');
-  const hashInput = `${seedStr}|ruin|${tile.q},${tile.r}`;
-
-  const h = hashStr32(hashInput);
-  const rng = xorshift32(h);
-
-  const owningFaction = pick(rng, FACTIONS);
-  const enemyFaction  = pick(rng, ENEMIES);
-  const disaster      = pick(rng, DISASTER_TYPES);
-  const cityName      = `${pick(rng, CITY_PREFIX)} ${pick(rng, CITY_ROOT)}`;
-
-  const baseYear = scene.getNextHistoryYear
-    ? scene.getNextHistoryYear()
-    : 5000;
-
-  const q = tile.q;
-  const r = tile.r;
-
-  const events = [
-    {
-      year: baseYear,
-      text: `City ${cityName} is founded by the ${owningFaction} on hex (${q},${r}).`,
-      type: 'city_foundation',
-    },
-    {
-      year: baseYear + 6,
-      text: `${cityName} grows into a key outpost of the ${owningFaction}, with workshops and docks.`,
-      type: 'city_growth',
-    },
-    {
-      year: baseYear + 18,
-      text: `Tensions rise as the ${enemyFaction} contest control of ${cityName} and its trade routes.`,
-      type: 'faction_tension',
-    },
-    {
-      year: baseYear + 21,
-      text: `${cityName} is devastated by ${disaster}; its districts are shattered and left in ruins.`,
-      type: 'city_ruined',
-    },
-  ];
+  const seedStr = String(scene.seed || "000000");
+  const rng = xorshift32(hashStr32(`${seedStr}|worldLore`));
 
   const addEntry = scene.addHistoryEntry
     ? (entry) => scene.addHistoryEntry(entry)
     : null;
-
   if (!addEntry) {
-    // Fail-safe: mark lore as generated so we don't spam next time,
-    // even if we can't actually store entries yet.
-    tile.__loreGenerated = true;
-    tile.__historyLogged = true;
+    // If there's no history system wired yet, bail out silently.
+    scene.__worldLoreGenerated = true;
     return;
   }
 
+  const mapObjects = scene.mapInfo && Array.isArray(scene.mapInfo.objects)
+    ? scene.mapInfo.objects
+    : [];
+
+  const ruins = mapObjects.filter(o =>
+    String(o.type || "").toLowerCase() === "ruin"
+  );
+  const crashSites = mapObjects.filter(o => {
+    const t = String(o.type || "").toLowerCase();
+    return t === "crash_site" || t === "wreck";
+  });
+
+  // Fallback coords if there are no explicit objects
+  const tiles = Array.isArray(scene.mapData) ? scene.mapData : [];
+  const anyLand = tiles.filter(t => t && t.type !== "water");
+
+  // Island name & factions
+  const islandName = `${pick(rng, ISLAND_PREFIX)} ${pick(rng, ISLAND_ROOT)}`;
+
+  // 1 or 2 main factions
+  const factionCount = rng() < 0.6 ? 2 : 1;
+  const factions = pickMany(rng, FACTIONS, factionCount);
+  const factionA = factions[0] || pick(rng, FACTIONS);
+  const factionB = factions[1] || pick(rng, FACTIONS);
+
+  // Key locations: up to 3 ruins or any land tiles
+  const keyLocs = [];
+  const pool = ruins.length ? ruins : anyLand;
+  const maxLocs = 3;
+  const used = new Set();
+  for (let i = 0; i < maxLocs && pool.length; i++) {
+    let idx = Math.floor(rng() * pool.length);
+    let tries = 0;
+    while (tries < 10 && used.has(idx)) {
+      idx = Math.floor(rng() * pool.length);
+      tries++;
+    }
+    used.add(idx);
+    const obj = pool[idx];
+    keyLocs.push({ q: obj.q, r: obj.r, type: String(obj.type || "").toLowerCase() });
+  }
+
+  if (!keyLocs.length && anyLand.length) {
+    const t = anyLand[Math.floor(rng() * anyLand.length)];
+    keyLocs.push({ q: t.q, r: t.r, type: "land" });
+  }
+
+  // Helper to find matching tile & annotate
+  const getTile = (q, r) =>
+    tiles.find(t => t.q === q && t.r === r);
+
+  const outposts = keyLocs.map((loc, idx) => {
+    const name = `${pick(rng, OUTPOST_PREFIX)} ${pick(rng, OUTPOST_ROOT)}${idx ? "-" + (idx + 1) : ""}`;
+    const tile = getTile(loc.q, loc.r);
+    if (tile) {
+      tile.cityName = name;
+    }
+    return {
+      name,
+      q: loc.q,
+      r: loc.r,
+      type: loc.type,
+    };
+  });
+
+  const baseYear = 5000;
+  const events = [];
+
+  // Decide scenario: A = two factions & war; B = single faction growth & plague.
+  const scenario = (factionCount === 2 && rng() < 0.7) ? "A" : "B";
+
+  if (scenario === "A") {
+    // === Scenario A: contested island, war, cataclysm ===
+    const disaster = pick(rng, DISASTER_TYPES);
+
+    const out1 = outposts[0];
+    const out2 = outposts[1] || out1;
+    const out3 = outposts[2] || out2;
+
+    events.push({
+      year: baseYear,
+      text: `${factionA} first discover ${islandName} and establish the outpost ${out1.name} near hex (${out1.q},${out1.r}).`,
+      type: "island_discovered",
+    });
+
+    events.push({
+      year: baseYear + 7,
+      text: `${factionB} arrive on ${islandName} and settle on the distant shore, founding ${out2.name} at (${out2.q},${out2.r}).`,
+      type: "second_faction_arrives",
+    });
+
+    events.push({
+      year: baseYear + 23,
+      text: `Tensions between ${factionA} and ${factionB} rise as patrols cross paths and trade routes are disputed.`,
+      type: "tensions_rise",
+    });
+
+    events.push({
+      year: baseYear + 37,
+      text: `${factionA} expands, building a second outpost called ${out3.name} on the shore of ${islandName}.`,
+      type: "second_outpost_built",
+    });
+
+    events.push({
+      year: baseYear + 41,
+      text: `${factionB} declares war and seizes ${out1.name}, driving ${factionA} back to the far side of the island.`,
+      type: "war_outbreak",
+    });
+
+    events.push({
+      year: baseYear + 42,
+      text: `In the chaos of the war, ${disaster} devastates ${islandName}, leaving ${out1.name}, ${out2.name} and ${out3.name} in ruins.`,
+      type: "cataclysm",
+      disaster,
+    });
+  } else {
+    // === Scenario B: single faction growth, economy, then plague ===
+    const disaster = "a sweeping plague";
+
+    const out1 = outposts[0];
+    const out2 = outposts[1] || out1;
+    const out3 = outposts[2] || out2;
+
+    events.push({
+      year: baseYear,
+      text: `${factionA} settle ${islandName}, founding the outpost ${out1.name} near the higher ground at (${out1.q},${out1.r}).`,
+      type: "island_settled",
+    });
+
+    events.push({
+      year: baseYear + 11,
+      text: `${factionA} starts gathering food from the surrounding waters, establishing fish farms and drying racks along the coast.`,
+      type: "food_economy",
+    });
+
+    events.push({
+      year: baseYear + 13,
+      text: `${factionA}'s trade flourishes; merchants pass through ${islandName}, and a second outpost, ${out2.name}, is built on the opposite shore.`,
+      type: "trade_boom",
+    });
+
+    events.push({
+      year: baseYear + 27,
+      text: `Roads and small docks are constructed between ${out1.name} and ${out2.name}, turning ${islandName} into a minor hub.`,
+      type: "infrastructure",
+    });
+
+    events.push({
+      year: baseYear + 41,
+      text: `${factionA} establishes a third outpost, ${out3.name}, to control the far reefs and fishing grounds.`,
+      type: "third_outpost_built",
+    });
+
+    events.push({
+      year: baseYear + 59,
+      text: `A sudden outbreak of ${disaster} sweeps across ${islandName}, emptying ${out1.name}, ${out2.name} and ${out3.name} and leaving only ruins behind.`,
+      type: "plague_cataclysm",
+      disaster,
+    });
+  }
+
+  // Write all events into the history
   for (const ev of events) {
     addEntry({
       year: ev.year,
       text: ev.text,
       type: ev.type,
-      q,
-      r,
-      faction: owningFaction,
-      cityName,
-      disaster,
-      enemyFaction,
+      islandName,
+      factions,
     });
   }
 
-  // Persist basic metadata on the tile so road lore can re-use it
-  tile.owningFaction = owningFaction;
-  tile.cityName = cityName;
-  tile.ruinDisaster = disaster;
+  // Store some global lore state for other systems (roads, etc.)
+  scene.loreState = {
+    islandName,
+    factions,
+    outposts,
+  };
 
-  tile.__loreGenerated = true;
-  tile.__historyLogged = true;
+  scene.__worldLoreGenerated = true;
 }
 
 /**
- * Generate lore entries for all road connections stored on the scene.
- *
- * Expects:
- *   scene.roadConnections = [
- *     { from: {q,r,type}, to: {q,r,type}, path: [{q,r}, ...] },
- *     ...
- *   ]
- *
- * Roads are attributed to:
- *   - owningFaction of the 'from' tile if present
- *   - else owningFaction of 'to' tile
- *   - else deterministicFactionForCoord(seed, from.q, from.r)
- *
- * @param {Phaser.Scene & any} scene
+ * Called from WorldSceneMapLocations for each ruin tile.
+ * Now it simply ensures world-level lore exists and
+ * marks the tile as "participating" in that lore.
+ */
+export function generateRuinLoreForTile(scene, tile) {
+  if (!scene || !tile) return;
+  ensureWorldLoreGenerated(scene);
+
+  // Mark tile so we don't try to "regenerate" per-tile stories anywhere else.
+  tile.__loreGenerated = true;
+}
+
+/**
+ * Road lore still works like before: for each recorded connection
+ * in scene.roadConnections we create a "road built from X to Y"
+ * event. We also make sure world-level lore exists first so that
+ * outpost names / factions can be reused.
  */
 export function generateRoadLoreForExistingConnections(scene) {
   if (!scene) return;
+
+  ensureWorldLoreGenerated(scene);
+
   if (scene.__roadLoreGenerated) return;
 
   const conns = Array.isArray(scene.roadConnections)
@@ -201,19 +347,21 @@ export function generateRoadLoreForExistingConnections(scene) {
     return;
   }
 
-  const seedStr = String(scene.seed || '000000');
-
-  const getTile = (q, r) =>
-    (scene.mapData || []).find(t => t.q === q && t.r === r);
-
   const addEntry = scene.addHistoryEntry
     ? (entry) => scene.addHistoryEntry(entry)
     : null;
-
   if (!addEntry) {
     scene.__roadLoreGenerated = true;
     return;
   }
+
+  const tiles = Array.isArray(scene.mapData) ? scene.mapData : [];
+  const getTile = (q, r) => tiles.find(t => t.q === q && t.r === r);
+
+  const islandName = scene.loreState?.islandName || "the island";
+  const factions = scene.loreState?.factions || [];
+
+  const defaultFaction = factions[0] || "an unknown faction";
 
   for (const conn of conns) {
     const fq = conn.from?.q;
@@ -225,21 +373,21 @@ export function generateRoadLoreForExistingConnections(scene) {
     const toTile   = getTile(tq, tr);
 
     const faction =
-      (fromTile && fromTile.owningFaction) ||
-      (toTile && toTile.owningFaction) ||
-      deterministicFactionForCoord(seedStr, fq, fr);
+      fromTile?.owningFaction ||
+      toTile?.owningFaction ||
+      defaultFaction;
 
     const fromLabel = buildLocationLabel(conn.from, fromTile, true);
     const toLabel   = buildLocationLabel(conn.to, toTile, false);
 
     const year = scene.getNextHistoryYear
       ? scene.getNextHistoryYear()
-      : 5000;
+      : 5030;
 
     addEntry({
       year,
-      text: `${faction} build a road from ${fromLabel} to ${toLabel}.`,
-      type: 'road_built',
+      text: `${faction} lay a road across ${islandName}, linking ${fromLabel} with ${toLabel}.`,
+      type: "road_built",
       from: { q: fq, r: fr },
       to: { q: tq, r: tr },
       faction,
@@ -250,28 +398,27 @@ export function generateRoadLoreForExistingConnections(scene) {
 }
 
 function buildLocationLabel(endpoint, tile, isFrom) {
-  if (!endpoint) return 'an unknown place';
+  if (!endpoint) return "an unknown place";
   const q = endpoint.q;
   const r = endpoint.r;
-  const type = String(endpoint.type || '').toLowerCase();
+  const type = String(endpoint.type || "").toLowerCase();
 
   if (tile && tile.cityName) {
-    // if we know the city name, use it
     if (isFrom) {
-      return `the city of ${tile.cityName} (${q},${r})`;
+      return `the outpost ${tile.cityName} (${q},${r})`;
     }
     return `the ruins of ${tile.cityName} (${q},${r})`;
   }
 
-  if (type === 'crash_site' || type === 'wreck') {
+  if (type === "crash_site" || type === "wreck") {
     return `a crash site near (${q},${r})`;
   }
 
-  if (type === 'vehicle') {
+  if (type === "vehicle") {
     return `a stranded vehicle at (${q},${r})`;
   }
 
-  if (type === 'ruin') {
+  if (type === "ruin") {
     return `ruins at (${q},${r})`;
   }
 
