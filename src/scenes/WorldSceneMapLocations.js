@@ -62,6 +62,7 @@ function deterministicAStar(byKey, width, height, start, goal) {
     Math.abs(q - goal.q) + Math.abs(r - goal.r);
 
   while (open.size > 0) {
+    // pick smallest f, then lexicographically smallest key
     let cur = null;
     for (const n of open.values()) {
       if (!cur || n.f < cur.f || (n.f === cur.f && n.k < cur.k)) cur = n;
@@ -123,6 +124,7 @@ function addRoad(mapData, a, b) {
 function generateDeterministicRoads(mapData, width, height, mapObjects) {
   const byKey = new Map(mapData.map((t) => [keyOf(t.q, t.r), t]));
 
+  // Significant POIs
   const pts = mapObjects.filter((o) => {
     const T = String(o.type || "").toLowerCase();
     return (
@@ -242,7 +244,7 @@ export function drawLocationsAndRoads() {
     const cx = c.x + offsetX;
     const cy = c.y + offsetY - LIFT * effectiveElevationLocal(t);
 
-    /* ---------------- Mountain icons ---------------- */
+    /* ---------------- Mountain icons (FIXED!) ---------------- */
     if (t.type === "mountain" || t.elevation === 7) {
       addEmoji(cx, cy, "⛰️", size * 0.9, 110);
       continue;
@@ -264,14 +266,18 @@ export function drawLocationsAndRoads() {
     if (t.hasRuin) {
       addEmoji(cx, cy, "🏚️", size * 0.8, 106);
 
-      // HISTORY ENTRY FOR RUINS
-      scene.addHistoryEntry?.({
-        year: scene.getNextHistoryYear?.() ?? 5000,
-        text: `Ancient ruin discovered at (${t.q},${t.r})`,
-        type: "ruin",
-        q: t.q,
-        r: t.r,
-      });
+      // HISTORY ENTRY FOR RUINS (only once per tile)
+      if (!t.__historyLogged && scene.addHistoryEntry) {
+        const year = scene.getNextHistoryYear?.() ?? 5000;
+        scene.addHistoryEntry({
+          year,
+          text: `Ancient ruin discovered at (${t.q},${t.r})`,
+          type: "ruin",
+          q: t.q,
+          r: t.r,
+        });
+        t.__historyLogged = true;
+      }
     }
 
     /* ---------------- Other POIs ---------------- */
