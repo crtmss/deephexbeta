@@ -1,10 +1,9 @@
 // src/scenes/WorldSceneHistory.js
 //
 // History panel UI.
-// - Sits near the top-right corner, visually similar to the resources panel.
-// - Panel is hidden by default and can be toggled with a "History" button.
+// - Large, scrollable lore log.
+// - Appears to the left of the Resources panel (if available).
 // - Renders chronological entries from scene.historyEntries (year + text).
-// - Now bigger, scrollable, and spaced out for readability.
 
 /**
  * Create the History panel and toggle button.
@@ -15,42 +14,56 @@ export function setupHistoryUI(scene) {
   const cam = scene.cameras.main;
   const margin = 12;
 
-  // 200% bigger than original: width & height x2
-  const panelWidth = 520;
-  const panelHeight = 440;
+  // Panel size (~200% of the first version)
+  const panelWidth = 420;
+  const panelHeight = 360;
 
-  const rightAnchor = cam.width - margin;
-  const panelX = rightAnchor - panelWidth * 2 - 16; // leave space for resources panel
-  const panelY = margin + 28; // a bit under the top edge
+  // Try to position relative to the resources panel if it exists
+  let panelX;
+  let panelY;
 
-  // --- History panel container ---
-  const container = scene.add.container(panelX, panelY);
-  container.setScrollFactor(0);
-  container.setDepth(1900); // above map, below some HUD if needed
+  if (scene.resourcesPanel) {
+    panelX = scene.resourcesPanel.x - panelWidth - 16;
+    panelY = scene.resourcesPanel.y;
+  } else {
+    // Fallback: top-right area
+    panelX = cam.width - margin - panelWidth - 260 - 16; // assume 260px for resources panel
+    panelY = 70;
+  }
 
-  // Background
+  // Store geometry for later (scroll hit-test)
+  scene.historyPanelX = panelX;
+  scene.historyPanelY = panelY;
+  scene.historyPanelWidth = panelWidth;
+  scene.historyPanelHeight = panelHeight;
+
+  // ----- Background -----
   const bg = scene.add.graphics();
+  bg.setScrollFactor(0);
+  bg.setDepth(1900);
   bg.fillStyle(0x050f1a, 0.92);
-  bg.fillRoundedRect(0, 0, panelWidth, panelHeight, 8);
+  bg.fillRoundedRect(panelX, panelY, panelWidth, panelHeight, 8);
   bg.lineStyle(1, 0x34d2ff, 0.9);
-  bg.strokeRoundedRect(0, 0, panelWidth, panelHeight, 8);
+  bg.strokeRoundedRect(panelX, panelY, panelWidth, panelHeight, 8);
 
-  // Title
+  // ----- Title -----
   const title = scene.add.text(
-    10,
-    8,
+    panelX + 12,
+    panelY + 8,
     'History',
     {
       fontFamily: 'monospace',
       fontSize: '16px',
       color: '#d0f2ff',
     }
-  );
+  )
+    .setScrollFactor(0)
+    .setDepth(1901);
 
-  // Scrollable text area
-  const TEXT_TOP = 36;
-  const TEXT_LEFT = 14;
-  const TEXT_WIDTH = panelWidth - TEXT_LEFT * 2;
+  // ----- Scrollable text area -----
+  const TEXT_TOP = panelY + 36;
+  const TEXT_LEFT = panelX + 14;
+  const TEXT_WIDTH = panelWidth - 28;
   const TEXT_BOTTOM_PADDING = 12;
 
   const entriesText = scene.add.text(
@@ -64,37 +77,54 @@ export function setupHistoryUI(scene) {
       wordWrap: { width: TEXT_WIDTH },
       lineSpacing: 4,
     }
-  );
+  )
+    .setScrollFactor(0)
+    .setDepth(1901);
 
-  // Mask for scrollable area
+  // Mask for scrollable area (using world coordinates)
+  const visibleHeight = panelHeight - (TEXT_TOP - panelY) - TEXT_BOTTOM_PADDING;
   const maskGraphics = scene.add.graphics();
+  maskGraphics.setScrollFactor(0);
+  maskGraphics.setDepth(1901);
   maskGraphics.fillStyle(0xffffff, 1);
   maskGraphics.fillRect(
     TEXT_LEFT - 2,
     TEXT_TOP - 2,
     TEXT_WIDTH + 4,
-    panelHeight - TEXT_TOP - TEXT_BOTTOM_PADDING
+    visibleHeight + 4
   );
   const textMask = maskGraphics.createGeometryMask();
   entriesText.setMask(textMask);
 
-  container.add([bg, title, entriesText, maskGraphics]);
-  container.setVisible(false); // closed by default
+  // ----- Scroll hitbox -----
+  const scrollZone = scene.add.zone(
+    panelX,
+    panelY,
+    panelWidth,
+    panelHeight
+  )
+    .setOrigin(0, 0)
+    .setScrollFactor(0)
+    .setDepth(1902)
+    .setInteractive(); // to ensure pointer events are tracked over it
 
   // Store refs on scene
-  scene.historyPanelContainer = container;
+  scene.historyPanelBg = bg;
+  scene.historyPanelTitle = title;
   scene.historyPanelText = entriesText;
+  scene.historyPanelMask = maskGraphics;
+  scene.historyPanelScrollZone = scrollZone;
+
   scene.historyTextBaseY = TEXT_TOP;
+  scene.historyVisibleHeight = visibleHeight;
   scene.historyScrollOffset = 0;
-  scene.historyPanelHeight = panelHeight;
-  scene.historyPanelInnerHeight = panelHeight - TEXT_TOP - TEXT_BOTTOM_PADDING;
   scene.isHistoryPanelOpen = false;
 
-  // --- Toggle button ("History") ---
+  // ----- Toggle button ("History") -----
   const buttonWidth = 96;
   const buttonHeight = 26;
   const btnX = panelX; // align left edge of panel
-  const btnY = margin; // just under top edge
+  const btnY = panelY - buttonHeight - 6;
 
   const buttonBg = scene.add.rectangle(
     btnX + buttonWidth / 2,
@@ -106,7 +136,7 @@ export function setupHistoryUI(scene) {
   )
     .setStrokeStyle(1, 0x34d2ff, 0.9)
     .setScrollFactor(0)
-    .setDepth(1901)
+    .setDepth(1903)
     .setInteractive({ useHandCursor: true });
 
   const buttonLabel = scene.add.text(
@@ -120,7 +150,7 @@ export function setupHistoryUI(scene) {
     }
   )
     .setScrollFactor(0)
-    .setDepth(1902);
+    .setDepth(1904);
 
   buttonBg.on('pointerover', () => {
     buttonBg.setFillStyle(0x0b2338, 0.95);
@@ -141,19 +171,34 @@ export function setupHistoryUI(scene) {
   scene.historyButtonBg = buttonBg;
   scene.historyButtonLabel = buttonLabel;
 
-  // Expose helpers on scene for other modules (if they want to use them)
+  // Expose helpers on scene
   scene.openHistoryPanel = () => openHistoryPanel(scene);
   scene.closeHistoryPanel = () => closeHistoryPanel(scene);
   scene.refreshHistoryPanel = () => refreshHistoryPanel(scene);
 
-  // Scroll with mouse wheel when panel is open
-  scene.input.on('wheel', (_pointer, _gameObjects, _dx, dy) => {
+  // Scroll with mouse wheel only when cursor is over the history panel
+  scene.input.on('wheel', (pointer, _gameObjects, _dx, dy) => {
     if (!scene.isHistoryPanelOpen || !scene.historyPanelText) return;
 
-    const step = 30; // scroll speed
+    const px = pointer.x;
+    const py = pointer.y;
+
+    const x0 = scene.historyPanelX;
+    const y0 = scene.historyPanelY;
+    const x1 = x0 + scene.historyPanelWidth;
+    const y1 = y0 + scene.historyPanelHeight;
+
+    // Scroll only if cursor is inside the panel bounds
+    if (px < x0 || px > x1 || py < y0 || py > y1) return;
+
+    const step = 30;
+    // Phaser wheel: dy > 0 → scroll down
     scene.historyScrollOffset -= Math.sign(dy) * step;
     refreshHistoryPanel(scene);
   });
+
+  // Hide everything by default
+  setHistoryPanelVisible(scene, false);
 
   // Initial refresh so UI shows a sensible placeholder
   refreshHistoryPanel(scene);
@@ -164,9 +209,8 @@ export function setupHistoryUI(scene) {
  * @param {Phaser.Scene & any} scene
  */
 export function openHistoryPanel(scene) {
-  if (!scene.historyPanelContainer) return;
+  setHistoryPanelVisible(scene, true);
   scene.isHistoryPanelOpen = true;
-  scene.historyPanelContainer.setVisible(true);
   refreshHistoryPanel(scene);
 }
 
@@ -175,9 +219,22 @@ export function openHistoryPanel(scene) {
  * @param {Phaser.Scene & any} scene
  */
 export function closeHistoryPanel(scene) {
-  if (!scene.historyPanelContainer) return;
+  setHistoryPanelVisible(scene, false);
   scene.isHistoryPanelOpen = false;
-  scene.historyPanelContainer.setVisible(false);
+}
+
+/**
+ * Show/hide all history UI elements together.
+ */
+function setHistoryPanelVisible(scene, visible) {
+  const elems = [
+    scene.historyPanelBg,
+    scene.historyPanelTitle,
+    scene.historyPanelText,
+    scene.historyPanelMask,
+    scene.historyPanelScrollZone,
+  ];
+  elems.forEach(e => e && e.setVisible(visible));
 }
 
 /**
@@ -195,23 +252,21 @@ export function refreshHistoryPanel(scene) {
   if (entries.length === 0) {
     scene.historyPanelText.setText('No events recorded yet.');
     scene.historyScrollOffset = 0;
-    scene.historyPanelText.y = scene.historyTextBaseY || 36;
+    scene.historyPanelText.y = scene.historyTextBaseY || (scene.historyPanelY + 36);
     return;
   }
 
-  // Extra spacing between entries and slightly more verbose format if needed
+  // Extra spacing between entries
   const lines = entries.map(e => {
     const year = typeof e.year === 'number' ? e.year : 5000;
     const text = e.text || '';
     return `${year} – ${text}`;
   });
 
-  // Double newline = spaced chronology
   scene.historyPanelText.setText(lines.join('\n\n'));
 
-  // Scroll handling
-  const baseY = scene.historyTextBaseY || 36;
-  const visibleHeight = scene.historyPanelInnerHeight || 300;
+  const baseY = scene.historyTextBaseY || (scene.historyPanelY + 36);
+  const visibleHeight = scene.historyVisibleHeight || 300;
   const contentHeight = scene.historyPanelText.height;
 
   // If content is smaller than view, reset scroll
