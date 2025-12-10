@@ -1,22 +1,21 @@
 // src/scenes/LoreGeneration.js
 //
 // Deterministic lore generation for the whole island.
-// Instead of giving each ruin a tiny 4-line story, we now:
-// - Generate a single island-level storyline per world (per seed).
-// - Use 1–2 factions, an island name, and multiple outposts.
-// - Create events like:
-//    • faction arrives and founds first outpost
-//    • second faction arrives (optional)
-//    • tensions rise, expansion, trade, roads
-//    • war / plague / meteor wipes everything into ruins
+// Now uses multiple phases & event pools so each island's story
+// can vary much more than the previous 2-scenario version.
 //
-// Public API (kept for compatibility):
+// Public API (unchanged):
 //   generateRuinLoreForTile(scene, tile)
 //   generateRoadLoreForExistingConnections(scene)
 //
-// NOTE: generateRuinLoreForTile() now just ensures the world-level lore
-// has been generated once; it does NOT emit per-tile micro-stories anymore.
-// This way all ruins share a common history.
+// Implementation idea:
+//   - Once per world, we build an "island arc" with phases:
+//       discovery → expansion → tension/economy → climax
+//   - Each phase draws 1–3 events from a pool, depending on
+//     how many factions & outposts exist.
+//   - Ruins / crash sites are used as named outposts.
+//   - Roads get separate "road built" events based on the
+//     roadConnections recorded on the scene.
 
 function hashStr32(s) {
   let h = 2166136261 >>> 0;
@@ -45,6 +44,7 @@ const FACTIONS = [
   "Sable Court",
   "Old Reef League",
   "Marrow Tide Company",
+  "Glass Current Guild",
 ];
 
 const ISLAND_PREFIX = [
@@ -65,6 +65,7 @@ const ISLAND_ROOT = [
   "Lowmar",
   "Tiderest",
   "Stormwake",
+  "Gloomharbor",
 ];
 
 const OUTPOST_PREFIX = [
@@ -74,6 +75,7 @@ const OUTPOST_PREFIX = [
   "Watch",
   "Camp",
   "Dock",
+  "Station",
 ];
 
 const OUTPOST_ROOT = [
@@ -84,14 +86,16 @@ const OUTPOST_ROOT = [
   "Ridge",
   "Pearl",
   "Thorn",
+  "Skerry",
 ];
 
 const DISASTER_TYPES = [
   "a meteor shower",
-  "a great plague",
+  "a sweeping plague",
   "a black tide",
   "rising seas",
   "a chain of earthquakes",
+  "a burning sky",
 ];
 
 function pick(rng, arr) {
@@ -109,24 +113,16 @@ function pickMany(rng, arr, count) {
   return res;
 }
 
-/**
- * Ensure that world-level lore for this scene is generated once.
- * Uses:
- *   - scene.seed
- *   - scene.mapInfo.objects (for ruins/crash_sites)
- *   - scene.mapData (to annotate tiles with meta)
- */
 function ensureWorldLoreGenerated(scene) {
   if (!scene || scene.__worldLoreGenerated) return;
 
   const seedStr = String(scene.seed || "000000");
-  const rng = xorshift32(hashStr32(`${seedStr}|worldLore`));
+  const rng = xorshift32(hashStr32(`${seedStr}|worldLoreV2`));
 
   const addEntry = scene.addHistoryEntry
     ? (entry) => scene.addHistoryEntry(entry)
     : null;
   if (!addEntry) {
-    // If there's no history system wired yet, bail out silently.
     scene.__worldLoreGenerated = true;
     return;
   }
@@ -134,6 +130,7 @@ function ensureWorldLoreGenerated(scene) {
   const mapObjects = scene.mapInfo && Array.isArray(scene.mapInfo.objects)
     ? scene.mapInfo.objects
     : [];
+  const tiles = Array.isArray(scene.mapData) ? scene.mapData : [];
 
   const ruins = mapObjects.filter(o =>
     String(o.type || "").toLowerCase() === "ruin"
@@ -142,35 +139,37 @@ function ensureWorldLoreGenerated(scene) {
     const t = String(o.type || "").toLowerCase();
     return t === "crash_site" || t === "wreck";
   });
-
-  // Fallback coords if there are no explicit objects
-  const tiles = Array.isArray(scene.mapData) ? scene.mapData : [];
   const anyLand = tiles.filter(t => t && t.type !== "water");
 
-  // Island name & factions
+  // --- Island name & factions ---
   const islandName = `${pick(rng, ISLAND_PREFIX)} ${pick(rng, ISLAND_ROOT)}`;
 
-  // 1 or 2 main factions
-  const factionCount = rng() < 0.6 ? 2 : 1;
+  const factionCount = 1 + Math.floor(rng() * 3); // 1–3
   const factions = pickMany(rng, FACTIONS, factionCount);
-  const factionA = factions[0] || pick(rng, FACTIONS);
-  const factionB = factions[1] || pick(rng, FACTIONS);
+  const factionA = factions[0];
+  const factionB = factions[1];
+  const factionC = factions[2];
 
-  // Key locations: up to 3 ruins or any land tiles
+  // --- Key locations → outposts ---
   const keyLocs = [];
-  const pool = ruins.length ? ruins : anyLand;
-  const maxLocs = 3;
+  const basePool = ruins.length ? ruins : anyLand;
+  const maxLocs = Math.min(4, basePool.length || 4);
   const used = new Set();
-  for (let i = 0; i < maxLocs && pool.length; i++) {
-    let idx = Math.floor(rng() * pool.length);
+
+  for (let i = 0; i < maxLocs && basePool.length; i++) {
+    let idx = Math.floor(rng() * basePool.length);
     let tries = 0;
     while (tries < 10 && used.has(idx)) {
-      idx = Math.floor(rng() * pool.length);
+      idx = Math.floor(rng() * basePool.length);
       tries++;
     }
     used.add(idx);
-    const obj = pool[idx];
-    keyLocs.push({ q: obj.q, r: obj.r, type: String(obj.type || "").toLowerCase() });
+    const obj = basePool[idx];
+    keyLocs.push({
+      q: obj.q,
+      r: obj.r,
+      type: String(obj.type || (obj.type === "water" ? "water" : "land")).toLowerCase(),
+    });
   }
 
   if (!keyLocs.length && anyLand.length) {
@@ -178,15 +177,14 @@ function ensureWorldLoreGenerated(scene) {
     keyLocs.push({ q: t.q, r: t.r, type: "land" });
   }
 
-  // Helper to find matching tile & annotate
-  const getTile = (q, r) =>
-    tiles.find(t => t.q === q && t.r === r);
+  const getTile = (q, r) => tiles.find(t => t.q === q && t.r === r);
 
   const outposts = keyLocs.map((loc, idx) => {
     const name = `${pick(rng, OUTPOST_PREFIX)} ${pick(rng, OUTPOST_ROOT)}${idx ? "-" + (idx + 1) : ""}`;
     const tile = getTile(loc.q, loc.r);
     if (tile) {
       tile.cityName = name;
+      tile.owningFaction = factionA;
     }
     return {
       name,
@@ -196,103 +194,148 @@ function ensureWorldLoreGenerated(scene) {
     };
   });
 
+  // --- Phased storyline ---
   const baseYear = 5000;
   const events = [];
 
-  // Decide scenario: A = two factions & war; B = single faction growth & plague.
-  const scenario = (factionCount === 2 && rng() < 0.7) ? "A" : "B";
+  // Phase 1: Discovery / first settlement
+  const firstOut = outposts[0];
 
-  if (scenario === "A") {
-    // === Scenario A: contested island, war, cataclysm ===
-    const disaster = pick(rng, DISASTER_TYPES);
+  events.push({
+    year: baseYear,
+    text: `${factionA} sight ${islandName} and establish the outpost ${firstOut.name} near (${firstOut.q},${firstOut.r}).`,
+    type: "discovery",
+  });
 
-    const out1 = outposts[0];
-    const out2 = outposts[1] || out1;
-    const out3 = outposts[2] || out2;
+  const hasCrashSite = crashSites.length > 0;
 
+  if (hasCrashSite && rng() < 0.5) {
+    const c = crashSites[Math.floor(rng() * crashSites.length)];
     events.push({
-      year: baseYear,
-      text: `${factionA} first discover ${islandName} and establish the outpost ${out1.name} near hex (${out1.q},${out1.r}).`,
-      type: "island_discovered",
+      year: baseYear + 3,
+      text: `A derelict vessel is found beached near (${c.q},${c.r}); scavengers from ${firstOut.name} drag its timbers inland.`,
+      type: "early_scavenging",
     });
+  }
 
+  // Phase 2: Expansion & economy
+  const econTemplates = [];
+
+  econTemplates.push((year) => ({
+    year,
+    text: `${factionA} begin netting the surrounding shallows, raising fishpens and smoke racks along the coves of ${islandName}.`,
+    type: "fish_economy",
+  }));
+
+  econTemplates.push((year) => ({
+    year,
+    text: `Trade slowly picks up; small cutters from distant ports anchor off ${islandName} to barter for dried fish and scrap.`,
+    type: "trade_grows",
+  }));
+
+  econTemplates.push((year) => ({
+    year,
+    text: `Work crews from ${firstOut.name} lay crude paths inland, marking the first overland routes on ${islandName}.`,
+    type: "paths_built",
+  }));
+
+  if (outposts[1]) {
+    const out2 = outposts[1];
+    econTemplates.push((year) => ({
+      year,
+      text: `To secure another anchorage, ${factionA} raise a second outpost, ${out2.name}, on the far side of ${islandName}.`,
+      type: "second_outpost",
+    }));
+  }
+
+  let yearCursor = baseYear + 8;
+  const econEventsToTake = 1 + Math.floor(rng() * 3); // 1–3 events
+  const econPool = [...econTemplates];
+  for (let i = 0; i < econEventsToTake && econPool.length; i++) {
+    const idx = Math.floor(rng() * econPool.length);
+    const fn = econPool[idx];
+    econPool.splice(idx, 1);
+    events.push(fn(yearCursor));
+    yearCursor += 5 + Math.floor(rng() * 6);
+  }
+
+  // Phase 3: Other factions / tensions OR deeper economy
+  const multiFaction = factionB && rng() < 0.7;
+
+  if (multiFaction) {
+    const out2 = outposts[1] || firstOut;
     events.push({
-      year: baseYear + 7,
-      text: `${factionB} arrive on ${islandName} and settle on the distant shore, founding ${out2.name} at (${out2.q},${out2.r}).`,
+      year: yearCursor,
+      text: `${factionB} arrive on ${islandName}, staking a claim near (${out2.q},${out2.r}) and raising banners not far from ${firstOut.name}.`,
       type: "second_faction_arrives",
     });
+    yearCursor += 7 + Math.floor(rng() * 5);
 
+    if (rng() < 0.6) {
+      events.push({
+        year: yearCursor,
+        text: `Patrols from ${factionA} and ${factionB} cross paths; markers are torn down, and arguments over streams and coves grow violent.`,
+        type: "tensions_rise",
+      });
+      yearCursor += 5 + Math.floor(rng() * 4);
+    }
+
+    if (outposts[2] && rng() < 0.7) {
+      const out3 = outposts[2];
+      events.push({
+        year: yearCursor,
+        text: `${factionA} answer the pressure by founding a new redoubt, ${out3.name}, closer to the disputed shore.`,
+        type: "third_outpost_built",
+      });
+      yearCursor += 4 + Math.floor(rng() * 4);
+    }
+  } else {
+    if (outposts[2] && rng() < 0.7) {
+      const out3 = outposts[2];
+      events.push({
+        year: yearCursor,
+        text: `Prosperity on ${islandName} allows ${factionA} to form a third settlement, ${out3.name}, overlooking distant reefs.`,
+        type: "third_outpost_single_faction",
+      });
+      yearCursor += 6 + Math.floor(rng() * 5);
+    }
+  }
+
+  // Optional skirmish / brief war
+  if (multiFaction && rng() < 0.7) {
+    const attacker = rng() < 0.5 ? factionA : factionB;
+    const defender = attacker === factionA ? factionB : factionA;
+    const targetOut = outposts[1] || firstOut;
     events.push({
-      year: baseYear + 23,
-      text: `Tensions between ${factionA} and ${factionB} rise as patrols cross paths and trade routes are disputed.`,
-      type: "tensions_rise",
+      year: yearCursor,
+      text: `A brief war flares: ${attacker} storm ${targetOut.name}, and for a season, campfires of ${defender} burn only on the far horizon.`,
+      type: "brief_war",
     });
+    yearCursor += 4 + Math.floor(rng() * 3);
+  }
 
-    events.push({
-      year: baseYear + 37,
-      text: `${factionA} expands, building a second outpost called ${out3.name} on the shore of ${islandName}.`,
-      type: "second_outpost_built",
-    });
+  // Phase 4: Climax (cataclysm)
+  const disaster = pick(rng, DISASTER_TYPES);
 
-    events.push({
-      year: baseYear + 41,
-      text: `${factionB} declares war and seizes ${out1.name}, driving ${factionA} back to the far side of the island.`,
-      type: "war_outbreak",
-    });
+  const namesList = outposts.map(o => o.name).join(", ");
 
+  if (rng() < 0.5) {
     events.push({
-      year: baseYear + 42,
-      text: `In the chaos of the war, ${disaster} devastates ${islandName}, leaving ${out1.name}, ${out2.name} and ${out3.name} in ruins.`,
-      type: "cataclysm",
+      year: yearCursor,
+      text: `As arguments over supply and tribute sharpen, every banner on ${islandName} is struck down at once when ${disaster} ravages ${namesList}.`,
+      type: "cataclysm_conflict",
       disaster,
     });
   } else {
-    // === Scenario B: single faction growth, economy, then plague ===
-    const disaster = "a sweeping plague";
-
-    const out1 = outposts[0];
-    const out2 = outposts[1] || out1;
-    const out3 = outposts[2] || out2;
-
     events.push({
-      year: baseYear,
-      text: `${factionA} settle ${islandName}, founding the outpost ${out1.name} near the higher ground at (${out1.q},${out1.r}).`,
-      type: "island_settled",
-    });
-
-    events.push({
-      year: baseYear + 11,
-      text: `${factionA} starts gathering food from the surrounding waters, establishing fish farms and drying racks along the coast.`,
-      type: "food_economy",
-    });
-
-    events.push({
-      year: baseYear + 13,
-      text: `${factionA}'s trade flourishes; merchants pass through ${islandName}, and a second outpost, ${out2.name}, is built on the opposite shore.`,
-      type: "trade_boom",
-    });
-
-    events.push({
-      year: baseYear + 27,
-      text: `Roads and small docks are constructed between ${out1.name} and ${out2.name}, turning ${islandName} into a minor hub.`,
-      type: "infrastructure",
-    });
-
-    events.push({
-      year: baseYear + 41,
-      text: `${factionA} establishes a third outpost, ${out3.name}, to control the far reefs and fishing grounds.`,
-      type: "third_outpost_built",
-    });
-
-    events.push({
-      year: baseYear + 59,
-      text: `A sudden outbreak of ${disaster} sweeps across ${islandName}, emptying ${out1.name}, ${out2.name} and ${out3.name} and leaving only ruins behind.`,
-      type: "plague_cataclysm",
+      year: yearCursor,
+      text: `Years of overfishing, scavenging and quiet feuds leave ${islandName} hollow. When ${disaster} comes, there is no strength left to resist, and ${namesList} fall silent.`,
+      type: "cataclysm_collapse",
       disaster,
     });
   }
 
-  // Write all events into the history
+  // Write events into the history
   for (const ev of events) {
     addEntry({
       year: ev.year,
@@ -303,40 +346,29 @@ function ensureWorldLoreGenerated(scene) {
     });
   }
 
-  // Store some global lore state for other systems (roads, etc.)
   scene.loreState = {
     islandName,
     factions,
     outposts,
+    disaster,
   };
 
   scene.__worldLoreGenerated = true;
 }
 
-/**
- * Called from WorldSceneMapLocations for each ruin tile.
- * Now it simply ensures world-level lore exists and
- * marks the tile as "participating" in that lore.
- */
+// Called per-ruin from WorldSceneMapLocations.
+// Now it just ensures world-level lore exists and marks the tile.
 export function generateRuinLoreForTile(scene, tile) {
   if (!scene || !tile) return;
   ensureWorldLoreGenerated(scene);
-
-  // Mark tile so we don't try to "regenerate" per-tile stories anywhere else.
   tile.__loreGenerated = true;
 }
 
-/**
- * Road lore still works like before: for each recorded connection
- * in scene.roadConnections we create a "road built from X to Y"
- * event. We also make sure world-level lore exists first so that
- * outpost names / factions can be reused.
- */
+// Same API as before: we add "road built" events based on recorded connections.
 export function generateRoadLoreForExistingConnections(scene) {
   if (!scene) return;
 
   ensureWorldLoreGenerated(scene);
-
   if (scene.__roadLoreGenerated) return;
 
   const conns = Array.isArray(scene.roadConnections)
@@ -360,7 +392,6 @@ export function generateRoadLoreForExistingConnections(scene) {
 
   const islandName = scene.loreState?.islandName || "the island";
   const factions = scene.loreState?.factions || [];
-
   const defaultFaction = factions[0] || "an unknown faction";
 
   for (const conn of conns) {
