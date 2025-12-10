@@ -1,5 +1,4 @@
 // src/scenes/WorldScene.js
-import Phaser from 'phaser';                           // ✅ ADDED BACK
 import HexMap from '../engine/HexMap.js';
 import { findPath as aStarFindPath } from '../engine/AStar.js';
 import { drawLocationsAndRoads } from './WorldSceneMapLocations.js';
@@ -31,8 +30,8 @@ import {
   hexToPixel,
   pixelToHex,
   roundHex,
-  getColorForTerrain,      // still imported for compatibility if other modules read it
-  isoOffset,               // idem
+  getColorForTerrain,
+  isoOffset,
   LIFT_PER_LVL,
 } from './WorldSceneMap.js';
 
@@ -112,9 +111,10 @@ export default class WorldScene extends Phaser.Scene {
   preload() {}
 
   async create() {
-    this.hexSize = 24;
-    this.mapWidth = 25;
-    this.mapHeight = 25;
+    // >>> keep 29x29 and hexSize from your previous version <<<
+    this.hexSize = 22;
+    this.mapWidth = 29;
+    this.mapHeight = 29;
 
     this.input.setDefaultCursor('grab');
     this.isDragging = false;
@@ -174,7 +174,8 @@ export default class WorldScene extends Phaser.Scene {
 
     // Global water level (1..7; tiles with baseElevation <= level are flooded)
     this.worldWaterLevel = 3;
-    this.waterLevel = this.worldWaterLevel;        // ✅ keep renderer-helper in sync
+    // keep simple alias used by other parts of the code (e.g. map renderer)
+    this.waterLevel      = this.worldWaterLevel || 3;
 
     /* =========================
        Deterministic map generation
@@ -297,7 +298,6 @@ export default class WorldScene extends Phaser.Scene {
   getNextPlayer(players, currentName) {
     if (!players || players.length === 0) return null;
 
-    // players[] can be ["Vlad", "Alice"] or [{name:"Vlad"}, ...]
     const norm = players.map(p => (typeof p === 'string' ? { name: p } : p));
     const idx = norm.findIndex(p => p.name === currentName);
 
@@ -322,7 +322,6 @@ Biomes: ${biome}`;
 
     const pad = { x: 8, y: 6 };
 
-    // moved to the right so it doesn't overlap the resource HUD
     const x = 320;
     const y = 16;
 
@@ -358,7 +357,6 @@ Biomes: ${biome}`;
     label.setDepth(101);
   }
 
-  // === Centralized offset-aware conversions ===
   axialToWorld(q, r) {
     const size = this.hexSize;
     const { x, y } = hexToPixel(q, r, size);
@@ -419,7 +417,7 @@ Biomes: ${biome}`;
 
     this.isUnitMoving = true;
     const scene = this;
-    let index = 1; // start from second node
+    let index = 1;
 
     function stepNext() {
       if (index >= path.length) {
@@ -427,7 +425,7 @@ Biomes: ${biome}`;
         unit.q = last.q;
         unit.r = last.r;
         scene.isUnitMoving = false;
-        scene.updateSelectionHighlight?.();   // keep highlight on the new hex
+        scene.updateSelectionHighlight?.();
         if (onComplete) onComplete();
         return;
       }
@@ -448,7 +446,6 @@ Biomes: ${biome}`;
           unit.q = step.q;
           unit.r = step.r;
 
-          // update facing direction towards this step
           updateUnitOrientation(scene, unit, prevQ, prevR, unit.q, unit.r);
 
           index += 1;
@@ -466,16 +463,11 @@ Biomes: ${biome}`;
 
     console.log(`[TURN] Ending turn for ${this.turnOwner} (Turn ${this.turnNumber})`);
 
-    // 1) Ships (fish → docks)
     applyShipRoutesOnEndTurn(this);
-    // 2) Ground haulers (legacy behavior, e.g. docks ↔ base)
     applyHaulerRoutesOnEndTurn(this);
-    // 3) Buildings logistics (e.g. Mines produce scrap into local storage)
     applyLogisticsOnEndTurn(this);
-    // 4) Factorio-style hauler routes (logisticsRoute on haulers / ships)
     applyLogisticsRoutesOnEndTurn(this);
 
-    // Host moves enemies; clients will later be synced via Supabase (future step)
     if (this.isHost) {
       this.moveEnemies();
     }
@@ -536,42 +528,19 @@ Biomes: ${biome}`;
     });
   }
 
-  /**
-   * Recompute which tiles are under water for the current worldWaterLevel.
-   * Uses baseElevation (or elevation) and groundType to set tile.type,
-   * waterDepth and visualElevation, then triggers a full redraw.
-   *
-   * Rules:
-   *  - Underwater if baseElevation <= worldWaterLevel.
-   *  - Underwater tiles:
-   *      type              = 'water'
-   *      isUnderWater      = true
-   *      isWater           = true
-   *      isCoveredByWater  = true
-   *      waterDepth        = 1 (deep) .. 3 (shallow)
-   *      visualElevation   = 0
-   *  - Land tiles:
-   *      type              = groundType
-   *      clear water flags
-   *      waterDepth        = 0
-   *      visualElevation   = max(0, baseElevation - worldWaterLevel)
-   *    → every +1 water level shrinks all cliffs by 1.
-   */
   recomputeWaterFromLevel() {
     if (!Array.isArray(this.mapData)) return;
 
-    // clamp and store
     const lvlRaw = (typeof this.worldWaterLevel === 'number')
       ? this.worldWaterLevel
       : 3;
     const lvl = Math.max(0, Math.min(7, lvlRaw));
     this.worldWaterLevel = lvl;
-    this.waterLevel = lvl;                       // ✅ keep used-by-renderer in sync
+    this.waterLevel      = lvl;   // keep in sync
 
     for (const t of this.mapData) {
       if (!t) continue;
 
-      // Canonical base elevation 1..7
       let base = (typeof t.baseElevation === 'number')
         ? t.baseElevation
         : (typeof t.elevation === 'number' ? t.elevation : 0);
@@ -579,7 +548,6 @@ Biomes: ${biome}`;
       t.baseElevation = base;
       t.elevation = base;
 
-      // Ensure groundType once
       if (!t.groundType) {
         if (t.type && t.type !== 'water') {
           t.groundType = t.type;
@@ -591,28 +559,24 @@ Biomes: ${biome}`;
       const under = (lvl > 0) && (base <= lvl);
 
       if (under) {
-        // --- Underwater tile ---
         t.type = 'water';
         t.isUnderWater = true;
         t.isWater = true;
         t.isCoveredByWater = true;
 
-        // 1..3 depth for the three water shades
         let depth = base;
         if (depth < 1) depth = 1;
         if (depth > 3) depth = 3;
         t.waterDepth = depth;
 
-        t.visualElevation = 0; // all water is flat visually
+        t.visualElevation = 0;
       } else {
-        // --- Land tile ---
         t.type = t.groundType || 'grassland';
         t.isUnderWater = false;
         t.isWater = false;
         t.isCoveredByWater = false;
         t.waterDepth = 0;
 
-        // visual height above *current* sea level
         const eff = base - lvl;
         t.visualElevation = eff > 0 ? eff : 0;
       }
@@ -621,17 +585,9 @@ Biomes: ${biome}`;
     this.redrawWorld();
   }
 
-  /**
-   * Redraw the whole hex map & locations using current this.mapData.
-   * Called explicitly (e.g. by HexTransformTool or recomputeWaterFromLevel)
-   * after terrain changes.
-   */
   redrawWorld() {
-    // Re-draw terrain
     drawHexMap.call(this);
-    // Re-draw roads & special locations
     drawLocationsAndRoads.call(this);
-    // Re-bind resource visuals from deterministic mapInfo (fish etc.)
     spawnFishResources.call(this);
   }
 }
@@ -640,7 +596,6 @@ Biomes: ${biome}`;
    Helpers defined outside the class
    ========================================================= */
 
-// Wrapper to use shared A* pathfinding logic (kept for compatibility)
 function computePathWithAStar(unit, targetHex, mapData, blockedPred) {
   const start = { q: unit.q, r: unit.r };
   const goal = { q: targetHex.q, r: targetHex.r };
@@ -662,22 +617,18 @@ WorldScene.prototype.setSelectedUnit = function (unit) {
   this.updateSelectionHighlight?.();
 
   if (unit) {
-    // Open the root menu when a unit is selected
     this.openRootUnitMenu?.(unit);
   } else {
-    // Close menus when nothing is selected
     this.closeAllMenus?.();
   }
 };
 
 WorldScene.prototype.toggleSelectedUnitAtHex = function (q, r) {
-  // If the same unit is already selected – deselect it
   if (this.selectedUnit && this.selectedUnit.q === q && this.selectedUnit.r === r) {
     this.setSelectedUnit(null);
     return;
   }
 
-  // Find a unit/hauler on this hex
   const unit =
     (this.players || []).find(u => u.q === q && u.r === r) ||
     (this.haulers || []).find(h => h.q === q && h.r === r);
