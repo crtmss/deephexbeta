@@ -24,7 +24,7 @@ import { setupTurnUI, updateTurnText, setupWorldInputUI } from './WorldSceneUI.j
 
 // Units / resources / map
 import { spawnUnitsAndEnemies, updateUnitOrientation } from './WorldSceneUnits.js';
-import { spawnFishResources } from './WorldSceneResources.js';
+import { spawnFishResources, spawnCrudeOilResources } from './WorldSceneResources.js';
 import {
   drawHexMap,
   hexToPixel,
@@ -589,6 +589,7 @@ Biomes: ${biome}`;
     drawHexMap.call(this);
     drawLocationsAndRoads.call(this);
     spawnFishResources.call(this);
+    spawnCrudeOilResources.call(this);
   }
 }
 
