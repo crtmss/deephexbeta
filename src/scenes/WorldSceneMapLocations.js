@@ -11,6 +11,7 @@ import {
   getNoPOISet,
   resolveBiome,
 } from "./WorldSceneGeography.js";
+import { generateRuinLoreForTile } from "./LoreGeneration.js";
 
 const keyOf = (q, r) => `${q},${r}`;
 
@@ -266,18 +267,8 @@ export function drawLocationsAndRoads() {
     if (t.hasRuin) {
       addEmoji(cx, cy, "🏚️", size * 0.8, 106);
 
-      // HISTORY ENTRY FOR RUINS (only once per tile)
-      if (!t.__historyLogged && scene.addHistoryEntry) {
-        const year = scene.getNextHistoryYear?.() ?? 5000;
-        scene.addHistoryEntry({
-          year,
-          text: `Ancient ruin discovered at (${t.q},${t.r})`,
-          type: "ruin",
-          q: t.q,
-          r: t.r,
-        });
-        t.__historyLogged = true;
-      }
+      // Generate full lore timeline for this ruin (dedup handled inside)
+      generateRuinLoreForTile(scene, t);
     }
 
     /* ---------------- Other POIs ---------------- */
