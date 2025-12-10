@@ -1,21 +1,12 @@
 // src/scenes/LoreGeneration.js
 //
 // Deterministic lore generation for the whole island.
-// Now uses multiple phases & event pools so each island's story
-// can vary much more than the previous 2-scenario version.
+// Now uses multiple phases & event pools and inspects the map's
+// terrain/resources to generate resource-aware events.
 //
 // Public API (unchanged):
 //   generateRuinLoreForTile(scene, tile)
 //   generateRoadLoreForExistingConnections(scene)
-//
-// Implementation idea:
-//   - Once per world, we build an "island arc" with phases:
-//       discovery → expansion → tension/economy → climax
-//   - Each phase draws 1–3 events from a pool, depending on
-//     how many factions & outposts exist.
-//   - Ruins / crash sites are used as named outposts.
-//   - Roads get separate "road built" events based on the
-//     roadConnections recorded on the scene.
 
 function hashStr32(s) {
   let h = 2166136261 >>> 0;
@@ -113,11 +104,69 @@ function pickMany(rng, arr, count) {
   return res;
 }
 
+/**
+ * Lightweight scan of terrain & resources to drive resource-aware lore.
+ * Tries to be robust to unknown structures by checking several patterns.
+ */
+function analyzeResources(tiles, mapObjects) {
+  let waterTiles = 0;
+  let shallowWaterTiles = 0;
+  let forestTiles = 0;
+  let mountainTiles = 0;
+  let fishNodes = 0;
+  let oilNodes = 0;
+
+  for (const t of tiles) {
+    if (!t) continue;
+    if (t.type === "water") {
+      waterTiles++;
+      const depth = typeof t.waterDepth === "number" ? t.waterDepth : 2;
+      if (depth <= 2) shallowWaterTiles++;
+    }
+    if (t.hasForest) forestTiles++;
+    if (t.type === "mountain" || t.elevation === 7) mountainTiles++;
+
+    // Try to guess resource markers on tiles
+    const resType = String(t.resourceType || "").toLowerCase();
+    if (resType === "fish") fishNodes++;
+    if (resType === "crudeoil" || resType === "crude_oil" || resType === "oil") oilNodes++;
+
+    if (Array.isArray(t.resources)) {
+      for (const r of t.resources) {
+        const rt = String(r?.type || "").toLowerCase();
+        if (rt === "fish") fishNodes++;
+        if (rt === "crudeoil" || rt === "crude_oil" || rt === "oil") oilNodes++;
+      }
+    }
+    if (t.hasFishResource) fishNodes++;
+    if (t.hasCrudeOilResource || t.hasOilResource) oilNodes++;
+  }
+
+  for (const o of mapObjects) {
+    const t = String(o.type || "").toLowerCase();
+    if (t === "fish" || t === "fish_node") fishNodes++;
+    if (t === "crudeoil" || t === "crude_oil" || t === "oil") oilNodes++;
+  }
+
+  const total = tiles.length || 1;
+  return {
+    waterTiles,
+    shallowWaterTiles,
+    forestTiles,
+    mountainTiles,
+    fishNodes,
+    oilNodes,
+    waterRatio: waterTiles / total,
+    forestRatio: forestTiles / total,
+    mountainRatio: mountainTiles / total,
+  };
+}
+
 function ensureWorldLoreGenerated(scene) {
   if (!scene || scene.__worldLoreGenerated) return;
 
   const seedStr = String(scene.seed || "000000");
-  const rng = xorshift32(hashStr32(`${seedStr}|worldLoreV2`));
+  const rng = xorshift32(hashStr32(`${seedStr}|worldLoreV3`));
 
   const addEntry = scene.addHistoryEntry
     ? (entry) => scene.addHistoryEntry(entry)
@@ -131,6 +180,8 @@ function ensureWorldLoreGenerated(scene) {
     ? scene.mapInfo.objects
     : [];
   const tiles = Array.isArray(scene.mapData) ? scene.mapData : [];
+
+  const resInfo = analyzeResources(tiles, mapObjects);
 
   const ruins = mapObjects.filter(o =>
     String(o.type || "").toLowerCase() === "ruin"
@@ -218,18 +269,79 @@ function ensureWorldLoreGenerated(scene) {
     });
   }
 
-  // Phase 2: Expansion & economy
+  // Phase 2: Expansion & economy — now resource-aware
   const econTemplates = [];
 
-  econTemplates.push((year) => ({
-    year,
-    text: `${factionA} begin netting the surrounding shallows, raising fishpens and smoke racks along the coves of ${islandName}.`,
-    type: "fish_economy",
-  }));
+  // Generic fishing / food if lots of water or fish nodes
+  if (resInfo.waterRatio > 0.25 || resInfo.fishNodes > 4) {
+    econTemplates.push((year) => ({
+      year,
+      text: `${factionA} begin netting the surrounding shallows, raising fishpens and smoke racks along the coves of ${islandName}.`,
+      type: "fish_economy",
+    }));
 
+    econTemplates.push((year) => ({
+      year,
+      text: `Skiffs from ${firstOut.name} push ever farther offshore, following glittering shoals that circle ${islandName} each season.`,
+      type: "deep_fishing",
+    }));
+  } else {
+    econTemplates.push((year) => ({
+      year,
+      text: `${factionA} clear a few terraces of soil around ${firstOut.name}, coaxing thin crops from the island's dust.`,
+      type: "meagre_farming",
+    }));
+  }
+
+  // Forest-based events
+  if (resInfo.forestRatio > 0.15 || resInfo.forestTiles > 40) {
+    econTemplates.push((year) => ({
+      year,
+      text: `Loggers from ${firstOut.name} move into the island's thickets, cutting timber for piers and modest halls.`,
+      type: "logging",
+    }));
+
+    econTemplates.push((year) => ({
+      year,
+      text: `The best trunks are hauled to the shore and shaped into hulls; small shipyards grow up beside ${firstOut.name}.`,
+      type: "shipbuilding",
+    }));
+  }
+
+  // Mountain / ore events
+  if (resInfo.mountainRatio > 0.08 || resInfo.mountainTiles > 20) {
+    econTemplates.push((year) => ({
+      year,
+      text: `Prospectors hammer the cliffs and ridges of ${islandName}, marking seams where metal glints in the rock.`,
+      type: "prospecting",
+    }));
+
+    econTemplates.push((year) => ({
+      year,
+      text: `Mines bite into the hills; carts from ${firstOut.name} creak under ore bound for crude smelters by the shore.`,
+      type: "mining",
+    }));
+  }
+
+  // Oil events – based on crude oil resource nodes or lots of shallow water
+  if (resInfo.oilNodes > 0 || (resInfo.shallowWaterTiles > 20 && rng() < 0.6)) {
+    econTemplates.push((year) => ({
+      year,
+      text: `Dark slicks are spotted in the shallows; ${factionA} rig makeshift derricks over the seabed near ${firstOut.name}.`,
+      type: "oil_discovery",
+    }));
+
+    econTemplates.push((year) => ({
+      year,
+      text: `Crude from the reefs of ${islandName} is boiled down in noisy stills; lamps in ${firstOut.name} burn late into the night.`,
+      type: "oil_refining",
+    }));
+  }
+
+  // Always have at least one generic trade / paths template
   econTemplates.push((year) => ({
     year,
-    text: `Trade slowly picks up; small cutters from distant ports anchor off ${islandName} to barter for dried fish and scrap.`,
+    text: `Trade slowly picks up; small cutters from distant ports anchor off ${islandName} to barter for whatever the settlers can spare.`,
     type: "trade_grows",
   }));
 
@@ -249,14 +361,14 @@ function ensureWorldLoreGenerated(scene) {
   }
 
   let yearCursor = baseYear + 8;
-  const econEventsToTake = 1 + Math.floor(rng() * 3); // 1–3 events
+  const econEventsToTake = 2 + Math.floor(rng() * 3); // 2–4 events
   const econPool = [...econTemplates];
   for (let i = 0; i < econEventsToTake && econPool.length; i++) {
     const idx = Math.floor(rng() * econPool.length);
     const fn = econPool[idx];
     econPool.splice(idx, 1);
     events.push(fn(yearCursor));
-    yearCursor += 5 + Math.floor(rng() * 6);
+    yearCursor += 4 + Math.floor(rng() * 6);
   }
 
   // Phase 3: Other factions / tensions OR deeper economy
@@ -274,7 +386,7 @@ function ensureWorldLoreGenerated(scene) {
     if (rng() < 0.6) {
       events.push({
         year: yearCursor,
-        text: `Patrols from ${factionA} and ${factionB} cross paths; markers are torn down, and arguments over streams and coves grow violent.`,
+        text: `Patrols from ${factionA} and ${factionB} cross paths; markers are torn down, and arguments over streams, coves and seams of ore grow violent.`,
         type: "tensions_rise",
       });
       yearCursor += 5 + Math.floor(rng() * 4);
@@ -327,9 +439,20 @@ function ensureWorldLoreGenerated(scene) {
       disaster,
     });
   } else {
+    let resourceFlavor = "";
+    if (resInfo.oilNodes > 0) {
+      resourceFlavor = "oil rigs rust and topple,";
+    } else if (resInfo.mountainTiles > 10) {
+      resourceFlavor = "shafts cave in and furnaces go cold,";
+    } else if (resInfo.fishNodes > 3 || resInfo.waterRatio > 0.25) {
+      resourceFlavor = "nets rot on their poles and the harbors silt over,";
+    } else if (resInfo.forestTiles > 20) {
+      resourceFlavor = "cut stumps stand along the hillsides like teeth,";
+    }
+
     events.push({
       year: yearCursor,
-      text: `Years of overfishing, scavenging and quiet feuds leave ${islandName} hollow. When ${disaster} comes, there is no strength left to resist, and ${namesList} fall silent.`,
+      text: `Years of overfishing, scavenging and quiet feuds leave ${islandName} hollow; ${resourceFlavor} and when ${disaster} comes there is no strength left to resist, and ${namesList} fall silent.`,
       type: "cataclysm_collapse",
       disaster,
     });
@@ -351,6 +474,7 @@ function ensureWorldLoreGenerated(scene) {
     factions,
     outposts,
     disaster,
+    resources: resInfo,
   };
 
   scene.__worldLoreGenerated = true;
