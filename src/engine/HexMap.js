@@ -339,9 +339,8 @@ function assignExact(pool, type, count, rand) {
 }
 
 /**
- * Paints a global biome onto the map, but now does it using
- * contiguous patches (4–15 hexes) so land looks like actual
- * terrain blobs instead of scattered noise.
+ * Paints a global biome onto the map using contiguous patches
+ * (4–9 hexes) so land looks like proper blobs instead of noise.
  */
 function paintBiome(map, cols, rows, rand) {
   const flat = map.flat();
@@ -367,7 +366,7 @@ function paintBiome(map, cols, rows, rand) {
     if (!terrainTypes[type]) return;
 
     const minPatch = 4;
-    const maxPatch = 15;
+    const maxPatch = 9;  // <== blobs now between 4 and 9 hexes
 
     while (targetCount > 0 && unassigned.size > 0) {
       const keysArr = Array.from(unassigned);
@@ -681,7 +680,7 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
   // Enforce a 3-hex water margin between land and map edge
   enforceIslandMargin(map, cols, rows, 3);
 
-  // Biome (now using contiguous patch painting)
+  // Biome (using contiguous patch painting)
   const biome = paintBiome(map, cols, rows, rand);
 
   // Mountains (chains on land mask)
@@ -799,8 +798,8 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
   // FINAL ELEVATION + BASE WATER DEPTH
   // ============================================================
   const cx = cols / 2, cy = rows / 2;
+  const maxd = Math.hypot(cx, cy) || 1;
 
-  // First pass: land levels + base deep water
   for (const t of flat) {
     const shape = __hx_computeElevationShape(
       t.q,
@@ -820,20 +819,36 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
       t.isUnderWater     = true;
       t.groundType       = 'undersea';
     } else {
-      // ----- LAND: levels 4..7 with extra weight on level 6 near high shape -----
-      let lvl;
-      if (shape < 0.50) {
-        lvl = 4;
-      } else if (shape < 0.78) {
-        lvl = 5;
-      } else if (shape < 0.96) {
-        // wide band mapped to 6 → many tiles in island interior
+      // Base float from shape: 4..7
+      let baseFloat = 4 + shape * 3; // 4–7
+
+      // Add jitter so levels are less predictable
+      const jitter = (rand() - 0.5) * 1.8; // -0.9..+0.9
+      baseFloat += jitter;
+
+      let lvl = Math.round(baseFloat);
+
+      // Clamp
+      if (lvl < 4) lvl = 4;
+      if (lvl > 7) lvl = 7;
+
+      // Center promotion: more 6s (and some 7s) near island core
+      const dx = t.q - cx;
+      const dy = t.r - cy;
+      const dist = Math.hypot(dx, dy);
+      const centerFactor = 1 - dist / maxd; // 0 edge, 1 center
+
+      if (centerFactor > 0.45 && lvl === 5 && rand() < 0.45) {
         lvl = 6;
-      } else {
+      }
+      if (centerFactor > 0.6 && lvl === 4 && rand() < 0.35) {
+        lvl = 5;
+      }
+      if (centerFactor > 0.7 && lvl === 6 && rand() < 0.25) {
         lvl = 7;
       }
 
-      // Ensure explicit mountain tiles are level 7
+      // Ensure explicit mountains stay at 7
       if (t.type === 'mountain') {
         lvl = 7;
       }
