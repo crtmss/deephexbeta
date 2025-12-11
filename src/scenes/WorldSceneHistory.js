@@ -5,6 +5,7 @@
 // - Scrollable with mouse wheel.
 // - Text clipped to panel via geometry mask.
 // - Entries that can focus a hex are cyan & clickable.
+// - City/outpost names in text are bold white and highlight their hex on hover.
 //
 // Public helpers:
 //   setupHistoryUI(scene)
@@ -12,332 +13,430 @@
 //   closeHistoryPanel(scene)
 //   refreshHistoryPanel(scene)
 
+import { effectiveElevationLocal } from "./WorldSceneGeography.js";
+
+const PANEL_WIDTH  = 420;
+const PANEL_HEIGHT = 260;
+const PANEL_MARGIN = 12;
+
+// Colors
+const COLOR_BG        = 0x000000;
+const COLOR_BG_ALPHA  = 0.75;
+const COLOR_BORDER    = 0xffffff;
+const COLOR_TITLE     = "#ffffff";
+const COLOR_TEXT      = "#9ad1ff"; // cyan-ish for normal history text
+const COLOR_CITY_TEXT = "#ffffff"; // bold white for city/outpost names
+
 /* =========================================================
    SETUP
    ========================================================= */
-
 export function setupHistoryUI(scene) {
-  const margin = 12;
+  // Panel root container
+  const x = scene.scale.width - PANEL_WIDTH - PANEL_MARGIN;
+  const y = PANEL_MARGIN + 64; // a bit below top UI
 
-  const PANEL_WIDTH = 420;
-  const PANEL_HEIGHT = 360;
-
-  // Position: to the left of resources panel if present
-  let panelX;
-  let panelY;
-
-  if (scene.resourcesPanel) {
-    panelX = scene.resourcesPanel.x - PANEL_WIDTH - 16;
-    panelY = scene.resourcesPanel.y;
-  } else {
-    panelX = margin;
-    panelY = 70;
-  }
-
-  const depthBase = 9000; // render above most UI
-
-  // ---- Main container for the panel ----
-  const container = scene.add.container(panelX, panelY);
-  container.setScrollFactor(0);
-  container.setDepth(depthBase);
-
-  // ---- Background ----
-  const bg = scene.add.rectangle(
-    0,
-    0,
-    PANEL_WIDTH,
-    PANEL_HEIGHT,
-    0x07121f,
-    0.96
-  ).setOrigin(0, 0);
-  bg.setStrokeStyle(2, 0x34d2ff, 0.85);
-  container.add(bg);
-
-  // ---- Title ----
-  const title = scene.add.text(
-    12,
-    8,
-    'History',
-    {
-      fontFamily: 'monospace',
-      fontSize: '17px',
-      color: '#d0f2ff',
-    }
-  );
-  container.add(title);
-
-  // ---- Scrollable entries container (inside panel) ----
-  const CONTENT_X = 12;
-  const CONTENT_Y = 34;
-  const CONTENT_W = PANEL_WIDTH - 24;
-  const CONTENT_H = PANEL_HEIGHT - CONTENT_Y - 10;
-
-  const entriesContainer = scene.add.container(CONTENT_X, CONTENT_Y);
-  container.add(entriesContainer);
-
-  // ---- Mask to clip entries to panel ----
-  const maskGraphics = scene.make.graphics({ x: 0, y: 0, add: false });
-  maskGraphics.fillStyle(0xffffff);
-  maskGraphics.fillRect(
-    panelX + CONTENT_X,
-    panelY + CONTENT_Y,
-    CONTENT_W,
-    CONTENT_H
-  );
-  const entriesMask = maskGraphics.createGeometryMask();
-  entriesContainer.setMask(entriesMask);
-
-  // Initial visibility
-  container.setVisible(false);
-
-  // ---- Store references on scene ----
-  scene.historyPanelContainer = container;
-  scene.historyPanelBg = bg;
-  scene.historyPanelTitle = title;
-  scene.historyEntriesContainer = entriesContainer;
-  scene.historyEntryTexts = [];
-  scene.historyPanelWidth = PANEL_WIDTH;
-  scene.historyPanelHeight = PANEL_HEIGHT;
-  scene.historyVisibleHeight = CONTENT_H;
-  scene.historyEntriesBaseY = CONTENT_Y;
-  scene.historyScrollPos = 0;
-  scene.historyMaskGraphics = maskGraphics;
-  scene.historyEntriesMask = entriesMask;
+  const panel = scene.add.container(x, y).setDepth(1600);
+  scene.historyPanelContainer = panel;
   scene.isHistoryPanelOpen = false;
+  panel.setVisible(false);
 
-  // ---- Toggle button ----
-  const button = scene.add.text(
-    panelX,
-    panelY - 26,
-    'History',
-    {
-      fontFamily: 'monospace',
-      fontSize: '15px',
-      color: '#d0f2ff',
-      backgroundColor: '#092038',
-      padding: { x: 8, y: 4 },
-    }
-  )
-    .setScrollFactor(0)
-    .setDepth(depthBase + 1)
-    .setInteractive({ useHandCursor: true });
+  // Background + border
+  const bg = scene.add
+    .rectangle(0, 0, PANEL_WIDTH, PANEL_HEIGHT, COLOR_BG, COLOR_BG_ALPHA)
+    .setOrigin(0, 0);
 
-  button.on('pointerdown', () => {
-    if (scene.isHistoryPanelOpen) {
-      closeHistoryPanel(scene);
-    } else {
-      openHistoryPanel(scene);
-    }
+  const border = scene.add
+    .rectangle(0, 0, PANEL_WIDTH, PANEL_HEIGHT)
+    .setOrigin(0, 0);
+  border.setStrokeStyle(2, COLOR_BORDER, 0.9);
+
+  panel.add(bg);
+  panel.add(border);
+
+  // Title
+  const title = scene.add.text(10, 6, "History", {
+    fontFamily: "Arial",
+    fontSize: "16px",
+    color: COLOR_TITLE,
+    fontStyle: "bold",
   });
+  panel.add(title);
 
-  scene.historyButton = button;
+  // Close button
+  const closeBtn = scene.add
+    .text(PANEL_WIDTH - 18, 4, "×", {
+      fontFamily: "Arial",
+      fontSize: "18px",
+      color: "#ff8080",
+    })
+    .setOrigin(0.5, 0);
+  closeBtn.setInteractive({ useHandCursor: true });
+  closeBtn.on("pointerdown", () => closeHistoryPanel(scene));
+  panel.add(closeBtn);
 
-  // Public helpers
-  scene.openHistoryPanel = () => openHistoryPanel(scene);
-  scene.closeHistoryPanel = () => closeHistoryPanel(scene);
-  scene.refreshHistoryPanel = () => refreshHistoryPanel(scene);
+  // Entries container (scrollable area)
+  const entriesContainer = scene.add.container(0, 0);
+  scene.historyEntriesContainer = entriesContainer;
+  panel.add(entriesContainer);
 
-  // ---- Scroll with mouse wheel when pointer over panel ----
-  scene.input.on('wheel', (pointer, _gameObjects, _dx, dy) => {
+  // Geometry mask for scroll area
+  const maskGfx = scene.add.graphics();
+  maskGfx.fillStyle(0xffffff, 1);
+  const maskX = x + 4;
+  const maskY = y + 26;
+  const maskW = PANEL_WIDTH - 8;
+  const maskH = PANEL_HEIGHT - 32;
+  maskGfx.beginPath();
+  maskGfx.fillRect(maskX, maskY, maskW, maskH);
+  maskGfx.closePath();
+
+  const mask = maskGfx.createGeometryMask();
+  entriesContainer.setMask(mask);
+  scene.historyMaskGraphics = maskGfx;
+
+  scene.historyScrollOffset = 0;
+  scene.historyMaxScroll = 0;
+
+  // Mouse wheel scrolling when cursor is over panel
+  scene.input.on("wheel", (pointer, _gameObjects, _dx, dy) => {
     if (!scene.isHistoryPanelOpen) return;
 
     const px = pointer.x;
     const py = pointer.y;
-    const x0 = panelX;
-    const y0 = panelY;
-    const x1 = panelX + PANEL_WIDTH;
-    const y1 = panelY + PANEL_HEIGHT;
+    const x0 = x;
+    const y0 = y;
+    const x1 = x + PANEL_WIDTH;
+    const y1 = y + PANEL_HEIGHT;
 
     if (px < x0 || px > x1 || py < y0 || py > y1) return;
 
     const step = 30;
-    scene.historyScrollPos += Math.sign(dy) * step;
-    refreshHistoryPanel(scene);
+    const dir = dy > 0 ? 1 : -1;
+    const maxScroll = scene.historyMaxScroll || 0;
+
+    scene.historyScrollOffset = Math.max(
+      0,
+      Math.min(maxScroll, scene.historyScrollOffset + dir * step)
+    );
+
+    updateEntriesContainerOffset(scene);
   });
 
-  // Initial refresh
-  refreshHistoryPanel(scene);
+  // Expose helpers on scene for convenience
+  scene.openHistoryPanel = () => openHistoryPanel(scene);
+  scene.closeHistoryPanel = () => closeHistoryPanel(scene);
+  scene.refreshHistoryPanel = () => refreshHistoryPanel(scene);
 }
 
 /* =========================================================
    OPEN / CLOSE
    ========================================================= */
-
 export function openHistoryPanel(scene) {
   if (!scene.historyPanelContainer) return;
-  scene.historyPanelContainer.setVisible(true);
   scene.isHistoryPanelOpen = true;
+  scene.historyPanelContainer.setVisible(true);
+  scene.historyScrollOffset = 0;
+  updateEntriesContainerOffset(scene);
   refreshHistoryPanel(scene);
 }
 
 export function closeHistoryPanel(scene) {
   if (!scene.historyPanelContainer) return;
-  scene.historyPanelContainer.setVisible(false);
   scene.isHistoryPanelOpen = false;
+  scene.historyPanelContainer.setVisible(false);
+  highlightHistoryHex(scene, null, null); // clear hover highlight
 }
 
 /* =========================================================
-   RENDER / SCROLL
+   REFRESH / RENDER
    ========================================================= */
-
 export function refreshHistoryPanel(scene) {
-  const entriesContainer = scene.historyEntriesContainer;
-  if (!entriesContainer) return;
+  if (!scene.historyPanelContainer || !scene.historyEntriesContainer) return;
 
-  // Destroy previous texts
-  const prevTexts = scene.historyEntryTexts || [];
-  prevTexts.forEach(t => t.destroy());
-  scene.historyEntryTexts = [];
+  const entries = scene.historyEntries || [];
+  const container = scene.historyEntriesContainer;
 
-  const entries = Array.isArray(scene.historyEntries)
-    ? scene.historyEntries.slice().sort((a, b) => (a.year || 0) - (b.year || 0))
-    : [];
+  // Clear previous children (destroy)
+  container.removeAll(true);
 
-  const maxWidth = scene.historyPanelWidth - 24;
-  let yCursor = 0;
+  const x0 = 12;    // left margin inside panel
+  let yCursor = 28; // start a bit below the header
 
-  if (!entries.length) {
-    const txt = scene.add.text(
-      0,
-      0,
-      'No events yet.',
-      {
-        fontFamily: 'monospace',
-        fontSize: '14px',
-        color: '#b7d7ff',
-        wordWrap: { width: maxWidth },
-        lineSpacing: 4,
-      }
-    );
-    entriesContainer.add(txt);
-    scene.historyEntryTexts.push(txt);
-    scene.historyScrollPos = 0;
-  } else {
-    for (const ev of entries) {
-      const year = typeof ev.year === 'number' ? ev.year : 5000;
-      const body = ev.text || '';
-      const label = `${year} — ${body}`;
+  const normalStyle = {
+    fontFamily: "Arial",
+    fontSize: "14px",
+    color: COLOR_TEXT,
+    wordWrap: { width: PANEL_WIDTH - 24 },
+  };
 
-      const hasTargets = entryHasTargets(ev);
-      const color = hasTargets ? '#6bf7ff' : '#b7d7ff';
+  const cityStyle = {
+    fontFamily: "Arial",
+    fontSize: "14px",
+    color: COLOR_CITY_TEXT,
+    fontStyle: "bold",
+  };
 
-      const txt = scene.add.text(
-        0,
-        yCursor,
-        label,
-        {
-          fontFamily: 'monospace',
-          fontSize: '14px',
-          color,
-          wordWrap: { width: maxWidth },
-          lineSpacing: 6, // extra spacing
+  // Precompute outposts & their names for highlighting
+  const outposts =
+    (scene.loreState && Array.isArray(scene.loreState.outposts))
+      ? scene.loreState.outposts
+      : [];
+  const outpostNames = outposts
+    .map((o) => (o && o.name ? String(o.name) : null))
+    .filter(Boolean);
+
+  // Render entries (already sorted by addHistoryEntry)
+  for (const entry of entries) {
+    const year = typeof entry.year === "number" ? entry.year : null;
+    const text = String(entry.text ?? "");
+
+    const mainText = year != null ? `[${year}] ${text}` : text;
+
+    // Determine a "focus" hex for entry-level click (if any)
+    const focus = resolveEntryFocus(entry);
+
+    // Split text into segments: normal vs city-name segments
+    const segments = splitTextByCityNames(mainText, outposts, outpostNames);
+
+    // Layout tokens manually with simple wrapping
+    let xCursor = x0;
+    let lineBottom = yCursor;
+
+    for (const seg of segments) {
+      const baseStyle = seg.city ? cityStyle : normalStyle;
+      // Split into tokens (words + spaces), preserve spaces
+      const tokens = seg.text.split(/(\s+)/);
+
+      for (const token of tokens) {
+        if (!token) continue;
+
+        // Measure token
+        const tmp = scene.add.text(0, 0, token, baseStyle).setOrigin(0, 0);
+        const tokenW = tmp.width;
+        const tokenH = tmp.height;
+        tmp.destroy();
+
+        const maxWidth = PANEL_WIDTH - 24;
+        if (
+          token.trim().length > 0 &&
+          xCursor > x0 &&
+          xCursor + tokenW > x0 + maxWidth
+        ) {
+          // New line
+          xCursor = x0;
+          yCursor = lineBottom + 4;
+          lineBottom = yCursor;
         }
-      );
 
-      if (hasTargets) {
-        txt.setInteractive({ useHandCursor: true });
-        txt.on('pointerdown', () => {
-          focusEntry(scene, ev);
-        });
+        const style = { ...baseStyle };
+
+        const tObj = scene.add.text(xCursor, yCursor, token, style).setOrigin(0, 0);
+
+        // Entry-level click (cyan entries that can focus a hex)
+        if (focus) {
+          tObj.setColor(COLOR_TEXT);
+          tObj.setInteractive({ useHandCursor: true });
+          tObj.on("pointerdown", () => {
+            selectHex(scene, focus.q, focus.r);
+          });
+        }
+
+        // City-name specific hover/click (bold white)
+        if (seg.city && token.trim().length > 0) {
+          const city = seg.city;
+          tObj.setInteractive({ useHandCursor: true });
+          tObj.on("pointerover", () => {
+            highlightHistoryHex(scene, city.q, city.r);
+          });
+          tObj.on("pointerout", () => {
+            highlightHistoryHex(scene, null, null);
+          });
+          tObj.on("pointerdown", () => {
+            selectHex(scene, city.q, city.r);
+          });
+        }
+
+        container.add(tObj);
+
+        xCursor += tObj.width;
+        lineBottom = Math.max(lineBottom, yCursor + tObj.height);
       }
-
-      entriesContainer.add(txt);
-      scene.historyEntryTexts.push(txt);
-
-      yCursor += txt.height + 10; // spacing between entries
     }
+
+    // Move to next entry (slightly more spacing)
+    yCursor = lineBottom + 10;
   }
 
-  const contentHeight = yCursor;
-  const visibleHeight = scene.historyVisibleHeight || (scene.historyPanelHeight - 44);
-
-  const maxScroll = Math.max(0, contentHeight - visibleHeight);
-
-  if (scene.historyScrollPos < 0) scene.historyScrollPos = 0;
-  if (scene.historyScrollPos > maxScroll) scene.historyScrollPos = maxScroll;
-
-  // entriesContainer.y is relative to panel container
-  entriesContainer.y = scene.historyEntriesBaseY - scene.historyScrollPos;
+  // Compute max scroll
+  const visibleHeight = PANEL_HEIGHT - 40;
+  scene.historyMaxScroll = Math.max(0, yCursor - visibleHeight);
+  updateEntriesContainerOffset(scene);
 }
 
 /* =========================================================
-   CLICKABLE ENTRY HELPERS
+   INTERNAL HELPERS
    ========================================================= */
-
-function entryHasTargets(entry) {
-  if (typeof entry.q === 'number' && typeof entry.r === 'number') return true;
-  if (entry.from && hasCoord(entry.from)) return true;
-  if (entry.to && hasCoord(entry.to)) return true;
-  if (Array.isArray(entry.targets) && entry.targets.some(hasCoord)) return true;
-  return false;
+function updateEntriesContainerOffset(scene) {
+  if (!scene.historyEntriesContainer) return;
+  // Offset entries inside mask (top margin ~24 for header)
+  scene.historyEntriesContainer.y = 24 - (scene.historyScrollOffset || 0);
 }
 
-function hasCoord(t) {
-  return t && typeof t.q === 'number' && typeof t.r === 'number';
+// Determine a "focus" coordinate for a history entry (road built, discovery, etc.)
+function resolveEntryFocus(entry) {
+  if (!entry || typeof entry !== "object") return null;
+
+  // Explicit focus field
+  if (entry.focus && typeof entry.focus.q === "number" && typeof entry.focus.r === "number") {
+    return { q: entry.focus.q, r: entry.focus.r };
+  }
+
+  // from / to coordinates (roads, etc.)
+  if (entry.from && typeof entry.from.q === "number" && typeof entry.from.r === "number") {
+    return { q: entry.from.q, r: entry.from.r };
+  }
+  if (entry.to && typeof entry.to.q === "number" && typeof entry.to.r === "number") {
+    return { q: entry.to.q, r: entry.to.r };
+  }
+
+  // Direct q,r on the entry itself
+  if (typeof entry.q === "number" && typeof entry.r === "number") {
+    return { q: entry.q, r: entry.r };
+  }
+
+  return null;
 }
 
-function focusEntry(scene, entry) {
-  const targets = [];
+// Split text by city/outpost names so we can style & highlight them
+function splitTextByCityNames(text, outposts, outpostNames) {
+  if (!outposts || !outposts.length || !outpostNames || !outpostNames.length) {
+    return [{ text, city: null }];
+  }
 
-  if (typeof entry.q === 'number' && typeof entry.r === 'number') {
-    targets.push({ q: entry.q, r: entry.r });
-  }
-  if (entry.from && hasCoord(entry.from)) {
-    targets.push({ q: entry.from.q, r: entry.from.r });
-  }
-  if (entry.to && hasCoord(entry.to)) {
-    targets.push({ q: entry.to.q, r: entry.to.r });
-  }
-  if (Array.isArray(entry.targets)) {
-    for (const t of entry.targets) {
-      if (hasCoord(t)) {
-        targets.push({ q: t.q, r: t.r });
-      }
+  const matches = [];
+
+  for (const name of outpostNames) {
+    const n = String(name);
+    let idx = text.indexOf(n);
+    while (idx !== -1) {
+      matches.push({ start: idx, end: idx + n.length, name: n });
+      idx = text.indexOf(n, idx + n.length);
     }
   }
 
-  if (!targets.length) return;
-
-  let focusQ = targets[0].q;
-  let focusR = targets[0].r;
-
-  if (
-    entry.from && hasCoord(entry.from) &&
-    entry.to && hasCoord(entry.to)
-  ) {
-    // Road-style: pan to midpoint, highlight "from"
-    const a = scene.axialToWorld(entry.from.q, entry.from.r);
-    const b = scene.axialToWorld(entry.to.q, entry.to.r);
-    const midX = (a.x + b.x) / 2;
-    const midY = (a.y + b.y) / 2;
-    panCameraTo(scene, midX, midY);
-    focusQ = entry.from.q;
-    focusR = entry.from.r;
-  } else {
-    const p = scene.axialToWorld(focusQ, focusR);
-    panCameraTo(scene, p.x, p.y);
+  if (!matches.length) {
+    return [{ text, city: null }];
   }
 
-  selectHex(scene, focusQ, focusR);
+  // Sort and keep non-overlapping matches (prefer earlier, longer)
+  matches.sort((a, b) => {
+    if (a.start !== b.start) return a.start - b.start;
+    return b.end - a.end; // longer first if same start
+  });
+
+  const filtered = [];
+  let lastEnd = -1;
+  for (const m of matches) {
+    if (m.start >= lastEnd) {
+      filtered.push(m);
+      lastEnd = m.end;
+    }
+  }
+
+  const segments = [];
+  let pos = 0;
+  for (const m of filtered) {
+    if (m.start > pos) {
+      segments.push({ text: text.slice(pos, m.start), city: null });
+    }
+    const city = outposts.find((o) => o && o.name === m.name) || null;
+    segments.push({ text: text.slice(m.start, m.end), city });
+    pos = m.end;
+  }
+  if (pos < text.length) {
+    segments.push({ text: text.slice(pos), city: null });
+  }
+  return segments;
 }
 
-function panCameraTo(scene, x, y) {
-  const cam = scene.cameras.main;
-  if (!cam) return;
-  cam.pan(x, y, 350, 'Sine.easeInOut', true);
+/**
+ * Highlight a hex with a white outline, similar to hovering over a hex.
+ * If q/r are null, clears the history-driven highlight.
+ */
+function highlightHistoryHex(scene, q, r) {
+  if (!scene || !scene.mapData) return;
+
+  if (!scene.historyHoverGraphics) {
+    const g = scene.add.graphics().setDepth(1850);
+    g.visible = false;
+    scene.historyHoverGraphics = g;
+  }
+  const g = scene.historyHoverGraphics;
+
+  if (typeof q !== "number" || typeof r !== "number") {
+    g.clear();
+    g.visible = false;
+    return;
+  }
+
+  const tile = scene.mapData.find((t) => t.q === q && t.r === r);
+  if (!tile) {
+    g.clear();
+    g.visible = false;
+    return;
+  }
+
+  const size = scene.hexSize || 24;
+  const LIFT = scene?.LIFT_PER_LVL ?? 4;
+  const eff = effectiveElevationLocal(tile);
+
+  const coord = scene.hexToPixel(q, r, size);
+  const offsetX = scene.mapOffsetX || 0;
+  const offsetY = scene.mapOffsetY || 0;
+  const x = coord.x + offsetX;
+  const y = coord.y + offsetY - LIFT * eff;
+
+  const radius = size * 0.95;
+
+  g.clear();
+  g.lineStyle(3, 0xffffff, 1);
+
+  g.beginPath();
+  for (let i = 0; i < 6; i++) {
+    const angle = (Math.PI / 3) * i + Math.PI / 6; // 60° steps, rotated 30°
+    const px = x + radius * Math.cos(angle);
+    const py = y + radius * Math.sin(angle);
+    if (i === 0) g.moveTo(px, py);
+    else g.lineTo(px, py);
+  }
+  g.closePath();
+  g.strokePath();
+
+  g.visible = true;
 }
 
+/**
+ * Programmatically select a hex, similar to clicking it on the map.
+ * Used when clicking on history entries that can focus a hex.
+ */
 function selectHex(scene, q, r) {
-  if (typeof q !== 'number' || typeof r !== 'number') return;
+  if (typeof q !== "number" || typeof r !== "number") return;
 
   // Clear unit selection & path preview
   scene.setSelectedUnit?.(null);
   scene.selectedHex = { q, r };
   scene.clearPathPreview?.();
 
-  // Update hex selection visuals
+  // Update selection visuals (if the scene has a hook for this)
   scene.updateSelectionHighlight?.();
 
-  // Optional debug
+  // Optional debug hook
   scene.debugHex?.(q, r);
 }
+
+export default {
+  setupHistoryUI,
+  openHistoryPanel,
+  closeHistoryPanel,
+  refreshHistoryPanel,
+};
