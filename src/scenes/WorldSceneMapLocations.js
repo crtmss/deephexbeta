@@ -309,6 +309,15 @@ export function drawLocationsAndRoads() {
   /* ------------------- Geography overlays ------------------- */
   drawGeographyOverlay(scene);
 
+  /* ------------------- Electricity overlay (if present) -------------------
+     Весь реальный рендер и логика сети остаются в WorldSceneElectricity.
+     Здесь только мягкий хук, чтобы не ломать существующий код. */
+  if (typeof scene.drawElectricityOverlay === "function") {
+    scene.drawElectricityOverlay();
+  } else if (scene.electricity && typeof scene.electricity.drawOverlay === "function") {
+    scene.electricity.drawOverlay();
+  }
+
   /* ------------------- POI Icons ------------------- */
   const noPOISet = getNoPOISet(map);
 
