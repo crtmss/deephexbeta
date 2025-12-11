@@ -33,10 +33,74 @@ function inBounds(q, r, w, h) {
 }
 
 /* ---------------------------------------------------------------
-   POI flags (NOOP — deterministic now)
+   POI flags: now driven by mapInfo.objects (seed -> lore -> POI)
    --------------------------------------------------------------- */
-export function applyLocationFlags(mapData) {
-  return mapData; // nothing needed
+/**
+ * Apply POI flags (hasRuin / hasCrashSite / hasVehicle) onto tiles
+ * based on deterministic map objects.
+ *
+ * NOTE:
+ *  - mapData is a flat array of tiles ({q,r,...}).
+ *  - mapObjects usually come from scene.mapInfo.objects,
+ *    which are filled by LoreGeneration (ensureWorldLoreGenerated).
+ *
+ * Backwards compatible: if mapObjects не переданы, ф-ция просто
+ * возвращает mapData как есть.
+ */
+export function applyLocationFlags(mapData, mapObjects) {
+  if (!Array.isArray(mapData)) return mapData;
+
+  const objs = Array.isArray(mapObjects) ? mapObjects : [];
+  if (!objs.length) {
+    // Nothing to apply – просто убедимся, что флаги существуют
+    for (const t of mapData) {
+      if (!t) continue;
+      t.hasRuin = !!t.hasRuin;
+      t.hasCrashSite = !!t.hasCrashSite;
+      t.hasVehicle = !!t.hasVehicle;
+    }
+    return mapData;
+  }
+
+  // Index tiles by q,r
+  const byKey = new Map(mapData.map(t => [keyOf(t.q, t.r), t]));
+
+  // Сначала сбросить все флаги POI (мы хотим, чтобы ИСТОРИЯ была источником правды)
+  for (const t of mapData) {
+    if (!t) continue;
+    t.hasRuin = false;
+    t.hasCrashSite = false;
+    t.hasVehicle = false;
+    // hasObject может использоваться и в других местах, поэтому не трогаем,
+    // но если POI ставится здесь, мы будем включать hasObject.
+    if (typeof t.hasObject !== "boolean") t.hasObject = !!t.hasObject;
+  }
+
+  // Затем проставить флаги по объектам карты
+  for (const o of objs) {
+    if (!o) continue;
+    const q = o.q;
+    const r = o.r;
+    if (typeof q !== "number" || typeof r !== "number") continue;
+
+    const tile = byKey.get(keyOf(q, r));
+    if (!tile) continue;
+
+    const type = String(o.type || "").toLowerCase();
+
+    if (type === "ruin") {
+      tile.hasRuin = true;
+      tile.hasObject = true;
+    } else if (type === "crash_site" || type === "wreck") {
+      tile.hasCrashSite = true;
+      tile.hasObject = true;
+    } else if (type === "vehicle" || type === "abandoned_vehicle") {
+      tile.hasVehicle = true;
+      tile.hasObject = true;
+    }
+  }
+
+  return mapData;
 }
 
 /* ---------------------------------------------------------------
@@ -187,6 +251,9 @@ export function drawLocationsAndRoads() {
     scene.mapInfo && Array.isArray(scene.mapInfo.objects)
       ? scene.mapInfo.objects
       : [];
+
+  // Применяем флаги POI к тайлам на основе mapInfo.objects
+  applyLocationFlags(map, mapObjects);
 
   if (!map.__roadsApplied) {
     generateDeterministicRoads(scene, map, scene.mapWidth, scene.mapHeight, mapObjects);
