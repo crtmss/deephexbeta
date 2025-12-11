@@ -5,6 +5,13 @@ import {
   startMinePlacement,
   startFactoryPlacement,
   startBunkerPlacement,
+
+  // NEW: energy buildings placement
+  startSolarPanelPlacement,
+  startFuelGeneratorPlacement,
+  startBatteryPlacement,
+  startPowerPolePlacement,
+  startPowerConduitPlacement,
 } from './WorldSceneBuildings.js';
 
 import {
@@ -66,7 +73,7 @@ const MENUS = {
       { label: 'Units',          action: 'open:units' },
       { label: 'Infrastructure', action: 'open:infra' },
       { label: 'Back',           action: 'back' },
-      { label: '',               action: null },
+      { label: 'Energy',         action: 'open:energy' }, // NEW: Energy tab
       { label: '',               action: null },
     ],
   },
@@ -101,6 +108,18 @@ const MENUS = {
       { label: '',       action: null },
       { label: '',       action: null },
       { label: 'Back',   action: 'back' },
+    ],
+  },
+
+  // NEW: Energy build menu (5 slots + Back)
+  energy: {
+    slots: [
+      { label: 'Solar Panel',    action: 'energy:solar_panel' },
+      { label: 'Fuel Generator', action: 'energy:fuel_generator' },
+      { label: 'Battery',        action: 'energy:battery' },
+      { label: 'Power Pole',     action: 'energy:power_pole' },
+      { label: 'Power Conduit',  action: 'energy:power_conduit' },
+      { label: 'Back',           action: 'back' },
     ],
   },
 };
@@ -418,25 +437,54 @@ function handleMenuAction(scene, action) {
     return;
   }
 
-if (kind === 'infra') {
-  switch (arg) {
-    case 'road':
-      console.log('[MENU] Road action not implemented yet.');
-      break;
-
-    case 'bridge':
-      tryBuildBridgeFromMobileBase(scene);
-      break;
-
-    case 'canal':
-      console.log('[MENU] Canal action not implemented yet.');
-      break;
-
-    default:
-      console.warn('[MENU] Unknown infrastructure action:', arg);
-      break;
+  // NEW: Energy build actions
+  if (kind === 'energy') {
+    if (!selection) {
+      console.warn('[MENU] No selection for energy action:', arg);
+      return;
+    }
+    switch (arg) {
+      case 'solar_panel':
+        startSolarPanelPlacement.call(scene);
+        break;
+      case 'fuel_generator':
+        startFuelGeneratorPlacement.call(scene);
+        break;
+      case 'battery':
+        startBatteryPlacement.call(scene);
+        break;
+      case 'power_pole':
+        startPowerPolePlacement.call(scene);
+        break;
+      case 'power_conduit':
+        startPowerConduitPlacement.call(scene);
+        break;
+      default:
+        console.warn('[MENU] Unknown energy action:', arg);
+        break;
+    }
+    return;
   }
-}
+
+  if (kind === 'infra') {
+    switch (arg) {
+      case 'road':
+        console.log('[MENU] Road action not implemented yet.');
+        break;
+
+      case 'bridge':
+        tryBuildBridgeFromMobileBase(scene);
+        break;
+
+      case 'canal':
+        console.log('[MENU] Canal action not implemented yet.');
+        break;
+
+      default:
+        console.warn('[MENU] Unknown infrastructure action:', arg);
+        break;
+    }
+  }
 }
 
 /**
