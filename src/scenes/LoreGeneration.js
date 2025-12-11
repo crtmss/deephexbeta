@@ -7,11 +7,6 @@
 // Public API (unchanged):
 //   generateRuinLoreForTile(scene, tile)
 //   generateRoadLoreForExistingConnections(scene)
-//
-// IMPORTANT:
-//   This file now also shapes POI (mapInfo.objects) based on the
-//   generated lore, establishing the order:
-//     seed -> lore -> POI
 
 function hashStr32(s) {
   let h = 2166136261 >>> 0;
@@ -166,7 +161,6 @@ function analyzeResources(tiles, mapObjects) {
     mountainRatio: mountainTiles / total,
   };
 }
-
 function ensureWorldLoreGenerated(scene) {
   if (!scene || scene.__worldLoreGenerated) return;
 
@@ -183,33 +177,37 @@ function ensureWorldLoreGenerated(scene) {
 
   const tiles = Array.isArray(scene.mapData) ? scene.mapData : [];
 
-  const originalMapObjects = scene.mapInfo && Array.isArray(scene.mapInfo.objects)
-    ? scene.mapInfo.objects
-    : [];
+  const originalMapObjects =
+    scene.mapInfo && Array.isArray(scene.mapInfo.objects)
+      ? scene.mapInfo.objects
+      : [];
 
   // World-level POI state that will be shaped by lore.
   // Start with a shallow copy of whatever is already present.
-  const worldObjects = originalMapObjects.map(o => ({ ...o }));
+  const worldObjects = originalMapObjects.map((o) => ({ ...o }));
 
   const resInfo = analyzeResources(tiles, worldObjects);
 
-  const ruins = worldObjects.filter(o =>
-    String(o.type || "").toLowerCase() === "ruin"
+  const ruins = worldObjects.filter(
+    (o) => String(o.type || "").toLowerCase() === "ruin"
   );
-  const crashSites = worldObjects.filter(o => {
+  const crashSites = worldObjects.filter((o) => {
     const t = String(o.type || "").toLowerCase();
     return t === "crash_site" || t === "wreck";
   });
-  const anyLand = tiles.filter(t => t && t.type !== "water");
+  const anyLand = tiles.filter((t) => t && t.type !== "water");
 
   // --- Island name & factions ---
-  const islandName = `${pick(rng, ISLAND_PREFIX)} ${pick(rng, ISLAND_ROOT)}`;
+  const islandName = `${pick(rng, ISLAND_PREFIX)} ${pick(
+    rng,
+    ISLAND_ROOT
+  )}`;
 
   const factionCount = 1 + Math.floor(rng() * 3); // 1–3
   const factions = pickMany(rng, FACTIONS, factionCount);
   const factionA = factions[0];
   const factionB = factions[1];
-  const factionC = factions[2]; // currently unused but kept for future phases
+  const factionC = factions[2]; // reserved for future use
 
   // --- Key locations → outposts ---
   const keyLocs = [];
@@ -229,7 +227,9 @@ function ensureWorldLoreGenerated(scene) {
     keyLocs.push({
       q: obj.q,
       r: obj.r,
-      type: String(obj.type || (obj.type === "water" ? "water" : "land")).toLowerCase(),
+      type: String(
+        obj.type || (obj.type === "water" ? "water" : "land")
+      ).toLowerCase(),
     });
   }
 
@@ -238,10 +238,13 @@ function ensureWorldLoreGenerated(scene) {
     keyLocs.push({ q: t.q, r: t.r, type: "land" });
   }
 
-  const getTile = (q, r) => tiles.find(t => t.q === q && t.r === r);
+  const getTile = (q, r) => tiles.find((t) => t.q === q && t.r === r);
 
   const outposts = keyLocs.map((loc, idx) => {
-    const name = `${pick(rng, OUTPOST_PREFIX)} ${pick(rng, OUTPOST_ROOT)}${idx ? "-" + (idx + 1) : ""}`;
+    const name = `${pick(rng, OUTPOST_PREFIX)} ${pick(
+      rng,
+      OUTPOST_ROOT
+    )}${idx ? "-" + (idx + 1) : ""}`;
     const tile = getTile(loc.q, loc.r);
     if (tile) {
       tile.cityName = name;
@@ -286,12 +289,14 @@ function ensureWorldLoreGenerated(scene) {
     const c = crashSites[Math.floor(rng() * crashSites.length)];
     events.push({
       year: baseYear + 3,
-      text: `A derelict vessel is found beached near (${c.q},${c.r}); scavengers from ${firstOut ? firstOut.name : "the first camp"} drag its timbers inland.`,
+      text: `A derelict vessel is found beached near (${c.q},${c.r}); scavengers from ${
+        firstOut ? firstOut.name : "the first camp"
+      } drag its timbers inland.`,
       type: "early_scavenging",
     });
   }
 
-  // Phase 2: Expansion & economy — now resource-aware
+  // Phase 2: Expansion & economy — resource-aware
   const econTemplates = [];
 
   // Generic fishing / food if lots of water or fish nodes
@@ -304,13 +309,17 @@ function ensureWorldLoreGenerated(scene) {
 
     econTemplates.push((year) => ({
       year,
-      text: `Skiffs from ${firstOut ? firstOut.name : "the first settlement"} push ever farther offshore, following glittering shoals that circle ${islandName} each season.`,
+      text: `Skiffs from ${
+        firstOut ? firstOut.name : "the first settlement"
+      } push ever farther offshore, following glittering shoals that circle ${islandName} each season.`,
       type: "deep_fishing",
     }));
   } else {
     econTemplates.push((year) => ({
       year,
-      text: `${factionA} clear a few terraces of soil around ${firstOut ? firstOut.name : "their first camp"}, coaxing thin crops from the island's dust.`,
+      text: `${factionA} clear a few terraces of soil around ${
+        firstOut ? firstOut.name : "their first camp"
+      }, coaxing thin crops from the island's dust.`,
       type: "meagre_farming",
     }));
   }
@@ -319,13 +328,17 @@ function ensureWorldLoreGenerated(scene) {
   if (resInfo.forestRatio > 0.15 || resInfo.forestTiles > 40) {
     econTemplates.push((year) => ({
       year,
-      text: `Loggers from ${firstOut ? firstOut.name : "the main settlement"} move into the island's thickets, cutting timber for piers and modest halls.`,
+      text: `Loggers from ${
+        firstOut ? firstOut.name : "the main settlement"
+      } move into the island's thickets, cutting timber for piers and modest halls.`,
       type: "logging",
     }));
 
     econTemplates.push((year) => ({
       year,
-      text: `The best trunks are hauled to the shore and shaped into hulls; small shipyards grow up beside ${firstOut ? firstOut.name : "the harbor"}.`,
+      text: `The best trunks are hauled to the shore and shaped into hulls; small shipyards grow up beside ${
+        firstOut ? firstOut.name : "the harbor"
+      }.`,
       type: "shipbuilding",
     }));
   }
@@ -340,22 +353,31 @@ function ensureWorldLoreGenerated(scene) {
 
     econTemplates.push((year) => ({
       year,
-      text: `Mines bite into the hills; carts from ${firstOut ? firstOut.name : "the coastal yards"} creak under ore bound for crude smelters by the shore.`,
+      text: `Mines bite into the hills; carts from ${
+        firstOut ? firstOut.name : "the coastal yards"
+      } creak under ore bound for crude smelters by the shore.`,
       type: "mining",
     }));
   }
 
   // Oil events – based on crude oil resource nodes or lots of shallow water
-  if (resInfo.oilNodes > 0 || (resInfo.shallowWaterTiles > 20 && rng() < 0.6)) {
+  if (
+    resInfo.oilNodes > 0 ||
+    (resInfo.shallowWaterTiles > 20 && rng() < 0.6)
+  ) {
     econTemplates.push((year) => ({
       year,
-      text: `Dark slicks are spotted in the shallows; ${factionA} rig makeshift derricks over the seabed near ${firstOut ? firstOut.name : "their harbor"}.`,
+      text: `Dark slicks are spotted in the shallows; ${factionA} rig makeshift derricks over the seabed near ${
+        firstOut ? firstOut.name : "their harbor"
+      }.`,
       type: "oil_discovery",
     }));
 
     econTemplates.push((year) => ({
       year,
-      text: `Crude from the reefs of ${islandName} is boiled down in noisy stills; lamps in ${firstOut ? firstOut.name : "the settlements"} burn late into the night.`,
+      text: `Crude from the reefs of ${islandName} is boiled down in noisy stills; lamps in ${
+        firstOut ? firstOut.name : "the settlements"
+      } burn late into the night.`,
       type: "oil_refining",
     }));
   }
@@ -369,7 +391,9 @@ function ensureWorldLoreGenerated(scene) {
 
   econTemplates.push((year) => ({
     year,
-    text: `Work crews from ${firstOut ? firstOut.name : "the main settlement"} lay crude paths inland, marking the first overland routes on ${islandName}.`,
+    text: `Work crews from ${
+      firstOut ? firstOut.name : "the main settlement"
+    } lay crude paths inland, marking the first overland routes on ${islandName}.`,
     type: "paths_built",
   }));
 
@@ -401,7 +425,9 @@ function ensureWorldLoreGenerated(scene) {
     if (out2) {
       events.push({
         year: yearCursor,
-        text: `${factionB} arrive on ${islandName}, staking a claim near (${out2.q},${out2.r}) and raising banners not far from ${firstOut ? firstOut.name : "the first settlement"}.`,
+        text: `${factionB} arrive on ${islandName}, staking a claim near (${out2.q},${out2.r}) and raising banners not far from ${
+          firstOut ? firstOut.name : "the first settlement"
+        }.`,
         type: "second_faction_arrives",
       });
       yearCursor += 7 + Math.floor(rng() * 5);
@@ -455,7 +481,7 @@ function ensureWorldLoreGenerated(scene) {
   // Phase 4: Climax (cataclysm)
   const disaster = pick(rng, DISASTER_TYPES);
 
-  const namesList = outposts.map(o => o.name).join(", ");
+  const namesList = outposts.map((o) => o.name).join(", ");
 
   let finalCataclysmEvent = null;
 
@@ -488,7 +514,7 @@ function ensureWorldLoreGenerated(scene) {
     events.push(finalCataclysmEvent);
   }
 
-  // === Lore -> POI translation step ==================================
+  // === Lore -> POI translation step ============================
   // At the moment of the cataclysm, all outposts are considered ruined.
   // We convert the corresponding POI entries from "outpost" to "ruin".
   if (finalCataclysmEvent) {
@@ -501,7 +527,7 @@ function ensureWorldLoreGenerated(scene) {
       }
     }
   }
-  // ===================================================================
+  // ============================================================
 
   // Write events into the history
   for (const ev of events) {
@@ -522,11 +548,10 @@ function ensureWorldLoreGenerated(scene) {
     resources: resInfo,
   };
 
-  // Seed -> lore -> POI: commit worldObjects back into the mapInfo.
+  // Seed -> lore -> POI: commit worldObjects back into mapInfo / hexMap
   if (!scene.mapInfo) scene.mapInfo = { tiles, objects: [] };
   scene.mapInfo.objects = worldObjects;
   if (scene.hexMap) {
-    // Keep hexMap.objects in sync if used elsewhere.
     scene.hexMap.objects = worldObjects;
   }
 
@@ -551,4 +576,84 @@ export function generateRoadLoreForExistingConnections(scene) {
   const conns = Array.isArray(scene.roadConnections)
     ? scene.roadConnections
     : [];
-  if (!co
+  if (!conns.length) {
+    scene.__roadLoreGenerated = true;
+    return;
+  }
+
+  const addEntry = scene.addHistoryEntry
+    ? (entry) => scene.addHistoryEntry(entry)
+    : null;
+  if (!addEntry) {
+    scene.__roadLoreGenerated = true;
+    return;
+  }
+
+  const tiles = Array.isArray(scene.mapData) ? scene.mapData : [];
+  const getTile = (q, r) => tiles.find((t) => t.q === q && t.r === r);
+
+  const islandName = scene.loreState?.islandName || "the island";
+  const factions = scene.loreState?.factions || [];
+  const defaultFaction = factions[0] || "an unknown faction";
+
+  for (const conn of conns) {
+    const fq = conn.from?.q;
+    const fr = conn.from?.r;
+    const tq = conn.to?.q;
+    const tr = conn.to?.r;
+
+    const fromTile = getTile(fq, fr);
+    const toTile = getTile(tq, tr);
+
+    const faction =
+      fromTile?.owningFaction ||
+      toTile?.owningFaction ||
+      defaultFaction;
+
+    const fromLabel = buildLocationLabel(conn.from, fromTile, true);
+    const toLabel = buildLocationLabel(conn.to, toTile, false);
+
+    const year = scene.getNextHistoryYear
+      ? scene.getNextHistoryYear()
+      : 5030;
+
+    addEntry({
+      year,
+      text: `${faction} lay a road across ${islandName}, linking ${fromLabel} with ${toLabel}.`,
+      type: "road_built",
+      from: { q: fq, r: fr },
+      to: { q: tq, r: tr },
+      faction,
+    });
+  }
+
+  scene.__roadLoreGenerated = true;
+}
+
+function buildLocationLabel(endpoint, tile, isFrom) {
+  if (!endpoint) return "an unknown place";
+  const q = endpoint.q;
+  const r = endpoint.r;
+  const type = String(endpoint.type || "").toLowerCase();
+
+  if (tile && tile.cityName) {
+    if (isFrom) {
+      return `the outpost ${tile.cityName} (${q},${r})`;
+    }
+    return `the ruins of ${tile.cityName} (${q},${r})`;
+  }
+
+  if (type === "crash_site" || type === "wreck") {
+    return `a crash site near (${q},${r})`;
+  }
+
+  if (type === "vehicle" || type === "abandoned_vehicle") {
+    return `a stranded vehicle at (${q},${r})`;
+  }
+
+  if (type === "ruin") {
+    return `ruins at (${q},${r})`;
+  }
+
+  return `(${q},${r})`;
+}
