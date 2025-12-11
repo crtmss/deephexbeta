@@ -41,9 +41,11 @@ import { initDebugMenu } from './WorldSceneDebug.js';
 // NEW: History panel UI
 import { setupHistoryUI } from './WorldSceneHistory.js';
 
-// NEW: Electricity system (energy buildings & network)
-// !!! ВАЖНО: импортируем default-объект, а не именованные экспорты
-import ElectricitySystem from './WorldSceneElectricity.js';
+// NEW: Electricity system (power management)
+import ElectricitySystem, {
+  initElectricityForScene,
+  applyElectricityOnEndTurn,
+} from './WorldSceneElectricity.js';
 
 import { supabase as sharedSupabase } from '../net/SupabaseClient.js';
 
@@ -216,6 +218,36 @@ export default class WorldScene extends Phaser.Scene {
     this.hexMap.mapInfo = mapInfo;
     this.mapData = mapInfo.tiles;
 
+    // =========================
+    // Electricity system: attach module and init networks
+    // =========================
+    this.electricitySystem = ElectricitySystem || null;
+    // create a small namespace for flags if not present
+    if (!this.electricity) {
+      this.electricity = {};
+    }
+    try {
+      if (typeof initElectricityForScene === 'function') {
+        initElectricityForScene(this);
+      } else if (
+        this.electricitySystem &&
+        typeof this.electricitySystem.initElectricityForScene === 'function'
+      ) {
+        this.electricitySystem.initElectricityForScene(this);
+      } else if (
+        this.electricitySystem &&
+        typeof this.electricitySystem.initElectricity === 'function'
+      ) {
+        // very old fallback
+        this.electricitySystem.initElectricity(this);
+        this.electricity.initialized = true;
+      } else {
+        console.warn('[ENERGY] WorldSceneElectricity.initElectricityForScene not found');
+      }
+    } catch (err) {
+      console.error('[ENERGY] Error during electricity init:', err);
+    }
+
     // expose helpers; offset handling is centralized in axialToWorld/worldToAxial
     this.hexToPixel = (q, r, sizeOverride) =>
       hexToPixel(q, r, sizeOverride ?? this.hexSize);
@@ -227,15 +259,6 @@ export default class WorldScene extends Phaser.Scene {
     // and draws terrain + POIs + roads + resources once.
     // =========================
     this.recomputeWaterFromLevel();
-
-    // =========================
-    // Electricity system (energy layer: solar, generators, batteries, grid)
-    // =========================
-    if (ElectricitySystem && typeof ElectricitySystem.initElectricityForScene === 'function') {
-      ElectricitySystem.initElectricityForScene(this);
-    } else {
-      console.warn('[ENERGY] WorldSceneElectricity.initElectricityForScene not found');
-    }
 
     /* =========================
        UNITS & ENEMIES SPAWN (multiplayer-aware)
@@ -491,9 +514,23 @@ Biomes: ${biome}`;
     applyLogisticsOnEndTurn(this);
     applyLogisticsRoutesOnEndTurn(this);
 
-    // NEW: apply per-turn electricity (generation, consumption, storage, network)
-    if (ElectricitySystem && typeof ElectricitySystem.applyElectricityOnEndTurn === 'function') {
-      ElectricitySystem.applyElectricityOnEndTurn(this);
+    // NEW: per-turn electricity simulation
+    try {
+      if (typeof applyElectricityOnEndTurn === 'function') {
+        applyElectricityOnEndTurn(this);
+      } else if (
+        this.electricitySystem &&
+        typeof this.electricitySystem.applyElectricityOnEndTurn === 'function'
+      ) {
+        this.electricitySystem.applyElectricityOnEndTurn(this);
+      } else if (
+        this.electricitySystem &&
+        typeof this.electricitySystem.tickElectricity === 'function'
+      ) {
+        this.electricitySystem.tickElectricity(this);
+      }
+    } catch (err) {
+      console.error('[ENERGY] Error during end-turn electricity tick:', err);
     }
 
     if (this.isHost) {
