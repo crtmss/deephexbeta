@@ -42,10 +42,8 @@ import { initDebugMenu } from './WorldSceneDebug.js';
 import { setupHistoryUI } from './WorldSceneHistory.js';
 
 // NEW: Electricity system (energy buildings & network)
-import {
-  initElectricityForScene,
-  applyElectricityOnEndTurn,
-} from './WorldSceneElectricity.js';
+// !!! ВАЖНО: импортируем default-объект, а не именованные экспорты
+import ElectricitySystem from './WorldSceneElectricity.js';
 
 import { supabase as sharedSupabase } from '../net/SupabaseClient.js';
 
@@ -233,7 +231,11 @@ export default class WorldScene extends Phaser.Scene {
     // =========================
     // Electricity system (energy layer: solar, generators, batteries, grid)
     // =========================
-    initElectricityForScene(this);
+    if (ElectricitySystem && typeof ElectricitySystem.initElectricityForScene === 'function') {
+      ElectricitySystem.initElectricityForScene(this);
+    } else {
+      console.warn('[ENERGY] WorldSceneElectricity.initElectricityForScene not found');
+    }
 
     /* =========================
        UNITS & ENEMIES SPAWN (multiplayer-aware)
@@ -490,7 +492,9 @@ Biomes: ${biome}`;
     applyLogisticsRoutesOnEndTurn(this);
 
     // NEW: apply per-turn electricity (generation, consumption, storage, network)
-    applyElectricityOnEndTurn(this);
+    if (ElectricitySystem && typeof ElectricitySystem.applyElectricityOnEndTurn === 'function') {
+      ElectricitySystem.applyElectricityOnEndTurn(this);
+    }
 
     if (this.isHost) {
       this.moveEnemies();
