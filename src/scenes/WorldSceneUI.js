@@ -52,24 +52,6 @@ export function setupTurnUI(scene) {
   // Centralised economy UI (resource HUD, top tabs, resources panel)
   setupEconomyUI(scene);
 
-  // ---------- Energy HUD (левый верхний угол) ----------
-  // Начальное отображение 0/5, дальше WorldSceneElectricity дергает updateEnergyUI.
-  scene.energyLabel = scene.add.text(20, 140, '⚡ 0/5', {
-    fontSize: '16px',
-    fill: '#ffe066',
-    backgroundColor: '#133046',
-    padding: { x: 8, y: 4 },
-  }).setScrollFactor(0).setDepth(100);
-
-  // Хук, который дергает WorldSceneElectricity.recomputeGlobalEnergyStats(scene)
-  // current / max = суммарная энергия и ёмкость (база + все сети).
-  scene.updateEnergyUI = function (current, max) {
-    if (!this.energyLabel) return;
-    const cur = Math.max(0, Math.floor(current ?? 0));
-    const cap = Math.max(0, Math.floor(max ?? 0));
-    this.energyLabel.setText(`⚡ ${cur}/${cap}`);
-  };
-
   // Turn label – positioned under the (now taller) resource HUD
   const baseY = 170;
 
