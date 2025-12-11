@@ -41,6 +41,12 @@ import { initDebugMenu } from './WorldSceneDebug.js';
 // NEW: History panel UI
 import { setupHistoryUI } from './WorldSceneHistory.js';
 
+// NEW: Electricity simulation (networks + per-turn energy)
+import {
+  initElectricity,
+  tickElectricity,
+} from './WorldSceneElectricity.js';
+
 import { supabase as sharedSupabase } from '../net/SupabaseClient.js';
 
 /* =========================
@@ -223,6 +229,9 @@ export default class WorldScene extends Phaser.Scene {
     // and draws terrain + POIs + roads + resources once.
     // =========================
     this.recomputeWaterFromLevel();
+
+    // NEW: initialize electricity subsystem (networks & per-turn state)
+    initElectricity(this);
 
     /* =========================
        UNITS & ENEMIES SPAWN (multiplayer-aware)
@@ -477,6 +486,9 @@ Biomes: ${biome}`;
     applyHaulerRoutesOnEndTurn(this);
     applyLogisticsOnEndTurn(this);
     applyLogisticsRoutesOnEndTurn(this);
+
+    // NEW: apply per-turn electricity simulation (production/consumption)
+    tickElectricity(this);
 
     if (this.isHost) {
       this.moveEnemies();
