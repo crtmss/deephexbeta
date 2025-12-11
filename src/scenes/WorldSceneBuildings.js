@@ -308,6 +308,127 @@ export function startBunkerPlacement(argSceneMaybe) {
   console.warn('[BUILD] startBunkerPlacement: no scene provided.');
 }
 
+/* ==========================================================
+   ENERGY BUILDINGS – thin wrappers into WorldSceneElectricity
+   ========================================================== */
+
+/**
+ * Internal helper to delegate into the electricity system on the scene.
+ * Keeps most of the actual logic in WorldSceneElectricity.js.
+ */
+function _startEnergyPlacement(scene, kind) {
+  if (!scene) {
+    console.warn('[ENERGY] No scene provided for energy placement:', kind);
+    return;
+  }
+
+  // 🔒 MP: only host should actually spawn energy objects
+  if (scene.isHost === false) {
+    console.warn('[ENERGY][MP] Non-host cannot place energy buildings; host is authoritative.');
+    return;
+  }
+
+  // Preferred hook: scene.startEnergyBuildingPlacement(type)
+  const fn =
+    (typeof scene.startEnergyBuildingPlacement === 'function'
+      ? scene.startEnergyBuildingPlacement
+      : (scene.electricity &&
+         typeof scene.electricity.startEnergyBuildingPlacement === 'function'
+           ? scene.electricity.startEnergyBuildingPlacement
+           : null));
+
+  if (!fn) {
+    console.warn('[ENERGY] Electricity system not initialized; cannot place', kind);
+    return;
+  }
+
+  try {
+    fn.call(scene, kind);
+  } catch (err) {
+    console.error('[ENERGY] Error during energy placement for', kind, err);
+  }
+}
+
+export function startSolarPanelPlacement(argSceneMaybe) {
+  let scene = null;
+  if (this && this.sys && this.add) {
+    scene = this;
+  } else if (argSceneMaybe && argSceneMaybe.sys && argSceneMaybe.add) {
+    scene = argSceneMaybe;
+  }
+
+  if (!scene) {
+    console.warn('[ENERGY] startSolarPanelPlacement: no scene provided.');
+    return;
+  }
+
+  _startEnergyPlacement(scene, 'solar_panel');
+}
+
+export function startFuelGeneratorPlacement(argSceneMaybe) {
+  let scene = null;
+  if (this && this.sys && this.add) {
+    scene = this;
+  } else if (argSceneMaybe && argSceneMaybe.sys && argSceneMaybe.add) {
+    scene = argSceneMaybe;
+  }
+
+  if (!scene) {
+    console.warn('[ENERGY] startFuelGeneratorPlacement: no scene provided.');
+    return;
+  }
+
+  _startEnergyPlacement(scene, 'fuel_generator');
+}
+
+export function startBatteryPlacement(argSceneMaybe) {
+  let scene = null;
+  if (this && this.sys && this.add) {
+    scene = this;
+  } else if (argSceneMaybe && argSceneMaybe.sys && argSceneMaybe.add) {
+    scene = argSceneMaybe;
+  }
+
+  if (!scene) {
+    console.warn('[ENERGY] startBatteryPlacement: no scene provided.');
+    return;
+  }
+
+  _startEnergyPlacement(scene, 'battery');
+}
+
+export function startPowerPolePlacement(argSceneMaybe) {
+  let scene = null;
+  if (this && this.sys && this.add) {
+    scene = this;
+  } else if (argSceneMaybe && argSceneMaybe.sys && argSceneMaybe.add) {
+    scene = argSceneMaybe;
+  }
+
+  if (!scene) {
+    console.warn('[ENERGY] startPowerPolePlacement: no scene provided.');
+    return;
+  }
+
+  _startEnergyPlacement(scene, 'power_pole');
+}
+
+export function startPowerConduitPlacement(argSceneMaybe) {
+  let scene = null;
+  if (this && this.sys && this.add) {
+    scene = this;
+  } else if (argSceneMaybe && argSceneMaybe.sys && argSceneMaybe.add) {
+    scene = argSceneMaybe;
+  }
+
+  if (!scene) {
+    console.warn('[ENERGY] startPowerConduitPlacement: no scene provided.');
+    return;
+  }
+
+  _startEnergyPlacement(scene, 'power_conduit');
+}
+
 /**
  * Direct placement for docks (legacy, rarely used).
  */
@@ -788,6 +909,12 @@ export default {
   startMinePlacement,
   startFactoryPlacement,
   startBunkerPlacement,
+  // energy:
+  startSolarPanelPlacement,
+  startFuelGeneratorPlacement,
+  startBatteryPlacement,
+  startPowerPolePlacement,
+  startPowerConduitPlacement,
   placeDocks,
   applyBuildingProductionOnEndTurn,
   cancelPlacement,
