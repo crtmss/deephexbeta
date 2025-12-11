@@ -18,11 +18,11 @@
 //   isBuildingPowered(scene, building)
 //   drawElectricOverlay(scene)
 //
-// + NEW high-level helpers used by WorldScene / WorldSceneBuildings:
+// + high-level helpers used by WorldScene / WorldSceneBuildings:
 //   initElectricityForScene(scene)          – one-time scene setup, attaches placement API
 //   applyElectricityOnEndTurn(scene)       – shorthand for per-turn tick
 //   startEnergyBuildingPlacement(scene, kind)
-//
+//   (NEW) recomputeGlobalEnergyStats(scene) – total energy / capacity (base + all networks)
 
 import { effectiveElevationLocal } from "./WorldSceneGeography.js";
 
@@ -102,6 +102,7 @@ function hexDistance(q1, r1, q2, r2) {
 
 /**
  * Very defensive check whether building participates in electricity system.
+ * + default configs for energy buildings.
  */
 function buildingEnergyConfig(b) {
   const e = b && b.energy ? b.energy : {};
@@ -127,6 +128,7 @@ function buildingEnergyConfig(b) {
     };
   }
   if (type === "battery" && !e.storageCapacity) {
+    // батарея хранит до 20
     return {
       ...e,
       storageCapacity: 20,
@@ -190,6 +192,12 @@ export function initElectricity(scene) {
       dirty: true,
     };
   }
+
+  // базовый блок для мобильной базы: 5 ёмкость, 1 производство/ход
+  const es = scene.electricState;
+  if (typeof es.baseCapacity !== "number") es.baseCapacity = 5;
+  if (typeof es.baseStored !== "number") es.baseStored = 0;
+  if (typeof es.baseProductionPerTurn !== "number") es.baseProductionPerTurn = 1;
 }
 
 /**
@@ -411,17 +419,71 @@ export function recalcNetworks(scene) {
 }
 
 /* =========================================================
+   Global energy stats (base + all networks)
+   ========================================================= */
+
+/**
+ * Пересчитать суммарную энергию/ёмкость:
+ *  - база: baseStored / baseCapacity
+ *  - сети: Σ net.storedEnergy / Σ net.storageCapacity
+ *
+ * И отдать это в scene.updateEnergyUI(stored, capacity) если она есть.
+ */
+export function recomputeGlobalEnergyStats(scene) {
+  if (!scene || !scene.electricState) return;
+  ensureNetworks(scene);
+
+  const es = scene.electricState;
+  let totalCapacity = es.baseCapacity || 0;
+  let totalStored = es.baseStored || 0;
+
+  const nets = es.networks || {};
+  for (const id in nets) {
+    const net = nets[id];
+    if (!net) continue;
+    totalCapacity += net.storageCapacity || 0;
+    totalStored += net.storedEnergy || 0;
+  }
+
+  es.totalCapacity = totalCapacity;
+  es.totalStored = totalStored;
+
+  // Хук для UI (левый верхний угол "energy: X/Y")
+  if (typeof scene.updateEnergyUI === "function") {
+    try {
+      scene.updateEnergyUI(totalStored, totalCapacity);
+    } catch (err) {
+      console.error("[ENERGY] Error in scene.updateEnergyUI:", err);
+    }
+  }
+}
+
+/* =========================================================
    Simulation per turn
    ========================================================= */
 
 export function tickElectricity(scene) {
   if (!scene || !scene.electricState) return;
+  initElectricity(scene);
+
+  // 0) Мобильная база: +1 энергии в ход, максимум 5.
+  const es = scene.electricState;
+  if (!Number.isFinite(es.baseStored)) es.baseStored = 0;
+  const baseCap = es.baseCapacity ?? 0;
+  const baseProd = es.baseProductionPerTurn ?? 0;
+  if (baseProd > 0 && baseCap > 0) {
+    es.baseStored = Math.min(baseCap, es.baseStored + baseProd);
+  }
+
   ensureNetworks(scene);
 
-  const state = scene.electricState;
-  const nets = state.networks || {};
+  const nets = es.networks || {};
   const netIds = Object.keys(nets);
-  if (!netIds.length) return;
+  if (!netIds.length) {
+    // даже если сетей нет, пересчитаем глобальную статистику для 0/X
+    recomputeGlobalEnergyStats(scene);
+    return;
+  }
 
   for (const idStr of netIds) {
     const net = nets[idStr];
@@ -503,6 +565,9 @@ export function tickElectricity(scene) {
     net.lastProduced = produced;
     net.lastDemand = demand;
   }
+
+  // 5) После всех сетей – обновляем глобальные статы X/Y
+  recomputeGlobalEnergyStats(scene);
 }
 
 /**
@@ -513,7 +578,7 @@ export function isBuildingPowered(scene, building) {
   if (typeof building.powerOnline === "boolean") {
     return building.powerOnline;
   }
-  // Fallback: if it doesn't require power, consider it "powered".
+  // Fallback: если не требует энергию, считаем "есть питание".
   const e = buildingEnergyConfig(building);
   if (!e.requiresPower) return true;
   return false;
@@ -620,12 +685,12 @@ export function drawElectricOverlay(scene) {
 }
 
 /* =========================================================
-   NEW: Scene-level integration + placement API
+   Scene-level integration + placement API
    ========================================================= */
 
 /**
  * Called from WorldScene.create().
- * - Ensures electricState exists.
+ * - Ensures electricState exists and base defaults are set.
  * - Attaches scene.startEnergyBuildingPlacement used by WorldSceneBuildings.
  */
 export function initElectricityForScene(scene) {
@@ -646,6 +711,9 @@ export function initElectricityForScene(scene) {
   }
   scene.electricity.startEnergyBuildingPlacement =
     scene.startEnergyBuildingPlacement;
+
+  // сразу посчитать стартовое 0/5
+  recomputeGlobalEnergyStats(scene);
 }
 
 /**
@@ -809,6 +877,9 @@ export function startEnergyBuildingPlacement(scene, kind) {
   } catch (err) {
     console.error("[ENERGY] Error while drawing electric overlay after placement:", err);
   }
+
+  // и обновить глобальные X/Y сразу после постройки
+  recomputeGlobalEnergyStats(scene);
 }
 
 /* =========================================================
@@ -825,8 +896,10 @@ export default {
   tickElectricity,
   isBuildingPowered,
   drawElectricOverlay,
-  // new high-level helpers
+  // high-level helpers
   initElectricityForScene,
   applyElectricityOnEndTurn,
   startEnergyBuildingPlacement,
+  // global stats (для UI)
+  recomputeGlobalEnergyStats,
 };
