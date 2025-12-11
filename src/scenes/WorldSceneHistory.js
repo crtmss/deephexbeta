@@ -1,15 +1,12 @@
 // src/scenes/WorldSceneHistory.js
 //
-// Large, simple History panel UI.
-// - No masking (to avoid white-overlay bugs).
-// - Very high depth so it renders on top of map & resource icons.
-// - Entries are shown with extra spacing for readability.
+// Large, scrollable History panel UI with proper text clipping.
 
 export function setupHistoryUI(scene) {
   const cam = scene.cameras.main;
   const margin = 12;
 
-  // Panel size (~200% of original)
+  // Panel size
   const PANEL_WIDTH = 420;
   const PANEL_HEIGHT = 360;
 
@@ -25,9 +22,9 @@ export function setupHistoryUI(scene) {
     panelY = 70;
   }
 
-  const depthBase = 9000; // way above everything else
+  const depthBase = 9000; // above almost everything
 
-  // ---- Container ----
+  // ---- Container that holds all visible parts ----
   const container = scene.add.container(panelX, panelY);
   container.setScrollFactor(0);
   container.setDepth(depthBase);
@@ -58,10 +55,11 @@ export function setupHistoryUI(scene) {
   );
   container.add(title);
 
-  // ---- Entries text (no mask; just big area) ----
+  // ---- Scrollable text area ----
   const CONTENT_X = 12;
   const CONTENT_Y = 34;
   const CONTENT_W = PANEL_WIDTH - 24;
+  const CONTENT_H = PANEL_HEIGHT - CONTENT_Y - 10;
 
   const entriesText = scene.add.text(
     CONTENT_X,
@@ -77,6 +75,19 @@ export function setupHistoryUI(scene) {
   );
   container.add(entriesText);
 
+  // ---- Proper clipping mask for the text ----
+  // Use world coordinates (panelX + local offsets) and don't add the graphics to the display list.
+  const maskGraphics = scene.make.graphics({ x: 0, y: 0, add: false });
+  maskGraphics.fillStyle(0xffffff);
+  maskGraphics.fillRect(
+    panelX + CONTENT_X,
+    panelY + CONTENT_Y,
+    CONTENT_W,
+    CONTENT_H
+  );
+  const textMask = maskGraphics.createGeometryMask();
+  entriesText.setMask(textMask);
+
   // Initial state
   container.setVisible(false);
 
@@ -87,6 +98,8 @@ export function setupHistoryUI(scene) {
   scene.historyPanelHeight = PANEL_HEIGHT;
   scene.historyTextBaseY = CONTENT_Y;
   scene.historyScrollOffset = 0;
+  scene.historyMaskGraphics = maskGraphics;
+  scene.historyTextMask = textMask;
   scene.isHistoryPanelOpen = false;
 
   // ---- Toggle button ----
@@ -121,11 +134,11 @@ export function setupHistoryUI(scene) {
   scene.closeHistoryPanel = () => closeHistoryPanel(scene);
   scene.refreshHistoryPanel = () => refreshHistoryPanel(scene);
 
-  // Very simple scroll: move the text up/down, no mask.
+  // Scroll with mouse wheel (clipped by mask)
   scene.input.on('wheel', (pointer, _gameObjects, _dx, dy) => {
     if (!scene.isHistoryPanelOpen) return;
 
-    // Only scroll when mouse is over the panel
+    // Only scroll when pointer is over the panel
     const px = pointer.x;
     const py = pointer.y;
     const x0 = panelX;
@@ -183,7 +196,7 @@ export function refreshHistoryPanel(scene) {
 
   const baseY = scene.historyTextBaseY || 34;
   const contentHeight = textObj.height;
-  const visibleHeight = scene.historyPanelHeight - (baseY + 12);
+  const visibleHeight = scene.historyPanelHeight - baseY - 10;
 
   if (contentHeight <= visibleHeight) {
     // No need to scroll
