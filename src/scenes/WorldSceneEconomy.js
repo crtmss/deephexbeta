@@ -19,8 +19,17 @@ export function setupEconomyUI(scene) {
       metal: 0,
       components: 0,
       crudeOil: 0,
-      energy: 0,
+      energy: 0,   // числовой запас можно оставить для старого кода
       credits: 0,
+    };
+  }
+
+  // ENERGY: глобальные итоги энергии (мобильная база + сети)
+  // По умолчанию 0/5, как ты описывал.
+  if (!scene.energyTotals) {
+    scene.energyTotals = {
+      current: 0,
+      capacity: 5,
     };
   }
 
@@ -28,14 +37,43 @@ export function setupEconomyUI(scene) {
   createTopTabs(scene);
   createResourcesPanel(scene);
 
+  // ENERGY: отдельный апдейтер для строки Energy
+  scene.updateEnergyUI = (current, capacity) => {
+    const c =
+      typeof current === 'number'
+        ? current
+        : (scene.energyTotals?.current ?? 0);
+    const cap =
+      typeof capacity === 'number'
+        ? capacity
+        : (scene.energyTotals?.capacity ?? 0);
+
+    scene.energyTotals = { current: c, capacity: cap };
+
+    // верхний левый HUD
+    const hudEntry = scene.resourceHUD?.entries?.energy;
+    if (hudEntry && hudEntry.value) {
+      hudEntry.value.setText(`${c}/${cap}`);
+    }
+
+    // правая панель ресурсов
+    const panelEntry = scene.resourcesPanelTexts?.energy;
+    if (panelEntry && panelEntry.value) {
+      panelEntry.value.setText(`${c}/${cap}`);
+    }
+  };
+
   // Attach public helpers on the scene
   scene.updateResourceUI = () => updateResourceUI(scene);
   scene.bumpResource = (key, delta = 1) => bumpResource(scene, key, delta);
   scene.refreshResourcesPanel = () => refreshResourcesPanel(scene);
 
-  // Initial refresh
+  // Initial refresh for обычных ресурсов
   updateResourceUI(scene);
   refreshResourcesPanel(scene);
+
+  // ENERGY: инициализируем отображение энергии (0/5 на старте)
+  scene.updateEnergyUI(scene.energyTotals.current, scene.energyTotals.capacity);
 
   // Default active tab = Resources
   if (typeof scene.setActiveTopTab === 'function') {
@@ -149,7 +187,7 @@ function updateResourceUI(scene) {
 
   const safe = v => (typeof v === 'number' ? v : 0);
 
-  const setVal = (key, prop) => {
+  const setVal = key => {
     const entry = entries[key];
     if (!entry) return;
     entry.value.setText(String(safe(r[key])));
@@ -160,7 +198,7 @@ function updateResourceUI(scene) {
   setVal('metal');
   setVal('components');
   setVal('crudeOil');
-  setVal('energy');
+  // ENERGY: не трогаем строку energy здесь – ей управляет updateEnergyUI.
   setVal('credits');
 }
 
@@ -445,6 +483,6 @@ function refreshResourcesPanel(scene) {
   setVal('metal');
   setVal('components');
   setVal('crudeOil');
-  setVal('energy');
+  // ENERGY: не трогаем energy — её обновляет updateEnergyUI.
   setVal('credits');
 }
