@@ -620,7 +620,6 @@ function applyGeoObject(map, cols, rows, rand, biome, worldMeta) {
     worldMeta.geoLandmark = landmark;
   }
 }
-
 /* ================= Map generation ================= */
 function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
   const map = Array.from({ length: rows }, (_, r) =>
@@ -713,42 +712,30 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
   const worldMeta = { biome: biome[0].toUpperCase() + biome.slice(1) + ' Biome' };
   applyGeoObject(map, cols, rows, rand, biome, worldMeta);
 
-  // Objects / POIs (forests/ruins/vehicles/roads) — seeded
+  // Objects / features (forests & roads), POI (ruins/crash/vehicles) now come from lore
   const flat = map.flat();
   const markObj = (tile, key) => { tile[key] = true; tile.hasObject = true; };
   const isFree = t => !t.hasObject && !['mountain', 'water'].includes(t.type);
 
-  // Forests
+  // Forests (kept as before – это не POI, а часть ландшафта)
   const forestCandidates = flat.filter(t => ['grassland', 'mud'].includes(t.type));
   shuffleInPlace(forestCandidates, rand);
   forestCandidates.slice(0, 39).forEach(tile => {
     tile.hasForest = true;
   });
 
-  // Ruins
-  const ruinCandidates = flat.filter(t =>
-    ['sand', 'swamp', 'volcano_ash', 'ice', 'snow'].includes(t.type) && isFree(t)
-  );
-  shuffleInPlace(ruinCandidates, rand);
-  ruinCandidates
-    .slice(0, randInt(rand, 2, 3))
-    .forEach(t => markObj(t, 'hasRuin'));
+  // NOTE: Ruins / crash sites / vehicles больше не генерируются здесь.
+  // Они будут появляться детерминированно из истории (LoreGeneration),
+  // через mapInfo.objects -> applyLocationFlags -> флаги тайлов.
+  //
+  // Прежние блоки:
+  //   - ruinCandidates ... markObj(t, 'hasRuin')
+  //   - crashCandidates ... markObj(t, 'hasCrashSite')
+  //   - vehicleCandidates ... markObj(t, 'hasVehicle')
+  // намеренно убраны, чтобы соблюсти порядок:
+  //   seed -> lore -> POI.
 
-  // Crashsites
-  const crashCandidates = flat.filter(isFree);
-  shuffleInPlace(crashCandidates, rand);
-  crashCandidates
-    .slice(0, randInt(rand, 2, 3))
-    .forEach(t => markObj(t, 'hasCrashSite'));
-
-  // Vehicles
-  const vehicleCandidates = flat.filter(t => t.type === 'grassland' && isFree(t));
-  shuffleInPlace(vehicleCandidates, rand);
-  vehicleCandidates
-    .slice(0, randInt(rand, 2, 3))
-    .forEach(t => markObj(t, 'hasVehicle'));
-
-  // Roads (simple seeded BFS)
+  // Roads (simple seeded BFS) – оставляем как было
   const roadTiles = flat.filter(t =>
     !['water', 'mountain'].includes(t.type) && !t.hasObject
   );
@@ -1079,4 +1066,3 @@ export default class HexMap {
     return this.map;
   }
 }
-
