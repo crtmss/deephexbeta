@@ -18,6 +18,12 @@
 //   isBuildingPowered(scene, building)
 //   drawElectricOverlay(scene)
 //
+// + NEW high-level helpers used by WorldScene / WorldSceneBuildings:
+//   initElectricityForScene(scene)          – one-time scene setup, attaches placement API
+//   applyElectricityOnEndTurn(scene)       – shorthand for per-turn tick
+//   startEnergyBuildingPlacement(scene, kind)
+//
+
 import { effectiveElevationLocal } from "./WorldSceneGeography.js";
 
 const AXIAL_DIRS = [
@@ -321,9 +327,12 @@ export function recalcNetworks(scene) {
 
   // 2) power pole radius (q,r within distance <= 2)
   for (const node of nodeByKey.values()) {
-    if (!node.hasPole && !Array.from(node.buildings).some(
-      (b) => String(b?.type || "").toLowerCase() === "power_pole"
-    )) {
+    if (
+      !node.hasPole &&
+      !Array.from(node.buildings).some(
+        (b) => String(b?.type || "").toLowerCase() === "power_pole"
+      )
+    ) {
       continue;
     }
 
@@ -611,31 +620,195 @@ export function drawElectricOverlay(scene) {
 }
 
 /* =========================================================
-   Adapters for WorldScene.js (compat layer)
+   NEW: Scene-level integration + placement API
    ========================================================= */
 
 /**
- * Wrapper для старого API:
- * WorldScene ожидает ElectricitySystem.initElectricityForScene(scene)
+ * Called from WorldScene.create().
+ * - Ensures electricState exists.
+ * - Attaches scene.startEnergyBuildingPlacement used by WorldSceneBuildings.
  */
 export function initElectricityForScene(scene) {
-  // твоя основная инициализация
+  if (!scene) return;
   initElectricity(scene);
 
-  // совместимость с проверками вида
-  // if (!scene.electricity || !scene.electricity.initialized) ...
   if (!scene.electricity) {
     scene.electricity = {};
   }
+
   scene.electricity.initialized = true;
+
+  // Attach placement API once per scene
+  if (typeof scene.startEnergyBuildingPlacement !== "function") {
+    scene.startEnergyBuildingPlacement = function (kind) {
+      return startEnergyBuildingPlacement(scene, kind);
+    };
+  }
+  scene.electricity.startEnergyBuildingPlacement =
+    scene.startEnergyBuildingPlacement;
 }
 
 /**
- * Wrapper для старого API:
- * WorldScene ожидает ElectricitySystem.applyElectricityOnEndTurn(scene)
+ * Simple wrapper used from WorldScene.endTurn().
  */
 export function applyElectricityOnEndTurn(scene) {
   tickElectricity(scene);
+}
+
+/**
+ * Decide target hex for placement:
+ * - prefer selectedUnit
+ * - fallback to selectedHex
+ */
+function getEnergyPlacementHex(scene) {
+  if (scene.selectedUnit && typeof scene.selectedUnit.q === "number" && typeof scene.selectedUnit.r === "number") {
+    return { q: scene.selectedUnit.q, r: scene.selectedUnit.r };
+  }
+  if (scene.selectedHex && typeof scene.selectedHex.q === "number" && typeof scene.selectedHex.r === "number") {
+    return { q: scene.selectedHex.q, r: scene.selectedHex.r };
+  }
+  return null;
+}
+
+/**
+ * Create a simple framed-emoji building like other buildings.
+ */
+function spawnEnergyBuilding(scene, kind, q, r) {
+  const pos = scene.axialToWorld(q, r);
+  const plateW = 36;
+  const plateH = 36;
+  const radius = 8;
+
+  const cont = scene.add
+    .container(pos.x, pos.y)
+    .setDepth(2100);
+
+  const plate = scene.add.graphics();
+  plate.fillStyle(0x0f2233, 0.92);
+  plate.fillRoundedRect(-plateW / 2, -plateH / 2, plateW, plateH, radius);
+  plate.lineStyle(2, 0x3da9fc, 0.9);
+  plate.strokeRoundedRect(-plateW / 2, -plateH / 2, plateW, plateH, radius);
+
+  let emoji = "⚡";
+  let name = "Power";
+  if (kind === "solar_panel") {
+    emoji = "🔆";
+    name = "Solar";
+  } else if (kind === "fuel_generator") {
+    emoji = "⛽";
+    name = "Generator";
+  } else if (kind === "battery") {
+    emoji = "🔋";
+    name = "Battery";
+  } else if (kind === "power_pole") {
+    emoji = "🗼";
+    name = "Pole";
+  } else if (kind === "power_conduit") {
+    emoji = "•";
+    name = "Conduit";
+  }
+
+  const emojiText = scene.add
+    .text(0, 0, emoji, {
+      fontSize: "22px",
+      color: "#ffffff",
+    })
+    .setOrigin(0.5);
+
+  const label = scene.add
+    .text(0, plateH / 2 + 10, name, {
+      fontSize: "14px",
+      color: "#e8f6ff",
+    })
+    .setOrigin(0.5, 0);
+
+  cont.add([plate, emojiText, label]);
+
+  scene.buildings = scene.buildings || [];
+  scene._buildingIdSeq = (scene._buildingIdSeq || 1) + 1;
+  const id = scene._buildingIdSeq;
+
+  const building = {
+    id,
+    type: kind,
+    name,
+    q,
+    r,
+    container: cont,
+    energy: {},
+  };
+
+  // Default energy configs (these get merged in buildingEnergyConfig)
+  if (kind === "solar_panel") {
+    building.energy.productionPerTurn = 2;
+  } else if (kind === "fuel_generator") {
+    building.energy.productionPerTurn = 5;
+    building.energy.fuelType = "crude_oil";
+    building.energy.fuelPerTurn = 1;
+  } else if (kind === "battery") {
+    building.energy.storageCapacity = 20;
+  }
+
+  scene.buildings.push(building);
+
+  // Notify electricity system
+  onBuildingPlaced(scene, building);
+
+  return building;
+}
+
+/**
+ * Placement entry point used by WorldSceneBuildings._startEnergyPlacement().
+ * kind: "solar_panel" | "fuel_generator" | "battery" | "power_pole" | "power_conduit"
+ */
+export function startEnergyBuildingPlacement(scene, kind) {
+  if (!scene) return;
+
+  // make sure base state exists
+  initElectricity(scene);
+
+  const hex = getEnergyPlacementHex(scene);
+  if (!hex) {
+    console.warn("[ENERGY] No target hex for", kind, "(no unit / selected hex)");
+    return;
+  }
+
+  const { q, r } = hex;
+  const mapData = scene.mapData || [];
+  const tile = mapData.find((t) => t.q === q && t.r === r);
+  if (!tile) {
+    console.warn("[ENERGY] Target tile not found for", kind, "at", q, r);
+    return;
+  }
+
+  // Basic placement rules (можно усложнить позже)
+  if (kind === "solar_panel" || kind === "fuel_generator" || kind === "battery") {
+    if (tile.type === "water" || tile.type === "ocean" || tile.type === "sea") {
+      console.warn("[ENERGY] Cannot place", kind, "on water.");
+      return;
+    }
+    spawnEnergyBuilding(scene, kind, q, r);
+  } else if (kind === "power_pole") {
+    // Either as a building or just a tile flag.
+    tile.hasPowerPole = true;
+    spawnEnergyBuilding(scene, kind, q, r);
+  } else if (kind === "power_conduit") {
+    // Conduits в основном живут на тайле + рисуются оверлеем.
+    tile.hasPowerConduit = true;
+    // optional: small visual marker as building for consistency
+    spawnEnergyBuilding(scene, kind, q, r);
+  } else {
+    console.warn("[ENERGY] Unknown energy kind:", kind);
+    return;
+  }
+
+  // Сеть надо пересчитать и перерисовать оверлей
+  markElectricDirty(scene);
+  try {
+    drawElectricOverlay(scene);
+  } catch (err) {
+    console.error("[ENERGY] Error while drawing electric overlay after placement:", err);
+  }
 }
 
 /* =========================================================
@@ -644,14 +817,16 @@ export function applyElectricityOnEndTurn(scene) {
 
 export default {
   initElectricity,
-  initElectricityForScene,
   markElectricDirty,
   onTileUpdated,
   onBuildingPlaced,
   onBuildingRemoved,
   recalcNetworks,
   tickElectricity,
-  applyElectricityOnEndTurn,
   isBuildingPowered,
   drawElectricOverlay,
+  // new high-level helpers
+  initElectricityForScene,
+  applyElectricityOnEndTurn,
+  startEnergyBuildingPlacement,
 };
