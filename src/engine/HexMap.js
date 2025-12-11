@@ -18,7 +18,7 @@ const terrainTypes = {
   snow:        { movementCost: 3, color: '#F7FBFF' }    // heavy snow
 };
 
-/** Hash helpers / noise (unchanged core, but now returns float 0..1) */
+/** Hash helpers / noise (returns float 0..1) */
 function __hx_strHash(s) {
   let h = 2166136261 >>> 0;
   for (let i = 0; i < s.length; i++) {
@@ -59,7 +59,7 @@ function __hx_fbm2D(x, y, seedStr, oct = 4, lac = 2.0, gain = 0.5) {
   return sum / (as || 1);
 }
 
-/** Elevation "shape" 0..1 (we'll quantize later to 1..7) */
+/** Elevation "shape" 0..1 (we'll quantize later to 4..7) */
 function __hx_computeElevationShape(q, r, cols, rows, rawSeed, terrainType) {
   const seedStr = (typeof rawSeed === 'string' && rawSeed) ? rawSeed : 'defaultseed';
   const x = q * 0.18 + 123.45;
@@ -73,12 +73,11 @@ function __hx_computeElevationShape(q, r, cols, rows, rawSeed, terrainType) {
   const falloff = 1 - (dist / maxd); // 1 at center, 0 at corners
   const centerBias = falloff * falloff; // stronger push toward center
 
-  // Mix noise with center bias – more weight on center to push inner tiles up
+  // Mix noise with center bias – higher toward center, but still noisy
   n = 0.6 * n + 0.4 * centerBias;
 
   switch (terrainType) {
     case 'water':
-      // keep low-ish to favour deeper sea away from island
       n = Math.min(n, 0.4);
       break;
     case 'mountain':
@@ -99,7 +98,6 @@ function __hx_computeElevationShape(q, r, cols, rows, rawSeed, terrainType) {
       n = Math.max(0, n * 0.98 - 0.01);
       break;
   }
-  // clamp to 0..1
   return Math.max(0, Math.min(0.9999, n));
 }
 
@@ -160,20 +158,7 @@ function enforceIslandMargin(map, cols, rows, marginRings = 3) {
 /* ================= Geography presets ================ */
 function applyGeography(map, cols, rows, seedStr, rand) {
 
-  // ==========================================================
-  // NEW WEIGHTED SELECTION
-  //
-  // Goal:
-  //   - Reduce donut/central-lagoon shapes (cases 2 and 3)
-  //     from ~30–40% down to ~10% total.
-  //
-  // Weight distribution:
-  //   0–0.05  → case 2 (5%)
-  //   0.05–0.10 → case 3 (5%)   => donut maps total ≈10%
-  //   0.10–0.40 → case 4 (30%)
-  //   0.40–0.70 → case 5 (30%)
-  //   0.70–1.00 → case 6 (30%)
-  // ==========================================================
+  // Weighted selection of island shapes, keeping donut-ish rare
   let pickF;
   const roll = rand(); // 0..1
 
@@ -225,12 +210,8 @@ function applyGeography(map, cols, rows, seedStr, rand) {
   const fbm = (x, y, f = 1.0) =>
     __hx_fbm2D(x * f + 41.2, y * f - 17.9, "g-" + seedStr, 4, 2.0, 0.5);
 
-  // ==========================================================
-  // GEOGRAPHY PRESET BEHAVIOR
-  // ==========================================================
   switch (pickF) {
-
-    // 2 → Roundish island with stronger central depression
+    // 2 → Roundish island with central depression
     case 2:
       carveByMask(0.15, 0.35, (q, r) => {
         const X = nx(q), Y = ny(r);
@@ -341,6 +322,7 @@ function assignExact(pool, type, count, rand) {
 /**
  * Paints a global biome onto the map using contiguous patches
  * (4–9 hexes) so land looks like proper blobs instead of noise.
+ * Patches are biased to be roughly roundish around their seed.
  */
 function paintBiome(map, cols, rows, rand) {
   const flat = map.flat();
@@ -366,7 +348,7 @@ function paintBiome(map, cols, rows, rand) {
     if (!terrainTypes[type]) return;
 
     const minPatch = 4;
-    const maxPatch = 9;  // <== blobs now between 4 and 9 hexes
+    const maxPatch = 9;  // blobs between 4 and 9 hexes
 
     while (targetCount > 0 && unassigned.size > 0) {
       const keysArr = Array.from(unassigned);
@@ -380,6 +362,11 @@ function paintBiome(map, cols, rows, rand) {
       let patchSize = randInt(rand, minPatch, maxPatch);
       patchSize = Math.min(patchSize, targetCount);
 
+      const seedQ = seedTile.q;
+      const seedR = seedTile.r;
+      // approximate radius so blobs look roundish
+      const radius = Math.max(1.5, Math.sqrt(patchSize / Math.PI) * 1.25);
+
       const queue = [seedTile];
       const visitedLocal = new Set();
 
@@ -388,6 +375,12 @@ function paintBiome(map, cols, rows, rand) {
         if (!tile) continue;
         const k = keyOf(tile.q, tile.r);
         if (!unassigned.has(k) || visitedLocal.has(k)) continue;
+
+        // distance from seed – keep within radius for round-ish shapes
+        const dx0 = tile.q - seedQ;
+        const dy0 = tile.r - seedR;
+        const dist0 = Math.hypot(dx0, dy0);
+        if (dist0 > radius) continue;
 
         // Assign tile to this biome type
         tile.type = type;
@@ -404,6 +397,12 @@ function paintBiome(map, cols, rows, rand) {
           if (!unassigned.has(nk) || visitedLocal.has(nk)) continue;
           const nt = map[nr][nq];
           if (!nt || nt.type === 'water' || nt.type === 'mountain') continue;
+
+          const dx = nq - seedQ;
+          const dy = nr - seedR;
+          const dist = Math.hypot(dx, dy);
+          if (dist > radius + rand() * 0.4) continue;
+
           queue.push(nt);
         }
       }
@@ -456,6 +455,7 @@ function paintBiome(map, cols, rows, rand) {
 
   return biome;
 }
+
 /* ================ Geo-object helpers ================= */
 function isCoastal(map, q, r) {
   const t = map[r][q];
@@ -661,7 +661,7 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
   // Geography and minimum coverage (still using type=water as mask)
   applyGeography(map, cols, rows, seedStr, rand);
   const flat0 = map.flat();
-  const MIN_COVER = 0.30;   // ↓ 10% less land vs old 0.40
+  const MIN_COVER = 0.30;
   if (coverageRatio(flat0) < MIN_COVER) {
     const waters = flat0
       .filter(t => t.type === 'water')
@@ -795,68 +795,117 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
   }
 
   // ============================================================
-  // FINAL ELEVATION + BASE WATER DEPTH
+  // FINAL ELEVATION + BASE WATER DEPTH (GLOBAL DISTRIBUTION)
   // ============================================================
   const cx = cols / 2, cy = rows / 2;
   const maxd = Math.hypot(cx, cy) || 1;
 
-  for (const t of flat) {
-    const shape = __hx_computeElevationShape(
-      t.q,
-      t.r,
-      cols,
-      rows,
-      seedStr,
-      t.type
-    ); // 0..1, center-biased
+  const landTiles = flat.filter(t => t.type !== 'water');
+  const waterTiles = flat.filter(t => t.type === 'water');
 
-    if (t.type === 'water') {
-      const depth = 1;
-      t.baseElevation    = depth;
-      t.elevation        = depth;
-      t.waterDepth       = depth;
-      t.isCoveredByWater = true;
-      t.isUnderWater     = true;
-      t.groundType       = 'undersea';
-    } else {
-      // Base float from shape: 4..7
-      let baseFloat = 4 + shape * 3; // 4–7
+  // Precompute shape & center factor for land
+  for (const t of landTiles) {
+    const shape = __hx_computeElevationShape(t.q, t.r, cols, rows, seedStr, t.type);
+    const dx = t.q - cx;
+    const dy = t.r - cy;
+    const dist = Math.hypot(dx, dy);
+    const centerFactor = 1 - dist / maxd;
+    t.__elevShape = shape;
+    t.__centerFactor = Math.max(0, Math.min(1, centerFactor));
+  }
 
-      // Add jitter so levels are less predictable
-      const jitter = (rand() - 0.5) * 1.8; // -0.9..+0.9
-      baseFloat += jitter;
+  const landCount = landTiles.length;
+  if (landCount > 0) {
+    // Pick global fractions within requested ranges
+    let frac7 = 0.09 + (rand() - 0.5) * 0.06; // ~9% ±3% => 6–12
+    frac7 = Math.max(0.05, Math.min(0.15, frac7));
 
-      let lvl = Math.round(baseFloat);
+    let frac6 = 0.17 + (rand() - 0.5) * 0.10; // ~17% ±5% => 12–22
+    frac6 = Math.max(0.10, Math.min(0.25, frac6));
 
-      // Clamp
-      if (lvl < 4) lvl = 4;
-      if (lvl > 7) lvl = 7;
+    let target7Total = Math.round(landCount * frac7);
+    let target6 = Math.round(landCount * frac6);
 
-      // Center promotion: more 6s (and some 7s) near island core
-      const dx = t.q - cx;
-      const dy = t.r - cy;
-      const dist = Math.hypot(dx, dy);
-      const centerFactor = 1 - dist / maxd; // 0 edge, 1 center
+    if (target7Total + target6 > landCount) {
+      const scale = landCount / (target7Total + target6);
+      target7Total = Math.floor(target7Total * scale);
+      target6 = Math.floor(target6 * scale);
+    }
 
-      if (centerFactor > 0.45 && lvl === 5 && rand() < 0.45) {
-        lvl = 6;
+    const mountainTiles = landTiles.filter(t => t.type === 'mountain');
+    const forced7 = mountainTiles.length;
+    if (forced7 > target7Total) {
+      target7Total = forced7;
+    }
+    let extra7 = Math.max(0, target7Total - forced7);
+
+    const remainingAfterHigh = Math.max(0, landCount - target7Total - target6);
+    let target4 = 0;
+    let target5 = 0;
+    if (remainingAfterHigh > 0) {
+      target4 = Math.round(remainingAfterHigh * 0.60);
+      target5 = remainingAfterHigh - target4;
+    }
+
+    // High-elevation candidates sorted by score (shape + center bias)
+    const nonMountain = landTiles.filter(t => t.type !== 'mountain');
+    nonMountain.sort((a, b) => {
+      const sa = a.__elevShape ?? 0;
+      const sb = b.__elevShape ?? 0;
+      const ca = a.__centerFactor ?? 0;
+      const cb = b.__centerFactor ?? 0;
+      const scoreA = sa * 0.6 + ca * 0.4;
+      const scoreB = sb * 0.6 + cb * 0.4;
+      return scoreB - scoreA;
+    });
+
+    const levelMap = new Map(); // tile -> level
+
+    // Forced mountains as level 7
+    for (const t of mountainTiles) {
+      levelMap.set(t, 7);
+    }
+
+    // Extra lvl 7 (non-mountain tiles with highest score)
+    let idx = 0;
+    while (extra7 > 0 && idx < nonMountain.length) {
+      const t = nonMountain[idx++];
+      if (levelMap.has(t)) continue;
+      levelMap.set(t, 7);
+      extra7--;
+    }
+
+    // Lvl 6 assignment
+    idx = 0;
+    let left6 = target6;
+    while (left6 > 0 && idx < nonMountain.length) {
+      const t = nonMountain[idx++];
+      if (levelMap.has(t)) continue;
+      levelMap.set(t, 6);
+      left6--;
+    }
+
+    // Remaining tiles for 4 and 5 (60/40 split)
+    const remainingTiles = landTiles.filter(t => !levelMap.has(t));
+    remainingTiles.sort((a, b) => ( (a.__elevShape ?? 0) - (b.__elevShape ?? 0) ));
+
+    let left4 = target4;
+    for (const t of remainingTiles) {
+      if (left4 > 0) {
+        levelMap.set(t, 4);
+        left4--;
+      } else {
+        levelMap.set(t, 5);
       }
-      if (centerFactor > 0.6 && lvl === 4 && rand() < 0.35) {
-        lvl = 5;
-      }
-      if (centerFactor > 0.7 && lvl === 6 && rand() < 0.25) {
-        lvl = 7;
-      }
+    }
 
-      // Ensure explicit mountains stay at 7
-      if (t.type === 'mountain') {
-        lvl = 7;
-      }
-
-      t.baseElevation     = lvl;
-      t.elevation         = lvl;
-      t.isCoveredByWater  = false;
-      t.isUnderWater      = false;
+    // Apply levels to land tiles
+    for (const t of landTiles) {
+      const lvl = levelMap.get(t) || 4;
+      t.baseElevation = lvl;
+      t.elevation = lvl;
+      t.isCoveredByWater = false;
+      t.isUnderWater = false;
 
       if (lvl === 7 || t.type === 'mountain') {
         t.type = 'mountain';
@@ -869,20 +918,33 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
       } else {
         if (!t.groundType) t.groundType = t.type;
         t.hasMountainIcon = false;
+        t.impassable = !!terrainTypes[t.type]?.impassable;
+        t.movementCost = terrainTypes[t.type]?.movementCost ?? 1;
       }
+
+      delete t.__elevShape;
+      delete t.__centerFactor;
     }
   }
 
-  // SECOND PASS: clustered shallow water patches (2–4 stains)
-  const waterTiles = flat.filter(t => t.type === 'water');
-  if (waterTiles.length > 0) {
+  // Water tiles: start as deep water, shallows handled below
+  for (const t of waterTiles) {
+    const depth = 1;
+    t.baseElevation    = depth;
+    t.elevation        = depth;
+    t.waterDepth       = depth;
+    t.isCoveredByWater = true;
+    t.isUnderWater     = true;
+    t.groundType       = 'undersea';
+  }
 
+  // SECOND PASS: clustered shallow water patches (2–4 stains)
+  if (waterTiles.length > 0) {
     const targetShallowRatio = 0.30;
     const targetShallow = Math.floor(waterTiles.length * targetShallowRatio);
     let shallowCount = waterTiles.filter(t => t.baseElevation === 3).length;
 
     if (shallowCount < targetShallow) {
-
       const coastalWater = waterTiles.filter(t => {
         const bd = Math.min(t.q, t.r, cols - 1 - t.q, rows - 1 - t.r);
         if (bd <= 1) return false;
@@ -895,7 +957,6 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
       });
 
       if (coastalWater.length > 0) {
-
         coastalWater.sort((a, b) => {
           const da = (a.q - cx) ** 2 + (a.r - cy) ** 2;
           const db = (b.q - cx) ** 2 + (b.r - cy) ** 2;
@@ -1018,3 +1079,4 @@ export default class HexMap {
     return this.map;
   }
 }
+
