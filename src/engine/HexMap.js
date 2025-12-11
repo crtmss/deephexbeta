@@ -684,7 +684,7 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
   const biome = paintBiome(map, cols, rows, rand);
 
   // Mountains (chains on land mask)
-  const mountainChains = 6 + Math.floor(rand() * 3);
+  const mountainChains = 3 + Math.floor(rand() * 2);
   for (let i = 0; i < mountainChains; i++) {
     let q = Math.floor(rand() * (cols - 4)) + 2;
     let r = Math.floor(rand() * (rows - 4)) + 2;
@@ -817,12 +817,12 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
   const landCount = landTiles.length;
   if (landCount > 0) {
     // Pick global fractions within requested ranges
-    let frac7 = 0.09 + (rand() - 0.5) * 0.06; // ~9% ±3% => 6–12
-    frac7 = Math.max(0.05, Math.min(0.15, frac7));
+    let frac7 = 0.045 + (rand() - 0.5) * 0.05; // ~4.5% ±2.5% => ~2–7%
+    frac7 = Math.max(0.03, Math.min(0.08, frac7));
 
     let frac6 = 0.17 + (rand() - 0.5) * 0.10; // ~17% ±5% => 12–22
     frac6 = Math.max(0.10, Math.min(0.25, frac6));
-
+    
     let target7Total = Math.round(landCount * frac7);
     let target6 = Math.round(landCount * frac6);
 
