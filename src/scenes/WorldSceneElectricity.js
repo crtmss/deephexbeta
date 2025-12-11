@@ -611,17 +611,47 @@ export function drawElectricOverlay(scene) {
 }
 
 /* =========================================================
+   Adapters for WorldScene.js (compat layer)
+   ========================================================= */
+
+/**
+ * Wrapper для старого API:
+ * WorldScene ожидает ElectricitySystem.initElectricityForScene(scene)
+ */
+export function initElectricityForScene(scene) {
+  // твоя основная инициализация
+  initElectricity(scene);
+
+  // совместимость с проверками вида
+  // if (!scene.electricity || !scene.electricity.initialized) ...
+  if (!scene.electricity) {
+    scene.electricity = {};
+  }
+  scene.electricity.initialized = true;
+}
+
+/**
+ * Wrapper для старого API:
+ * WorldScene ожидает ElectricitySystem.applyElectricityOnEndTurn(scene)
+ */
+export function applyElectricityOnEndTurn(scene) {
+  tickElectricity(scene);
+}
+
+/* =========================================================
    Default export
    ========================================================= */
 
 export default {
   initElectricity,
+  initElectricityForScene,
   markElectricDirty,
   onTileUpdated,
   onBuildingPlaced,
   onBuildingRemoved,
   recalcNetworks,
   tickElectricity,
+  applyElectricityOnEndTurn,
   isBuildingPowered,
   drawElectricOverlay,
 };
