@@ -4,9 +4,9 @@
 // - Large panel near top-right.
 // - Scrollable with mouse wheel.
 // - Text clipped to panel via geometry mask.
-// - Clickable words (outpost / city names etc.) are cyan and focus the map.
+// - Entries that can focus a hex are cyan & clickable.
 //
-// Exposed helpers:
+// Public helpers:
 //   setupHistoryUI(scene)
 //   openHistoryPanel(scene)
 //   closeHistoryPanel(scene)
@@ -17,13 +17,12 @@
    ========================================================= */
 
 export function setupHistoryUI(scene) {
-  const cam = scene.cameras.main;
   const margin = 12;
 
   const PANEL_WIDTH = 420;
   const PANEL_HEIGHT = 360;
 
-  // Position: to the left of resources panel if possible
+  // Position: to the left of resources panel if present
   let panelX;
   let panelY;
 
@@ -195,7 +194,6 @@ export function refreshHistoryPanel(scene) {
     : [];
 
   const maxWidth = scene.historyPanelWidth - 24;
-
   let yCursor = 0;
 
   if (!entries.length) {
@@ -220,88 +218,33 @@ export function refreshHistoryPanel(scene) {
       const body = ev.text || '';
       const label = `${year} — ${body}`;
 
-      // Build clickable target metadata from entry
-      const targets = collectTargetsFromEntry(ev);
+      const hasTargets = entryHasTargets(ev);
+      const color = hasTargets ? '#6bf7ff' : '#b7d7ff';
 
-      // Names that we can highlight
-      const clickableNames = targets
-        .map(t => t.name)
-        .filter(n => typeof n === 'string' && n.length > 0);
+      const txt = scene.add.text(
+        0,
+        yCursor,
+        label,
+        {
+          fontFamily: 'monospace',
+          fontSize: '14px',
+          color,
+          wordWrap: { width: maxWidth },
+          lineSpacing: 6, // extra spacing
+        }
+      );
 
-      let segments;
-
-      if (clickableNames.length === 0 && targets.length > 0) {
-        // No names but we have coords → whole line is clickable
-        segments = [{
-          text: label,
-          clickable: true,
-          target: targets[0],
-        }];
-      } else if (clickableNames.length === 0) {
-        // Plain non-clickable line
-        segments = [{
-          text: label,
-          clickable: false,
-          target: null,
-        }];
-      } else {
-        // Split label into segments around each clickable name
-        segments = buildSegmentsForLabel(label, clickableNames, targets);
+      if (hasTargets) {
+        txt.setInteractive({ useHandCursor: true });
+        txt.on('pointerdown', () => {
+          focusEntry(scene, ev);
+        });
       }
 
-      // Render segments with manual wrapping
-      let xCursor = 0;
+      entriesContainer.add(txt);
+      scene.historyEntryTexts.push(txt);
 
-      for (const seg of segments) {
-        const color = seg.clickable ? '#6bf7ff' : '#b7d7ff';
-
-        const txt = scene.add.text(
-          xCursor,
-          yCursor,
-          seg.text,
-          {
-            fontFamily: 'monospace',
-            fontSize: '14px',
-            color,
-            lineSpacing: 4,
-          }
-        );
-
-        // Wrap if segment would overflow significantly
-        if (xCursor > 0 && xCursor + txt.width > maxWidth) {
-          xCursor = 0;
-          yCursor += txt.height;
-          txt.x = xCursor;
-          txt.y = yCursor;
-        }
-
-        if (seg.clickable && seg.target && hasCoord(seg.target)) {
-          txt.setInteractive({ useHandCursor: true });
-          txt.on('pointerdown', () => {
-            focusEntry(scene, { targets: [seg.target] });
-          });
-        } else if (!seg.clickable && segmentHasAnyTarget(seg) && targets.length) {
-          // fallback: full-line click when we couldn't match text but have coords
-          txt.setInteractive({ useHandCursor: true });
-          txt.on('pointerdown', () => {
-            focusEntry(scene, { targets });
-          });
-        }
-
-        entriesContainer.add(txt);
-        scene.historyEntryTexts.push(txt);
-
-        xCursor += txt.width;
-
-        // Support explicit line breaks in text (rare)
-        if (seg.text.includes('\n')) {
-          xCursor = 0;
-          yCursor += txt.height;
-        }
-      }
-
-      // Spacing after each entry
-      yCursor += 18;
+      yCursor += txt.height + 10; // spacing between entries
     }
   }
 
@@ -318,125 +261,20 @@ export function refreshHistoryPanel(scene) {
 }
 
 /* =========================================================
-   SEGMENT BUILDING / TARGET COLLECTION
+   CLICKABLE ENTRY HELPERS
    ========================================================= */
+
+function entryHasTargets(entry) {
+  if (typeof entry.q === 'number' && typeof entry.r === 'number') return true;
+  if (entry.from && hasCoord(entry.from)) return true;
+  if (entry.to && hasCoord(entry.to)) return true;
+  if (Array.isArray(entry.targets) && entry.targets.some(hasCoord)) return true;
+  return false;
+}
 
 function hasCoord(t) {
-  return typeof t.q === 'number' && typeof t.r === 'number';
+  return t && typeof t.q === 'number' && typeof t.r === 'number';
 }
-
-function collectTargetsFromEntry(ev) {
-  const result = [];
-
-  if (typeof ev.q === 'number' && typeof ev.r === 'number') {
-    result.push({ name: ev.name || null, q: ev.q, r: ev.r });
-  }
-
-  if (ev.from && hasCoord(ev.from)) {
-    result.push({
-      name: ev.from.name || ev.from.cityName || null,
-      q: ev.from.q,
-      r: ev.from.r,
-    });
-  }
-
-  if (ev.to && hasCoord(ev.to)) {
-    result.push({
-      name: ev.to.name || ev.to.cityName || null,
-      q: ev.to.q,
-      r: ev.to.r,
-    });
-  }
-
-  if (Array.isArray(ev.targets)) {
-    for (const t of ev.targets) {
-      if (hasCoord(t)) {
-        result.push({
-          name: t.name || t.cityName || null,
-          q: t.q,
-          r: t.r,
-        });
-      }
-    }
-  }
-
-  return result;
-}
-
-/**
- * Splits a label string into segments, where each clickable name
- * becomes its own segment with a target attached.
- */
-function buildSegmentsForLabel(label, clickableNames, allTargets) {
-  let segments = [{ text: label, clickable: false, target: null }];
-
-  for (const name of clickableNames) {
-    const newSegs = [];
-
-    for (const seg of segments) {
-      if (seg.clickable) {
-        newSegs.push(seg);
-        continue;
-      }
-
-      let remaining = seg.text;
-      let first = true;
-
-      while (true) {
-        const idx = remaining.indexOf(name);
-        if (idx === -1) {
-          if (remaining.length) {
-            newSegs.push({ text: remaining, clickable: false, target: null });
-          }
-          break;
-        }
-
-        // text before
-        if (idx > 0) {
-          newSegs.push({
-            text: remaining.slice(0, idx),
-            clickable: false,
-            target: null,
-          });
-        }
-
-        // clickable name
-        const target = allTargets.find(t => t.name === name) || allTargets[0] || null;
-        newSegs.push({
-          text: name,
-          clickable: true,
-          target,
-        });
-
-        remaining = remaining.slice(idx + name.length);
-
-        // Only highlight first occurrence per segment to avoid spam
-        if (first) {
-          if (remaining.length) {
-            newSegs.push({
-              text: remaining,
-              clickable: false,
-              target: null,
-            });
-          }
-          break;
-        }
-      }
-    }
-
-    segments = newSegs;
-  }
-
-  return segments;
-}
-
-function segmentHasAnyTarget(seg) {
-  return !!seg.target;
-}
-
-/* =========================================================
-   FOCUS / CAMERA / SELECTION
-   ========================================================= */
 
 function focusEntry(scene, entry) {
   const targets = [];
