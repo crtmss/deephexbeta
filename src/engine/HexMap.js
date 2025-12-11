@@ -70,9 +70,11 @@ function __hx_computeElevationShape(q, r, cols, rows, rawSeed, terrainType) {
   const dx = q - cx, dy = r - cy;
   const dist = Math.sqrt(dx * dx + dy * dy);
   const maxd = Math.sqrt(cx * cx + cy * cy) || 1;
-  const falloff = 1 - (dist / maxd);
+  const falloff = 1 - (dist / maxd); // 1 at center, 0 at corners
+  const centerBias = falloff * falloff; // stronger push toward center
 
-  n = 0.75 * n + 0.25 * falloff;
+  // Mix noise with center bias – more weight on center to push inner tiles up
+  n = 0.6 * n + 0.4 * centerBias;
 
   switch (terrainType) {
     case 'water':
@@ -156,7 +158,6 @@ function enforceIslandMargin(map, cols, rows, marginRings = 3) {
 }
 
 /* ================= Geography presets ================ */
-/* ================= Geography presets ================ */
 function applyGeography(map, cols, rows, seedStr, rand) {
 
   // ==========================================================
@@ -229,10 +230,7 @@ function applyGeography(map, cols, rows, seedStr, rand) {
   // ==========================================================
   switch (pickF) {
 
-    // --------------------------------------------------------
     // 2 → Roundish island with stronger central depression
-    // (one of the donut-shape sources)
-    // --------------------------------------------------------
     case 2:
       carveByMask(0.15, 0.35, (q, r) => {
         const X = nx(q), Y = ny(r);
@@ -241,10 +239,7 @@ function applyGeography(map, cols, rows, seedStr, rand) {
       });
       break;
 
-    // --------------------------------------------------------
     // 3 → Radial falloff with center hollow
-    // (the stronger donut-shape preset)
-    // --------------------------------------------------------
     case 3:
       carveByMask(0.10, 0.20, (q, r) => {
         const X = nx(q), Y = ny(r);
@@ -253,9 +248,7 @@ function applyGeography(map, cols, rows, seedStr, rand) {
       });
       break;
 
-    // --------------------------------------------------------
     // 4 → Bays and inlets carved from edges
-    // --------------------------------------------------------
     case 4: {
       const bays = 2 + Math.floor(rand() * 2);
       const bayParams = [];
@@ -292,9 +285,7 @@ function applyGeography(map, cols, rows, seedStr, rand) {
       break;
     }
 
-    // --------------------------------------------------------
     // 5 → Banding / ridges / irregular shapes
-    // --------------------------------------------------------
     case 5:
       carveByMask(0.15, 0.30, (q, r) => {
         const X = nx(q), Y = ny(r);
@@ -304,9 +295,7 @@ function applyGeography(map, cols, rows, seedStr, rand) {
       });
       break;
 
-    // --------------------------------------------------------
     // 6 → Multi-island / archipelago
-    // --------------------------------------------------------
     case 6: {
       const islands = 2 + Math.floor(rand() * 2);
       const centers = [];
@@ -334,7 +323,6 @@ function applyGeography(map, cols, rows, seedStr, rand) {
   }
 }
 
-
 /* ================= Biome helpers ================= */
 function assignExact(pool, type, count, rand) {
   if (count <= 0) return;
@@ -349,10 +337,18 @@ function assignExact(pool, type, count, rand) {
     count--;
   }
 }
-function paintBiome(flat, cols, rows, rand) {
+
+/**
+ * Paints a global biome onto the map, but now does it using
+ * contiguous patches (4–15 hexes) so land looks like actual
+ * terrain blobs instead of scattered noise.
+ */
+function paintBiome(map, cols, rows, rand) {
+  const flat = map.flat();
   const choices = ['icy', 'volcanic', 'desert', 'temperate', 'swamp'];
   const biome = choices[Math.floor(rand() * choices.length)];
 
+  // All non-water, non-mountain land starts as grassland
   const land = flat.filter(t => t.type !== 'water' && t.type !== 'mountain');
   for (const t of land) {
     t.type = 'grassland';
@@ -362,55 +358,106 @@ function paintBiome(flat, cols, rows, rand) {
   }
 
   const N = land.length;
+  const byKey = new Map(land.map(t => [keyOf(t.q, t.r), t]));
+  let unassigned = new Set(land.map(t => keyOf(t.q, t.r)));
 
-  if (biome === 'volcanic') {
-    const ashN = Math.round(0.50 * N);
-    assignExact(land, 'volcano_ash', ashN, rand);
-    const remaining = land.filter(t => t.type === 'grassland');
-    const remN = remaining.length;
-    assignExact(remaining, 'mud',   Math.round(remN * 0.30), rand);
-    assignExact(remaining.filter(t => t.type === 'grassland'), 'swamp', Math.round(remN * 0.30), rand);
+  const clusterAssign = (type, targetCount) => {
+    if (targetCount <= 0) return;
+    targetCount = Math.min(targetCount, unassigned.size);
+    if (!terrainTypes[type]) return;
 
-  } else if (biome === 'desert') {
-    const sandN = Math.round(0.50 * N);
-    assignExact(land, 'sand', sandN, rand);
-    const remaining = land.filter(t => t.type !== 'sand');
-    const remN = remaining.length;
-    assignExact(remaining, 'mud',   Math.round(remN * 0.30), rand);
-    assignExact(remaining.filter(t => t.type === 'grassland'), 'swamp', Math.round(remN * 0.30), rand);
+    const minPatch = 4;
+    const maxPatch = 15;
 
-  } else if (biome === 'icy') {
-    const frac = 0.60 + 0.10 * rand();
-    const coldN = Math.round(frac * N);
-    const iceN  = Math.round(coldN * 0.40);
-    const snowN = coldN - iceN;
-    assignExact(land, 'ice',  iceN, rand);
-    assignExact(land.filter(t => t.type === 'grassland'), 'snow', snowN, rand);
+    while (targetCount > 0 && unassigned.size > 0) {
+      const keysArr = Array.from(unassigned);
+      const seedKey = keysArr[(rand() * keysArr.length) | 0];
+      const seedTile = byKey.get(seedKey);
+      if (!seedTile) {
+        unassigned.delete(seedKey);
+        continue;
+      }
 
-  } else if (biome === 'swamp') {
-    const mudN  = Math.round(0.40 * N);
-    const swpN  = Math.round(0.20 * N);
-    assignExact(land, 'mud', mudN, rand);
-    assignExact(land.filter(t => t.type === 'grassland'), 'swamp', swpN, rand);
+      let patchSize = randInt(rand, minPatch, maxPatch);
+      patchSize = Math.min(patchSize, targetCount);
 
-  } else { // temperate
-    const mudN  = Math.round(0.15 * N);
-    const sandN = Math.round(0.15 * N);
-    const swpN  = Math.round(0.15 * N);
-    assignExact(land, 'mud', mudN, rand);
-    assignExact(land.filter(t => t.type === 'grassland'), 'sand', sandN, rand);
-    assignExact(land.filter(t => t.type === 'grassland'), 'swamp', swpN, rand);
+      const queue = [seedTile];
+      const visitedLocal = new Set();
+
+      while (queue.length && targetCount > 0 && visitedLocal.size < patchSize) {
+        const tile = queue.shift();
+        if (!tile) continue;
+        const k = keyOf(tile.q, tile.r);
+        if (!unassigned.has(k) || visitedLocal.has(k)) continue;
+
+        // Assign tile to this biome type
+        tile.type = type;
+        tile.groundType = type;
+        tile.movementCost = terrainTypes[type].movementCost;
+        tile.impassable = !!terrainTypes[type].impassable;
+
+        unassigned.delete(k);
+        visitedLocal.add(k);
+        targetCount--;
+
+        for (const [nq, nr] of neighbors(tile.q, tile.r, map)) {
+          const nk = keyOf(nq, nr);
+          if (!unassigned.has(nk) || visitedLocal.has(nk)) continue;
+          const nt = map[nr][nq];
+          if (!nt || nt.type === 'water' || nt.type === 'mountain') continue;
+          queue.push(nt);
+        }
+      }
+    }
+  };
+
+  if (N > 0) {
+    if (biome === 'volcanic') {
+      const ashN = Math.round(0.50 * N);
+      clusterAssign('volcano_ash', ashN);
+      const remaining = unassigned.size;
+      clusterAssign('mud',   Math.round(remaining * 0.35));
+      clusterAssign('swamp', Math.round(remaining * 0.35));
+
+    } else if (biome === 'desert') {
+      const sandN = Math.round(0.50 * N);
+      clusterAssign('sand', sandN);
+      const remaining = unassigned.size;
+      clusterAssign('mud',   Math.round(remaining * 0.30));
+      clusterAssign('swamp', Math.round(remaining * 0.30));
+
+    } else if (biome === 'icy') {
+      const frac   = 0.60 + 0.10 * rand();
+      const coldN  = Math.round(frac * N);
+      const iceN   = Math.round(coldN * 0.40);
+      const snowN  = coldN - iceN;
+      clusterAssign('ice',  iceN);
+      clusterAssign('snow', snowN);
+
+    } else if (biome === 'swamp') {
+      const mudN  = Math.round(0.40 * N);
+      const swpN  = Math.round(0.20 * N);
+      clusterAssign('mud',   mudN);
+      clusterAssign('swamp', swpN);
+
+    } else { // temperate
+      const mudN  = Math.round(0.15 * N);
+      const sandN = Math.round(0.15 * N);
+      const swpN  = Math.round(0.15 * N);
+      clusterAssign('mud',   mudN);
+      clusterAssign('sand',  sandN);
+      clusterAssign('swamp', swpN);
+    }
   }
 
-  // keep groundType in sync for land
+  // Any remaining unassigned land stays as grassland
   for (const t of land) {
-    t.groundType = t.type;
+    if (!t.groundType) t.groundType = t.type || 'grassland';
   }
 
   return biome;
 }
-
-/* ================ Geo-object helpers ================ */
+/* ================ Geo-object helpers ================= */
 function isCoastal(map, q, r) {
   const t = map[r][q];
   if (!t || t.type === 'water') return false;
@@ -634,8 +681,8 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
   // Enforce a 3-hex water margin between land and map edge
   enforceIslandMargin(map, cols, rows, 3);
 
-  // Biome
-  const biome = paintBiome(map.flat(), cols, rows, rand);
+  // Biome (now using contiguous patch painting)
+  const biome = paintBiome(map, cols, rows, rand);
 
   // Mountains (chains on land mask)
   const mountainChains = 6 + Math.floor(rand() * 3);
@@ -749,13 +796,11 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
   }
 
   // ============================================================
-  // FINAL ELEVATION + BASE WATER DEPTH (all water starts deep)
+  // FINAL ELEVATION + BASE WATER DEPTH
   // ============================================================
   const cx = cols / 2, cy = rows / 2;
-  const maxd = Math.hypot(cx, cy) || 1;
-  const depthSeed = 'depth-' + seedStr;
 
-  // First pass: land levels + base deep water (depth=1)
+  // First pass: land levels + base deep water
   for (const t of flat) {
     const shape = __hx_computeElevationShape(
       t.q,
@@ -764,12 +809,9 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
       rows,
       seedStr,
       t.type
-    ); // 0..1
-
-    const borderDist = Math.min(t.q, t.r, cols - 1 - t.q, rows - 1 - t.r);
+    ); // 0..1, center-biased
 
     if (t.type === 'water') {
-      // All water starts as deep (1); clustering will adjust shallows later.
       const depth = 1;
       t.baseElevation    = depth;
       t.elevation        = depth;
@@ -778,19 +820,16 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
       t.isUnderWater     = true;
       t.groundType       = 'undersea';
     } else {
-      // ----- LAND: levels 4..7 with biased distribution -----
+      // ----- LAND: levels 4..7 with extra weight on level 6 near high shape -----
       let lvl;
-      // Level 4 should dominate: target ≈ 55% of land
-      if (shape < 0.55) {
+      if (shape < 0.50) {
         lvl = 4;
-      } else if (shape < 0.82) {
-        // ~27% → level 5
+      } else if (shape < 0.78) {
         lvl = 5;
-      } else if (shape < 0.95) {
-        // ~13% → level 6
+      } else if (shape < 0.96) {
+        // wide band mapped to 6 → many tiles in island interior
         lvl = 6;
       } else {
-        // top ~5% → level 7 peaks
         lvl = 7;
       }
 
@@ -813,16 +852,13 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
         t.baseElevation = 7;
         t.elevation = 7;
       } else {
-        // keep groundType for land
         if (!t.groundType) t.groundType = t.type;
         t.hasMountainIcon = false;
       }
     }
   }
 
-  // ----------------------------------------------------------------
-  // SECOND PASS: CLUSTERED SHALLOW WATER PATCHES (2–4 stains)
-  // ----------------------------------------------------------------
+  // SECOND PASS: clustered shallow water patches (2–4 stains)
   const waterTiles = flat.filter(t => t.type === 'water');
   if (waterTiles.length > 0) {
 
@@ -940,8 +976,7 @@ function generateMap(rows = 25, cols = 25, seedStr = 'defaultseed', rand) {
   });
 
   return flat;
-}  // <-- MISSING BRACE FIXED HERE
-
+}
 
 // ------------------------------------------------------------
 //  EXPORT CLASS
