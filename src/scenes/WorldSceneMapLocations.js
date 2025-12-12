@@ -238,6 +238,43 @@ function generateDeterministicRoads(scene, mapData, width, height, mapObjects) {
 }
 
 /* ---------------------------------------------------------------
+   Reposition helpers: keep emoji locked to hex elevation
+   --------------------------------------------------------------- */
+
+/**
+ * Re-snap all emoji icons in scene.locationsLayer to current elevation.
+ * Useful if water level changes and you don't fully rebuild the layer.
+ */
+export function refreshLocationIcons(scene) {
+  if (!scene || !scene.locationsLayer) return;
+  const layer = scene.locationsLayer;
+  const size = scene.hexSize || 24;
+
+  const offsetX = scene.mapOffsetX || 0;
+  const offsetY = scene.mapOffsetY || 0;
+  const LIFT = scene?.LIFT_PER_LVL ?? 4;
+
+  // Build fast lookup tile by q,r
+  const map = scene.mapData || [];
+  const byKey = new Map(map.map(t => [keyOf(t.q, t.r), t]));
+
+  layer.iterate(obj => {
+    if (!obj || !obj.__hex) return;
+
+    const { q, r, ox = 0, oy = 0 } = obj.__hex;
+    const tile = byKey.get(keyOf(q, r));
+    if (!tile) return;
+
+    const c = scene.hexToPixel(q, r, size);
+    const cx = c.x + offsetX;
+    const cy = c.y + offsetY - LIFT * effectiveElevationLocal(tile);
+
+    obj.x = cx + ox;
+    obj.y = cy + oy;
+  });
+}
+
+/* ---------------------------------------------------------------
    Rendering: Roads + POIs + Geography
    --------------------------------------------------------------- */
 export function drawLocationsAndRoads() {
@@ -309,9 +346,7 @@ export function drawLocationsAndRoads() {
   /* ------------------- Geography overlays ------------------- */
   drawGeographyOverlay(scene);
 
-  /* ------------------- Electricity overlay (if present) -------------------
-     Весь реальный рендер и логика сети остаются в WorldSceneElectricity.
-     Здесь только мягкий хук, чтобы не ломать существующий код. */
+  /* ------------------- Electricity overlay (if present) ------------------- */
   if (typeof scene.drawElectricityOverlay === "function") {
     scene.drawElectricityOverlay();
   } else if (scene.electricity && typeof scene.electricity.drawOverlay === "function") {
@@ -321,12 +356,16 @@ export function drawLocationsAndRoads() {
   /* ------------------- POI Icons ------------------- */
   const noPOISet = getNoPOISet(map);
 
-  const addEmoji = (x, y, char, px, depth = 42) => {
-    const t = scene.add.text(x, y, char, {
+  const addEmoji = (q, r, ox, oy, char, px, depth = 42) => {
+    const t = scene.add.text(0, 0, char, {
       fontSize: `${px}px`,
       fontFamily: 'Arial, "Segoe UI Emoji", "Noto Color Emoji", sans-serif',
     });
     t.setOrigin(0.5).setDepth(depth);
+
+    // attach tile anchor so we can resnap after water level changes
+    t.__hex = { q, r, ox: ox || 0, oy: oy || 0 };
+
     layer.add(t);
     return t;
   };
@@ -339,9 +378,11 @@ export function drawLocationsAndRoads() {
     const cx = c.x + offsetX;
     const cy = c.y + offsetY - LIFT * effectiveElevationLocal(t);
 
-    /* ---------------- Mountain icons (FIXED!) ---------------- */
+    /* ---------------- Mountain icons ---------------- */
     if (t.type === "mountain" || t.elevation === 7) {
-      addEmoji(cx, cy, "⛰️", size * 0.9, 110);
+      const icon = addEmoji(t.q, t.r, 0, 0, "⛰️", size * 0.9, 110);
+      icon.x = cx;
+      icon.y = cy;
       continue;
     }
 
@@ -353,20 +394,35 @@ export function drawLocationsAndRoads() {
         [size * 0.22, size * 0.1],
       ];
       offsets.forEach(([ox, oy]) => {
-        addEmoji(cx + ox, cy + oy, "🌳", size * 0.5, 105);
+        const tree = addEmoji(t.q, t.r, ox, oy, "🌳", size * 0.5, 105);
+        tree.x = cx + ox;
+        tree.y = cy + oy;
       });
     }
 
     /* ---------------- Ruins ---------------- */
     if (t.hasRuin) {
-      addEmoji(cx, cy, "🏚️", size * 0.8, 106);
+      const ruin = addEmoji(t.q, t.r, 0, 0, "🏚️", size * 0.8, 106);
+      ruin.x = cx;
+      ruin.y = cy;
       generateRuinLoreForTile(scene, t);
     }
 
     /* ---------------- Other POIs ---------------- */
-    if (t.hasCrashSite) addEmoji(cx, cy, "🚀", size * 0.8, 106);
-    if (t.hasVehicle) addEmoji(cx, cy, "🚙", size * 0.8, 106);
+    if (t.hasCrashSite) {
+      const crash = addEmoji(t.q, t.r, 0, 0, "🚀", size * 0.8, 106);
+      crash.x = cx;
+      crash.y = cy;
+    }
+    if (t.hasVehicle) {
+      const veh = addEmoji(t.q, t.r, 0, 0, "🚙", size * 0.8, 106);
+      veh.x = cx;
+      veh.y = cy;
+    }
   }
+
+  // Safety: make sure everything is snapped to current elevation (water level)
+  refreshLocationIcons(scene);
 
   // After POIs / ruins have had their city/faction lore assigned,
   // generate road history entries for the connections we recorded earlier.
@@ -376,4 +432,5 @@ export function drawLocationsAndRoads() {
 export default {
   applyLocationFlags,
   drawLocationsAndRoads,
+  refreshLocationIcons,
 };
