@@ -35,6 +35,9 @@ import {
   LIFT_PER_LVL,
 } from './WorldSceneMap.js';
 
+// Elevation helper (needed to keep units/paths aligned with lifted map)
+import { effectiveElevationLocal } from './WorldSceneGeography.js';
+
 // Debug menu (hydrology controls)
 import { initDebugMenu } from './WorldSceneDebug.js';
 
@@ -403,6 +406,7 @@ Biomes: ${biome}`;
     label.setDepth(101);
   }
 
+  // ✅ FIX: include elevation lift so units/path overlays stay aligned with map
   axialToWorld(q, r) {
     const size = this.hexSize;
     const { x, y } = hexToPixel(q, r, size);
@@ -410,7 +414,11 @@ Biomes: ${biome}`;
     const ox = this.mapOffsetX || 0;
     const oy = this.mapOffsetY || 0;
 
-    return { x: x + ox, y: y + oy };
+    const tile = getTile(this, q, r);
+    const LIFT = (typeof this.LIFT_PER_LVL === 'number') ? this.LIFT_PER_LVL : LIFT_PER_LVL;
+    const liftY = tile ? (LIFT * effectiveElevationLocal(tile)) : 0;
+
+    return { x: x + ox, y: (y - liftY) + oy };
   }
 
   worldToAxial(x, y) {
