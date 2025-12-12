@@ -22,7 +22,7 @@
 //   initElectricityForScene(scene)          – one-time scene setup, attaches placement API
 //   applyElectricityOnEndTurn(scene)       – shorthand for per-turn tick
 //   startEnergyBuildingPlacement(scene, kind)
-//   (NEW) recomputeGlobalEnergyStats(scene) – total energy / capacity (base + all networks)
+//   recomputeGlobalEnergyStats(scene)      – total energy / capacity (base + all networks)
 
 import { effectiveElevationLocal } from "./WorldSceneGeography.js";
 
@@ -198,6 +198,14 @@ export function initElectricity(scene) {
   if (typeof es.baseCapacity !== "number") es.baseCapacity = 5;
   if (typeof es.baseStored !== "number") es.baseStored = 0;
   if (typeof es.baseProductionPerTurn !== "number") es.baseProductionPerTurn = 1;
+
+  // глобальные статы, которые читает HUD (WorldSceneEconomy)
+  if (!scene.energyStats) {
+    scene.energyStats = {
+      current: 0,
+      capacity: es.baseCapacity,
+    };
+  }
 }
 
 /**
@@ -427,7 +435,8 @@ export function recalcNetworks(scene) {
  *  - база: baseStored / baseCapacity
  *  - сети: Σ net.storedEnergy / Σ net.storageCapacity
  *
- * И отдать это в scene.updateEnergyUI(stored, capacity) если она есть.
+ * Результат записывается в scene.energyStats.current / capacity,
+ * а HUD обновляется через updateResourceUI / refreshResourcesPanel.
  */
 export function recomputeGlobalEnergyStats(scene) {
   if (!scene || !scene.electricState) return;
@@ -448,14 +457,16 @@ export function recomputeGlobalEnergyStats(scene) {
   es.totalCapacity = totalCapacity;
   es.totalStored = totalStored;
 
-  // Хук для UI (левый верхний угол "energy: X/Y")
-  if (typeof scene.updateEnergyUI === "function") {
-    try {
-      scene.updateEnergyUI(totalStored, totalCapacity);
-    } catch (err) {
-      console.error("[ENERGY] Error in scene.updateEnergyUI:", err);
-    }
+  if (!scene.energyStats) {
+    scene.energyStats = { current: 0, capacity: 0 };
   }
+  scene.energyStats.current = totalStored;
+  // хотя capacity теоретически может быть 0, HUD минимум 5
+  scene.energyStats.capacity = Math.max(totalCapacity, 5);
+
+  // Обновить UI (HUD + правая панель)
+  scene.updateResourceUI?.();
+  scene.refreshResourcesPanel?.();
 }
 
 /* =========================================================
