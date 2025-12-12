@@ -23,6 +23,21 @@
 //   applyElectricityOnEndTurn(scene)       – shorthand for per-turn tick
 //   startEnergyBuildingPlacement(scene, kind)
 //   recomputeGlobalEnergyStats(scene)      – total energy / capacity (base + all networks)
+//
+// RULES (per your spec):
+//  - Mobile base: capacity 5, produces +1/turn, stores up to 5.
+//  - Battery: capacity 20.
+//  - Global HUD shows stored/capacity where:
+//      capacity = base(5) + ALL batteries on map (even unconnected)
+//      stored   = baseStored + SUM(network.storedEnergy) for connected networks
+//  - Producers (solar/fuel) produce ONLY if they are CONNECTED to a network AND that network has storage (battery).
+//  - No "transient energy": if a network has no batteries, it cannot store energy (storedEnergy forced to 0).
+//  - Connectivity:
+//      Graph nodes are ONLY conduit/pole tiles.
+//      Buildings attach to nearest node within radius:
+//        conduit: 1 hex
+//        pole:    2 hex
+//      If not attached -> not in any network (powerNetworkId = null).
 
 import { effectiveElevationLocal } from "./WorldSceneGeography.js";
 
@@ -84,7 +99,11 @@ function getBuildingCoords(b) {
   if (b.hex && typeof b.hex.q === "number" && typeof b.hex.r === "number") {
     return { q: b.hex.q, r: b.hex.r };
   }
-  if (b.position && typeof b.position.q === "number" && typeof b.position.r === "number") {
+  if (
+    b.position &&
+    typeof b.position.q === "number" &&
+    typeof b.position.r === "number"
+  ) {
     return { q: b.position.q, r: b.position.r };
   }
   return null;
@@ -156,7 +175,6 @@ function isStorageBuilding(b) {
 function isConsumerBuilding(b) {
   const e = buildingEnergyConfig(b);
   if (e.requiresPower && e.consumptionPerTurn > 0) return true;
-  // Fallback: если явно не указано, не трогаем.
   return false;
 }
 
@@ -187,7 +205,7 @@ export function initElectricity(scene) {
   if (!scene) return;
   if (!scene.electricState) {
     scene.electricState = {
-      networks: {},    // id -> network object
+      networks: {}, // id -> network object
       nextNetworkId: 1,
       dirty: true,
     };
@@ -246,7 +264,8 @@ function ensureNetworks(scene) {
 
 /**
  * Rebuild all electricity networks from tile + building data.
- * Safe to call часто – но обычно мы вызываем только если dirty=true.
+ * Graph nodes are ONLY conduit/pole tiles.
+ * Buildings attach to nearest node within radius (conduit=1, pole=2).
  */
 export function recalcNetworks(scene) {
   initElectricity(scene);
@@ -266,7 +285,8 @@ export function recalcNetworks(scene) {
   }
 
   // ---------- Build nodes ----------
-  // Node = tile that has conduit / pole / relevant building.
+  // Node = tile that has conduit / pole ONLY.
+  // Buildings do NOT create graph nodes; they attach to nearby conduit/pole nodes.
   const nodeByKey = new Map();
 
   function ensureNode(q, r) {
@@ -282,7 +302,7 @@ export function recalcNetworks(scene) {
         tile,
         hasConduit: !!tile.hasPowerConduit,
         hasPole: !!tile.hasPowerPole,
-        buildings: new Set(),
+        buildings: new Set(), // buildings attached to this node
         neighbors: new Set(),
       };
       nodeByKey.set(k, node);
@@ -290,7 +310,7 @@ export function recalcNetworks(scene) {
     return node;
   }
 
-  // 1) tiles with conduits/poles
+  // 1) nodes from tiles with conduits/poles
   for (const t of tiles) {
     if (!t) continue;
     if (t.hasPowerConduit || t.hasPowerPole) {
@@ -298,37 +318,83 @@ export function recalcNetworks(scene) {
     }
   }
 
-  // 2) buildings with energy config
+  // helper: find best attachment node for a building position
+  function findAttachmentNode(q, r) {
+    let best = null;
+    let bestDist = Infinity;
+
+    for (const node of nodeByKey.values()) {
+      const d = hexDistance(q, r, node.q, node.r);
+      const conduitOk = node.hasConduit && d <= 1;
+      const poleOk = node.hasPole && d <= 2;
+      if (!conduitOk && !poleOk) continue;
+
+      if (d < bestDist) {
+        bestDist = d;
+        best = node;
+      }
+    }
+    return best;
+  }
+
+  // 2) attach buildings that participate in electricity to nearest node (if any)
   const buildings = getAllBuildings(scene);
   for (const b of buildings) {
+    if (!b) continue;
+
     const e = buildingEnergyConfig(b);
     const type = String(b?.type || "").toLowerCase();
+
+    // NOTE: pole/conduit "buildings" are handled by tile flags; but we still allow them if you spawned them as buildings.
+    // If such building exists, mirror to tile flags AND ensure a node.
+    if (type === "power_pole") {
+      const pos = getBuildingCoords(b);
+      if (pos) {
+        const t = byKeyTile.get(keyOf(pos.q, pos.r));
+        if (t) t.hasPowerPole = true;
+        const node = ensureNode(pos.q, pos.r);
+        if (node) node.hasPole = true;
+      }
+      continue;
+    }
+    if (type === "power_conduit") {
+      const pos = getBuildingCoords(b);
+      if (pos) {
+        const t = byKeyTile.get(keyOf(pos.q, pos.r));
+        if (t) t.hasPowerConduit = true;
+        const node = ensureNode(pos.q, pos.r);
+        if (node) node.hasConduit = true;
+      }
+      continue;
+    }
+
     const participates =
-      isProducerBuilding(b) || isStorageBuilding(b) || isConsumerBuilding(b) ||
-      e.pullsFromNetwork ||
-      type === "power_pole" || type === "power_conduit";
+      isProducerBuilding(b) ||
+      isStorageBuilding(b) ||
+      isConsumerBuilding(b) ||
+      !!e.pullsFromNetwork;
 
     if (!participates) continue;
 
     const pos = getBuildingCoords(b);
     if (!pos) continue;
 
-    const node = ensureNode(pos.q, pos.r);
-    if (!node) continue;
-    node.buildings.add(b);
-
-    // If a building is actually a pole / conduit, mirror flags to tile
-    if (type === "power_pole") {
-      node.hasPole = true;
-      if (node.tile) node.tile.hasPowerPole = true;
-    } else if (type === "power_conduit") {
-      node.hasConduit = true;
-      if (node.tile) node.tile.hasPowerConduit = true;
+    const attach = findAttachmentNode(pos.q, pos.r);
+    if (!attach) {
+      b.powerNetworkId = null;
+      if (isProducerBuilding(b)) {
+        b.powerOnline = false;
+        b.powerOfflineReason = "not_connected";
+      }
+      continue;
     }
+
+    attach.buildings.add(b);
   }
 
   // ---------- Build adjacency (edges) ----------
-  // 1) axial neighbors
+  // adjacency between conduit/pole nodes only:
+  // 1) axial neighbors (touching conduits/poles can connect)
   for (const node of nodeByKey.values()) {
     for (const [dq, dr] of AXIAL_DIRS) {
       const nq = node.q + dq;
@@ -336,21 +402,13 @@ export function recalcNetworks(scene) {
       const nk = keyOf(nq, nr);
       if (!nodeByKey.has(nk)) continue;
       node.neighbors.add(nk);
-      const n = nodeByKey.get(nk);
-      n.neighbors.add(node.key);
+      nodeByKey.get(nk).neighbors.add(node.key);
     }
   }
 
-  // 2) power pole radius (q,r within distance <= 2)
+  // 2) power pole radius (node with pole connects to other nodes within <=2)
   for (const node of nodeByKey.values()) {
-    if (
-      !node.hasPole &&
-      !Array.from(node.buildings).some(
-        (b) => String(b?.type || "").toLowerCase() === "power_pole"
-      )
-    ) {
-      continue;
-    }
+    if (!node.hasPole) continue;
 
     for (const other of nodeByKey.values()) {
       if (other.key === node.key) continue;
@@ -396,12 +454,8 @@ export function recalcNetworks(scene) {
         // Remember network id on building
         b.powerNetworkId = id;
 
-        if (isProducerBuilding(b)) {
-          net.producers.push(b);
-        }
-        if (isConsumerBuilding(b)) {
-          net.consumers.push(b);
-        }
+        if (isProducerBuilding(b)) net.producers.push(b);
+        if (isConsumerBuilding(b)) net.consumers.push(b);
         if (isStorageBuilding(b)) {
           net.storage.push(b);
           net.storageCapacity += Math.max(0, e.storageCapacity || 0);
@@ -417,23 +471,30 @@ export function recalcNetworks(scene) {
       }
     }
 
+    // If network has no storage -> cannot store energy
+    if ((net.storageCapacity || 0) <= 0) {
+      net.storedEnergy = 0;
+    } else {
+      net.storedEnergy = Math.min(net.storageCapacity, net.storedEnergy || 0);
+    }
+
     networks[id] = net;
   }
 
   state.networks = networks;
   state.nextNetworkId = nextId;
-  // NOTE: мы пока не переносим старую storedEnergy при пересборке — можно добавить позже.
   state.dirty = false;
 }
 
 /* =========================================================
-   Global energy stats (base + all networks)
+   Global energy stats (base + all batteries + connected stored)
    ========================================================= */
 
 /**
  * Пересчитать суммарную энергию/ёмкость:
  *  - база: baseStored / baseCapacity
- *  - сети: Σ net.storedEnergy / Σ net.storageCapacity
+ *  - capacity: base(5) + ALL batteries (даже если не подключены)
+ *  - stored:   baseStored + Σ net.storedEnergy (только подключенные сети)
  *
  * Результат записывается в scene.energyStats.current / capacity,
  * а HUD обновляется через updateResourceUI / refreshResourcesPanel.
@@ -443,26 +504,39 @@ export function recomputeGlobalEnergyStats(scene) {
   ensureNetworks(scene);
 
   const es = scene.electricState;
+
   let totalCapacity = es.baseCapacity || 0;
   let totalStored = es.baseStored || 0;
 
+  // 1) capacity from ALL batteries (even unconnected)
+  const allBuildings = getAllBuildings(scene);
+  for (const b of allBuildings) {
+    if (!b) continue;
+    const t = String(b.type || "").toLowerCase();
+    if (t === "battery") {
+      const e = buildingEnergyConfig(b);
+      totalCapacity += Math.max(0, e.storageCapacity || 20);
+    }
+  }
+
+  // 2) stored energy only from actual networks
   const nets = es.networks || {};
   for (const id in nets) {
     const net = nets[id];
     if (!net) continue;
-    totalCapacity += net.storageCapacity || 0;
     totalStored += net.storedEnergy || 0;
   }
 
   es.totalCapacity = totalCapacity;
   es.totalStored = totalStored;
 
-  if (!scene.energyStats) {
-    scene.energyStats = { current: 0, capacity: 0 };
-  }
-  scene.energyStats.current = totalStored;
-  // хотя capacity теоретически может быть 0, HUD минимум 5
-  scene.energyStats.capacity = Math.max(totalCapacity, 5);
+  if (!scene.energyStats) scene.energyStats = { current: 0, capacity: 0 };
+  scene.energyStats.current = Math.max(0, Math.floor(totalStored));
+  scene.energyStats.capacity = Math.max(Math.floor(totalCapacity), 5);
+
+  // Keep playerResources.energy in sync (so Economy HUD can show 0/5 etc if you rely on it)
+  scene.playerResources = scene.playerResources || {};
+  scene.playerResources.energy = scene.energyStats.current;
 
   // Обновить UI (HUD + правая панель)
   scene.updateResourceUI?.();
@@ -480,6 +554,7 @@ export function tickElectricity(scene) {
   // 0) Мобильная база: +1 энергии в ход, максимум 5.
   const es = scene.electricState;
   if (!Number.isFinite(es.baseStored)) es.baseStored = 0;
+
   const baseCap = es.baseCapacity ?? 0;
   const baseProd = es.baseProductionPerTurn ?? 0;
   if (baseProd > 0 && baseCap > 0) {
@@ -490,8 +565,8 @@ export function tickElectricity(scene) {
 
   const nets = es.networks || {};
   const netIds = Object.keys(nets);
+
   if (!netIds.length) {
-    // даже если сетей нет, пересчитаем глобальную статистику для 0/X
     recomputeGlobalEnergyStats(scene);
     return;
   }
@@ -500,12 +575,22 @@ export function tickElectricity(scene) {
     const net = nets[idStr];
     if (!net) continue;
 
+    // If no storage, network can't store energy and producers are effectively off.
+    const canStore = (net.storageCapacity || 0) > 0;
+
     let produced = 0;
     let demand = 0;
 
-    // 1) Production
+    // 1) Production (ONLY if network has storage)
     for (const b of net.producers) {
       if (!b) continue;
+
+      if (!canStore) {
+        b.powerOnline = false;
+        b.powerOfflineReason = "no_storage";
+        continue;
+      }
+
       const type = String(b.type || "").toLowerCase();
       const e = buildingEnergyConfig(b);
       let p = 0;
@@ -513,37 +598,40 @@ export function tickElectricity(scene) {
       if (type === "solar_panel") {
         p = e.productionPerTurn ?? 2;
         b.powerOnline = true;
+        b.powerOfflineReason = null;
       } else if (type === "fuel_generator") {
         const fuelPerTurn = e.fuelPerTurn ?? 1;
         const ok = consumeCrudeOil(scene, fuelPerTurn);
         if (ok) {
           p = e.productionPerTurn ?? 5;
           b.powerOnline = true;
+          b.powerOfflineReason = null;
         } else {
           p = 0;
           b.powerOnline = false;
           b.powerOfflineReason = "no_fuel";
         }
       } else {
-        // Generic producer
         p = e.productionPerTurn || 0;
         b.powerOnline = true;
+        b.powerOfflineReason = null;
       }
 
       produced += Math.max(0, p);
     }
 
-    // 2) Storage update: add produced to storedEnergy
-    if (produced > 0) {
-      if (net.storageCapacity > 0) {
+    // 2) Storage update (NO transient energy)
+    if (canStore) {
+      if (produced > 0) {
         net.storedEnergy = Math.min(
           net.storageCapacity,
           (net.storedEnergy || 0) + produced
         );
       } else {
-        // If there is no storage at all, we still allow transient energy:
-        net.storedEnergy = (net.storedEnergy || 0) + produced;
+        net.storedEnergy = Math.min(net.storageCapacity, (net.storedEnergy || 0));
       }
+    } else {
+      net.storedEnergy = 0;
     }
 
     // 3) Demand
@@ -553,10 +641,9 @@ export function tickElectricity(scene) {
       demand += Math.max(0, e.consumptionPerTurn || 0);
     }
 
-    // 4) Satisfy demand: simple "all-or-nothing" scheme
+    // 4) Satisfy demand: all-or-nothing (only possible if canStore)
     if (demand > 0) {
-      if ((net.storedEnergy || 0) >= demand) {
-        // Enough power for everyone
+      if (canStore && (net.storedEnergy || 0) >= demand) {
         net.storedEnergy -= demand;
         for (const c of net.consumers) {
           if (!c) continue;
@@ -564,7 +651,6 @@ export function tickElectricity(scene) {
           c.powerOfflineReason = null;
         }
       } else {
-        // Not enough power -> all consumers offline (for now)
         for (const c of net.consumers) {
           if (!c) continue;
           c.powerOnline = false;
@@ -586,10 +672,8 @@ export function tickElectricity(scene) {
  */
 export function isBuildingPowered(scene, building) {
   if (!building) return false;
-  if (typeof building.powerOnline === "boolean") {
-    return building.powerOnline;
-  }
-  // Fallback: если не требует энергию, считаем "есть питание".
+  if (typeof building.powerOnline === "boolean") return building.powerOnline;
+
   const e = buildingEnergyConfig(building);
   if (!e.requiresPower) return true;
   return false;
@@ -615,12 +699,8 @@ export function drawElectricOverlay(scene) {
   const LIFT = scene?.LIFT_PER_LVL ?? 4;
 
   // Clear previous graphics
-  if (scene.powerGraphics) {
-    scene.powerGraphics.destroy();
-  }
-  if (scene.powerPoleGraphics) {
-    scene.powerPoleGraphics.destroy();
-  }
+  if (scene.powerGraphics) scene.powerGraphics.destroy();
+  if (scene.powerPoleGraphics) scene.powerPoleGraphics.destroy();
 
   const gLines = scene.add.graphics().setDepth(38);
   const gPoles = scene.add.graphics().setDepth(39);
@@ -641,13 +721,12 @@ export function drawElectricOverlay(scene) {
     return { x: pos.x + offsetX, y: y + offsetY };
   }
 
-  // --- Draw conduits as short fat segments between neighbors ---
+  // --- Draw conduits as segments between adjacent conduit/pole tiles ---
   for (const t of tiles) {
     if (!t || !t.hasPowerConduit) continue;
 
     const c = hexCenter(t);
 
-    // check neighbors that also have conduit or pole or building
     for (const [dq, dr] of AXIAL_DIRS) {
       const nq = t.q + dq;
       const nr = t.r + dr;
@@ -665,12 +744,10 @@ export function drawElectricOverlay(scene) {
       gLines.strokePath();
     }
 
-    // if isolated (no neighbor conduits/poles) – draw a big dot
+    // isolated conduit dot
     let hasNeighbor = false;
     for (const [dq, dr] of AXIAL_DIRS) {
-      const nq = t.q + dq;
-      const nr = t.r + dr;
-      const nt = byKeyTile.get(keyOf(nq, nr));
+      const nt = byKeyTile.get(keyOf(t.q + dq, t.r + dr));
       if (!nt) continue;
       if (nt.hasPowerConduit || nt.hasPowerPole) {
         hasNeighbor = true;
@@ -683,7 +760,7 @@ export function drawElectricOverlay(scene) {
     }
   }
 
-  // --- Draw poles as icons / markers ---
+  // --- Draw poles as markers ---
   for (const t of tiles) {
     if (!t || !t.hasPowerPole) continue;
     const c = hexCenter(t);
@@ -708,10 +785,7 @@ export function initElectricityForScene(scene) {
   if (!scene) return;
   initElectricity(scene);
 
-  if (!scene.electricity) {
-    scene.electricity = {};
-  }
-
+  if (!scene.electricity) scene.electricity = {};
   scene.electricity.initialized = true;
 
   // Attach placement API once per scene
@@ -720,10 +794,9 @@ export function initElectricityForScene(scene) {
       return startEnergyBuildingPlacement(scene, kind);
     };
   }
-  scene.electricity.startEnergyBuildingPlacement =
-    scene.startEnergyBuildingPlacement;
+  scene.electricity.startEnergyBuildingPlacement = scene.startEnergyBuildingPlacement;
 
-  // сразу посчитать стартовое 0/5
+  // стартовое 0/5
   recomputeGlobalEnergyStats(scene);
 }
 
@@ -740,10 +813,18 @@ export function applyElectricityOnEndTurn(scene) {
  * - fallback to selectedHex
  */
 function getEnergyPlacementHex(scene) {
-  if (scene.selectedUnit && typeof scene.selectedUnit.q === "number" && typeof scene.selectedUnit.r === "number") {
+  if (
+    scene.selectedUnit &&
+    typeof scene.selectedUnit.q === "number" &&
+    typeof scene.selectedUnit.r === "number"
+  ) {
     return { q: scene.selectedUnit.q, r: scene.selectedUnit.r };
   }
-  if (scene.selectedHex && typeof scene.selectedHex.q === "number" && typeof scene.selectedHex.r === "number") {
+  if (
+    scene.selectedHex &&
+    typeof scene.selectedHex.q === "number" &&
+    typeof scene.selectedHex.r === "number"
+  ) {
     return { q: scene.selectedHex.q, r: scene.selectedHex.r };
   }
   return null;
@@ -758,9 +839,7 @@ function spawnEnergyBuilding(scene, kind, q, r) {
   const plateH = 36;
   const radius = 8;
 
-  const cont = scene.add
-    .container(pos.x, pos.y)
-    .setDepth(2100);
+  const cont = scene.add.container(pos.x, pos.y).setDepth(2100);
 
   const plate = scene.add.graphics();
   plate.fillStyle(0x0f2233, 0.92);
@@ -843,7 +922,6 @@ function spawnEnergyBuilding(scene, kind, q, r) {
 export function startEnergyBuildingPlacement(scene, kind) {
   if (!scene) return;
 
-  // make sure base state exists
   initElectricity(scene);
 
   const hex = getEnergyPlacementHex(scene);
@@ -860,7 +938,6 @@ export function startEnergyBuildingPlacement(scene, kind) {
     return;
   }
 
-  // Basic placement rules (можно усложнить позже)
   if (kind === "solar_panel" || kind === "fuel_generator" || kind === "battery") {
     if (tile.type === "water" || tile.type === "ocean" || tile.type === "sea") {
       console.warn("[ENERGY] Cannot place", kind, "on water.");
@@ -868,20 +945,16 @@ export function startEnergyBuildingPlacement(scene, kind) {
     }
     spawnEnergyBuilding(scene, kind, q, r);
   } else if (kind === "power_pole") {
-    // Either as a building or just a tile flag.
     tile.hasPowerPole = true;
     spawnEnergyBuilding(scene, kind, q, r);
   } else if (kind === "power_conduit") {
-    // Conduits в основном живут на тайле + рисуются оверлеем.
     tile.hasPowerConduit = true;
-    // optional: small visual marker as building for consistency
     spawnEnergyBuilding(scene, kind, q, r);
   } else {
     console.warn("[ENERGY] Unknown energy kind:", kind);
     return;
   }
 
-  // Сеть надо пересчитать и перерисовать оверлей
   markElectricDirty(scene);
   try {
     drawElectricOverlay(scene);
@@ -889,7 +962,6 @@ export function startEnergyBuildingPlacement(scene, kind) {
     console.error("[ENERGY] Error while drawing electric overlay after placement:", err);
   }
 
-  // и обновить глобальные X/Y сразу после постройки
   recomputeGlobalEnergyStats(scene);
 }
 
