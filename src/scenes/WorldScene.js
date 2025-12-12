@@ -35,7 +35,7 @@ import {
   LIFT_PER_LVL,
 } from './WorldSceneMap.js';
 
-// Elevation helper (needed to keep units/paths aligned with lifted map)
+// NEW: elevation helper used by the map renderer (must match visuals)
 import { effectiveElevationLocal } from './WorldSceneGeography.js';
 
 // Debug menu (hydrology controls)
@@ -112,7 +112,7 @@ function getWorldSummaryForSeed(seedStr, width, height) {
    Small axial helpers
    ========================= */
 function getTile(scene, q, r) {
-  return scene.mapData.find(h => h.q === q && h.r === r);
+  return (scene.mapData || []).find(h => h.q === q && h.r === r);
 }
 
 export default class WorldScene extends Phaser.Scene {
@@ -304,6 +304,9 @@ export default class WorldScene extends Phaser.Scene {
     // ---- Debug menu (top-center hydrology controls) ----
     initDebugMenu(this);
 
+    // After everything exists: ensure icons are snapped to correct lifted positions
+    this.refreshAllIconWorldPositions();
+
     /* =========================
        Supabase sync bridge stub
        ========================= */
@@ -406,29 +409,105 @@ Biomes: ${biome}`;
     label.setDepth(101);
   }
 
-  // ✅ FIX: include elevation lift so units/path overlays stay aligned with map
+  /**
+   * Axial -> world position, WITH elevation lift (must match map renderer).
+   */
   axialToWorld(q, r) {
     const size = this.hexSize;
-    const { x, y } = hexToPixel(q, r, size);
+    const base = hexToPixel(q, r, size);
 
     const ox = this.mapOffsetX || 0;
     const oy = this.mapOffsetY || 0;
 
     const tile = getTile(this, q, r);
-    const LIFT = (typeof this.LIFT_PER_LVL === 'number') ? this.LIFT_PER_LVL : LIFT_PER_LVL;
-    const liftY = tile ? (LIFT * effectiveElevationLocal(tile)) : 0;
+    const liftLvl = (typeof this.LIFT_PER_LVL === 'number') ? this.LIFT_PER_LVL : 4;
+    const elev = tile ? effectiveElevationLocal(tile) : 0;
 
-    return { x: x + ox, y: (y - liftY) + oy };
+    return { x: base.x + ox, y: (base.y + oy) - liftLvl * elev };
   }
 
+  /**
+   * World -> axial, WITH elevation compensation.
+   * We do a small iterative refinement: guess hex, read its elevation, re-project.
+   */
   worldToAxial(x, y) {
     const size = this.hexSize;
-
     const ox = this.mapOffsetX || 0;
     const oy = this.mapOffsetY || 0;
+    const liftLvl = (typeof this.LIFT_PER_LVL === 'number') ? this.LIFT_PER_LVL : 4;
 
-    const { q, r } = pixelToHex(x - ox, y - oy, size);
-    return roundHex(q, r);
+    // initial guess ignoring elevation
+    let px = x - ox;
+    let py = y - oy;
+
+    let { q, r } = pixelToHex(px, py, size);
+    let rounded = roundHex(q, r);
+
+    // refine 2 iterations (enough for stable pick)
+    for (let i = 0; i < 2; i++) {
+      const t = getTile(this, rounded.q, rounded.r);
+      const elev = t ? effectiveElevationLocal(t) : 0;
+      const py2 = (y - oy) + liftLvl * elev;
+      const hr = pixelToHex(px, py2, size);
+      rounded = roundHex(hr.q, hr.r);
+    }
+
+    return rounded;
+  }
+
+  /**
+   * Re-snap ALL in-world icons/containers to correct elevated positions.
+   * Call after water level changes (because effectiveElevationLocal changes).
+   */
+  refreshAllIconWorldPositions() {
+    const scene = this;
+
+    const snapObj = (obj) => {
+      if (!obj || typeof obj.q !== 'number' || typeof obj.r !== 'number') return;
+      const { x, y } = scene.axialToWorld(obj.q, obj.r);
+      if (typeof obj.setPosition === 'function') obj.setPosition(x, y);
+      else { obj.x = x; obj.y = y; }
+    };
+
+    // Units / enemies / haulers / ships (Phaser GameObjects)
+    (this.units || []).forEach(snapObj);
+    (this.players || []).forEach(snapObj);
+    (this.enemies || []).forEach(snapObj);
+    (this.haulers || []).forEach(snapObj);
+    (this.ships || []).forEach(snapObj);
+
+    // Buildings: containers + extra labels anchored in world space
+    (this.buildings || []).forEach(b => {
+      if (!b) return;
+
+      // main visual container
+      if (b.container) {
+        const { x, y } = scene.axialToWorld(b.q, b.r);
+        b.container.setPosition(x, y);
+
+        // mine scrap label (stored as world text)
+        if (b.storageScrapLabel) {
+          b.storageScrapLabel.setPosition(x + 16, y - 14);
+        }
+      }
+
+      // some systems store extra world objects
+      if (b.storageObj) snapObj(b.storageObj);
+      if (b.routeMarker) snapObj(b.routeMarker);
+
+      // docks: menu/overlay are screen-space or relative; ignore
+      if (b.menu) {
+        // menu container is world-space anchored near docks
+        const { x, y } = scene.axialToWorld(b.q, b.r);
+        b.menu.setPosition(x, y - 56);
+      }
+    });
+
+    // Resources: if you store q/r on them (fish/oil)
+    (this.resources || []).forEach(snapObj);
+
+    // Path preview should be cleared (otherwise it will float)
+    this.clearPathPreview?.();
   }
 
   debugHex(q, r) {
@@ -656,6 +735,9 @@ Biomes: ${biome}`;
     }
 
     this.redrawWorld();
+
+    // ✅ IMPORTANT: после смены воды пересадить все иконки/контейнеры на новую высоту
+    this.refreshAllIconWorldPositions();
   }
 
   redrawWorld() {
