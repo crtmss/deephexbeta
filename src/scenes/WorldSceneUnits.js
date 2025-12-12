@@ -93,10 +93,17 @@ function pickSpawnTiles(scene, count) {
 
 /**
  * Creates a mobile base unit (player "king" piece).
+ *
+ * ✅ FIX: radius scales with hex size so it still "fits" after resizing the grid.
+ * Position is taken from scene.axialToWorld(), which now includes elevation lift.
  */
 function createMobileBase(scene, spawnTile, player, color, playerIndex) {
   const pos = scene.axialToWorld(spawnTile.q, spawnTile.r);
-  const unit = scene.add.circle(pos.x, pos.y, 16, color).setDepth(UNIT_Z.player);
+
+  const size = (typeof scene.hexSize === 'number') ? scene.hexSize : 22;
+  const radius = Math.max(10, Math.round(size * 0.72)); // ~16 at hexSize=22
+
+  const unit = scene.add.circle(pos.x, pos.y, radius, color).setDepth(UNIT_Z.player);
 
   unit.q = spawnTile.q;
   unit.r = spawnTile.r;
@@ -126,15 +133,21 @@ function createMobileBase(scene, spawnTile, player, color, playerIndex) {
 
 /**
  * Creates a simple enemy unit.
+ *
+ * ✅ FIX: triangle size scales with hex size (so it doesn't look tiny/huge after hex resize).
+ * Position is taken from scene.axialToWorld(), which now includes elevation lift.
  */
 function createEnemyUnit(scene, spawnTile) {
   const pos = scene.axialToWorld(spawnTile.q, spawnTile.r);
 
+  const size = (typeof scene.hexSize === 'number') ? scene.hexSize : 22;
+  const s = Math.max(12, Math.round(size * 0.82)); // ~18 at hexSize=22
+
   const enemy = scene.add.triangle(
     pos.x, pos.y,
-    0,  18,
-   -16, -14,
-    16, -14,
+    0,  s,
+   -Math.round(s * 0.9), -Math.round(s * 0.78),
+    Math.round(s * 0.9), -Math.round(s * 0.78),
     ENEMY_COLOR
   ).setDepth(UNIT_Z.enemy);
 
