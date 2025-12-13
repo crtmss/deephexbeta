@@ -1,11 +1,10 @@
-//
 // src/scenes/WorldSceneElectricity.js
 //
 // Simplified electricity simulation + placement API.
 //
 // NETWORK RULES (simplified):
 //  - A "power network" exists only if the connected component contains
-//    at least one generator building (solar_panel / fuel_generator).
+//    at least one WORKING generator building (solar_panel / fuel_generator).
 //  - Adjacent generators automatically connect into the same network (no cables needed).
 //  - Cables / poles / batteries / consumers are attached via connectivity rules.
 //  - Storage is per-network via batteries.
@@ -49,7 +48,21 @@ const AXIAL_DIRS = [
   [0, +1],
 ];
 
+function toNum(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+function normQR(q, r) {
+  const nq = toNum(q);
+  const nr = toNum(r);
+  if (nq == null || nr == null) return null;
+  return { q: nq, r: nr };
+}
 const keyOf = (q, r) => `${q},${r}`;
+
+function safeArr(x) {
+  return Array.isArray(x) ? x : [];
+}
 
 /* =========================================================
    Helpers: buildings, positions, resources
@@ -82,10 +95,22 @@ function getAllBuildings(scene) {
 
 function getBuildingCoords(b) {
   if (!b) return null;
-  if (typeof b.q === "number" && typeof b.r === "number") return { q: b.q, r: b.r };
-  if (b.tile && typeof b.tile.q === "number" && typeof b.tile.r === "number") return { q: b.tile.q, r: b.tile.r };
-  if (b.hex && typeof b.hex.q === "number" && typeof b.hex.r === "number") return { q: b.hex.q, r: b.hex.r };
-  if (b.position && typeof b.position.q === "number" && typeof b.position.r === "number") return { q: b.position.q, r: b.position.r };
+
+  // Most common
+  if (b.q != null && b.r != null) {
+    return normQR(b.q, b.r);
+  }
+  // Common wrappers
+  if (b.tile && b.tile.q != null && b.tile.r != null) {
+    return normQR(b.tile.q, b.tile.r);
+  }
+  if (b.hex && b.hex.q != null && b.hex.r != null) {
+    return normQR(b.hex.q, b.hex.r);
+  }
+  if (b.position && b.position.q != null && b.position.r != null) {
+    return normQR(b.position.q, b.position.r);
+  }
+
   return null;
 }
 
@@ -96,44 +121,66 @@ function hexDistance(q1, r1, q2, r2) {
   return (Math.abs(dq) + Math.abs(dr) + Math.abs(ds)) / 2;
 }
 
-function buildingEnergyConfig(b) {
-  const e = b && b.energy ? b.energy : {};
-  const type = String(b?.type || "").toLowerCase();
+function typeOf(b) {
+  return String(b?.type || "").toLowerCase();
+}
 
-  if (type === "solar_panel" && !e.productionPerTurn) {
-    return { ...e, productionPerTurn: 2, requiresPower: false, pullsFromNetwork: false };
+function isBatteryType(t) {
+  return (
+    t === "battery" ||
+    t === "accumulator" ||
+    t === "storage_battery" ||
+    t === "battery_storage"
+  );
+}
+
+function buildingEnergyConfig(b) {
+  const e = (b && b.energy) ? b.energy : {};
+  const t = typeOf(b);
+
+  // Defaults (only if value missing / non-finite)
+  if (t === "solar_panel") {
+    const prod = Number.isFinite(e.productionPerTurn) ? e.productionPerTurn : 2;
+    return { ...e, productionPerTurn: prod, requiresPower: false, pullsFromNetwork: false };
   }
-  if (type === "fuel_generator" && !e.productionPerTurn) {
+
+  if (t === "fuel_generator") {
+    const prod = Number.isFinite(e.productionPerTurn) ? e.productionPerTurn : 5;
+    const fuelPerTurn = Number.isFinite(e.fuelPerTurn) ? e.fuelPerTurn : 1;
     return {
       ...e,
-      productionPerTurn: 5,
-      fuelType: "crude_oil",
-      fuelPerTurn: 1,
+      productionPerTurn: prod,
+      fuelType: e.fuelType || "crude_oil",
+      fuelPerTurn,
       requiresPower: false,
       pullsFromNetwork: false,
     };
   }
-  if (type === "battery" && !e.storageCapacity) {
-    return { ...e, storageCapacity: 20, requiresPower: false, pullsFromNetwork: true };
+
+  if (isBatteryType(t)) {
+    const cap = Number.isFinite(e.storageCapacity) ? e.storageCapacity : 20;
+    return { ...e, storageCapacity: cap, requiresPower: false, pullsFromNetwork: true };
   }
 
   return e;
 }
 
 function isGeneratorBuilding(b) {
-  const type = String(b?.type || "").toLowerCase();
-  return type === "solar_panel" || type === "fuel_generator";
+  const t = typeOf(b);
+  return t === "solar_panel" || t === "fuel_generator";
 }
 
 function isProducerBuilding(b) {
+  const t = typeOf(b);
   const e = buildingEnergyConfig(b);
-  if (e.productionPerTurn && e.productionPerTurn > 0) return true;
-  return isGeneratorBuilding(b);
+  if (t === "solar_panel") return true;
+  if (t === "fuel_generator") return true;
+  return Number.isFinite(e.productionPerTurn) && e.productionPerTurn > 0;
 }
 
 function isStorageBuilding(b) {
   const e = buildingEnergyConfig(b);
-  return !!(e.storageCapacity && e.storageCapacity > 0);
+  return Number.isFinite(e.storageCapacity) && e.storageCapacity > 0;
 }
 
 function isConsumerBuilding(b) {
@@ -141,9 +188,30 @@ function isConsumerBuilding(b) {
   return !!(e.requiresPower && (e.consumptionPerTurn || 0) > 0);
 }
 
+function getResourceBag(scene) {
+  return scene.playerResources || scene.resources || scene.state?.resources || null;
+}
+
+function getCrudeOilAmount(scene) {
+  const res = getResourceBag(scene);
+  if (!res) return 0;
+  const keys = ["crudeOil", "crude_oil", "crudeoil", "Crude Oil"];
+  for (const k of keys) {
+    if (typeof res[k] === "number") return res[k];
+  }
+  return 0;
+}
+
+function canFuelGeneratorRun(scene, gen) {
+  const e = buildingEnergyConfig(gen);
+  const fuelPerTurn = Math.max(0, e.fuelPerTurn ?? 1);
+  if (fuelPerTurn <= 0) return true;
+  return getCrudeOilAmount(scene) >= fuelPerTurn;
+}
+
 function consumeCrudeOil(scene, amount) {
   if (!scene || !amount || amount <= 0) return false;
-  const res = scene.playerResources || scene.resources || scene.state?.resources;
+  const res = getResourceBag(scene);
   if (!res) return false;
 
   const keys = ["crudeOil", "crude_oil", "crudeoil", "Crude Oil"];
@@ -180,17 +248,6 @@ export function initElectricity(scene) {
   if (!scene.energyStats) {
     scene.energyStats = { current: 0, capacity: es.baseCapacity };
   }
-
-  // ✅ FIX: always expose placement hook so Buildings module can place energy buildings
-  // (some flows call initElectricity() but not initElectricityForScene()).
-  if (typeof scene.startEnergyBuildingPlacement !== "function") {
-    scene.startEnergyBuildingPlacement = function (kind) {
-      return startEnergyBuildingPlacement(scene, kind);
-    };
-  }
-  scene.electricity = scene.electricity || {};
-  scene.electricity.initialized = true;
-  scene.electricity.startEnergyBuildingPlacement = scene.startEnergyBuildingPlacement;
 }
 
 export function markElectricDirty(scene) {
@@ -226,6 +283,12 @@ function ensureNetworks(scene) {
   recalcNetworks(scene);
 }
 
+function signatureForNodes(nodes) {
+  // stable signature to carry storedEnergy across recalcs
+  const keys = nodes.map(n => n.key).slice().sort();
+  return keys.join("|");
+}
+
 export function recalcNetworks(scene) {
   initElectricity(scene);
   const state = scene.electricState;
@@ -238,24 +301,40 @@ export function recalcNetworks(scene) {
     return;
   }
 
+  // Keep old stored energy by signature
+  const oldBySig = new Map();
+  for (const id in (state.networks || {})) {
+    const net = state.networks[id];
+    if (!net || !Array.isArray(net.nodes)) continue;
+    const sig = signatureForNodes(net.nodes);
+    oldBySig.set(sig, {
+      storedEnergy: Number.isFinite(net.storedEnergy) ? net.storedEnergy : 0,
+    });
+  }
+
   const byKeyTile = new Map();
   for (const t of tiles) {
     if (!t) continue;
-    byKeyTile.set(keyOf(t.q, t.r), t);
+    const qr = normQR(t.q, t.r);
+    if (!qr) continue;
+    byKeyTile.set(keyOf(qr.q, qr.r), t);
   }
 
   const nodeByKey = new Map();
 
   function ensureNode(q, r) {
-    const k = keyOf(q, r);
+    const qr = normQR(q, r);
+    if (!qr) return null;
+    const k = keyOf(qr.q, qr.r);
+
     let node = nodeByKey.get(k);
     if (!node) {
       const tile = byKeyTile.get(k);
       if (!tile) return null;
       node = {
         key: k,
-        q,
-        r,
+        q: qr.q,
+        r: qr.r,
         tile,
         hasConduit: !!tile.hasPowerConduit,
         hasPole: !!tile.hasPowerPole,
@@ -267,16 +346,18 @@ export function recalcNetworks(scene) {
     return node;
   }
 
-  // tiles with conduits/poles
+  // 1) tiles with conduits/poles
   for (const t of tiles) {
     if (!t) continue;
-    if (t.hasPowerConduit || t.hasPowerPole) ensureNode(t.q, t.r);
+    const qr = normQR(t.q, t.r);
+    if (!qr) continue;
+    if (t.hasPowerConduit || t.hasPowerPole) ensureNode(qr.q, qr.r);
   }
 
-  // buildings participating
+  // 2) buildings participating (generators, storage, consumers, poles, conduits)
   const buildings = getAllBuildings(scene);
   for (const b of buildings) {
-    const type = String(b?.type || "").toLowerCase();
+    const t = typeOf(b);
     const e = buildingEnergyConfig(b);
 
     const participates =
@@ -284,8 +365,8 @@ export function recalcNetworks(scene) {
       isStorageBuilding(b) ||
       isConsumerBuilding(b) ||
       !!e.pullsFromNetwork ||
-      type === "power_pole" ||
-      type === "power_conduit";
+      t === "power_pole" ||
+      t === "power_conduit";
 
     if (!participates) continue;
 
@@ -294,18 +375,19 @@ export function recalcNetworks(scene) {
 
     const node = ensureNode(pos.q, pos.r);
     if (!node) continue;
+
     node.buildings.add(b);
 
-    if (type === "power_pole") {
+    if (t === "power_pole") {
       node.hasPole = true;
       if (node.tile) node.tile.hasPowerPole = true;
-    } else if (type === "power_conduit") {
+    } else if (t === "power_conduit") {
       node.hasConduit = true;
       if (node.tile) node.tile.hasPowerConduit = true;
     }
   }
 
-  // adjacency: axial neighbors (this connects adjacent generators automatically)
+  // 3) adjacency between existing nodes (axial neighbors)
   for (const node of nodeByKey.values()) {
     for (const [dq, dr] of AXIAL_DIRS) {
       const nk = keyOf(node.q + dq, node.r + dr);
@@ -315,11 +397,11 @@ export function recalcNetworks(scene) {
     }
   }
 
-  // pole radius <=2
+  // 4) pole radius <=2
   for (const node of nodeByKey.values()) {
     const hasPole =
       node.hasPole ||
-      Array.from(node.buildings).some((b) => String(b?.type || "").toLowerCase() === "power_pole");
+      Array.from(node.buildings).some((b) => typeOf(b) === "power_pole");
     if (!hasPole) continue;
 
     for (const other of nodeByKey.values()) {
@@ -331,7 +413,7 @@ export function recalcNetworks(scene) {
     }
   }
 
-  // flood-fill components
+  // 5) flood-fill connected components
   const raw = [];
   const visited = new Set();
 
@@ -345,28 +427,37 @@ export function recalcNetworks(scene) {
       storage: [],
       generators: [],
       storageCapacity: 0,
-      hasAnyGenerator: false,
+      hasAnyWorkingGenerator: false,
     };
 
-    const q = [node];
+    const queue = [node];
     visited.add(node.key);
 
-    while (q.length) {
-      const cur = q.shift();
+    while (queue.length) {
+      const cur = queue.shift();
       comp.nodes.push(cur);
 
       for (const b of cur.buildings) {
         const e = buildingEnergyConfig(b);
+        const t = typeOf(b);
 
         if (isProducerBuilding(b)) comp.producers.push(b);
         if (isConsumerBuilding(b)) comp.consumers.push(b);
+
         if (isStorageBuilding(b)) {
           comp.storage.push(b);
           comp.storageCapacity += Math.max(0, e.storageCapacity || 0);
         }
+
         if (isGeneratorBuilding(b)) {
           comp.generators.push(b);
-          comp.hasAnyGenerator = true;
+
+          // WORKING generator rule:
+          if (t === "solar_panel") {
+            comp.hasAnyWorkingGenerator = true;
+          } else if (t === "fuel_generator") {
+            if (canFuelGeneratorRun(scene, b)) comp.hasAnyWorkingGenerator = true;
+          }
         }
       }
 
@@ -375,19 +466,19 @@ export function recalcNetworks(scene) {
         const n = nodeByKey.get(nk);
         if (!n) continue;
         visited.add(nk);
-        q.push(n);
+        queue.push(n);
       }
     }
 
     raw.push(comp);
   }
 
-  // filter: network exists only if component has generator(s)
+  // 6) filter: network exists only if component has >=1 working generator
   const networks = {};
   let nextId = 1;
 
   for (const comp of raw) {
-    if (!comp.hasAnyGenerator) continue;
+    if (!comp.hasAnyWorkingGenerator) continue;
 
     const id = nextId++;
     const net = {
@@ -404,9 +495,17 @@ export function recalcNetworks(scene) {
       lastWorkingGenerators: 0,
     };
 
+    // carry stored energy (by signature)
+    const sig = signatureForNodes(net.nodes);
+    const old = oldBySig.get(sig);
+    if (old) {
+      const cap = Math.max(0, net.storageCapacity || 0);
+      net.storedEnergy = cap > 0 ? Math.min(cap, old.storedEnergy) : 0;
+    }
+
     // mark buildings with network id
-    for (const node of net.nodes) {
-      for (const b of node.buildings) {
+    for (const n of net.nodes) {
+      for (const b of n.buildings) {
         b.powerNetworkId = id;
       }
     }
@@ -484,24 +583,25 @@ export function tickElectricity(scene) {
     let workingGenerators = 0;
 
     // production
-    for (const b of net.producers) {
+    for (const b of safeArr(net.producers)) {
       if (!b) continue;
-      const type = String(b.type || "").toLowerCase();
+      const t = typeOf(b);
       const e = buildingEnergyConfig(b);
 
       let p = 0;
 
-      if (type === "solar_panel") {
+      if (t === "solar_panel") {
         p = e.productionPerTurn ?? 2;
         b.powerOnline = p > 0;
         if (b.powerOnline) workingGenerators += 1;
-      } else if (type === "fuel_generator") {
+      } else if (t === "fuel_generator") {
         const fuelPerTurn = e.fuelPerTurn ?? 1;
         const ok = consumeCrudeOil(scene, fuelPerTurn);
         if (ok) {
           p = e.productionPerTurn ?? 5;
           b.powerOnline = p > 0;
           if (b.powerOnline) workingGenerators += 1;
+          b.powerOfflineReason = null;
         } else {
           p = 0;
           b.powerOnline = false;
@@ -521,7 +621,7 @@ export function tickElectricity(scene) {
       net.lastDemand = 0;
       net.lastWorkingGenerators = 0;
 
-      for (const c of net.consumers) {
+      for (const c of safeArr(net.consumers)) {
         if (!c) continue;
         c.powerOnline = false;
         c.powerOfflineReason = "no_power_source";
@@ -541,7 +641,7 @@ export function tickElectricity(scene) {
     }
 
     // demand
-    for (const c of net.consumers) {
+    for (const c of safeArr(net.consumers)) {
       if (!c) continue;
       const e = buildingEnergyConfig(c);
       demand += Math.max(0, e.consumptionPerTurn || 0);
@@ -551,13 +651,13 @@ export function tickElectricity(scene) {
     if (demand > 0) {
       if ((net.storedEnergy || 0) >= demand) {
         net.storedEnergy -= demand;
-        for (const c of net.consumers) {
+        for (const c of safeArr(net.consumers)) {
           if (!c) continue;
           c.powerOnline = true;
           c.powerOfflineReason = null;
         }
       } else {
-        for (const c of net.consumers) {
+        for (const c of safeArr(net.consumers)) {
           if (!c) continue;
           c.powerOnline = false;
           c.powerOfflineReason = "no_power";
@@ -633,7 +733,7 @@ export function debugElectricity(scene) {
 
   const ids = Object.keys(nets);
   if (!ids.length) {
-    console.log("No generator-networks found (no components with generators).");
+    console.log("No WORKING-generator networks found (no connected component with working generators).");
     return;
   }
 
@@ -642,14 +742,15 @@ export function debugElectricity(scene) {
     if (!net) continue;
 
     const buildings = [];
-    for (const node of net.nodes) {
-      for (const b of node.buildings) {
+    for (const node of safeArr(net.nodes)) {
+      for (const b of node.buildings || []) {
         const pos = getBuildingCoords(b);
         buildings.push({
           type: b?.type,
           id: b?.id,
           q: pos?.q,
           r: pos?.r,
+          energy: b?.energy || null,
         });
       }
     }
@@ -657,6 +758,7 @@ export function debugElectricity(scene) {
     console.log(`[Network ${net.id}]`, {
       nodes: net.nodes.length,
       generators: net.generators.length,
+      storageBuildings: net.storage.length,
       storageCapacity: net.storageCapacity,
       storedEnergy: net.storedEnergy,
       lastProduced: net.lastProduced,
@@ -693,11 +795,15 @@ export function drawElectricOverlay(scene) {
   const byKeyTile = new Map();
   for (const t of tiles) {
     if (!t) continue;
-    byKeyTile.set(keyOf(t.q, t.r), t);
+    const qr = normQR(t.q, t.r);
+    if (!qr) continue;
+    byKeyTile.set(keyOf(qr.q, qr.r), t);
   }
 
   function hexCenter(t) {
-    const pos = scene.hexToPixel(t.q, t.r, size);
+    const qr = normQR(t.q, t.r);
+    if (!qr) return { x: 0, y: 0 };
+    const pos = scene.hexToPixel(qr.q, qr.r, size);
     const y = pos.y - LIFT * effectiveElevationLocal(t);
     return { x: pos.x + offsetX, y: y + offsetY };
   }
@@ -708,7 +814,7 @@ export function drawElectricOverlay(scene) {
   if (active != null) {
     const net = scene.electricState?.networks?.[active];
     if (net) {
-      for (const n of net.nodes) highlightKeys.add(n.key);
+      for (const n of safeArr(net.nodes)) highlightKeys.add(n.key);
     }
   }
 
@@ -720,13 +826,15 @@ export function drawElectricOverlay(scene) {
   // conduits
   for (const t of tiles) {
     if (!t || !t.hasPowerConduit) continue;
+    const qr = normQR(t.q, t.r);
+    if (!qr) continue;
 
-    const k1 = keyOf(t.q, t.r);
+    const k1 = keyOf(qr.q, qr.r);
     const c = hexCenter(t);
     const a1 = alphaForKey(k1);
 
     for (const [dq, dr] of AXIAL_DIRS) {
-      const nk = keyOf(t.q + dq, t.r + dr);
+      const nk = keyOf(qr.q + dq, qr.r + dr);
       const nt = byKeyTile.get(nk);
       if (!nt) continue;
       if (!nt.hasPowerConduit && !nt.hasPowerPole) continue;
@@ -744,7 +852,7 @@ export function drawElectricOverlay(scene) {
 
     let hasNeighbor = false;
     for (const [dq, dr] of AXIAL_DIRS) {
-      const nt = byKeyTile.get(keyOf(t.q + dq, t.r + dr));
+      const nt = byKeyTile.get(keyOf(qr.q + dq, qr.r + dr));
       if (!nt) continue;
       if (nt.hasPowerConduit || nt.hasPowerPole) {
         hasNeighbor = true;
@@ -760,8 +868,10 @@ export function drawElectricOverlay(scene) {
   // poles
   for (const t of tiles) {
     if (!t || !t.hasPowerPole) continue;
+    const qr = normQR(t.q, t.r);
+    if (!qr) continue;
 
-    const k = keyOf(t.q, t.r);
+    const k = keyOf(qr.q, qr.r);
     const a = alphaForKey(k);
     const c = hexCenter(t);
 
@@ -777,17 +887,16 @@ export function drawElectricOverlay(scene) {
    ========================================================= */
 
 function getEnergyPlacementHex(scene) {
-  if (scene.selectedUnit && typeof scene.selectedUnit.q === "number" && typeof scene.selectedUnit.r === "number") {
-    return { q: scene.selectedUnit.q, r: scene.selectedUnit.r };
+  if (scene.selectedUnit && scene.selectedUnit.q != null && scene.selectedUnit.r != null) {
+    return normQR(scene.selectedUnit.q, scene.selectedUnit.r);
   }
-  if (scene.selectedHex && typeof scene.selectedHex.q === "number" && typeof scene.selectedHex.r === "number") {
-    return { q: scene.selectedHex.q, r: scene.selectedHex.r };
+  if (scene.selectedHex && scene.selectedHex.q != null && scene.selectedHex.r != null) {
+    return normQR(scene.selectedHex.q, scene.selectedHex.r);
   }
   return null;
 }
 
 function spawnEnergyBuilding(scene, kind, q, r) {
-  // Prefer scene.axialToWorld if exists (it already includes elevation in your patched WorldScene.js)
   const pos = (typeof scene.axialToWorld === "function")
     ? scene.axialToWorld(q, r)
     : scene.hexToPixel(q, r, scene.hexSize || 24);
@@ -808,7 +917,7 @@ function spawnEnergyBuilding(scene, kind, q, r) {
   let name = "Power";
   if (kind === "solar_panel") { emoji = "🔆"; name = "Solar"; }
   else if (kind === "fuel_generator") { emoji = "⛽"; name = "Generator"; }
-  else if (kind === "battery") { emoji = "🔋"; name = "Battery"; }
+  else if (kind === "battery" || kind === "accumulator") { emoji = "🔋"; name = "Battery"; }
   else if (kind === "power_pole") { emoji = "🗼"; name = "Pole"; }
   else if (kind === "power_conduit") { emoji = "•"; name = "Conduit"; }
 
@@ -843,7 +952,9 @@ function spawnEnergyBuilding(scene, kind, q, r) {
     building.energy.productionPerTurn = 5;
     building.energy.fuelType = "crude_oil";
     building.energy.fuelPerTurn = 1;
-  } else if (kind === "battery") building.energy.storageCapacity = 20;
+  } else if (kind === "battery" || kind === "accumulator") {
+    building.energy.storageCapacity = 20;
+  }
 
   scene.buildings.push(building);
 
@@ -864,13 +975,13 @@ export function startEnergyBuildingPlacement(scene, kind) {
 
   const { q, r } = hex;
   const mapData = scene.mapData || [];
-  const tile = mapData.find((t) => t.q === q && t.r === r);
+  const tile = mapData.find((t) => Number(t?.q) === q && Number(t?.r) === r);
   if (!tile) {
     console.warn("[ENERGY] Target tile not found for", kind, "at", q, r);
     return;
   }
 
-  if (kind === "solar_panel" || kind === "fuel_generator" || kind === "battery") {
+  if (kind === "solar_panel" || kind === "fuel_generator" || kind === "battery" || kind === "accumulator") {
     if (tile.type === "water" || tile.type === "ocean" || tile.type === "sea") {
       console.warn("[ENERGY] Cannot place", kind, "on water.");
       return;
@@ -887,17 +998,13 @@ export function startEnergyBuildingPlacement(scene, kind) {
     return;
   }
 
-  // ✅ FIX: networks must be rebuilt immediately after placement,
-  // otherwise UI still sees the old "no networks" state.
   markElectricDirty(scene);
-  recalcNetworks(scene);
 
   try { drawElectricOverlay(scene); } catch (err) {
     console.error("[ENERGY] Error while drawing electric overlay after placement:", err);
   }
 
   recomputeGlobalEnergyStats(scene);
-  scene.refreshEnergyPanel?.();
 }
 
 /* =========================================================
@@ -908,7 +1015,28 @@ export function initElectricityForScene(scene) {
   if (!scene) return;
   initElectricity(scene);
 
-  // ensure namespace
+  // Ensure scene.electricitySystem exists for UI calls (refreshEnergyPanel checks this)
+  if (!scene.electricitySystem) {
+    scene.electricitySystem = {
+      initElectricityForScene,
+      initElectricity,
+      markElectricDirty,
+      onTileUpdated,
+      onBuildingPlaced,
+      onBuildingRemoved,
+      recalcNetworks,
+      tickElectricity,
+      isBuildingPowered,
+      drawElectricOverlay,
+      recomputeGlobalEnergyStats,
+      debugElectricity,
+      setHighlightedNetwork,
+      clearHighlightedNetwork,
+      startEnergyBuildingPlacement,
+      applyElectricityOnEndTurn,
+    };
+  }
+
   if (!scene.electricity) scene.electricity = {};
   scene.electricity.initialized = true;
 
@@ -923,8 +1051,6 @@ export function initElectricityForScene(scene) {
   // Convenience overlay hook
   scene.drawElectricityOverlay = () => drawElectricOverlay(scene);
 
-  // ✅ ensure networks exist at least once (so UI can show them right away)
-  recalcNetworks(scene);
   recomputeGlobalEnergyStats(scene);
 }
 
