@@ -8,7 +8,7 @@ const DESIGN_HEIGHT = 1000;
 
 const config = {
   type: Phaser.AUTO,
-  backgroundColor: '#7CC4FF',
+  backgroundColor: '#0x6BA9E7',
   parent: 'game-container',
   scene: [LobbyScene, WorldScene, CombatScene],
 
