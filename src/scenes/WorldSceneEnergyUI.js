@@ -297,7 +297,8 @@ export function setupEnergyPanel(scene) {
   });
   applyTextReadability(footer);
 
-  panel.add([bg, title, hint, footer]);
+  panel.add(bg);
+  panel.add([title, hint, footer]);
 
   scene.energyUI.panel = panel;
   scene.energyUI.rows = rows;
