@@ -1,354 +1,335 @@
-// src/scenes/WorldSceneEnergyUI.js
-//
-// Energy (Electricity) panel UI.
-// Visual style intentionally mirrors Logistics panel.
+// deephexbeta/src/scenes/WorldSceneUI.js
 
-const UI_Z = 9105;
+import { refreshUnits } from './WorldSceneActions.js';
+import { findPath as aStarFindPath } from '../engine/AStar.js';
+import { setupLogisticsPanel } from './WorldSceneLogistics.js';
+import { setupEconomyUI } from './WorldSceneEconomy.js';
 
-// Palette (match Logistics-ish)
-const COLORS = {
-  bg: 0x08121c,
-  border: 0x2ec7ff,
-  title: '#d6f3ff',
-  text: '#ffffff',      // ✅ high contrast for main row titles
-  subtle: '#86b6cf',
-  danger: '#ff8b8b',
-  ok: '#b8ffcf',
-};
+/* ---------------- Camera controls (unused unless called) ---------------- */
+export function setupCameraControls(scene) {
+  scene.input.setDefaultCursor('grab');
+  scene.isDragging = false;
 
-function fmtSigned(n) {
-  const v = Math.round(n);
-  return v >= 0 ? `+${v}` : `${v}`;
+  scene.input.on('pointerdown', pointer => {
+    if (pointer.rightButtonDown()) {
+      scene.isDragging = true;
+      scene.input.setDefaultCursor('grabbing');
+      scene.dragStartX = pointer.x;
+      scene.dragStartY = pointer.y;
+      scene.cameraStartX = scene.cameras.main.scrollX;
+      scene.cameraStartY = scene.cameras.main.scrollY;
+    }
+  });
+
+  scene.input.on('pointerup', () => {
+    if (scene.isDragging) {
+      scene.isDragging = false;
+      scene.input.setDefaultCursor('grab');
+    }
+  });
+
+  scene.input.on('pointermove', pointer => {
+    if (scene.isDragging) {
+      const dx = pointer.x - scene.dragStartX;
+      const dy = pointer.y - scene.dragStartY;
+      scene.cameras.main.scrollX =
+        scene.cameraStartX - dx / scene.cameras.main.zoom;
+      scene.cameras.main.scrollY =
+        scene.cameraStartY - dy / scene.cameras.main.zoom;
+    }
+  });
+
+  scene.input.on('wheel', (pointer, _, __, deltaY) => {
+    const cam = scene.cameras.main;
+    let z = cam.zoom - deltaY * 0.001;
+    z = Phaser.Math.Clamp(z, 0.5, 2.5);
+    cam.setZoom(z);
+  });
 }
-function safeArr(x) {
-  return Array.isArray(x) ? x : [];
+
+/* ---------------- Turn UI + economy + logistics ---------------- */
+export function setupTurnUI(scene) {
+  // Centralised economy UI (resource HUD, top tabs, resources panel)
+  setupEconomyUI(scene);
+
+  // Turn label – positioned under the (now taller) resource HUD
+  const baseY = 170;
+
+  scene.turnText = scene.add.text(20, baseY, 'Player Turn: ...', {
+    fontSize: '18px',
+    fill: '#e8f6ff',
+    backgroundColor: '#133046',
+    padding: { x: 10, y: 5 },
+  }).setScrollFactor(0).setDepth(100).setInteractive();
+
+  // End Turn button
+  scene.endTurnButton = scene.add.text(20, baseY + 30, 'End Turn', {
+    fontSize: '18px',
+    fill: '#fff',
+    backgroundColor: '#3da9fc',
+    padding: { x: 10, y: 5 },
+  }).setScrollFactor(0).setDepth(100).setInteractive();
+
+  scene.endTurnButton.on('pointerdown', () => {
+    scene.endTurn();
+  });
+
+  // Refresh button (refresh units + redraw world)
+  scene.refreshButton = scene.add.text(20, baseY + 63, 'Refresh', {
+    fontSize: '18px',
+    fill: '#fff',
+    backgroundColor: '#444',
+    padding: { x: 10, y: 5 },
+  }).setScrollFactor(0).setDepth(100).setInteractive();
+
+  scene.refreshButton.on('pointerdown', () => {
+    refreshUnits(scene);
+    scene.redrawWorld?.();
+  });
+
+  // Logistics panel + helpers (the UI itself lives in WorldSceneLogistics)
+  setupLogisticsPanel(scene);
+
+  // Wrap logistics open/close to:
+  // - lock world input (no mobile base movement while logistics is open)
+  // - clear any selected unit and path preview when opening
+  const origOpenLogi = scene.openLogisticsPanel;
+  const origCloseLogi = scene.closeLogisticsPanel;
+
+  scene.logisticsInputLocked = false;
+
+  scene.openLogisticsPanel = function () {
+    this.logisticsInputLocked = true;
+
+    // Unselect any unit and clear move preview when opening logistics
+    this.setSelectedUnit?.(null);
+    this.selectedHex = null;
+    this.clearPathPreview?.();
+
+    origOpenLogi?.call(this);
+  };
+
+  scene.closeLogisticsPanel = function () {
+    this.logisticsInputLocked = false;
+    origCloseLogi?.call(this);
+  };
 }
+
+export function updateTurnText(scene, currentTurn) {
+  if (scene.turnText) {
+    scene.turnText.setText('Player Turn: ' + currentTurn);
+  }
+}
+
+/* =========================
+   Path preview & selection UI
+   ========================= */
+
+// local helper, same as in WorldScene
 function getTile(scene, q, r) {
-  return (scene.mapData || []).find(t => t && t.q === q && t.r === r) || null;
+  return (scene.mapData || []).find(h => h.q === q && h.r === r);
+}
+
+// helper: find any unit/hauler on given hex
+function getUnitAtHex(scene, q, r) {
+  const players = scene.players || [];
+  const haulers = scene.haulers || [];
+  return (
+    players.find(u => u.q === q && u.r === r) ||
+    haulers.find(h => h.q === q && h.r === r) ||
+    null
+  );
+}
+
+// wrapper around shared A* to keep logic here
+function computePathWithAStar(scene, unit, targetHex, blockedPred) {
+  const start = { q: unit.q, r: unit.r };
+  const goal = { q: targetHex.q, r: targetHex.r };
+
+  if (start.q === goal.q && start.r === goal.r) {
+    return [start];
+  }
+
+  const isBlocked = tile => {
+    if (!tile) return true;
+    return blockedPred ? blockedPred(tile) : false;
+  };
+
+  return aStarFindPath(start, goal, scene.mapData, isBlocked);
 }
 
 /**
- * Draw a hex polygon centered at x,y.
- * Pointy-top orientation.
+ * Sets up unit selection + path preview + movement
  */
-function drawHex(g, x, y, radius, fillColor, fillAlpha, lineColor, lineAlpha) {
-  const pts = [];
-  const start = Math.PI / 6; // 30deg
-  for (let i = 0; i < 6; i++) {
-    const a = start + i * (Math.PI / 3);
-    pts.push({ x: x + radius * Math.cos(a), y: y + radius * Math.sin(a) });
-  }
+export function setupWorldInputUI(scene) {
+  // ensure arrays for preview are present
+  scene.pathPreviewTiles = scene.pathPreviewTiles || [];
+  scene.pathPreviewLabels = scene.pathPreviewLabels || [];
 
-  g.fillStyle(fillColor, fillAlpha);
-  g.beginPath();
-  g.moveTo(pts[0].x, pts[0].y);
-  for (let i = 1; i < pts.length; i++) g.lineTo(pts[i].x, pts[i].y);
-  g.closePath();
-  g.fillPath();
+  scene.input.on('pointerdown', pointer => {
+    // Block world input when Logistics panel is open / logistics interactions active
+    if (scene.logisticsInputLocked) return;
 
-  if (lineAlpha > 0) {
-    g.lineStyle(2, lineColor, lineAlpha);
-    g.beginPath();
-    g.moveTo(pts[0].x, pts[0].y);
-    for (let i = 1; i < pts.length; i++) g.lineTo(pts[i].x, pts[i].y);
-    g.closePath();
-    g.strokePath();
-  }
-}
+    if (scene.isDragging) return;
+    if (pointer.rightButtonDown && pointer.rightButtonDown()) return;
 
-function computeDisplayNetworks(scene) {
-  const es = scene.electricState || null;
-  const out = [];
+    const worldPoint = pointer.positionToCamera(scene.cameras.main);
+    const rounded = scene.worldToAxial(worldPoint.x, worldPoint.y);
 
-  // Base “network”
-  const baseStored = es?.baseStored ?? 0;
-  const baseCap = es?.baseCapacity ?? 5;
-  const baseProd = es?.baseProductionPerTurn ?? 1;
+    if (
+      rounded.q < 0 ||
+      rounded.r < 0 ||
+      rounded.q >= scene.mapWidth ||
+      rounded.r >= scene.mapHeight
+    ) return;
 
-  const baseUnit =
-    safeArr(scene.players).find(p => p?.type === 'mobile_base') ||
-    safeArr(scene.units).find(p => p?.type === 'mobile_base') ||
-    null;
+    const { q, r } = rounded;
 
-  out.push({
-    kind: 'base',
-    id: 'base',
-    title: 'Mobile Base',
-    stored: baseStored,
-    capacity: baseCap,
-    producedPerTurn: baseProd,
-    demandPerTurn: 0,
-    tiles:
-      baseUnit && Number.isFinite(baseUnit.q) && Number.isFinite(baseUnit.r)
-        ? [{ q: baseUnit.q, r: baseUnit.r }]
-        : [],
-  });
-
-  const nets = es?.networks || {};
-  const ids = Object.keys(nets)
-    .map(x => parseInt(x, 10))
-    .filter(Number.isFinite)
-    .sort((a, b) => a - b);
-
-  for (const id of ids) {
-    const net = nets[id];
-    if (!net) continue;
-
-    let prod = 0;
-    let dem = 0;
-
-    for (const b of safeArr(net.producers)) {
-      const e = b?.energy || {};
-      const t = String(b?.type || '').toLowerCase();
-      if (t === 'fuel_generator') prod += Number.isFinite(e.productionPerTurn) ? e.productionPerTurn : 5;
-      else if (t === 'solar_panel') prod += Number.isFinite(e.productionPerTurn) ? e.productionPerTurn : 2;
-      else prod += Number.isFinite(e.productionPerTurn) ? e.productionPerTurn : 0;
+    // First, check if there's a unit on this hex and toggle selection.
+    const unitAtHex = getUnitAtHex(scene, q, r);
+    if (unitAtHex) {
+      scene.toggleSelectedUnitAtHex?.(q, r);
+      scene.clearPathPreview?.();
+      scene.selectedHex = null;
+      scene.debugHex?.(q, r);
+      return;
     }
 
-    for (const b of safeArr(net.consumers)) {
-      const e = b?.energy || {};
-      dem += Number.isFinite(e.consumptionPerTurn) ? e.consumptionPerTurn : 0;
-    }
-
-    const tiles = safeArr(net.nodes)
-      .map(n => ({ q: n?.q, r: n?.r }))
-      .filter(p => Number.isFinite(p.q) && Number.isFinite(p.r));
-
-    out.push({
-      kind: 'network',
-      id,
-      title: `Network ${id}`,
-      stored: net.storedEnergy ?? 0,
-      capacity: net.storageCapacity ?? 0,
-      producedPerTurn: prod,
-      demandPerTurn: dem,
-      tiles,
-    });
-  }
-
-  return out;
-}
-
-function drawEnergyOverlay(scene, tiles) {
-  if (!scene || !scene.add) return;
-
-  if (scene.energyHighlightGraphics) {
-    scene.energyHighlightGraphics.destroy();
-    scene.energyHighlightGraphics = null;
-  }
-
-  const g = scene.add.graphics().setDepth(95);
-  scene.energyHighlightGraphics = g;
-
-  const size = scene.hexSize || 24;
-  const radius = size * 0.62;
-
-  const seen = new Set();
-  for (const p of safeArr(tiles)) {
-    if (!p) continue;
-    const q = p.q, r = p.r;
-    if (!Number.isFinite(q) || !Number.isFinite(r)) continue;
-    const k = `${q},${r}`;
-    if (seen.has(k)) continue;
-    seen.add(k);
-
-    const world =
-      typeof scene.axialToWorld === 'function'
-        ? scene.axialToWorld(q, r)
-        : { x: 0, y: 0 };
-
-    const t = getTile(scene, q, r);
-    if (t && t.type === 'water') continue;
-
-    drawHex(g, world.x, world.y, radius, 0x2ec7ff, 0.10, 0x2ec7ff, 0.35);
-  }
-}
-
-function clearEnergyOverlay(scene) {
-  if (scene.energyHighlightGraphics) {
-    scene.energyHighlightGraphics.destroy();
-    scene.energyHighlightGraphics = null;
-  }
-}
-
-export function setupEnergyPanel(scene) {
-  if (!scene) return;
-  if (scene.energyUI?.initialized) return;
-
-  scene.energyUI = scene.energyUI || {};
-  scene.energyUI.initialized = true;
-
-  const W = 360;
-  const H = 420;
-
-  const panel = scene.add
-    .container(scene.scale.width - W - 20, 98)
-    .setScrollFactor(0)
-    .setDepth(UI_Z)
-    .setVisible(false);
-
-  const bg = scene.add.graphics();
-  bg.fillStyle(COLORS.bg, 0.92);
-  bg.fillRoundedRect(0, 0, W, H, 14);
-  bg.lineStyle(2, COLORS.border, 0.9);
-  bg.strokeRoundedRect(0, 0, W, H, 14);
-  panel.add(bg);
-
-  const title = scene.add.text(16, 12, 'ENERGY NETWORKS', {
-    fontFamily: 'monospace',
-    fontSize: '14px',
-    color: COLORS.title,
-  });
-  panel.add(title);
-
-  const hint = scene.add.text(16, 32, 'Hover a network to highlight it on the map.', {
-    fontFamily: 'monospace',
-    fontSize: '11px',
-    color: COLORS.subtle,
-  });
-  panel.add(hint);
-
-  panel.sendToBack(bg);
-
-  const listY = 58;
-  const rowH = 52;
-  const maxRows = 6;
-
-  const rows = [];
-
-  for (let i = 0; i < maxRows; i++) {
-    const y = listY + i * rowH;
-
-    const line = scene.add.graphics();
-    line.lineStyle(1, 0x1f3b52, 0.9);
-    line.beginPath();
-    line.moveTo(12, y + rowH - 1);
-    line.lineTo(W - 12, y + rowH - 1);
-    line.strokePath();
-
-    const name = scene.add.text(18, y + 8, '', {
-      fontFamily: 'monospace',
-      fontSize: '12px',
-      color: COLORS.text, // ✅ white
-    });
-
-    const meta = scene.add.text(18, y + 26, '', {
-      fontFamily: 'monospace',
-      fontSize: '11px',
-      color: COLORS.subtle,
-    });
-
-    const delta = scene.add
-      .text(W - 18, y + 16, '', {
-        fontFamily: 'monospace',
-        fontSize: '14px',
-        color: COLORS.ok,
-      })
-      .setOrigin(1, 0);
-
-    const hit = scene.add.rectangle(0, y, W, rowH, 0xffffff, 0.001).setOrigin(0, 0);
-    hit.setInteractive({ useHandCursor: true });
-
-    const row = { name, meta, delta, hit, network: null };
-    rows.push(row);
-
-    panel.add([line, name, meta, delta, hit]);
-  }
-
-  const footer = scene.add.text(16, H - 38, '', {
-    fontFamily: 'monospace',
-    fontSize: '11px',
-    color: COLORS.subtle,
-    wordWrap: { width: W - 32 },
-  });
-  panel.add(footer);
-
-  scene.energyUI.panel = panel;
-  scene.energyUI.rows = rows;
-  scene.energyUI.footer = footer;
-
-  scene.openEnergyPanel = function () {
-    panel.setVisible(true);
-    scene.energyUI.isOpen = true;
-    scene.refreshEnergyPanel?.();
-    scene.showAllEnergyReach?.();
-  };
-
-  scene.closeEnergyPanel = function () {
-    panel.setVisible(false);
-    scene.energyUI.isOpen = false;
-    clearEnergyOverlay(scene);
-  };
-
-  scene.refreshEnergyPanel = function () {
-    if (!scene.energyUI?.isOpen) return;
-
-    try {
-      if (scene.electricState?.dirty && scene.electricitySystem?.recalcNetworks) {
-        scene.electricitySystem.recalcNetworks(scene);
-      }
-    } catch (e) {}
-
-    const nets = computeDisplayNetworks(scene);
-    const ordered = nets.slice().sort((a, b) => {
-      if (a.kind === 'base' && b.kind !== 'base') return -1;
-      if (b.kind === 'base' && a.kind !== 'base') return 1;
-      return a.id > b.id ? 1 : a.id < b.id ? -1 : 0;
-    });
-
-    footer.setText(`Networks: ${ordered.length} • Hover to isolate highlight`);
-
-    const visible = ordered.slice(0, rows.length);
-
-    for (let i = 0; i < rows.length; i++) {
-      const row = rows[i];
-      const net = visible[i] || null;
-      row.network = net;
-
-      if (!net) {
-        row.name.setText('');
-        row.meta.setText('');
-        row.delta.setText('');
-        row.hit.disableInteractive();
-        continue;
-      }
-
-      row.hit.setInteractive({ useHandCursor: true });
-
-      const stored = Math.max(0, net.stored || 0);
-      const cap = Math.max(0, net.capacity || 0);
-      const prod = net.producedPerTurn || 0;
-      const dem = net.demandPerTurn || 0;
-      const d = prod - dem;
-
-      row.name.setText(net.title);
-      row.meta.setText(
-        `Stored ${Math.round(stored)}/${cap > 0 ? Math.round(cap) : '∞'} • Prod ${Math.round(prod)} / Use ${Math.round(dem)}`
+    // No unit here: it's a ground/location click
+    const tile = getTile(scene, q, r);
+    if (tile && tile.isLocation) {
+      console.log(
+        `[LOCATION] Clicked on location: ${tile.locationType || 'Unknown'} at (${q},${r})`
       );
-
-      row.delta.setColor(d < 0 ? COLORS.danger : COLORS.ok);
-      row.delta.setText(fmtSigned(d));
-
-      row.hit.removeAllListeners?.();
-      row.hit.on('pointerover', () => scene.highlightEnergyNetwork?.(net));
-      row.hit.on('pointerout', () => scene.showAllEnergyReach?.());
     }
-  };
 
-  scene.showAllEnergyReach = function () {
-    if (!scene.energyUI?.isOpen) return;
-    const nets = computeDisplayNetworks(scene);
-    const tiles = [];
-    for (const n of nets) tiles.push(...safeArr(n.tiles));
-    drawEnergyOverlay(scene, tiles);
-  };
+    scene.selectedHex = rounded;
+    scene.debugHex?.(q, r);
 
-  scene.highlightEnergyNetwork = function (net) {
-    if (!scene.energyUI?.isOpen) return;
-    drawEnergyOverlay(scene, safeArr(net?.tiles));
-  };
+    // If we have a selected unit, treat this as a move order
+    if (scene.selectedUnit) {
+      const blocked = t => !t || t.type === 'water' || t.type === 'mountain';
+      const fullPath = computePathWithAStar(scene, scene.selectedUnit, rounded, blocked);
+
+      if (fullPath && fullPath.length > 1) {
+        let movementPoints = scene.selectedUnit.movementPoints || 4;
+        const trimmedPath = [];
+        let costSum = 0;
+
+        for (let i = 0; i < fullPath.length; i++) {
+          const step = fullPath[i];
+          const tile2 = getTile(scene, step.q, step.r);
+          const cost = tile2?.movementCost || 1;
+          if (i > 0 && costSum + cost > movementPoints) break;
+          trimmedPath.push(step);
+          if (i > 0) costSum += cost;
+        }
+
+        if (trimmedPath.length > 1) {
+          console.log('[MOVE] Committing move along path:', trimmedPath);
+          scene.startStepMovement?.(scene.selectedUnit, trimmedPath, () => {
+            if (scene.checkCombat?.(
+              scene.selectedUnit,
+              trimmedPath[trimmedPath.length - 1]
+            )) {
+              scene.scene.start('CombatScene', {
+                seed: scene.seed,
+                playerUnit: scene.selectedUnit,
+              });
+            } else {
+              scene.syncPlayerMove?.(scene.selectedUnit);
+            }
+          });
+        }
+      }
+    }
+  });
+
+  scene.input.on('pointermove', pointer => {
+    // Block hover preview when logistics panel is open
+    if (scene.logisticsInputLocked) return;
+
+    if (scene.isDragging) return;
+    if (!scene.selectedUnit || scene.isUnitMoving) return;
+
+    const worldPoint = pointer.positionToCamera(scene.cameras.main);
+    const rounded = scene.worldToAxial(worldPoint.x, worldPoint.y);
+
+    if (
+      rounded.q < 0 ||
+      rounded.r < 0 ||
+      rounded.q >= scene.mapWidth ||
+      rounded.r >= scene.mapHeight
+    ) {
+      scene.clearPathPreview?.();
+      return;
+    }
+
+    const blocked = t => !t || t.type === 'water' || t.type === 'mountain';
+    const path = computePathWithAStar(scene, scene.selectedUnit, rounded, blocked);
+
+    scene.clearPathPreview?.();
+    if (path && path.length > 1) {
+      let movementPoints = scene.selectedUnit.movementPoints || 4;
+      let costSum = 0;
+      const maxPath = [];
+
+      for (let i = 0; i < path.length; i++) {
+        const step = path[i];
+        const tile = getTile(scene, step.q, step.r);
+        const cost = tile?.movementCost || 1;
+
+        if (i > 0 && costSum + cost > movementPoints) break;
+        maxPath.push(step);
+        if (i > 0) costSum += cost;
+      }
+
+      const graphics = scene.add.graphics();
+      graphics.lineStyle(2, 0x64ffda, 0.9);
+      graphics.setDepth(50);
+
+      for (let i = 0; i < maxPath.length - 1; i++) {
+        const a = maxPath[i];
+        const b = maxPath[i + 1];
+        const wa = scene.axialToWorld(a.q, a.r);
+        const wb = scene.axialToWorld(b.q, b.r);
+        graphics.beginPath();
+        graphics.moveTo(wa.x, wa.y);
+        graphics.lineTo(wb.x, wb.y);
+        graphics.strokePath();
+      }
+
+      scene.pathPreviewTiles.push(graphics);
+
+      const baseColor = '#e8f6ff';
+      const outOfRangeColor = '#ff7b7b';
+      costSum = 0;
+      for (let i = 0; i < maxPath.length; i++) {
+        const step = maxPath[i];
+        const tile = getTile(scene, step.q, step.r);
+        const cost = tile?.movementCost || 1;
+        if (i > 0) costSum += cost;
+        const { x, y } = scene.axialToWorld(step.q, step.r);
+        const labelColor = costSum <= movementPoints ? baseColor : outOfRangeColor;
+        const label = scene.add.text(x, y, `${costSum}`, {
+          fontSize: '10px',
+          color: labelColor,
+          fontStyle: 'bold',
+        }).setOrigin(0.5).setDepth(51);
+        scene.pathPreviewLabels.push(label);
+      }
+    }
+  });
+
+  scene.input.on('pointerout', () => {
+    scene.clearPathPreview?.();
+  });
 }
 
+/* Optional default export for convenience (doesn't break named imports) */
 export default {
-  setupEnergyPanel,
+  setupCameraControls,
+  setupTurnUI,
+  updateTurnText,
+  setupWorldInputUI,
 };
