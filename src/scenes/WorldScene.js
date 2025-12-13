@@ -5,6 +5,7 @@ import { drawLocationsAndRoads } from './WorldSceneMapLocations.js';
 import { setupWorldMenus, attachSelectionHighlight } from './WorldSceneMenus.js';
 import { startHexTransformTool } from './HexTransformTool.js';
 import { setupBuildingsUI } from './WorldSceneBuildingsUI.js';
+import { setupEnergyPanel } from './WorldSceneEnergyUI.js';
 
 // Haulers / ships
 import {
@@ -288,6 +289,7 @@ export default class WorldScene extends Phaser.Scene {
     setupBuildingsUI(this);
     setupTurnUI(this);
     setupLogisticsPanel(this);
+    setupEnergyPanel(this);
 
     // NEW: History UI (panel to the left of resources panel)
     setupHistoryUI(this);
