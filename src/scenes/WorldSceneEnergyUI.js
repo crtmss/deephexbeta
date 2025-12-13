@@ -1,7 +1,7 @@
 // src/scenes/WorldSceneEnergyUI.js
 //
 // Energy (Electricity) panel UI.
-// Visual style intentionally mirrors Logistics panel.
+// Visual style intentionally mirrors other right-side panels (Resources / Logistics).
 //
 // UX:
 //  - Opening the panel highlights ALL tiles that belong to any power network.
@@ -12,20 +12,19 @@
 
 const UI_Z = 9105;
 
-// Palette (match Logistics-ish)
+// Palette (match other panels)
 const COLORS = {
-  bg: 0x08121c,
-  border: 0x2ec7ff,
-  title: '#d6f3ff',
-  text: '#cde8f6',
-  subtle: '#86b6cf',
+  bg: 0x0f2233,        // ✅ same family as resources/logistics panels
+  border: 0x3da9fc,    // ✅ same blue border
+  title: '#ffffff',    // ✅ readable
+  text: '#c4f1ff',     // ✅ readable main text
+  subtle: '#8fb6d9',   // ✅ readable secondary text
   danger: '#ff8b8b',
   ok: '#b8ffcf',
+  divider: 0x1f3b52,
+  shadow: '#000000',
 };
 
-function clamp(n, a, b) {
-  return Math.max(a, Math.min(b, n));
-}
 function fmtSigned(n) {
   const v = Math.round(n);
   return v >= 0 ? `+${v}` : `${v}`;
@@ -170,8 +169,7 @@ function drawEnergyOverlay(scene, tiles) {
   const seen = new Set();
   for (const p of safeArr(tiles)) {
     if (!p) continue;
-    const q = p.q,
-      r = p.r;
+    const q = p.q, r = p.r;
     if (!Number.isFinite(q) || !Number.isFinite(r)) continue;
     const k = `${q},${r}`;
     if (seen.has(k)) continue;
@@ -185,7 +183,7 @@ function drawEnergyOverlay(scene, tiles) {
     const t = getTile(scene, q, r);
     if (t && t.type === 'water') continue;
 
-    drawHex(g, world.x, world.y, radius, 0x2ec7ff, 0.1, 0x2ec7ff, 0.35);
+    drawHex(g, world.x, world.y, radius, 0x3da9fc, 0.12, 0x3da9fc, 0.55);
   }
 }
 
@@ -193,6 +191,15 @@ function clearEnergyOverlay(scene) {
   if (scene.energyHighlightGraphics) {
     scene.energyHighlightGraphics.destroy();
     scene.energyHighlightGraphics = null;
+  }
+}
+
+function applyTextReadability(textObj) {
+  if (!textObj || typeof textObj.setAlpha !== 'function') return;
+  textObj.setAlpha(1);
+  // Subtle shadow like other panels so it doesn't disappear on dark bg
+  if (typeof textObj.setShadow === 'function') {
+    textObj.setShadow(0, 1, COLORS.shadow, 2, false, true);
   }
 }
 
@@ -213,25 +220,28 @@ export function setupEnergyPanel(scene) {
     .setVisible(false);
 
   const bg = scene.add.graphics();
-  bg.fillStyle(COLORS.bg, 0.92);
+  bg.fillStyle(COLORS.bg, 0.96);
   bg.fillRoundedRect(0, 0, W, H, 14);
-  bg.lineStyle(2, COLORS.border, 0.9);
+  bg.lineStyle(2, COLORS.border, 1);
   bg.strokeRoundedRect(0, 0, W, H, 14);
 
   const title = scene.add.text(16, 12, 'ENERGY NETWORKS', {
-    fontFamily: 'monospace',
+    fontFamily: 'sans-serif',
     fontSize: '14px',
     color: COLORS.title,
   });
 
-  const hint = scene.add.text(16, 32, 'Hover a network to highlight it on the map.', {
-    fontFamily: 'monospace',
-    fontSize: '11px',
+  const hint = scene.add.text(16, 34, 'Hover a network to highlight it on the map.', {
+    fontFamily: 'sans-serif',
+    fontSize: '12px',
     color: COLORS.subtle,
   });
 
-  const listY = 58;
-  const rowH = 52;
+  applyTextReadability(title);
+  applyTextReadability(hint);
+
+  const listY = 62;
+  const rowH = 54;
   const maxRows = 6;
 
   const rows = [];
@@ -240,31 +250,35 @@ export function setupEnergyPanel(scene) {
     const y = listY + i * rowH;
 
     const line = scene.add.graphics();
-    line.lineStyle(1, 0x1f3b52, 0.9);
+    line.lineStyle(1, COLORS.divider, 0.9);
     line.beginPath();
     line.moveTo(12, y + rowH - 1);
     line.lineTo(W - 12, y + rowH - 1);
     line.strokePath();
 
     const name = scene.add.text(18, y + 8, '', {
-      fontFamily: 'monospace',
+      fontFamily: 'sans-serif',
       fontSize: '12px',
       color: COLORS.text,
     });
 
-    const meta = scene.add.text(18, y + 26, '', {
-      fontFamily: 'monospace',
-      fontSize: '11px',
+    const meta = scene.add.text(18, y + 28, '', {
+      fontFamily: 'sans-serif',
+      fontSize: '12px',
       color: COLORS.subtle,
     });
 
     const delta = scene.add
-      .text(W - 18, y + 16, '', {
+      .text(W - 18, y + 14, '', {
         fontFamily: 'monospace',
         fontSize: '14px',
         color: COLORS.ok,
       })
       .setOrigin(1, 0);
+
+    applyTextReadability(name);
+    applyTextReadability(meta);
+    applyTextReadability(delta);
 
     const hit = scene.add.rectangle(0, y, W, rowH, 0xffffff, 0.001).setOrigin(0, 0);
     hit.setInteractive({ useHandCursor: true });
@@ -275,12 +289,13 @@ export function setupEnergyPanel(scene) {
     panel.add([line, name, meta, delta, hit]);
   }
 
-  const footer = scene.add.text(16, H - 38, '', {
-    fontFamily: 'monospace',
-    fontSize: '11px',
+  const footer = scene.add.text(16, H - 40, '', {
+    fontFamily: 'sans-serif',
+    fontSize: '12px',
     color: COLORS.subtle,
     wordWrap: { width: W - 32 },
   });
+  applyTextReadability(footer);
 
   panel.add([bg, title, hint, footer]);
 
@@ -320,6 +335,7 @@ export function setupEnergyPanel(scene) {
     });
 
     footer.setText(`Networks: ${ordered.length} • Hover to isolate highlight`);
+    applyTextReadability(footer);
 
     const visible = ordered.slice(0, rows.length);
 
@@ -346,13 +362,15 @@ export function setupEnergyPanel(scene) {
 
       row.name.setText(net.title);
       row.meta.setText(
-        `Stored ${Math.round(stored)}/${cap > 0 ? Math.round(cap) : '∞'} • Prod ${Math.round(
-          prod
-        )} / Use ${Math.round(dem)}`
+        `Stored ${Math.round(stored)}/${cap > 0 ? Math.round(cap) : '∞'} • Prod ${Math.round(prod)} / Use ${Math.round(dem)}`
       );
 
       row.delta.setColor(d < 0 ? COLORS.danger : COLORS.ok);
       row.delta.setText(fmtSigned(d));
+
+      applyTextReadability(row.name);
+      applyTextReadability(row.meta);
+      applyTextReadability(row.delta);
 
       row.hit.removeAllListeners?.();
       row.hit.on('pointerover', () => scene.highlightEnergyNetwork?.(net));
