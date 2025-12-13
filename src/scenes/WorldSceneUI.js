@@ -185,12 +185,18 @@ export function setupWorldInputUI(scene) {
 
     const { q, r } = rounded;
 
+    // ✅ HEX INFO: always update target on any valid click (unit or ground)
+    // (Panel decides whether to be visible; but we keep the "selected hex" in sync.)
+    scene.setHexInfoTarget?.(q, r);
+
     // First, check if there's a unit on this hex and toggle selection.
     const unitAtHex = getUnitAtHex(scene, q, r);
     if (unitAtHex) {
       scene.toggleSelectedUnitAtHex?.(q, r);
       scene.clearPathPreview?.();
       scene.selectedHex = null;
+
+      // still useful to log tile debug + keep hex-info updated
       scene.debugHex?.(q, r);
       return;
     }
