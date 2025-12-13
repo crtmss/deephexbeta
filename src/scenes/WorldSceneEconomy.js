@@ -22,11 +22,11 @@ export function setupEconomyUI(scene) {
     };
   }
 
-  // Глобальные статы энергии: current / capacity
+  // Global energy stats: current / capacity (read by HUD)
   if (!scene.energyStats) {
     scene.energyStats = {
       current: 0,
-      capacity: 5, // базовая ёмкость мобильной базы
+      capacity: 5, // base capacity of mobile base
     };
   }
 
@@ -58,7 +58,7 @@ function createResourceHUD(scene) {
   const lineHeight = 18;
   const rows = [
     { key: 'food',       emoji: '🍖', label: 'Food' },
-    { key: 'scrap',      emoji: '♻', label: 'Scrap' },
+    { key: 'scrap',      emoji: '♻',  label: 'Scrap' },
     { key: 'metal',      emoji: '⚙️', label: 'Metal' },
     { key: 'components', emoji: '📦', label: 'Components' },
     { key: 'crudeOil',   emoji: '🛢', label: 'Crude Oil' },
@@ -155,7 +155,7 @@ function updateResourceUI(scene) {
 
   const safe = v => (typeof v === 'number' ? v : 0);
 
-  const setVal = (key, prop) => {
+  const setVal = (key) => {
     const entry = entries[key];
     if (!entry) return;
     entry.value.setText(String(safe(r[key])));
@@ -166,7 +166,8 @@ function updateResourceUI(scene) {
   setVal('metal');
   setVal('components');
   setVal('crudeOil');
-  // energy обрабатываем отдельно (current / capacity)
+
+  // energy is current/capacity
   const energyEntry = entries.energy;
   if (energyEntry) {
     const stats = scene.energyStats || {};
@@ -174,6 +175,7 @@ function updateResourceUI(scene) {
     const cap = Math.max(0, Math.floor(stats.capacity ?? 5));
     energyEntry.value.setText(`${cur}/${cap}`);
   }
+
   setVal('credits');
 }
 
@@ -200,7 +202,7 @@ function bumpResource(scene, key, delta = 1) {
 }
 
 /* =========================================================================
-   Top-right tabs: Resources / Logistics
+   Top-right tabs: History / Energy / Resources / Logistics
    ======================================================================= */
 
 function createTopTabs(scene) {
@@ -208,7 +210,16 @@ function createTopTabs(scene) {
   const tabHeight = 28;
   const marginRight = 20;
 
-  const x = scene.scale.width - marginRight - tabWidth * 2;
+  const TAB_ORDER = ['history', 'energy', 'resources', 'logistics'];
+  const TAB_LABELS = {
+    history: 'History',
+    energy: 'Energy',
+    resources: 'Resources',
+    logistics: 'Logistics',
+  };
+
+  const totalWidth = tabWidth * TAB_ORDER.length;
+  const x = scene.scale.width - marginRight - totalWidth;
   const y = 16;
 
   const container = scene.add.container(x, y)
@@ -217,7 +228,6 @@ function createTopTabs(scene) {
 
   // Background bar
   const bg = scene.add.graphics();
-  const totalWidth = tabWidth * 2;
   const totalHeight = tabHeight + 6;
   bg.fillStyle(0x0b1925, 0.95);
   bg.fillRoundedRect(0, 0, totalWidth, totalHeight, 12);
@@ -259,54 +269,126 @@ function createTopTabs(scene) {
     return { bg: g, label: t };
   };
 
-  const resTab = makeTab('Resources', 4);
-  const logTab = makeTab('Logistics', tabWidth + 4);
-
-  container.resTab = resTab;
-  container.logTab = logTab;
-
-  scene.topTabs = container;
-
-  // Helper to update tab visuals
-  function updateTabVisual(active) {
-    const setTab = (tab, isActive, offsetX) => {
-      if (!tab) return;
-      tab.bg.clear();
-      tab.bg.fillStyle(isActive ? 0x1b4b72 : 0x123047, 0.95);
-      tab.bg.fillRoundedRect(offsetX, 3, tabWidth, tabHeight, 8);
-      tab.bg.lineStyle(1, 0x3da9fc, 1);
-      tab.bg.strokeRoundedRect(offsetX, 3, tabWidth, tabHeight, 8);
-      tab.label.setStyle(isActive ? tabStyleActive : tabStyleInactive);
-    };
-
-    setTab(resTab, active === 'resources', 4);
-    setTab(logTab, active === 'logistics', tabWidth + 4);
+  const tabs = {};
+  for (let i = 0; i < TAB_ORDER.length; i++) {
+    const key = TAB_ORDER[i];
+    const offsetX = 4 + i * tabWidth;
+    tabs[key] = makeTab(TAB_LABELS[key], offsetX);
+    tabs[key].__offsetX = offsetX;
   }
 
-  // Public API on scene
-  scene.setActiveTopTab = function (which) {
-    updateTabVisual(which);
+  container.tabs = tabs;
+  scene.topTabs = container;
 
+  const setPanelVisible = (which, on) => {
+    // Resources
     if (which === 'resources') {
-      if (scene.resourcesPanel) scene.resourcesPanel.visible = true;
-      if (scene.logisticsPanel) scene.logisticsPanel.visible = false;
-    } else if (which === 'logistics') {
-      if (scene.resourcesPanel) scene.resourcesPanel.visible = false;
-      if (scene.logisticsPanel) scene.logisticsPanel.visible = true;
+      if (scene.resourcesPanel) scene.resourcesPanel.visible = !!on;
+      return;
+    }
+    // Logistics (created by WorldSceneLogistics)
+    if (which === 'logistics') {
+      if (scene.logisticsPanel) scene.logisticsPanel.visible = !!on;
+      // some versions store UI under scene.logisticsUI.panel
+      if (scene.logisticsUI?.panel) scene.logisticsUI.panel.visible = !!on;
+      return;
+    }
+    // Energy (created by WorldSceneEnergyUI)
+    if (which === 'energy') {
+      if (scene.energyUI?.panel) scene.energyUI.panel.visible = !!on;
+      if (scene.energyPanel) scene.energyPanel.visible = !!on;
+      return;
+    }
+    // History (created by WorldSceneHistory)
+    if (which === 'history') {
+      if (scene.historyUI?.panel) scene.historyUI.panel.visible = !!on;
+      if (scene.historyPanel) scene.historyPanel.visible = !!on;
+      return;
     }
   };
 
-  // Click handlers
-  resTab.label.on('pointerdown', () => {
-    scene.openResourcesPanel?.();
-    scene.closeLogisticsPanel?.();
-    scene.setActiveTopTab('resources');
-  });
+  const openPanel = (which) => {
+    if (which === 'resources') {
+      scene.openResourcesPanel?.();
+      return;
+    }
+    if (which === 'logistics') {
+      scene.openLogisticsPanel?.();
+      return;
+    }
+    if (which === 'energy') {
+      scene.openEnergyPanel?.();
+      return;
+    }
+    if (which === 'history') {
+      scene.openHistoryPanel?.();
+      return;
+    }
+  };
 
-  logTab.label.on('pointerdown', () => {
-    scene.openLogisticsPanel?.();
-    scene.closeResourcesPanel?.();
-    scene.setActiveTopTab('logistics');
+  const closePanel = (which) => {
+    if (which === 'resources') {
+      scene.closeResourcesPanel?.();
+      return;
+    }
+    if (which === 'logistics') {
+      scene.closeLogisticsPanel?.();
+      return;
+    }
+    if (which === 'energy') {
+      scene.closeEnergyPanel?.();
+      return;
+    }
+    if (which === 'history') {
+      scene.closeHistoryPanel?.();
+      return;
+    }
+  };
+
+  // Helper to update tab visuals
+  function updateTabVisual(active) {
+    const setTab = (tabKey) => {
+      const tab = tabs[tabKey];
+      if (!tab) return;
+
+      const isActive = active === tabKey;
+      tab.bg.clear();
+      tab.bg.fillStyle(isActive ? 0x1b4b72 : 0x123047, 0.95);
+      tab.bg.fillRoundedRect(tab.__offsetX, 3, tabWidth, tabHeight, 8);
+      tab.bg.lineStyle(1, 0x3da9fc, 1);
+      tab.bg.strokeRoundedRect(tab.__offsetX, 3, tabWidth, tabHeight, 8);
+      tab.label.setStyle(isActive ? tabStyleActive : tabStyleInactive);
+    };
+
+    TAB_ORDER.forEach(setTab);
+  }
+
+  // Public API on scene: switch active top tab and manage panels
+  scene.setActiveTopTab = function (which) {
+    if (!TAB_ORDER.includes(which)) which = 'resources';
+
+    updateTabVisual(which);
+
+    // hide all panels first
+    TAB_ORDER.forEach(k => setPanelVisible(k, false));
+
+    // close all via APIs (so overlays/highlights clean up)
+    TAB_ORDER.forEach(k => {
+      if (k !== which) closePanel(k);
+    });
+
+    // show + open selected
+    setPanelVisible(which, true);
+    openPanel(which);
+
+    scene.activeTopTab = which;
+  };
+
+  // Click handlers
+  TAB_ORDER.forEach((k) => {
+    tabs[k].label.on('pointerdown', () => {
+      scene.setActiveTopTab(k);
+    });
   });
 }
 
@@ -387,7 +469,7 @@ function createResourcesPanel(scene) {
 
   const rows = [
     { key: 'food',       icon: '🍖', label: 'Food' },
-    { key: 'scrap',      icon: '♻', label: 'Scrap' },
+    { key: 'scrap',      icon: '♻',  label: 'Scrap' },
     { key: 'metal',      icon: '⚙️', label: 'Metal' },
     { key: 'components', icon: '📦', label: 'Components' },
     { key: 'crudeOil',   icon: '🛢', label: 'Crude Oil' },
@@ -437,6 +519,15 @@ function createResourcesPanel(scene) {
 
   scene.resourcesPanel = container;
   scene.resourcesPanelTexts = texts;
+
+  // Small open/close helpers for consistency with other panels
+  scene.openResourcesPanel = function () {
+    if (scene.resourcesPanel) scene.resourcesPanel.visible = true;
+    scene.refreshResourcesPanel?.();
+  };
+  scene.closeResourcesPanel = function () {
+    if (scene.resourcesPanel) scene.resourcesPanel.visible = false;
+  };
 }
 
 function refreshResourcesPanel(scene) {
