@@ -17,7 +17,7 @@ const COLORS = {
   bg: 0x08121c,
   border: 0x2ec7ff,
   title: '#d6f3ff',
-  text: '#ffffff',      // <-- ensure high contrast for main row title
+  text: '#ffffff',      // ensure high contrast for main row title
   subtle: '#86b6cf',
   danger: '#ff8b8b',
   ok: '#b8ffcf',
@@ -149,6 +149,9 @@ function computeDisplayNetworks(scene) {
 
 /**
  * Draw overlay highlights for a set of tiles.
+ * Goal: visually match your regular hover highlight on the map.
+ * If the scene exposes a hover-highlighting helper, we reuse it.
+ * Otherwise we fallback to a "hover-like" white outline.
  */
 function drawEnergyOverlay(scene, tiles) {
   if (!scene || !scene.add) return;
@@ -181,7 +184,17 @@ function drawEnergyOverlay(scene, tiles) {
     const t = getTile(scene, q, r);
     if (t && t.type === 'water') continue;
 
-    drawHex(g, world.x, world.y, radius, 0x2ec7ff, 0.10, 0x2ec7ff, 0.35);
+    // If the scene has a canonical hover highlight drawer, prefer it.
+    // (We keep safe fallbacks because naming differs per project.)
+    const usedSceneHighlight =
+      (typeof scene.drawHoverHexAt === 'function' && (scene.drawHoverHexAt(world.x, world.y, g), true)) ||
+      (typeof scene.drawHexHoverAt === 'function' && (scene.drawHexHoverAt(world.x, world.y, g), true)) ||
+      (typeof scene.drawHexOutlineAt === 'function' && (scene.drawHexOutlineAt(world.x, world.y, g), true));
+
+    if (!usedSceneHighlight) {
+      // Fallback: mimic "hover" look (white outline, minimal fill)
+      drawHex(g, world.x, world.y, radius, 0xffffff, 0.04, 0xffffff, 0.95);
+    }
   }
 }
 
@@ -198,6 +211,7 @@ export function setupEnergyPanel(scene) {
 
   scene.energyUI = scene.energyUI || {};
   scene.energyUI.initialized = true;
+  scene.energyUI.needsRefresh = false;
 
   const W = 360;
   const H = 420;
@@ -208,7 +222,7 @@ export function setupEnergyPanel(scene) {
     .setDepth(UI_Z)
     .setVisible(false);
 
-  // ✅ IMPORTANT: add BG first, and force it behind everything
+  // Background first, always behind
   const bg = scene.add.graphics();
   bg.fillStyle(COLORS.bg, 0.92);
   bg.fillRoundedRect(0, 0, W, H, 14);
@@ -230,7 +244,6 @@ export function setupEnergyPanel(scene) {
   });
   panel.add(hint);
 
-  // Make absolutely sure BG is at the back
   panel.sendToBack(bg);
 
   const listY = 58;
@@ -252,7 +265,7 @@ export function setupEnergyPanel(scene) {
     const name = scene.add.text(18, y + 8, '', {
       fontFamily: 'monospace',
       fontSize: '12px',
-      color: COLORS.text, // white for readability
+      color: COLORS.text, // white
     });
 
     const meta = scene.add.text(18, y + 26, '', {
@@ -289,28 +302,65 @@ export function setupEnergyPanel(scene) {
   scene.energyUI.panel = panel;
   scene.energyUI.rows = rows;
   scene.energyUI.footer = footer;
-  scene.energyUI.scrollOffset = 0;
+
+  // --- Auto refresh wiring ---
+  // 1) Refresh when: panel open AND someone marked it OR electricity marked dirty.
+  // 2) Refresh after endTurn() so values update each turn even if not dirty.
+  if (!scene.energyUI._wiredAutoRefresh) {
+    scene.energyUI._wiredAutoRefresh = true;
+
+    // next-frame refresh helper
+    scene.requestEnergyUIRefresh = function () {
+      if (!scene.energyUI) return;
+      scene.energyUI.needsRefresh = true;
+    };
+
+    // run once per frame if needed (cheap when closed)
+    scene.events?.on?.('postupdate', () => {
+      if (!scene.energyUI?.isOpen) return;
+      if (scene.energyUI.needsRefresh || scene.electricState?.dirty) {
+        scene.energyUI.needsRefresh = false;
+        scene.refreshEnergyPanel?.();
+      }
+    });
+
+    // wrap endTurn to trigger a refresh after turn resolves
+    if (typeof scene.endTurn === 'function' && !scene._energyUIWrappedEndTurn) {
+      scene._energyUIWrappedEndTurn = true;
+      const origEndTurn = scene.endTurn;
+      scene.endTurn = function (...args) {
+        const ret = origEndTurn.apply(this, args);
+        // even if networks aren't dirty, energy values can change per turn
+        this.requestEnergyUIRefresh?.();
+        return ret;
+      };
+    }
+  }
 
   scene.openEnergyPanel = function () {
     panel.setVisible(true);
     scene.energyUI.isOpen = true;
-    scene.refreshEnergyPanel?.();
+    scene.requestEnergyUIRefresh?.();
     scene.showAllEnergyReach?.();
   };
 
   scene.closeEnergyPanel = function () {
     panel.setVisible(false);
     scene.energyUI.isOpen = false;
-    scene.energyUI.hoverNetId = null;
     clearEnergyOverlay(scene);
   };
 
   scene.refreshEnergyPanel = function () {
     if (!scene.energyUI?.isOpen) return;
 
+    // If electricity system exposes recalc and state is dirty, recalc now
     try {
-      if (scene.electricState?.dirty && scene.electricitySystem?.recalcNetworks) {
-        scene.electricitySystem.recalcNetworks(scene);
+      if (scene.electricState?.dirty) {
+        // Try a few likely attachment points
+        if (scene.electricitySystem?.recalcNetworks) scene.electricitySystem.recalcNetworks(scene);
+        else if (scene.electricity?.recalcNetworks) scene.electricity.recalcNetworks(scene);
+        else if (scene.electricitySystem?.recalc) scene.electricitySystem.recalc(scene);
+        // else: electricity module may already recalc lazily elsewhere
       }
     } catch (e) {}
 
