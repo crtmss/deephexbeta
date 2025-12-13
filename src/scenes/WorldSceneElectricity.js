@@ -1,3 +1,4 @@
+//
 // src/scenes/WorldSceneElectricity.js
 //
 // Simplified electricity simulation + placement API.
@@ -179,6 +180,17 @@ export function initElectricity(scene) {
   if (!scene.energyStats) {
     scene.energyStats = { current: 0, capacity: es.baseCapacity };
   }
+
+  // ✅ FIX: always expose placement hook so Buildings module can place energy buildings
+  // (some flows call initElectricity() but not initElectricityForScene()).
+  if (typeof scene.startEnergyBuildingPlacement !== "function") {
+    scene.startEnergyBuildingPlacement = function (kind) {
+      return startEnergyBuildingPlacement(scene, kind);
+    };
+  }
+  scene.electricity = scene.electricity || {};
+  scene.electricity.initialized = true;
+  scene.electricity.startEnergyBuildingPlacement = scene.startEnergyBuildingPlacement;
 }
 
 export function markElectricDirty(scene) {
@@ -875,13 +887,17 @@ export function startEnergyBuildingPlacement(scene, kind) {
     return;
   }
 
+  // ✅ FIX: networks must be rebuilt immediately after placement,
+  // otherwise UI still sees the old "no networks" state.
   markElectricDirty(scene);
+  recalcNetworks(scene);
 
   try { drawElectricOverlay(scene); } catch (err) {
     console.error("[ENERGY] Error while drawing electric overlay after placement:", err);
   }
 
   recomputeGlobalEnergyStats(scene);
+  scene.refreshEnergyPanel?.();
 }
 
 /* =========================================================
@@ -892,6 +908,7 @@ export function initElectricityForScene(scene) {
   if (!scene) return;
   initElectricity(scene);
 
+  // ensure namespace
   if (!scene.electricity) scene.electricity = {};
   scene.electricity.initialized = true;
 
@@ -906,6 +923,8 @@ export function initElectricityForScene(scene) {
   // Convenience overlay hook
   scene.drawElectricityOverlay = () => drawElectricOverlay(scene);
 
+  // ✅ ensure networks exist at least once (so UI can show them right away)
+  recalcNetworks(scene);
   recomputeGlobalEnergyStats(scene);
 }
 
