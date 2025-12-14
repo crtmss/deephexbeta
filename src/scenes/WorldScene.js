@@ -7,6 +7,8 @@ import { startHexTransformTool } from './HexTransformTool.js';
 import { setupBuildingsUI } from './WorldSceneBuildingsUI.js';
 import { setupEnergyPanel } from './WorldSceneEnergyUI.js';
 import { setupHexInfoPanel } from './WorldSceneHexInfo.js';
+import { applyCombatEvent } from './WorldSceneCombatRuntime.js';
+import { handleCombatIntent } from '../net/CombatNetBridge.js';
 
 // Haulers / ships
 import {
@@ -313,7 +315,9 @@ export default class WorldScene extends Phaser.Scene {
 
     // After everything exists: ensure icons are snapped to correct lifted positions
     this.refreshAllIconWorldPositions();
-
+    
+    this.applyCombatEvent = (event) => applyCombatEvent(this, event);
+    this.handleCombatIntent = (intent) => handleCombatIntent(this, intent);
     /* =========================
        Supabase sync bridge stub
        ========================= */
