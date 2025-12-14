@@ -1,79 +1,88 @@
 // src/units/UnitActions.js
 //
-// Stage B: apply DEFENCE and ATTACK to Phaser unit objects while preserving legacy fields.
+// Stage B/C: Unit actions used by UI + input.
+//
+// Actions implemented here:
+//  - defence: consumes all MP and AP, +1 temporary armor, heals 10% max HP
+//  - turn: free; UI just sets facing (handled in UI module)
+//
+// Attack and move are mediated by scene input (WorldSceneUI), but helper
+// functions here keep the rules in one place.
 
-import { validateAttack, resolveAttack } from './CombatResolver.js';
+export function ensureUnitCombatFields(unit) {
+  if (!unit) return;
 
-/**
- * Apply defence:
- * - consumes all MP and AP
- * - heals 10% of max HP
- * - grants +1 temporary armor until owner's next turn refresh
- *
- * @param {any} unit
- * @returns {{ok:boolean, reason?:string}}
- */
+  // HP
+  if (!Number.isFinite(unit.maxHp) && Number.isFinite(unit.hp)) unit.maxHp = unit.hp;
+  if (!Number.isFinite(unit.hp)) unit.hp = Number.isFinite(unit.maxHp) ? unit.maxHp : 0;
+  if (!Number.isFinite(unit.maxHp)) unit.maxHp = unit.hp;
+
+  // MP/AP
+  if (!Number.isFinite(unit.mp) && Number.isFinite(unit.movementPoints)) unit.mp = unit.movementPoints;
+  if (!Number.isFinite(unit.mpMax) && Number.isFinite(unit.maxMovementPoints)) unit.mpMax = unit.maxMovementPoints;
+
+  if (!Number.isFinite(unit.mp)) unit.mp = 0;
+  if (!Number.isFinite(unit.mpMax)) unit.mpMax = unit.mp;
+
+  if (!Number.isFinite(unit.apMax)) unit.apMax = 1;
+  if (!Number.isFinite(unit.ap)) unit.ap = unit.apMax;
+
+  // Armor
+  if (!Number.isFinite(unit.armorPoints)) unit.armorPoints = 0;
+  if (!Number.isFinite(unit.tempArmorBonus)) unit.tempArmorBonus = 0;
+  if (!unit.armorClass) unit.armorClass = 'NONE';
+
+  unit.status = unit.status || {};
+}
+
+export function canSpendAp(unit, n = 1) {
+  ensureUnitCombatFields(unit);
+  return (unit.ap || 0) >= n;
+}
+
+export function spendAp(unit, n = 1) {
+  ensureUnitCombatFields(unit);
+  if ((unit.ap || 0) < n) return false;
+  unit.ap -= n;
+  return true;
+}
+
 export function applyDefence(unit) {
-  if (!unit) return { ok: false, reason: 'no_unit' };
+  ensureUnitCombatFields(unit);
 
-  // Must have at least 1 AP or MP? Spec says: Defence is an action.
-  // Stage B: allow if unit has AP>0 OR MP>0 (so it can be used even if moved but still has AP).
-  const ap = Number.isFinite(unit.ap) ? unit.ap : 0;
-  const mp = Number.isFinite(unit.mp) ? unit.mp : (Number.isFinite(unit.movementPoints) ? unit.movementPoints : 0);
+  if (!canSpendAp(unit, 1)) {
+    return { ok: false, reason: 'no_ap' };
+  }
 
-  if (ap <= 0 && mp <= 0) return { ok: false, reason: 'no_points' };
-
-  // Consume all
-  unit.ap = 0;
+  // Consume all points
   unit.mp = 0;
-  unit.movementPoints = 0;
+  unit.ap = 0;
 
-  // Heal 10%
-  const hpMax = Number.isFinite(unit.maxHp) ? unit.maxHp : (Number.isFinite(unit.hpMax) ? unit.hpMax : unit.hp || 0);
-  const hp = Number.isFinite(unit.hp) ? unit.hp : hpMax;
-  const heal = Math.max(0, Math.floor(hpMax * 0.10));
-  unit.hp = Math.min(hpMax, hp + heal);
+  // +1 armor for the rest of the turn
+  unit.tempArmorBonus = (unit.tempArmorBonus || 0) + 1;
 
-  // +1 temporary armor bonus
-  unit.tempArmorBonus = 1;
-  unit.status = unit.status && typeof unit.status === 'object' ? unit.status : {};
+  // Heal 10% max HP
+  const maxHp = Number.isFinite(unit.maxHp) ? unit.maxHp : 0;
+  const heal = Math.max(0, Math.round(maxHp * 0.10));
+  unit.hp = Math.min(maxHp, (unit.hp || 0) + heal);
+
   unit.status.defending = true;
 
-  return { ok: true };
+  return { ok: true, heal, tempArmorBonus: unit.tempArmorBonus };
 }
 
-/**
- * Apply attack:
- * - costs 1 AP
- * - uses active weapon (unit.weapons[unit.activeWeaponIndex]) fallback to first
- * - applies damage; may kill defender
- *
- * @param {any} attacker
- * @param {any} defender
- * @returns {{ok:boolean, reason?:string, result?:any}}
- */
-export function applyAttack(attacker, defender) {
-  if (!attacker || !defender) return { ok: false, reason: 'missing_units' };
-
-  const ap = Number.isFinite(attacker.ap) ? attacker.ap : 0;
-  if (ap <= 0) return { ok: false, reason: 'no_ap' };
-
-  const weapons = Array.isArray(attacker.weapons) ? attacker.weapons : [];
-  const idx = Number.isFinite(attacker.activeWeaponIndex) ? attacker.activeWeaponIndex : 0;
-  const weaponId = weapons[idx] || weapons[0] || 'lmg';
-
-  const v = validateAttack(attacker, defender, weaponId);
-  if (!v.ok) return { ok: false, reason: v.reason || 'invalid_attack' };
-
-  const r = resolveAttack(attacker, defender, weaponId);
-
-  // Spend AP
-  attacker.ap = ap - 1;
-
-  // Apply damage
-  const hpMax = Number.isFinite(defender.maxHp) ? defender.maxHp : (Number.isFinite(defender.hpMax) ? defender.hpMax : defender.hp || 0);
-  const hp = Number.isFinite(defender.hp) ? defender.hp : hpMax;
-  defender.hp = Math.max(0, hp - r.finalDamage);
-
-  return { ok: true, result: r };
+export function clearTurnTempBonuses(unit) {
+  ensureUnitCombatFields(unit);
+  unit.tempArmorBonus = 0;
+  if (unit.status) {
+    unit.status.defending = false;
+  }
 }
+
+export default {
+  ensureUnitCombatFields,
+  canSpendAp,
+  spendAp,
+  applyDefence,
+  clearTurnTempBonuses,
+};
