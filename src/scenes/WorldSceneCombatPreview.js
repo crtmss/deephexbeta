@@ -5,19 +5,15 @@
 // Visual only. Does NOT apply damage.
 //
 // Compatibility note:
-// Some branches export computeDamage as a named export from CombatResolver,
-// others only via default export. We support both to avoid breaking builds.
+// In this project CombatResolver may have ONLY named exports (no default).
+// We import as namespace and read computeDamage if present.
 
-import CombatResolverDefault from '../units/CombatResolver.js';
+import * as CombatResolver from '../units/CombatResolver.js';
 import { getWeaponDef } from '../units/WeaponDefs.js';
 
 function getComputeDamageFn() {
-  // Try named export first (if it exists in this build)
-  // We cannot import it directly because that throws at module load time.
-  // So we rely on default-export fallback.
-  if (CombatResolverDefault && typeof CombatResolverDefault.computeDamage === 'function') {
-    return CombatResolverDefault.computeDamage;
-  }
+  // Prefer named computeDamage, fallback to other possible names if you had them
+  if (CombatResolver && typeof CombatResolver.computeDamage === 'function') return CombatResolver.computeDamage;
   return null;
 }
 
@@ -36,6 +32,7 @@ export function updateCombatPreview(scene) {
   const weapons = attacker.weapons || [];
   const weaponId = weapons[attacker.activeWeaponIndex] || weapons[0];
   const weapon = getWeaponDef(weaponId);
+
   if (!weapon) {
     clearCombatPreview(scene);
     return;
@@ -43,33 +40,27 @@ export function updateCombatPreview(scene) {
 
   const computeDamage = getComputeDamageFn();
   if (!computeDamage) {
-    // No computeDamage available -> silently skip preview
+    // If resolver doesn't provide computeDamage, we silently skip preview (no crash).
     clearCombatPreview(scene);
     return;
   }
 
-  // Init preview objects
+  // Create preview container once
   scene.combatPreview = scene.combatPreview || {
     graphics: scene.add.graphics().setDepth(2500),
     labels: [],
-    lastKey: '',
   };
 
   const g = scene.combatPreview.graphics;
 
-  // Simple signature to avoid re-creating every frame if nothing changed
-  const sig = [
-    attacker.q, attacker.r,
-    weaponId,
-    attacker.activeWeaponIndex,
-    (scene.enemies || []).length,
-  ].join('|');
-
-  // We still clear every frame because enemies move; but keep structure
+  // Clear old
   g.clear();
-  scene.combatPreview.labels.forEach(l => l.destroy());
+  (scene.combatPreview.labels || []).forEach(l => {
+    try { l.destroy(); } catch (e) {}
+  });
   scene.combatPreview.labels = [];
 
+  // Draw per-enemy if in range
   for (const enemy of scene.enemies || []) {
     if (!enemy) continue;
 
@@ -81,17 +72,24 @@ export function updateCombatPreview(scene) {
     if (dist < weapon.rangeMin || dist > weapon.rangeMax) continue;
 
     const dmg = computeDamage(attacker, enemy, weaponId, { distance: dist });
-    const pos = scene.axialToWorld(enemy.q, enemy.r);
 
-    // Highlight target hex (circle)
+    const pos = (typeof scene.axialToWorld === 'function')
+      ? scene.axialToWorld(enemy.q, enemy.r)
+      : { x: 0, y: 0 };
+
+    // Highlight hex (circle)
     g.lineStyle(3, 0xff5555, 0.8);
-    g.strokeCircle(pos.x, pos.y, scene.hexSize * 0.55);
+    g.strokeCircle(pos.x, pos.y, (scene.hexSize || 22) * 0.55);
 
     // Damage label
+    const dmgValue =
+      (Number.isFinite(dmg?.finalDamage) ? dmg.finalDamage :
+        (Number.isFinite(dmg?.damage) ? dmg.damage : 0));
+
     const txt = scene.add.text(
       pos.x,
       pos.y - 22,
-      `-${dmg.finalDamage ?? dmg.damage ?? 0}`,
+      `-${dmgValue}`,
       {
         fontSize: '14px',
         fontStyle: 'bold',
@@ -101,14 +99,19 @@ export function updateCombatPreview(scene) {
 
     scene.combatPreview.labels.push(txt);
   }
-
-  scene.combatPreview.lastKey = sig;
 }
 
 function damageColor(dmg) {
-  // Accept both new and old shapes
-  const multArmorPoints = dmg.multArmorPoints ?? dmg.armorPointsMult;
-  const multArmorClass = dmg.multArmorClass ?? dmg.armorClassMult;
+  // Accept multiple shapes from different resolver versions
+  const multArmorPoints =
+    dmg?.multArmorPoints ??
+    dmg?.armorPointsMult ??
+    null;
+
+  const multArmorClass =
+    dmg?.multArmorClass ??
+    dmg?.armorClassMult ??
+    null;
 
   if (Number.isFinite(multArmorPoints) && multArmorPoints < 0.6) return '#aaaaaa';
   if (Number.isFinite(multArmorClass) && multArmorClass > 1.1) return '#ffd166';
@@ -118,7 +121,8 @@ function damageColor(dmg) {
 export function clearCombatPreview(scene) {
   if (!scene?.combatPreview) return;
 
-  try { scene.combatPreview.graphics.clear(); } catch (e) {}
+  try { scene.combatPreview.graphics?.clear?.(); } catch (e) {}
+
   try {
     (scene.combatPreview.labels || []).forEach(l => {
       try { l.destroy(); } catch (e) {}
