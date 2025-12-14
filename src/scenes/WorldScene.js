@@ -8,6 +8,9 @@ import { setupBuildingsUI } from './WorldSceneBuildingsUI.js';
 import { setupEnergyPanel } from './WorldSceneEnergyUI.js';
 import { setupHexInfoPanel } from './WorldSceneHexInfo.js';
 
+// Unit action panel UI (bottom-center)
+import { setupUnitActionPanel } from './WorldSceneUnitPanel.js';
+
 // Haulers / ships
 import {
   applyShipRoutesOnEndTurn,
@@ -294,6 +297,10 @@ export default class WorldScene extends Phaser.Scene {
     setupLogisticsPanel(this);
     setupEnergyPanel(this);
     setupHexInfoPanel(this);
+
+    // NEW: Unit action panel (Move/Attack/Defence + stats)
+    // This is separate from the build menu and must be initialised once.
+    setupUnitActionPanel(this);
 
     // NEW: History UI (panel to the left of resources panel)
     setupHistoryUI(this);
@@ -794,8 +801,20 @@ WorldScene.prototype.setSelectedUnit = function (unit) {
   this.updateSelectionHighlight?.();
 
   if (unit) {
-    this.openRootUnitMenu?.(unit);
+    // Always open the unit action panel (bottom-center) if available
+    this.openUnitActionPanel?.(unit);
+
+    // Mobile Base also opens the build menu (top-left grid menu)
+    const isMobileBase = (unit.type === 'mobile_base' || unit.unitType === 'mobile_base');
+    if (isMobileBase) {
+      this.openRootUnitMenu?.(unit);
+    } else {
+      // For non-mobile-base units, hide build menu if it was open
+      this.closeAllMenus?.();
+    }
   } else {
+    // Close both build menu and unit action panel
+    this.closeUnitActionPanel?.();
     this.closeAllMenus?.();
   }
 };
