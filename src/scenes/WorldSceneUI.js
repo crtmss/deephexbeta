@@ -149,10 +149,10 @@ function getUnitAtHex(scene, q, r) {
   const haulers = scene.haulers || [];
 
   return (
-    units.find(u => u && u.q === q && u.r === r) ||
-    players.find(u => u && u.q === q && u.r === r) ||
-    enemies.find(e => e && e.q === q && e.r === r) ||
-    haulers.find(h => h && h.q === q && h.r === r) ||
+    units.find(u => u && u.q === q && u.r === r && !u.isDead) ||
+    players.find(u => u && u.q === q && u.r === r && !u.isDead) ||
+    enemies.find(e => e && e.q === q && e.r === r && !e.isDead) ||
+    haulers.find(h => h && h.q === q && h.r === r && !h.isDead) ||
     null
   );
 }
@@ -172,6 +172,25 @@ function computePathWithAStar(scene, unit, targetHex, blockedPred) {
   };
 
   return aStarFindPath(start, goal, scene.mapData, isBlocked);
+}
+
+/**
+ * Enemy classification (FIX):
+ * Your "blue" AI units may not have isEnemy/controller flags,
+ * so for player units we treat ANY non-player as enemy.
+ */
+function isEnemyRelative(scene, attacker, u) {
+  if (!u || u.isDead) return false;
+  if (u === attacker) return false;
+
+  // explicit AI/enemy flags
+  if (u.isEnemy || u.controller === 'ai') return true;
+
+  // if attacker is player -> anyone not player is enemy
+  if (attacker?.isPlayer) return !u.isPlayer;
+
+  // if attacker is not player -> players are enemies
+  return !!u.isPlayer;
 }
 
 function isEnemy(u) {
@@ -221,6 +240,30 @@ function hexDistance(q1, r1, q2, r2) {
   return (Math.abs(dq) + Math.abs(dr) + Math.abs(ds)) / 2;
 }
 
+function getMP(unit) {
+  if (!unit) return 0;
+  if (Number.isFinite(unit.movementPoints)) return unit.movementPoints;
+  if (Number.isFinite(unit.mp)) return unit.mp;
+  return 0;
+}
+function setMP(unit, v) {
+  if (!unit) return;
+  unit.movementPoints = v;
+  if (Number.isFinite(unit.mp)) unit.mp = v;
+  else unit.mp = v; // keep legacy field present for other modules
+}
+function getAP(unit) {
+  if (!unit) return 0;
+  if (Number.isFinite(unit.ap)) return unit.ap;
+  if (Number.isFinite(unit.actionPoints)) return unit.actionPoints;
+  return 0;
+}
+function setAP(unit, v) {
+  if (!unit) return;
+  unit.ap = v;
+  unit.actionPoints = v;
+}
+
 /**
  * Host-authoritative: send attack intent from clients.
  * If scene.sendCombatIntent exists, we use it.
@@ -246,8 +289,6 @@ function trySendAttackIntent(scene, attacker, defender) {
     defender.netId ??
     `${defender.unitName || defender.name}@${defender.q},${defender.r}`;
 
-  // Deterministic ordering / idempotency token:
-  // Prefer crypto.randomUUID if available (browser), else fallback.
   const nonce =
     (typeof crypto !== 'undefined' && crypto.randomUUID)
       ? crypto.randomUUID()
@@ -267,7 +308,6 @@ function trySendAttackIntent(scene, attacker, defender) {
     return true;
   }
 
-  // Optional: if you wired Stage E bridge directly on host
   if (scene.isHost && typeof scene.handleCombatIntent === 'function') {
     scene.handleCombatIntent(intent);
     return true;
@@ -309,6 +349,8 @@ export function setupWorldInputUI(scene) {
     }
 
     if (!scene.selectedUnit) return;
+
+    // Allow selecting enemy (panel), but actions only for player units
     if (!isPlayerUnit(scene.selectedUnit)) return;
 
     // Optional: only allow acting on your turnOwner
@@ -319,6 +361,9 @@ export function setupWorldInputUI(scene) {
     }
 
     if (key === 'a') {
+      // Must have AP to enter attack mode
+      if (getAP(scene.selectedUnit) <= 0) return;
+
       scene.unitCommandMode = (scene.unitCommandMode === 'attack') ? null : 'attack';
       scene.clearPathPreview?.();
 
@@ -329,6 +374,7 @@ export function setupWorldInputUI(scene) {
       }
 
       console.log('[UNITS] Attack mode:', scene.unitCommandMode === 'attack' ? 'ON' : 'OFF');
+      scene.refreshUnitActionPanel?.();
       return;
     }
 
@@ -339,7 +385,6 @@ export function setupWorldInputUI(scene) {
         return;
       }
       console.log('[DEFENCE] applied to', scene.selectedUnit.name || scene.selectedUnit.unitId);
-      // Visual cue: tint darker if possible
       try {
         scene.selectedUnit.setAlpha?.(0.85);
       } catch (e) {}
@@ -350,9 +395,7 @@ export function setupWorldInputUI(scene) {
   });
 
   scene.input.on('pointerdown', pointer => {
-    // Block world input when Logistics panel is open / logistics interactions active
     if (scene.logisticsInputLocked) return;
-
     if (scene.isDragging) return;
     if (pointer.rightButtonDown && pointer.rightButtonDown()) return;
 
@@ -368,20 +411,28 @@ export function setupWorldInputUI(scene) {
 
     const { q, r } = rounded;
 
-    // Stage F: if in attack mode and clicked an enemy -> send intent (client) / resolve (host)
     const clickedUnit = getUnitAtHex(scene, q, r);
-    if (scene.unitCommandMode === 'attack' && scene.selectedUnit && clickedUnit && isEnemy(clickedUnit)) {
+
+    // Stage F: attack mode -> click enemy to attack
+    if (scene.unitCommandMode === 'attack' && scene.selectedUnit && clickedUnit) {
+      // Must be player unit to attack
+      if (!isPlayerUnit(scene.selectedUnit)) return;
+
+      // Must be enemy relative to selected unit (FIX for "blue" units)
+      if (!isEnemyRelative(scene, scene.selectedUnit, clickedUnit)) return;
+
       // Turn check
       const ownerName = scene.selectedUnit.playerName || scene.selectedUnit.name;
       if (scene.turnOwner && ownerName !== scene.turnOwner) return;
 
-      // Host-authoritative path:
-      // - Clients send intent if possible
-      // - Host can resolve directly (fallback)
+      // Must have AP
+      const apNow = getAP(scene.selectedUnit);
+      if (apNow <= 0) return;
+
+      // Host-authoritative send intent, else local fallback
       const sent = trySendAttackIntent(scene, scene.selectedUnit, clickedUnit);
 
       if (!sent) {
-        // Fallback: local resolve (dev/singleplayer)
         const atk = applyAttack(scene.selectedUnit, clickedUnit, {
           turnOwner: scene.turnOwner,
           turnNumber: scene.turnNumber,
@@ -393,7 +444,6 @@ export function setupWorldInputUI(scene) {
           return;
         }
 
-        // Legacy debug output (kept)
         const r2 = atk.details || atk.result || null;
         if (r2) {
           console.log(
@@ -401,20 +451,26 @@ export function setupWorldInputUI(scene) {
           );
         }
 
+        // Local fallback kill
         if (clickedUnit.hp <= 0) {
           console.log('[ATTACK] target destroyed');
           killUnit(scene, clickedUnit);
         }
       }
 
-      // After attack attempt exit attack mode (good UX)
+      // Spend AP always; spend 1 MP only if MP remains (as you requested)
+      setAP(scene.selectedUnit, Math.max(0, apNow - 1));
+      const mpNow = getMP(scene.selectedUnit);
+      if (mpNow > 0) setMP(scene.selectedUnit, Math.max(0, mpNow - 1));
+
+      // Exit attack mode
       scene.unitCommandMode = null;
       clearCombatPreview(scene);
       scene.refreshUnitActionPanel?.();
       return;
     }
 
-    // First, check if there's a unit on this hex and toggle selection.
+    // Clicking a unit -> select it (including enemies, to view info panel)
     if (clickedUnit) {
       scene.toggleSelectedUnitAtHex?.(q, r);
       scene.clearPathPreview?.();
@@ -425,10 +481,11 @@ export function setupWorldInputUI(scene) {
       clearCombatPreview(scene);
 
       scene.debugHex?.(q, r);
+      scene.refreshUnitActionPanel?.();
       return;
     }
 
-    // No unit here: it's a ground/location click
+    // Ground click
     const tile = getTile(scene, q, r);
     if (tile && tile.isLocation) {
       console.log(
@@ -439,29 +496,39 @@ export function setupWorldInputUI(scene) {
     scene.selectedHex = rounded;
     scene.debugHex?.(q, r);
 
-    // If we have a selected unit, treat this as a move order
     if (scene.selectedUnit) {
-      // If attack mode active and clicked ground: just cancel attack mode (safer UX)
+      // Cancel attack mode if click ground (safe UX)
       if (scene.unitCommandMode === 'attack') {
         scene.unitCommandMode = null;
         clearCombatPreview(scene);
+        scene.refreshUnitActionPanel?.();
         return;
       }
 
-      // Stage A: units cannot occupy the same hex.
-      // Treat any other unit/hauler/enemy as blocking for pathfinding.
+      // Only player units can move
+      if (!isPlayerUnit(scene.selectedUnit)) return;
+
+      // Turn check
+      const ownerName = scene.selectedUnit.playerName || scene.selectedUnit.name;
+      if (scene.turnOwner && ownerName !== scene.turnOwner) return;
+
+      // ✅ FIX: do not allow moving with 0 MP
+      const mpStart = getMP(scene.selectedUnit);
+      if (mpStart <= 0) return;
+
+      // Block occupied tiles (no stacking, includes enemies)
       const blocked = t => {
         if (!t) return true;
         if (t.type === 'water' || t.type === 'mountain') return true;
         const occ = getUnitAtHex(scene, t.q, t.r);
-        // Allow start tile (occupied by the moving unit)
         if (occ && occ !== scene.selectedUnit) return true;
         return false;
       };
+
       const fullPath = computePathWithAStar(scene, scene.selectedUnit, rounded, blocked);
 
       if (fullPath && fullPath.length > 1) {
-        let movementPoints = scene.selectedUnit.movementPoints || 4;
+        let movementPoints = mpStart;
         const trimmedPath = [];
         let costSum = 0;
 
@@ -469,28 +536,36 @@ export function setupWorldInputUI(scene) {
           const step = fullPath[i];
           const tile2 = getTile(scene, step.q, step.r);
           const cost = tile2?.movementCost || 1;
+
           if (i > 0 && costSum + cost > movementPoints) break;
+
+          // Extra safety: stop if any intermediate destination becomes occupied (except start)
+          if (i > 0) {
+            const occ = getUnitAtHex(scene, step.q, step.r);
+            if (occ && occ !== scene.selectedUnit) break;
+          }
+
           trimmedPath.push(step);
           if (i > 0) costSum += cost;
         }
 
         if (trimmedPath.length > 1) {
+          // Ensure destination not occupied (no stacking)
+          const dest = trimmedPath[trimmedPath.length - 1];
+          const destOcc = getUnitAtHex(scene, dest.q, dest.r);
+          if (destOcc && destOcc !== scene.selectedUnit) return;
+
           console.log('[MOVE] Committing move along path:', trimmedPath);
           scene.startStepMovement?.(scene.selectedUnit, trimmedPath, () => {
-            // Stage A: spend movement points equal to total path cost.
-            // Keep legacy and canonical fields in sync.
             try {
               const unit = scene.selectedUnit;
               if (unit) {
-                const mpBefore = Number.isFinite(unit.movementPoints) ? unit.movementPoints : (Number.isFinite(unit.mp) ? unit.mp : 0);
+                const mpBefore = getMP(unit);
                 const mpAfter = Math.max(0, mpBefore - costSum);
-                unit.movementPoints = mpAfter;
-                if (Number.isFinite(unit.mp)) unit.mp = mpAfter;
+                setMP(unit, mpAfter);
               }
             } catch (e) {}
 
-            // Stage B: keep existing CombatScene trigger (optional),
-            // but default behavior here remains sync move.
             if (scene.checkCombat?.(
               scene.selectedUnit,
               trimmedPath[trimmedPath.length - 1]
@@ -511,19 +586,37 @@ export function setupWorldInputUI(scene) {
   });
 
   scene.input.on('pointermove', pointer => {
-    // Block hover preview when logistics panel is open
     if (scene.logisticsInputLocked) return;
-
     if (scene.isDragging) return;
     if (!scene.selectedUnit || scene.isUnitMoving) return;
 
-    // Stage F: in attack mode -> show attack preview (no path preview)
+    // Stage F: attack preview
     if (scene.unitCommandMode === 'attack') {
       scene.clearPathPreview?.();
       updateCombatPreview(scene);
       return;
     } else {
       clearCombatPreview(scene);
+    }
+
+    // Only show path preview for player units
+    if (!isPlayerUnit(scene.selectedUnit)) {
+      scene.clearPathPreview?.();
+      return;
+    }
+
+    // Turn check
+    const ownerName = scene.selectedUnit.playerName || scene.selectedUnit.name;
+    if (scene.turnOwner && ownerName !== scene.turnOwner) {
+      scene.clearPathPreview?.();
+      return;
+    }
+
+    // ✅ FIX: no preview if 0 MP
+    const mpNow = getMP(scene.selectedUnit);
+    if (mpNow <= 0) {
+      scene.clearPathPreview?.();
+      return;
     }
 
     const worldPoint = pointer.positionToCamera(scene.cameras.main);
@@ -546,11 +639,12 @@ export function setupWorldInputUI(scene) {
       if (occ && occ !== scene.selectedUnit) return true;
       return false;
     };
+
     const path = computePathWithAStar(scene, scene.selectedUnit, rounded, blocked);
 
     scene.clearPathPreview?.();
     if (path && path.length > 1) {
-      let movementPoints = scene.selectedUnit.movementPoints || 4;
+      let movementPoints = mpNow;
       let costSum = 0;
       const maxPath = [];
 
@@ -560,6 +654,12 @@ export function setupWorldInputUI(scene) {
         const cost = tile?.movementCost || 1;
 
         if (i > 0 && costSum + cost > movementPoints) break;
+
+        if (i > 0) {
+          const occ = getUnitAtHex(scene, step.q, step.r);
+          if (occ && occ !== scene.selectedUnit) break;
+        }
+
         maxPath.push(step);
         if (i > 0) costSum += cost;
       }
