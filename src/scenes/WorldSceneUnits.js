@@ -5,6 +5,9 @@
 // and concrete Phaser units on the map.
 
 import { getLobbyState } from '../net/LobbyManager.js';
+// Stage A unit stats infrastructure (pure logic + backwards compatible fields)
+import { createUnitState, applyUnitStateToPhaserUnit } from '../units/UnitFactory.js';
+import { getUnitDef } from '../units/UnitDefs.js';
 
 // Basic visual / model constants
 const UNIT_Z = {
@@ -117,11 +120,22 @@ function createMobileBase(scene, spawnTile, player, color, playerIndex) {
   unit.name = unit.playerName;
   unit.playerIndex = playerIndex; // slot index 0..3
 
-  unit.movementPoints = 4;
-  unit.maxMovementPoints = 4;
-
-  unit.hp = 10;
-  unit.maxHp = 10;
+  // --- Canonical unit state (HP/Armor/MP/AP) ---
+  // We keep legacy fields (movementPoints/maxMovementPoints, hp/maxHp)
+  // via applyUnitStateToPhaserUnit().
+  const def = getUnitDef('mobile_base');
+  const st = createUnitState({
+    type: 'mobile_base',
+    ownerId: unit.playerId,
+    ownerSlot: playerIndex,
+    controller: 'player',
+    q: spawnTile.q,
+    r: spawnTile.r,
+    facing: 0,
+  });
+  // Ensure IDs/names remain as before for existing UI/turn logic.
+  unit.unitName = def.name;
+  applyUnitStateToPhaserUnit(unit, st);
 
   unit.facingAngle = 0;
   if (typeof unit.setStrokeStyle === 'function') {
@@ -158,11 +172,19 @@ function createEnemyUnit(scene, spawnTile) {
   enemy.isEnemy = true;
   enemy.isPlayer = false;
 
-  enemy.movementPoints = 2;
-  enemy.maxMovementPoints = 2;
-
-  enemy.hp = 5;
-  enemy.maxHp = 5;
+  // Canonical stats for enemies too (keeps legacy fields)
+  const def = getUnitDef('enemy_raider');
+  const st = createUnitState({
+    type: 'enemy_raider',
+    ownerId: null,
+    ownerSlot: null,
+    controller: 'ai',
+    q: spawnTile.q,
+    r: spawnTile.r,
+    facing: 3,
+  });
+  enemy.unitName = def.name;
+  applyUnitStateToPhaserUnit(enemy, st);
 
   // Face "down" by default
   enemy.rotation = Math.PI;
