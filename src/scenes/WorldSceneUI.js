@@ -5,6 +5,9 @@ import { findPath as aStarFindPath } from '../engine/AStar.js';
 import { setupLogisticsPanel } from './WorldSceneLogistics.js';
 import { setupEconomyUI } from './WorldSceneEconomy.js';
 
+// Stage B combat
+import { applyAttack, applyDefence } from '../units/UnitActions.js';
+
 /* ---------------- Camera controls (unused unless called) ---------------- */
 export function setupCameraControls(scene) {
   scene.input.setDefaultCursor('grab');
@@ -165,13 +168,99 @@ function computePathWithAStar(scene, unit, targetHex, blockedPred) {
   return aStarFindPath(start, goal, scene.mapData, isBlocked);
 }
 
+function isEnemy(u) {
+  return !!(u && (u.isEnemy || u.controller === 'ai') && !u.isPlayer);
+}
+
+function isPlayerUnit(u) {
+  return !!(u && u.isPlayer);
+}
+
 /**
- * Sets up unit selection + path preview + movement
+ * Stage B: apply kill handling (remove from arrays, destroy GO)
+ */
+function killUnit(scene, unit) {
+  if (!scene || !unit) return;
+
+  // Remove from arrays
+  const rm = (arr) => {
+    if (!Array.isArray(arr)) return;
+    const idx = arr.indexOf(unit);
+    if (idx >= 0) arr.splice(idx, 1);
+  };
+
+  rm(scene.units);
+  rm(scene.players);
+  rm(scene.enemies);
+
+  try {
+    unit.destroy?.();
+  } catch (e) {}
+
+  if (scene.selectedUnit === unit) {
+    scene.setSelectedUnit?.(null);
+  }
+  scene.updateSelectionHighlight?.();
+}
+
+/**
+ * Sets up unit selection + path preview + movement + Stage B attack/defence hotkeys.
  */
 export function setupWorldInputUI(scene) {
   // ensure arrays for preview are present
   scene.pathPreviewTiles = scene.pathPreviewTiles || [];
   scene.pathPreviewLabels = scene.pathPreviewLabels || [];
+
+  // Stage B: command mode
+  scene.unitCommandMode = scene.unitCommandMode || null; // null | 'attack'
+
+  // Stage B: hotkeys (A=attack mode, D=defence, ESC=cancel mode)
+  scene.input.keyboard?.on('keydown', (ev) => {
+    if (!scene || scene.logisticsInputLocked) return;
+
+    const key = String(ev.key || '').toLowerCase();
+
+    if (key === 'escape') {
+      if (scene.unitCommandMode) {
+        scene.unitCommandMode = null;
+        scene.clearPathPreview?.();
+        console.log('[UNITS] Command mode cleared');
+      }
+      return;
+    }
+
+    if (!scene.selectedUnit) return;
+    if (!isPlayerUnit(scene.selectedUnit)) return;
+
+    // Optional: only allow acting on your turnOwner
+    const ownerName = scene.selectedUnit.playerName || scene.selectedUnit.name;
+    if (scene.turnOwner && ownerName !== scene.turnOwner) {
+      // Not your turn: ignore
+      return;
+    }
+
+    if (key === 'a') {
+      scene.unitCommandMode = (scene.unitCommandMode === 'attack') ? null : 'attack';
+      scene.clearPathPreview?.();
+      console.log('[UNITS] Attack mode:', scene.unitCommandMode === 'attack' ? 'ON' : 'OFF');
+      return;
+    }
+
+    if (key === 'd') {
+      const res = applyDefence(scene.selectedUnit);
+      if (!res.ok) {
+        console.log('[DEFENCE] failed:', res.reason);
+        return;
+      }
+      console.log('[DEFENCE] applied to', scene.selectedUnit.name || scene.selectedUnit.unitId);
+      // Visual cue: tint darker if possible
+      try {
+        scene.selectedUnit.setAlpha?.(0.85);
+      } catch (e) {}
+      scene.updateSelectionHighlight?.();
+      return;
+    }
+  });
 
   scene.input.on('pointerdown', pointer => {
     // Block world input when Logistics panel is open / logistics interactions active
@@ -192,9 +281,38 @@ export function setupWorldInputUI(scene) {
 
     const { q, r } = rounded;
 
+    // Stage B: if we're in attack mode and clicked an enemy -> attack
+    const clickedUnit = getUnitAtHex(scene, q, r);
+    if (scene.unitCommandMode === 'attack' && scene.selectedUnit && clickedUnit && isEnemy(clickedUnit)) {
+      // Turn check
+      const ownerName = scene.selectedUnit.playerName || scene.selectedUnit.name;
+      if (scene.turnOwner && ownerName !== scene.turnOwner) return;
+
+      const atk = applyAttack(scene.selectedUnit, clickedUnit);
+      if (!atk.ok) {
+        console.log('[ATTACK] failed:', atk.reason);
+        return;
+      }
+      const r2 = atk.result;
+      console.log(
+        `[ATTACK] ${scene.selectedUnit.name} -> enemy (${clickedUnit.q},${clickedUnit.r}) with ${r2.weaponId}: dmg=${r2.finalDamage} dist=${r2.distance} ` +
+        `mult(ac=${r2.armorClassMult}, dist=${r2.distanceMult}, armorPts=${r2.armorPointsMult})`
+      );
+
+      if (clickedUnit.hp <= 0) {
+        console.log('[ATTACK] target destroyed');
+        killUnit(scene, clickedUnit);
+      }
+
+      // After attack we can exit attack mode automatically (safe UX)
+      scene.unitCommandMode = null;
+      return;
+    }
+
     // First, check if there's a unit on this hex and toggle selection.
-    const unitAtHex = getUnitAtHex(scene, q, r);
-    if (unitAtHex) {
+    if (clickedUnit) {
+      // If clicked on enemy while NOT in attack mode, keep old behavior:
+      // selection toggles only for players/haulers (existing code).
       scene.toggleSelectedUnitAtHex?.(q, r);
       scene.clearPathPreview?.();
       scene.selectedHex = null;
@@ -256,6 +374,8 @@ export function setupWorldInputUI(scene) {
               }
             } catch (e) {}
 
+            // Stage B: keep existing CombatScene trigger (optional),
+            // but default behavior here remains sync move.
             if (scene.checkCombat?.(
               scene.selectedUnit,
               trimmedPath[trimmedPath.length - 1]
@@ -279,6 +399,12 @@ export function setupWorldInputUI(scene) {
 
     if (scene.isDragging) return;
     if (!scene.selectedUnit || scene.isUnitMoving) return;
+
+    // If in attack mode, we could show attack preview later. For now, disable path preview.
+    if (scene.unitCommandMode === 'attack') {
+      scene.clearPathPreview?.();
+      return;
+    }
 
     const worldPoint = pointer.positionToCamera(scene.cameras.main);
     const rounded = scene.worldToAxial(worldPoint.x, worldPoint.y);
