@@ -7,8 +7,6 @@ import { startHexTransformTool } from './HexTransformTool.js';
 import { setupBuildingsUI } from './WorldSceneBuildingsUI.js';
 import { setupEnergyPanel } from './WorldSceneEnergyUI.js';
 import { setupHexInfoPanel } from './WorldSceneHexInfo.js';
-import { applyCombatEvent } from './WorldSceneCombatRuntime.js';
-import { handleCombatIntent } from '../net/CombatNetBridge.js';
 
 // Haulers / ships
 import {
@@ -27,7 +25,9 @@ import { applyLogisticsRoutesOnEndTurn } from './WorldSceneLogisticsRuntime.js';
 import { setupTurnUI, updateTurnText, setupWorldInputUI } from './WorldSceneUI.js';
 
 // Units / resources / map
-import { spawnUnitsAndEnemies, updateUnitOrientation } from './WorldSceneUnits.js';
+import { spawnUnitsAndEnemies, updateUnitOrientation, applyEnemyAIOnEndTurn } from './WorldSceneUnits.js';
+// Stage A: refresh MP/AP at the start of a player's turn
+import { refreshUnitsForTurn } from '../units/UnitTurn.js';
 import { spawnFishResources, spawnCrudeOilResources } from './WorldSceneResources.js';
 import {
   drawHexMap,
@@ -55,9 +55,6 @@ import ElectricitySystem, {
 } from './WorldSceneElectricity.js';
 
 import { supabase as sharedSupabase } from '../net/SupabaseClient.js';
-
-// ✅ Stage A: unit turn refresh (MP/AP reset for active player units)
-import { refreshUnitsForTurn } from '../units/UnitTurn.js';
 
 /* =========================
    Deterministic world summary (UI-only)
@@ -315,9 +312,7 @@ export default class WorldScene extends Phaser.Scene {
 
     // After everything exists: ensure icons are snapped to correct lifted positions
     this.refreshAllIconWorldPositions();
-    
-    this.applyCombatEvent = (event) => applyCombatEvent(this, event);
-    this.handleCombatIntent = (intent) => handleCombatIntent(this, intent);
+
     /* =========================
        Supabase sync bridge stub
        ========================= */
@@ -632,7 +627,14 @@ Biomes: ${biome}`;
     }
 
     if (this.isHost) {
-      this.moveEnemies();
+      // NEW: aggressive AI raiders (shoot if in range, else move towards closest player)
+      try {
+        applyEnemyAIOnEndTurn(this);
+      } catch (e) {
+        console.error('[AI] applyEnemyAIOnEndTurn failed:', e);
+        // fallback to legacy random movement
+        this.moveEnemies();
+      }
     }
 
     const idx = this.players.findIndex(p =>
@@ -653,11 +655,12 @@ Biomes: ${biome}`;
 
     console.log(`[TURN] New turn owner: ${this.turnOwner} (Turn ${this.turnNumber})`);
 
-    // ✅ Stage A: refresh MP/AP for the new current player's units
+    // Stage A: refresh MP/AP for the new turn owner (player-controlled units).
+    // This keeps legacy movementPoints in sync with the new mp fields.
     try {
       refreshUnitsForTurn(this, this.turnOwner);
     } catch (err) {
-      console.warn('[Units] refreshUnitsForTurn failed:', err);
+      console.error('[UNITS] Error refreshing units for new turn owner:', err);
     }
 
     updateTurnText(this, this.turnOwner);
