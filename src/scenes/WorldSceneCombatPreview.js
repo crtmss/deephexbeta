@@ -12,9 +12,36 @@ import * as CombatResolver from '../units/CombatResolver.js';
 import { getWeaponDef } from '../units/WeaponDefs.js';
 
 function getComputeDamageFn() {
-  // Prefer named computeDamage, fallback to other possible names if you had them
   if (CombatResolver && typeof CombatResolver.computeDamage === 'function') return CombatResolver.computeDamage;
   return null;
+}
+
+// Treat as enemy if:
+//  - explicitly isEnemy/controller=ai
+//  - OR simply not isPlayer (covers your "blue units" placeholder/AI)
+function isEnemyRelative(attacker, u) {
+  if (!u) return false;
+  if (u === attacker) return false;
+  if (u.isDead) return false;
+
+  if (u.isEnemy || u.controller === 'ai') return true;
+
+  // If attacker is player-controlled, any non-player is enemy for now
+  if (attacker?.isPlayer) {
+    return !u.isPlayer;
+  }
+
+  // If attacker is not player, then any player is enemy
+  return !!u.isPlayer;
+}
+
+// Prefer scene.hexDistance if exists, else axial cube distance
+function hexDistance(scene, q1, r1, q2, r2) {
+  if (typeof scene?.hexDistance === 'function') return scene.hexDistance(q1, r1, q2, r2);
+  const dq = q2 - q1;
+  const dr = r2 - r1;
+  const ds = -dq - dr;
+  return (Math.abs(dq) + Math.abs(dr) + Math.abs(ds)) / 2;
 }
 
 export function updateCombatPreview(scene) {
@@ -40,12 +67,11 @@ export function updateCombatPreview(scene) {
 
   const computeDamage = getComputeDamageFn();
   if (!computeDamage) {
-    // If resolver doesn't provide computeDamage, we silently skip preview (no crash).
+    // No resolver function -> skip preview silently (no crash)
     clearCombatPreview(scene);
     return;
   }
 
-  // Create preview container once
   scene.combatPreview = scene.combatPreview || {
     graphics: scene.add.graphics().setDepth(2500),
     labels: [],
@@ -60,25 +86,28 @@ export function updateCombatPreview(scene) {
   });
   scene.combatPreview.labels = [];
 
-  // Draw per-enemy if in range
-  for (const enemy of scene.enemies || []) {
-    if (!enemy) continue;
+  // Collect all possible targets from arrays to avoid missing "blue units"
+  const allUnits =
+    []
+      .concat(scene.units || [])
+      .concat(scene.players || [])
+      .concat(scene.enemies || []);
 
-    const dist = (typeof scene.hexDistance === 'function')
-      ? scene.hexDistance(attacker.q, attacker.r, enemy.q, enemy.r)
-      : null;
+  for (const target of allUnits) {
+    if (!isEnemyRelative(attacker, target)) continue;
 
-    if (dist == null) continue;
+    const dist = hexDistance(scene, attacker.q, attacker.r, target.q, target.r);
+    if (!Number.isFinite(dist)) continue;
     if (dist < weapon.rangeMin || dist > weapon.rangeMax) continue;
 
-    const dmg = computeDamage(attacker, enemy, weaponId, { distance: dist });
+    const dmg = computeDamage(attacker, target, weaponId, { distance: dist });
 
     const pos = (typeof scene.axialToWorld === 'function')
-      ? scene.axialToWorld(enemy.q, enemy.r)
+      ? scene.axialToWorld(target.q, target.r)
       : { x: 0, y: 0 };
 
-    // Highlight hex (circle)
-    g.lineStyle(3, 0xff5555, 0.8);
+    // Highlight target hex
+    g.lineStyle(3, 0xff5555, 0.85);
     g.strokeCircle(pos.x, pos.y, (scene.hexSize || 22) * 0.55);
 
     // Damage label
@@ -102,7 +131,6 @@ export function updateCombatPreview(scene) {
 }
 
 function damageColor(dmg) {
-  // Accept multiple shapes from different resolver versions
   const multArmorPoints =
     dmg?.multArmorPoints ??
     dmg?.armorPointsMult ??
