@@ -1,99 +1,82 @@
 // src/units/WeaponDefs.js
 //
-// Weapon definitions used by combat resolver.
-// Keep pure (no Phaser imports).
+// Stage B/C: Weapon definitions.
+//
+// Each weapon defines:
+//  - id, name
+//  - baseDamage
+//  - rangeMin, rangeMax (in hexes)
+//  - armorClassMult: { LIGHT, MEDIUM, HEAVY }
+//  - distanceCurve: optional multipliers by distance
+//
+// NOTE: Damage calculation is handled in CombatResolver.
 
-import { ARMOR_CLASSES } from './ArmorDefs.js';
+export const WEAPON_IDS = Object.freeze({
+  HMG: 'hmg',
+  LMG: 'lmg',
+  SMG: 'smg',
+  CUTTER: 'cutter',
+});
 
-/**
- * @typedef WeaponDef
- * @property {string} id
- * @property {string} name
- * @property {number} baseDamage
- * @property {number} rangeMin
- * @property {number} rangeMax
- * @property {Record<string, number>} armorClassMult  // multipliers for LIGHT/MEDIUM/HEAVY/NONE
- * @property {'ranged'|'melee'} mode
- * @property {{dist1?: number, dist2?: number}} [distanceCurve] // optional for SMG
- */
-
-export const WEAPON_DEFS = /** @type {Record<string, WeaponDef>} */ ({
-  // Крупнокалиберный пулемет: 10 урона, дальность до 3
-  // ЛБ 100%, СБ 125%, ТБ 75%
-  hmg: {
-    id: 'hmg',
+/** @type {Record<string, any>} */
+export const WEAPONS = Object.freeze({
+  // Крупнокалиберный пулемет
+  [WEAPON_IDS.HMG]: {
+    id: WEAPON_IDS.HMG,
     name: 'Heavy Machine Gun',
     baseDamage: 10,
     rangeMin: 1,
     rangeMax: 3,
-    mode: 'ranged',
-    armorClassMult: {
-      [ARMOR_CLASSES.NONE]: 1.0,
-      [ARMOR_CLASSES.LIGHT]: 1.0,
-      [ARMOR_CLASSES.MEDIUM]: 1.25,
-      [ARMOR_CLASSES.HEAVY]: 0.75,
-    },
+    armorClassMult: { LIGHT: 1.0, MEDIUM: 1.25, HEAVY: 0.75 },
+    distanceCurve: {},
   },
 
-  // Легкий пулемет: 4 урона, дальность до 2
-  // ЛБ 125%, СБ 75%, ТБ 50%
-  lmg: {
-    id: 'lmg',
+  // Легкий пулемет
+  [WEAPON_IDS.LMG]: {
+    id: WEAPON_IDS.LMG,
     name: 'Light Machine Gun',
     baseDamage: 4,
     rangeMin: 1,
     rangeMax: 2,
-    mode: 'ranged',
-    armorClassMult: {
-      [ARMOR_CLASSES.NONE]: 1.0,
-      [ARMOR_CLASSES.LIGHT]: 1.25,
-      [ARMOR_CLASSES.MEDIUM]: 0.75,
-      [ARMOR_CLASSES.HEAVY]: 0.5,
-    },
+    armorClassMult: { LIGHT: 1.25, MEDIUM: 0.75, HEAVY: 0.50 },
+    distanceCurve: {},
   },
 
-  // СМГ: 3 урона, дальность 2
-  // dist1 +25%, dist2 -25%
-  // ЛБ 125%, СБ 75%, ТБ 50%
-  smg: {
-    id: 'smg',
+  // СМГ: дальность до 2; dist=1 +25%, dist=2 -25%
+  [WEAPON_IDS.SMG]: {
+    id: WEAPON_IDS.SMG,
     name: 'SMG',
     baseDamage: 3,
     rangeMin: 1,
     rangeMax: 2,
-    mode: 'ranged',
+    armorClassMult: { LIGHT: 1.25, MEDIUM: 0.75, HEAVY: 0.50 },
     distanceCurve: { dist1: 1.25, dist2: 0.75 },
-    armorClassMult: {
-      [ARMOR_CLASSES.NONE]: 1.0,
-      [ARMOR_CLASSES.LIGHT]: 1.25,
-      [ARMOR_CLASSES.MEDIUM]: 0.75,
-      [ARMOR_CLASSES.HEAVY]: 0.5,
-    },
   },
 
-  // Резак (нож): ближний бой 1, 6 урона
-  // ЛБ 50%, СБ 100%, ТБ 125%
-  cutter: {
-    id: 'cutter',
+  // Резак (ближний бой)
+  [WEAPON_IDS.CUTTER]: {
+    id: WEAPON_IDS.CUTTER,
     name: 'Cutter',
     baseDamage: 6,
     rangeMin: 1,
     rangeMax: 1,
-    mode: 'melee',
-    armorClassMult: {
-      [ARMOR_CLASSES.NONE]: 1.0,
-      [ARMOR_CLASSES.LIGHT]: 0.5,
-      [ARMOR_CLASSES.MEDIUM]: 1.0,
-      [ARMOR_CLASSES.HEAVY]: 1.25,
-    },
+    armorClassMult: { LIGHT: 0.50, MEDIUM: 1.00, HEAVY: 1.25 },
+    distanceCurve: {},
   },
 });
 
-/**
- * @param {string} weaponId
- * @returns {WeaponDef}
- */
-export function getWeaponDef(weaponId) {
-  const id = String(weaponId || '').trim().toLowerCase();
-  return WEAPON_DEFS[id] || WEAPON_DEFS.lmg;
+export function getWeaponDef(id) {
+  const key = String(id || '').trim().toLowerCase();
+  return WEAPONS[key] || WEAPONS[WEAPON_IDS.LMG];
 }
+
+export function listWeaponIds() {
+  return Object.keys(WEAPONS);
+}
+
+export default {
+  WEAPON_IDS,
+  WEAPONS,
+  getWeaponDef,
+  listWeaponIds,
+};
