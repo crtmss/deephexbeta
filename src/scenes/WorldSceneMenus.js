@@ -22,6 +22,9 @@ import {
   buildHaulerAtSelectedUnit,
 } from './WorldSceneHaulers.js';
 
+// Stage C: unit action panel (bottom-center)
+import { setupUnitActionPanel } from './WorldSceneUnitPanel.js';
+
 /**
  * Optional: hard-coded cost labels for display.
  * Keep these in sync with COSTS in WorldSceneBuildings.js / WorldSceneHaulers.js.
@@ -131,6 +134,14 @@ const MENUS = {
 export function setupWorldMenus(scene) {
   const originX = 20;
   const originY = 164;
+
+  // Stage C: create unit action panel (independent from the 3x2 build menu)
+  // This is safe to call once here.
+  try {
+    setupUnitActionPanel(scene);
+  } catch (e) {
+    console.warn('[UNIT PANEL] setup failed:', e);
+  }
 
   // -------- Screen overlay to absorb clicks while menu is open --------
   const overlay = scene.add.rectangle(
@@ -333,20 +344,50 @@ export function setupWorldMenus(scene) {
     scene.menuContextSelection = selection || null;
     scene.unitMenu.stack = ['root'];
     scene.unitMenu.currentMenuKey = 'root';
-    scene.unitMenu.container.visible = true;
+    // Stage C: if selection is a unit, open the bottom-center unit panel.
+    // Keep the existing build menu behaviour for mobile base (and for building selection).
+    const isUnit = !!(
+      selection &&
+      typeof selection.q === 'number' &&
+      typeof selection.r === 'number' &&
+      // units are usually Phaser objects (circle/triangle) with flags,
+      // while buildings are typically plain objects with a .container
+      (selection.isPlayer || selection.isEnemy || selection.controller || (selection.type && !selection.container))
+    );
+    const type = String(selection?.type || selection?.unitType || '').toLowerCase();
+    const isMobileBase = type === 'mobile_base' || type === 'mobilebase' || type === 'base' || selection?.name === 'Mobile Base';
 
-    overlay.visible = true;
-    overlay.setInteractive({ useHandCursor: false });
+    if (isUnit) {
+      // Always show unit panel for any unit-like selection
+      try { scene.openUnitActionPanel?.(selection); } catch (e) {}
+    } else {
+      // Non-unit (e.g. building selection): hide unit panel
+      scene.closeUnitActionPanel?.();
+    }
 
-    scene.refreshUnitMenuView();
-    // bring menu above everything
-    scene.children.bringToTop(container);
+    // Build menu + overlay should NOT block the map when selecting regular units.
+    // Keep it only for mobile base (build workflow) and for non-unit selections.
+    const showBuildMenu = !isUnit || !!isMobileBase;
+
+    scene.unitMenu.container.visible = showBuildMenu;
+
+    if (showBuildMenu) {
+      overlay.visible = true;
+      overlay.setInteractive({ useHandCursor: false });
+      scene.refreshUnitMenuView();
+      // bring menu above everything
+      scene.children.bringToTop(container);
+    } else {
+      overlay.visible = false;
+      if (overlay.input) overlay.disableInteractive();
+    }
   };
 
   scene.closeAllMenus = function () {
     if (scene.unitMenu) {
       scene.unitMenu.container.visible = false;
     }
+    scene.closeUnitActionPanel?.();
     overlay.visible = false;
     if (overlay.input) {
       overlay.disableInteractive();
