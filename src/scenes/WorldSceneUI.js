@@ -132,11 +132,18 @@ function getTile(scene, q, r) {
 
 // helper: find any unit/hauler on given hex
 function getUnitAtHex(scene, q, r) {
+  // Prefer scene.units if present (contains players + enemies),
+  // but keep legacy arrays for compatibility.
+  const units = scene.units || [];
   const players = scene.players || [];
+  const enemies = scene.enemies || [];
   const haulers = scene.haulers || [];
+
   return (
-    players.find(u => u.q === q && u.r === r) ||
-    haulers.find(h => h.q === q && h.r === r) ||
+    units.find(u => u && u.q === q && u.r === r) ||
+    players.find(u => u && u.q === q && u.r === r) ||
+    enemies.find(e => e && e.q === q && e.r === r) ||
+    haulers.find(h => h && h.q === q && h.r === r) ||
     null
   );
 }
@@ -208,7 +215,16 @@ export function setupWorldInputUI(scene) {
 
     // If we have a selected unit, treat this as a move order
     if (scene.selectedUnit) {
-      const blocked = t => !t || t.type === 'water' || t.type === 'mountain';
+      // Stage A: units cannot occupy the same hex.
+      // Treat any other unit/hauler/enemy as blocking for pathfinding.
+      const blocked = t => {
+        if (!t) return true;
+        if (t.type === 'water' || t.type === 'mountain') return true;
+        const occ = getUnitAtHex(scene, t.q, t.r);
+        // Allow start tile (occupied by the moving unit)
+        if (occ && occ !== scene.selectedUnit) return true;
+        return false;
+      };
       const fullPath = computePathWithAStar(scene, scene.selectedUnit, rounded, blocked);
 
       if (fullPath && fullPath.length > 1) {
@@ -228,6 +244,18 @@ export function setupWorldInputUI(scene) {
         if (trimmedPath.length > 1) {
           console.log('[MOVE] Committing move along path:', trimmedPath);
           scene.startStepMovement?.(scene.selectedUnit, trimmedPath, () => {
+            // Stage A: spend movement points equal to total path cost.
+            // Keep legacy and canonical fields in sync.
+            try {
+              const unit = scene.selectedUnit;
+              if (unit) {
+                const mpBefore = Number.isFinite(unit.movementPoints) ? unit.movementPoints : (Number.isFinite(unit.mp) ? unit.mp : 0);
+                const mpAfter = Math.max(0, mpBefore - costSum);
+                unit.movementPoints = mpAfter;
+                if (Number.isFinite(unit.mp)) unit.mp = mpAfter;
+              }
+            } catch (e) {}
+
             if (scene.checkCombat?.(
               scene.selectedUnit,
               trimmedPath[trimmedPath.length - 1]
@@ -265,7 +293,13 @@ export function setupWorldInputUI(scene) {
       return;
     }
 
-    const blocked = t => !t || t.type === 'water' || t.type === 'mountain';
+    const blocked = t => {
+      if (!t) return true;
+      if (t.type === 'water' || t.type === 'mountain') return true;
+      const occ = getUnitAtHex(scene, t.q, t.r);
+      if (occ && occ !== scene.selectedUnit) return true;
+      return false;
+    };
     const path = computePathWithAStar(scene, scene.selectedUnit, rounded, blocked);
 
     scene.clearPathPreview?.();
