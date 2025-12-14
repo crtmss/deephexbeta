@@ -897,57 +897,89 @@ export function debugElectricity(scene) {
    - This is defensive: it tries to use existing scene APIs first.
    ========================================================= */
 
-function spawnEnergyBuilding(scene, kind, q, r) {
-  // Try to call the game's existing placement/build APIs if they exist.
-  const tile = scene.mapData?.find((t) => t?.q === q && t?.r === r) || null;
+function spawnEnergyBuilding(scene, kindRaw, q, r) {
+  const kind = canonicalType(kindRaw);
 
-  // Common patterns in Phaser strategy projects
-  const candidates = [
-    scene.spawnBuilding,
-    scene.placeBuilding,
-    scene.createBuilding,
-    scene.addBuilding,
-    scene.buildBuilding,
-  ].filter((fn) => typeof fn === "function");
-
-  for (const fn of candidates) {
-    try {
-      // Some implementations expect (type, q, r), others (type, tile), etc.
-      const res =
-        fn.length >= 3 ? fn.call(scene, kind, q, r)
-        : fn.length === 2 ? fn.call(scene, kind, { q, r })
-        : fn.call(scene, kind);
-
-      if (res) return res;
-    } catch (e) {
-      // keep trying fallbacks
-    }
+  // Важно: отмечаем флаги на тайле (как в старом файле)
+  const tile = scene.mapData?.find(t => t?.q === q && t?.r === r) || null;
+  if (tile) {
+    if (kind === "power_pole") tile.hasPowerPole = true;
+    if (kind === "power_conduit") tile.hasPowerConduit = true;
   }
 
-  // Fallback: create a minimal building object and push to known arrays
-  const b = {
-    id: `energy:${kind}:${q},${r}:${Date.now()}`,
+  // Позиция в мире (старый файл предпочитал axialToWorld)
+  const pos = (typeof scene.axialToWorld === "function")
+    ? scene.axialToWorld(q, r)
+    : scene.hexToPixel(q, r, scene.hexSize || 24);
+
+  const plateW = 36;
+  const plateH = 36;
+  const radius = 8;
+
+  // Контейнер выше карты/юнитов (как было)
+  const cont = scene.add.container(pos.x, pos.y).setDepth(2100);
+
+  // Плашка
+  const plate = scene.add.graphics();
+  plate.fillStyle(0x0f2233, 0.92);
+  plate.fillRoundedRect(-plateW / 2, -plateH / 2, plateW, plateH, radius);
+  plate.lineStyle(2, 0x3da9fc, 0.9);
+  plate.strokeRoundedRect(-plateW / 2, -plateH / 2, plateW, plateH, radius);
+
+  // Эмодзи + лейбл (как в старом файле)
+  let emoji = "⚡";
+  let name = "Power";
+  if (kind === "solar_panel") { emoji = "🔆"; name = "Solar"; }
+  else if (kind === "fuel_generator") { emoji = "⛽"; name = "Generator"; }
+  else if (kind === "battery") { emoji = "🔋"; name = "Battery"; }
+  else if (kind === "power_pole") { emoji = "🗼"; name = "Pole"; }
+  else if (kind === "power_conduit") { emoji = "•"; name = "Conduit"; }
+
+  const emojiText = scene.add.text(0, 0, emoji, {
+    fontSize: "22px",
+    color: "#ffffff",
+  }).setOrigin(0.5);
+
+  const label = scene.add.text(0, plateH / 2 + 10, name, {
+    fontSize: "14px",
+    color: "#e8f6ff",
+  }).setOrigin(0.5, 0);
+
+  cont.add([plate, emojiText, label]);
+
+  // Создаём building-объект и кладём в scene.buildings (как в старом файле)
+  scene.buildings = scene.buildings || [];
+  scene._buildingIdSeq = (scene._buildingIdSeq || 1) + 1;
+  const id = scene._buildingIdSeq;
+
+  const building = {
+    id,
     type: kind,
+    name,
     q,
     r,
     tile: tile || undefined,
-    energy: buildingEnergyConfig({ type: kind, energy: {} }),
+    container: cont,
+    energy: {},
   };
 
-  if (!Array.isArray(scene.buildings)) scene.buildings = [];
-  scene.buildings.push(b);
-
-  // If it's a conduit/pole, mark the tile flags so recalcNetworks sees it even if buildings are not tracked elsewhere
-  if (tile) {
-    if (kind === "power_conduit") tile.hasPowerConduit = true;
-    if (kind === "power_pole") tile.hasPowerPole = true;
+  // Энергоконфиги (как раньше, чтобы сеть считалась)
+  if (kind === "solar_panel") {
+    building.energy.productionPerTurn = 2;
+  } else if (kind === "fuel_generator") {
+    building.energy.productionPerTurn = 5;
+    building.energy.fuelType = "crude_oil";
+    building.energy.fuelPerTurn = 1;
+  } else if (kind === "battery") {
+    building.energy.storageCapacity = 20;
   }
 
-  // If the game has a renderer hook, try to let it render the new building
-  try { scene.renderBuilding?.(b); } catch (e) {}
-  try { scene.refreshMap?.(); } catch (e) {}
+  scene.buildings.push(building);
 
-  return b;
+  // Очень важно: уведомляем систему (сети/оверлей/UI)
+  onBuildingPlaced(scene, building);
+
+  return building;
 }
 
 /* =========================================================
