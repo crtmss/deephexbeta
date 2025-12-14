@@ -8,9 +8,6 @@ import { setupBuildingsUI } from './WorldSceneBuildingsUI.js';
 import { setupEnergyPanel } from './WorldSceneEnergyUI.js';
 import { setupHexInfoPanel } from './WorldSceneHexInfo.js';
 
-// Unit action panel UI (bottom-center)
-import { setupUnitActionPanel } from './WorldSceneUnitPanel.js';
-
 // Haulers / ships
 import {
   applyShipRoutesOnEndTurn,
@@ -28,9 +25,7 @@ import { applyLogisticsRoutesOnEndTurn } from './WorldSceneLogisticsRuntime.js';
 import { setupTurnUI, updateTurnText, setupWorldInputUI } from './WorldSceneUI.js';
 
 // Units / resources / map
-import { spawnUnitsAndEnemies, updateUnitOrientation, applyEnemyAIOnEndTurn } from './WorldSceneUnits.js';
-// Stage A: refresh MP/AP at the start of a player's turn
-import { refreshUnitsForTurn } from '../units/UnitTurn.js';
+import { spawnUnitsAndEnemies, updateUnitOrientation } from './WorldSceneUnits.js';
 import { spawnFishResources, spawnCrudeOilResources } from './WorldSceneResources.js';
 import {
   drawHexMap,
@@ -58,6 +53,9 @@ import ElectricitySystem, {
 } from './WorldSceneElectricity.js';
 
 import { supabase as sharedSupabase } from '../net/SupabaseClient.js';
+
+// NEW: Unit action panel (Stage C)
+import { setupUnitActionPanel } from './WorldSceneUnitPanel.js';
 
 /* =========================
    Deterministic world summary (UI-only)
@@ -120,6 +118,69 @@ function getWorldSummaryForSeed(seedStr, width, height) {
    ========================= */
 function getTile(scene, q, r) {
   return (scene.mapData || []).find(h => h.q === q && h.r === r);
+}
+
+// NEW: unit turn reset helpers (MP/AP refresh)
+function __getUnitOwnerName(u) {
+  return u?.playerName ?? u?.owner ?? u?.playerId ?? u?.name ?? null;
+}
+function __getUnitMpMax(u) {
+  if (Number.isFinite(u?.mpMax)) return u.mpMax;
+  if (Number.isFinite(u?.maxMovementPoints)) return u.maxMovementPoints;
+  if (Number.isFinite(u?.movementPointsMax)) return u.movementPointsMax;
+  // if only current exists, treat current as max
+  if (Number.isFinite(u?.movementPoints)) return u.movementPoints;
+  if (Number.isFinite(u?.mp)) return u.mp;
+  return 0;
+}
+function __getUnitApMax(u) {
+  if (Number.isFinite(u?.apMax)) return u.apMax;
+  if (Number.isFinite(u?.actionPointsMax)) return u.actionPointsMax;
+  // per spec default 1
+  return 1;
+}
+function resetUnitsForNewTurn(scene) {
+  const owner = scene?.turnOwner;
+  if (!owner) return;
+
+  // Only reset units that belong to current turn owner
+  const all = []
+    .concat(scene.units || [])
+    .concat(scene.players || []);
+
+  for (const u of all) {
+    if (!u) continue;
+    if (!u.isPlayer) continue;
+
+    const uOwner = __getUnitOwnerName(u);
+    if (uOwner != null && String(uOwner) !== String(owner)) continue;
+
+    const mpMax = __getUnitMpMax(u);
+    const apMax = __getUnitApMax(u);
+
+    // restore MP in both legacy + canonical fields
+    if (Number.isFinite(mpMax) && mpMax > 0) {
+      u.mpMax = mpMax;
+      u.maxMovementPoints = mpMax;
+      u.movementPoints = mpMax;
+      u.mp = mpMax;
+    } else {
+      // safe fallback (won't break old units)
+      if (!Number.isFinite(u.movementPoints)) u.movementPoints = 4;
+      if (!Number.isFinite(u.mp)) u.mp = u.movementPoints;
+    }
+
+    // restore AP
+    u.apMax = apMax;
+    u.ap = apMax;
+
+    // clear temporary defending bonus each turn if present
+    if (Number.isFinite(u.tempArmorBonus)) u.tempArmorBonus = 0;
+    if (u.status) {
+      u.status.defending = false;
+      u.status.attackedThisTurn = false;
+    }
+  }
 }
 
 export default class WorldScene extends Phaser.Scene {
@@ -298,15 +359,17 @@ export default class WorldScene extends Phaser.Scene {
     setupEnergyPanel(this);
     setupHexInfoPanel(this);
 
-    // NEW: Unit action panel (Move/Attack/Defence + stats)
-    // This is separate from the build menu and must be initialised once.
-    setupUnitActionPanel(this);
-
     // NEW: History UI (panel to the left of resources panel)
     setupHistoryUI(this);
 
+    // ✅ Unit action panel init (Stage C)
+    setupUnitActionPanel(this);
+
     if (this.turnOwner) {
       updateTurnText(this, this.turnOwner);
+
+      // ✅ IMPORTANT: refresh MP/AP for the first owner as well
+      resetUnitsForNewTurn(this);
     }
 
     this.addWorldMetaBadge();
@@ -634,14 +697,7 @@ Biomes: ${biome}`;
     }
 
     if (this.isHost) {
-      // NEW: aggressive AI raiders (shoot if in range, else move towards closest player)
-      try {
-        applyEnemyAIOnEndTurn(this);
-      } catch (e) {
-        console.error('[AI] applyEnemyAIOnEndTurn failed:', e);
-        // fallback to legacy random movement
-        this.moveEnemies();
-      }
+      this.moveEnemies();
     }
 
     const idx = this.players.findIndex(p =>
@@ -662,15 +718,11 @@ Biomes: ${biome}`;
 
     console.log(`[TURN] New turn owner: ${this.turnOwner} (Turn ${this.turnNumber})`);
 
-    // Stage A: refresh MP/AP for the new turn owner (player-controlled units).
-    // This keeps legacy movementPoints in sync with the new mp fields.
-    try {
-      refreshUnitsForTurn(this, this.turnOwner);
-    } catch (err) {
-      console.error('[UNITS] Error refreshing units for new turn owner:', err);
-    }
-
     updateTurnText(this, this.turnOwner);
+
+    // ✅ FIX: refresh MP/AP for units of the new owner
+    resetUnitsForNewTurn(this);
+
     this.printTurnSummary?.();
 
     this.uiLocked = false;
@@ -801,19 +853,15 @@ WorldScene.prototype.setSelectedUnit = function (unit) {
   this.updateSelectionHighlight?.();
 
   if (unit) {
-    // Always open the unit action panel (bottom-center) if available
+    // ✅ Always show unit info panel even for enemies (read-only is enforced in UI)
     this.openUnitActionPanel?.(unit);
 
-    // Mobile Base also opens the build menu (top-left grid menu)
-    const isMobileBase = (unit.type === 'mobile_base' || unit.unitType === 'mobile_base');
-    if (isMobileBase) {
+    // ✅ Mobile base still has build menu (if you use it)
+    const t = String(unit.type || unit.unitType || '').toLowerCase();
+    if (t.includes('mobile') || t.includes('base')) {
       this.openRootUnitMenu?.(unit);
-    } else {
-      // For non-mobile-base units, hide build menu if it was open
-      this.closeAllMenus?.();
     }
   } else {
-    // Close both build menu and unit action panel
     this.closeUnitActionPanel?.();
     this.closeAllMenus?.();
   }
@@ -825,8 +873,11 @@ WorldScene.prototype.toggleSelectedUnitAtHex = function (q, r) {
     return;
   }
 
+  // ✅ include enemies so clicking them opens info panel
   const unit =
     (this.players || []).find(u => u.q === q && u.r === r) ||
+    (this.enemies || []).find(u => u.q === q && u.r === r) ||
+    (this.units || []).find(u => u.q === q && u.r === r) ||
     (this.haulers || []).find(h => h.q === q && h.r === r);
 
   this.setSelectedUnit(unit || null);
