@@ -257,7 +257,6 @@ function notifyElectricityChanged(scene, reason = '') {
 
     // Optional debug trace
     if (reason) {
-      // comment out if too spammy
       // console.log('[ENERGY] state changed:', reason);
     }
   } finally {
@@ -346,7 +345,7 @@ function ensureNetworks(scene) {
   recalcNetworks(scene);
 }
 
-function overlapScore(oldNet, newKeysSet) {
+function overlapCount(oldNet, newKeysSet) {
   if (!oldNet?.nodes || !Array.isArray(oldNet.nodes)) return 0;
   let hit = 0;
   for (const n of oldNet.nodes) {
@@ -367,9 +366,9 @@ export function recalcNetworks(scene) {
     return;
   }
 
-  // Keep old networks to transfer stored energy (CRITICAL FIX)
+  // Keep old networks to transfer stored energy (CRITICAL FIX, merge+split safe)
   const oldNetworks = state.networks || {};
-  const oldList = Object.values(oldNetworks);
+  const oldList = Object.values(oldNetworks).filter(Boolean);
 
   const byKeyTile = new Map();
   for (const t of tiles) {
@@ -518,31 +517,55 @@ export function recalcNetworks(scene) {
   }
 
   // filter: network exists only if component has generator(s)
+  const comps = raw.filter(c => c?.hasAnyGenerator);
+
+  // =============================
+  // Stored-energy transfer FIX:
+  //  - MERGE: sum energies from all old nets that now belong to one component
+  //  - SPLIT: distribute old energy across resulting components proportionally to overlap
+  //  - CONSERVE total stored energy (then clamp by new capacity)
+  // =============================
+  const oldToNewOverlapSum = new Map(); // oldIndex -> sum overlaps across new comps
+  const overlapMatrix = [];            // [newIndex][oldIndex] = overlapCount
+
+  for (let j = 0; j < comps.length; j++) {
+    const newKeysSet = new Set(comps[j].nodes.map(n => n.key));
+    overlapMatrix[j] = [];
+    for (let i = 0; i < oldList.length; i++) {
+      const ov = overlapCount(oldList[i], newKeysSet);
+      overlapMatrix[j][i] = ov;
+      if (ov > 0) {
+        oldToNewOverlapSum.set(i, (oldToNewOverlapSum.get(i) || 0) + ov);
+      }
+    }
+  }
+
+  // build networks
   const networks = {};
   let nextId = 1;
 
-  for (const comp of raw) {
-    if (!comp.hasAnyGenerator) continue;
-
+  for (let j = 0; j < comps.length; j++) {
+    const comp = comps[j];
     const id = nextId++;
 
-    // Build key set for stored-energy carry-over
-    const newKeysSet = new Set(comp.nodes.map(n => n.key));
+    // allocate carried energy from old nets (merge+split safe)
+    let carriedStored = 0;
 
-    // Find best matching old net by overlap
-    let bestOld = null;
-    let bestScore = 0;
-    for (const o of oldList) {
-      const sc = overlapScore(o, newKeysSet);
-      if (sc > bestScore) {
-        bestScore = sc;
-        bestOld = o;
-      }
+    for (let i = 0; i < oldList.length; i++) {
+      const ov = overlapMatrix[j][i] || 0;
+      if (ov <= 0) continue;
+
+      const denom = oldToNewOverlapSum.get(i) || 0;
+      if (denom <= 0) continue;
+
+      const oldStored = Math.max(0, Number(oldList[i]?.storedEnergy || 0));
+      carriedStored += oldStored * (ov / denom);
     }
 
-    const carriedStored = (bestOld && bestScore > 0)
-      ? Math.max(0, Number(bestOld.storedEnergy || 0))
-      : 0;
+    // clamp by new capacity (no batteries => 0)
+    const cap = Math.max(0, Number(comp.storageCapacity || 0));
+    if (cap <= 0) carriedStored = 0;
+    else carriedStored = Math.min(cap, carriedStored);
 
     const net = {
       id,
@@ -553,7 +576,7 @@ export function recalcNetworks(scene) {
       generators: comp.generators,
       storageCapacity: comp.storageCapacity,
 
-      // IMPORTANT: carry over stored energy (fixes "0/20 after turns / after recalc")
+      // IMPORTANT: carry over stored energy (merge+split safe)
       storedEnergy: carriedStored,
 
       lastProduced: 0,
@@ -617,7 +640,7 @@ export function tickElectricity(scene) {
   // detect add/remove changes before ticking
   ensureWatched(scene);
 
-  // Base: +1 per turn, max 5
+  // Base energy (mobile base)
   const es = scene.electricState;
   if (!Number.isFinite(es.baseStored)) es.baseStored = 0;
   const baseCap = es.baseCapacity ?? 0;
@@ -633,7 +656,6 @@ export function tickElectricity(scene) {
 
   if (!ids.length) {
     recomputeGlobalEnergyStats(scene);
-    // UI refresh each turn even if no networks
     notifyElectricityChanged(scene, 'tick(noNetworks)');
     return;
   }
@@ -652,22 +674,20 @@ export function tickElectricity(scene) {
 
       const type = canonicalType(b.type);
       const e = buildingEnergyConfig(b);
-
       let p = 0;
 
       if (type === 'solar_panel') {
         p = e.productionPerTurn ?? 2;
         b.powerOnline = p > 0;
-        if (b.powerOnline) workingGenerators += 1;
+        if (b.powerOnline) workingGenerators++;
       } else if (type === 'fuel_generator') {
         const fuelPerTurn = e.fuelPerTurn ?? 1;
         const ok = consumeCrudeOil(scene, fuelPerTurn);
         if (ok) {
           p = e.productionPerTurn ?? 5;
-          b.powerOnline = p > 0;
-          if (b.powerOnline) workingGenerators += 1;
+          b.powerOnline = true;
+          workingGenerators++;
         } else {
-          p = 0;
           b.powerOnline = false;
           b.powerOfflineReason = 'no_fuel';
         }
@@ -679,7 +699,7 @@ export function tickElectricity(scene) {
       produced += Math.max(0, p);
     }
 
-    // If no working generators -> consumers offline, only clamp storage
+    // no generators → consumers offline, storage only clamps
     if (workingGenerators <= 0) {
       net.lastProduced = 0;
       net.lastDemand = 0;
@@ -701,7 +721,6 @@ export function tickElectricity(scene) {
     if (cap > 0) {
       net.storedEnergy = Math.min(cap, (net.storedEnergy || 0) + produced);
     } else {
-      // no batteries => can't store
       net.storedEnergy = 0;
     }
 
@@ -712,9 +731,9 @@ export function tickElectricity(scene) {
       demand += Math.max(0, e.consumptionPerTurn || 0);
     }
 
-    // satisfy demand (all-or-nothing)
+    // satisfy demand
     if (demand > 0) {
-      if ((net.storedEnergy || 0) >= demand) {
+      if (net.storedEnergy >= demand) {
         net.storedEnergy -= demand;
         for (const c of net.consumers) {
           if (!c) continue;
@@ -736,8 +755,6 @@ export function tickElectricity(scene) {
   }
 
   recomputeGlobalEnergyStats(scene);
-
-  // ✅ FIX: refresh Energy UI every turn
   notifyElectricityChanged(scene, 'tick');
 }
 
@@ -757,25 +774,21 @@ export function setHighlightedNetwork(scene, networkId) {
   if (!scene) return;
   initElectricity(scene);
 
-  scene.electricState.highlightNetworkId = (networkId == null) ? null : Number(networkId);
+  scene.electricState.highlightNetworkId =
+    networkId == null ? null : Number(networkId);
 
   const active = scene.electricState.highlightNetworkId;
   const all = getAllBuildings(scene);
 
   for (const b of all) {
-    if (!b) continue;
-    const cont = b.container;
-    if (!cont || typeof cont.setAlpha !== 'function') continue;
-
+    if (!b?.container?.setAlpha) continue;
     if (active == null) {
-      cont.setAlpha(1);
-      continue;
+      b.container.setAlpha(1);
+    } else {
+      b.container.setAlpha(b.powerNetworkId === active ? 1 : 0.25);
     }
-
-    cont.setAlpha(b.powerNetworkId === active ? 1 : 0.25);
   }
 
-  // Keep overlay in sync when highlight changes
   notifyElectricityChanged(scene, 'highlightChange');
 }
 
@@ -795,53 +808,43 @@ export function debugElectricity(scene) {
   const es = scene.electricState;
   const nets = es.networks || {};
 
-  console.log('=== [ENERGY DEBUG] Networks ===');
-  console.log('base:', {
-    baseStored: es.baseStored,
-    baseCapacity: es.baseCapacity,
-    baseProductionPerTurn: es.baseProductionPerTurn,
+  console.log('=== [ENERGY DEBUG] ===');
+  console.log('Base:', {
+    stored: es.baseStored,
+    capacity: es.baseCapacity,
+    prod: es.baseProductionPerTurn,
   });
 
-  const ids = Object.keys(nets);
-  if (!ids.length) {
-    console.log('No generator-networks found (no components with generators).');
-    return;
-  }
-
-  for (const id of ids) {
+  for (const id in nets) {
     const net = nets[id];
     if (!net) continue;
 
     const buildings = [];
-    for (const node of net.nodes) {
-      for (const b of node.buildings) {
+    for (const n of net.nodes) {
+      for (const b of n.buildings) {
         const pos = getBuildingCoords(b);
         buildings.push({
-          type: b?.type,
-          canon: canonicalType(b?.type),
-          id: b?.id,
+          type: b.type,
           q: pos?.q,
           r: pos?.r,
-          energy: b?.energy,
+          energy: b.energy,
         });
       }
     }
 
-    console.log(`[Network ${net.id}]`, {
-      nodes: net.nodes.length,
+    console.log(`[Network ${id}]`, {
+      stored: net.storedEnergy,
+      cap: net.storageCapacity,
+      prod: net.lastProduced,
+      demand: net.lastDemand,
       generators: net.generators.length,
-      storageCapacity: net.storageCapacity,
-      storedEnergy: net.storedEnergy,
-      lastProduced: net.lastProduced,
-      lastDemand: net.lastDemand,
-      lastWorkingGenerators: net.lastWorkingGenerators,
       buildings,
     });
   }
 }
 
 /* =========================================================
-   Rendering: overlay for conduits & poles (with highlight)
+   Rendering: overlay for conduits & poles
    ========================================================= */
 
 export function drawElectricOverlay(scene) {
@@ -851,8 +854,6 @@ export function drawElectricOverlay(scene) {
 
   const tiles = scene.mapData;
   const size = scene.hexSize || 24;
-  const offsetX = scene.mapOffsetX || 0;
-  const offsetY = scene.mapOffsetY || 0;
   const LIFT = scene?.LIFT_PER_LVL ?? 4;
 
   if (scene.powerGraphics) scene.powerGraphics.destroy();
@@ -864,215 +865,51 @@ export function drawElectricOverlay(scene) {
   scene.powerPoleGraphics = gPoles;
 
   const byKeyTile = new Map();
-  for (const t of tiles) {
-    if (!t) continue;
-    byKeyTile.set(keyOf(t.q, t.r), t);
-  }
-
-  function hexCenter(t) {
-    const pos = scene.hexToPixel(t.q, t.r, size);
-    const y = pos.y - LIFT * effectiveElevationLocal(t);
-    return { x: pos.x + offsetX, y: y + offsetY };
-  }
+  for (const t of tiles) byKeyTile.set(keyOf(t.q, t.r), t);
 
   const active = scene.electricState?.highlightNetworkId ?? null;
   const highlightKeys = new Set();
-
   if (active != null) {
-    const net = scene.electricState?.networks?.[active];
-    if (net) {
-      for (const n of net.nodes) highlightKeys.add(n.key);
-    }
+    const net = scene.electricState.networks?.[active];
+    if (net) for (const n of net.nodes) highlightKeys.add(n.key);
   }
 
-  const alphaForKey = (k) => {
-    if (active == null) return 1;
-    return highlightKeys.has(k) ? 1 : 0.15;
-  };
+  const alphaFor = (k) =>
+    active == null ? 1 : highlightKeys.has(k) ? 1 : 0.15;
+
+  function hexCenter(t) {
+    const pos = scene.hexToPixel(t.q, t.r, size);
+    return { x: pos.x, y: pos.y - LIFT * effectiveElevationLocal(t) };
+  }
 
   // conduits
   for (const t of tiles) {
-    if (!t || !t.hasPowerConduit) continue;
-
-    const k1 = keyOf(t.q, t.r);
+    if (!t?.hasPowerConduit) continue;
     const c = hexCenter(t);
-    const a1 = alphaForKey(k1);
+    const a1 = alphaFor(keyOf(t.q, t.r));
 
     for (const [dq, dr] of AXIAL_DIRS) {
-      const nk = keyOf(t.q + dq, t.r + dr);
-      const nt = byKeyTile.get(nk);
-      if (!nt) continue;
-      if (!nt.hasPowerConduit && !nt.hasPowerPole) continue;
-
+      const nt = byKeyTile.get(keyOf(t.q + dq, t.r + dr));
+      if (!nt || (!nt.hasPowerConduit && !nt.hasPowerPole)) continue;
       const c2 = hexCenter(nt);
-      const a2 = alphaForKey(nk);
-      const a = Math.min(a1, a2);
-
-      gLines.lineStyle(3, 0x777777, a);
+      gLines.lineStyle(3, 0x777777, Math.min(a1, alphaFor(keyOf(nt.q, nt.r))));
       gLines.beginPath();
       gLines.moveTo(c.x, c.y);
       gLines.lineTo(c2.x, c2.y);
       gLines.strokePath();
     }
-
-    // dot if isolated
-    let hasNeighbor = false;
-    for (const [dq, dr] of AXIAL_DIRS) {
-      const nt = byKeyTile.get(keyOf(t.q + dq, t.r + dr));
-      if (!nt) continue;
-      if (nt.hasPowerConduit || nt.hasPowerPole) {
-        hasNeighbor = true;
-        break;
-      }
-    }
-    if (!hasNeighbor) {
-      gLines.fillStyle(0x777777, a1);
-      gLines.fillCircle(c.x, c.y, size * 0.2);
-    }
   }
 
   // poles
   for (const t of tiles) {
-    if (!t || !t.hasPowerPole) continue;
-
-    const k = keyOf(t.q, t.r);
-    const a = alphaForKey(k);
+    if (!t?.hasPowerPole) continue;
     const c = hexCenter(t);
-
+    const a = alphaFor(keyOf(t.q, t.r));
     gPoles.lineStyle(2, 0xfff58a, a);
     gPoles.strokeCircle(c.x, c.y, size * 0.45);
     gPoles.fillStyle(0xfff58a, a);
     gPoles.fillCircle(c.x, c.y, size * 0.12);
   }
-}
-
-/* =========================================================
-   Placement API (required by WorldSceneBuildings.js)
-   ========================================================= */
-
-function getEnergyPlacementHex(scene) {
-  if (scene.selectedUnit && typeof scene.selectedUnit.q === 'number' && typeof scene.selectedUnit.r === 'number') {
-    return { q: scene.selectedUnit.q, r: scene.selectedUnit.r };
-  }
-  if (scene.selectedHex && typeof scene.selectedHex.q === 'number' && typeof scene.selectedHex.r === 'number') {
-    return { q: scene.selectedHex.q, r: scene.selectedHex.r };
-  }
-  return null;
-}
-
-function spawnEnergyBuilding(scene, kindRaw, q, r) {
-  const kind = canonicalType(kindRaw);
-
-  const pos = (typeof scene.axialToWorld === 'function')
-    ? scene.axialToWorld(q, r)
-    : scene.hexToPixel(q, r, scene.hexSize || 24);
-
-  const plateW = 36;
-  const plateH = 36;
-  const radius = 8;
-
-  const cont = scene.add.container(pos.x, pos.y).setDepth(2100);
-
-  const plate = scene.add.graphics();
-  plate.fillStyle(0x0f2233, 0.92);
-  plate.fillRoundedRect(-plateW / 2, -plateH / 2, plateW, plateH, radius);
-  plate.lineStyle(2, 0x3da9fc, 0.9);
-  plate.strokeRoundedRect(-plateW / 2, -plateH / 2, plateW, plateH, radius);
-
-  let emoji = '⚡';
-  let name = 'Power';
-  if (kind === 'solar_panel') { emoji = '🔆'; name = 'Solar'; }
-  else if (kind === 'fuel_generator') { emoji = '⛽'; name = 'Generator'; }
-  else if (kind === 'battery') { emoji = '🔋'; name = 'Battery'; }
-  else if (kind === 'power_pole') { emoji = '🗼'; name = 'Pole'; }
-  else if (kind === 'power_conduit') { emoji = '•'; name = 'Conduit'; }
-
-  const emojiText = scene.add.text(0, 0, emoji, {
-    fontSize: '22px',
-    color: '#ffffff',
-  }).setOrigin(0.5);
-
-  const label = scene.add.text(0, plateH / 2 + 10, name, {
-    fontSize: '14px',
-    color: '#e8f6ff',
-  }).setOrigin(0.5, 0);
-
-  cont.add([plate, emojiText, label]);
-
-  scene.buildings = scene.buildings || [];
-  scene._buildingIdSeq = (scene._buildingIdSeq || 1) + 1;
-  const id = scene._buildingIdSeq;
-
-  const building = {
-    id,
-    type: kind,          // IMPORTANT: store canonical type
-    name,
-    q,
-    r,
-    container: cont,
-    energy: {},
-  };
-
-  if (kind === 'solar_panel') building.energy.productionPerTurn = 2;
-  else if (kind === 'fuel_generator') {
-    building.energy.productionPerTurn = 5;
-    building.energy.fuelType = 'crude_oil';
-    building.energy.fuelPerTurn = 1;
-  } else if (kind === 'battery') {
-    building.energy.storageCapacity = 20;
-  }
-
-  scene.buildings.push(building);
-
-  onBuildingPlaced(scene, building);
-  return building;
-}
-
-export function startEnergyBuildingPlacement(scene, kindRaw) {
-  if (!scene) return;
-
-  initElectricity(scene);
-
-  const kind = canonicalType(kindRaw);
-
-  const hex = getEnergyPlacementHex(scene);
-  if (!hex) {
-    console.warn('[ENERGY] No target hex for', kind, '(no unit / selected hex)');
-    return;
-  }
-
-  const { q, r } = hex;
-  const mapData = scene.mapData || [];
-  const tile = mapData.find((t) => t.q === q && t.r === r);
-  if (!tile) {
-    console.warn('[ENERGY] Target tile not found for', kind, 'at', q, r);
-    return;
-  }
-
-  if (kind === 'solar_panel' || kind === 'fuel_generator' || kind === 'battery') {
-    if (tile.type === 'water' || tile.type === 'ocean' || tile.type === 'sea') {
-      console.warn('[ENERGY] Cannot place', kind, 'on water.');
-      return;
-    }
-    spawnEnergyBuilding(scene, kind, q, r);
-  } else if (kind === 'power_pole') {
-    tile.hasPowerPole = true;
-    spawnEnergyBuilding(scene, kind, q, r);
-  } else if (kind === 'power_conduit') {
-    tile.hasPowerConduit = true;
-    spawnEnergyBuilding(scene, kind, q, r);
-  } else {
-    console.warn('[ENERGY] Unknown energy kind:', kindRaw, '->', kind);
-    return;
-  }
-
-  // Mark + refresh (this is what you want: immediate UI update)
-  markElectricDirty(scene, `placed:${kind}`);
-  try { drawElectricOverlay(scene); } catch (err) {
-    console.error('[ENERGY] Error while drawing electric overlay after placement:', err);
-  }
-  recomputeGlobalEnergyStats(scene);
-  notifyElectricityChanged(scene, `placed:${kind}`);
 }
 
 /* =========================================================
@@ -1086,25 +923,18 @@ export function initElectricityForScene(scene) {
   if (!scene.electricity) scene.electricity = {};
   scene.electricity.initialized = true;
 
-  // IMPORTANT: WorldSceneBuildings.js expects this to exist
   if (typeof scene.startEnergyBuildingPlacement !== 'function') {
     scene.startEnergyBuildingPlacement = function (kind) {
       return startEnergyBuildingPlacement(scene, kind);
     };
   }
-  scene.electricity.startEnergyBuildingPlacement = scene.startEnergyBuildingPlacement;
 
-  // Convenience overlay hook
   scene.drawElectricityOverlay = () => drawElectricOverlay(scene);
-
-  // Make sure UI can refresh immediately if already open
   notifyElectricityChanged(scene, 'initForScene');
 }
 
 export function applyElectricityOnEndTurn(scene) {
   tickElectricity(scene);
-
-  // ✅ Required by your spec: Energy UI refresh every turn
   notifyElectricityChanged(scene, 'endTurn');
 }
 
@@ -1128,5 +958,5 @@ export default {
   clearHighlightedNetwork,
   initElectricityForScene,
   applyElectricityOnEndTurn,
-  startEnergyBuildingPlacement,
 };
+
