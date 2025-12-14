@@ -1,7 +1,8 @@
 // src/units/UnitTurn.js
 //
 // Turn-cycle helpers for unit MP/AP refresh.
-// Stage A: only refreshes MP/AP for the active player's units.
+// Stage A: refreshes MP/AP for the active player's units.
+// Stage B: resets temporary combat statuses (defence bonus).
 
 import { syncLegacyMovementFields } from './UnitFactory.js';
 
@@ -30,7 +31,8 @@ export function refreshUnitsForTurn(scene, turnOwnerName) {
     if (Number.isFinite(u.mpMax)) u.mp = u.mpMax;
     if (Number.isFinite(u.apMax)) u.ap = u.apMax;
 
-    // Reset temporary statuses (Stage A only)
+    // Reset temporary statuses (Stage B)
+    if (Number.isFinite(u.tempArmorBonus)) u.tempArmorBonus = 0;
     if (u.status && typeof u.status === 'object') {
       delete u.status.defending;
     }
