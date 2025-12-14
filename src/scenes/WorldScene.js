@@ -54,6 +54,9 @@ import ElectricitySystem, {
 
 import { supabase as sharedSupabase } from '../net/SupabaseClient.js';
 
+// ✅ Stage A: unit turn refresh (MP/AP reset for active player units)
+import { refreshUnitsForTurn } from '../units/UnitTurn.js';
+
 /* =========================
    Deterministic world summary (UI-only)
    ========================= */
@@ -645,6 +648,13 @@ Biomes: ${biome}`;
     this.turnNumber += 1;
 
     console.log(`[TURN] New turn owner: ${this.turnOwner} (Turn ${this.turnNumber})`);
+
+    // ✅ Stage A: refresh MP/AP for the new current player's units
+    try {
+      refreshUnitsForTurn(this, this.turnOwner);
+    } catch (err) {
+      console.warn('[Units] refreshUnitsForTurn failed:', err);
+    }
 
     updateTurnText(this, this.turnOwner);
     this.printTurnSummary?.();
