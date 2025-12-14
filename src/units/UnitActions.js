@@ -2,12 +2,22 @@
 //
 // Stage B/C: Unit actions used by UI + input.
 //
-// Actions implemented here:
-//  - defence: consumes all MP and AP, +1 temporary armor, heals 10% max HP
-//  - turn: free; UI just sets facing (handled in UI module)
+// Implemented actions:
+//  - move        (handled by WorldScene movement system)
+//  - attack      (AP cost + validation, damage resolved elsewhere)
+//  - defence     (consume MP+AP, +1 armor, heal 10% HP)
+//  - turn        (free, handled by UI)
+//  - convoy/hide (placeholders)
 //
-// Attack and move are mediated by scene input (WorldSceneUI), but helper
-// functions here keep the rules in one place.
+// IMPORTANT:
+//  - This file contains ONLY rule logic (no Phaser, no rendering)
+//  - Damage calculation will later be delegated to CombatResolver.js
+
+import { getWeaponDef } from './WeaponDefs.js';
+
+/* =========================================================
+   Core normalization
+   ========================================================= */
 
 export function ensureUnitCombatFields(unit) {
   if (!unit) return;
@@ -17,13 +27,13 @@ export function ensureUnitCombatFields(unit) {
   if (!Number.isFinite(unit.hp)) unit.hp = Number.isFinite(unit.maxHp) ? unit.maxHp : 0;
   if (!Number.isFinite(unit.maxHp)) unit.maxHp = unit.hp;
 
-  // MP/AP
+  // Movement
   if (!Number.isFinite(unit.mp) && Number.isFinite(unit.movementPoints)) unit.mp = unit.movementPoints;
   if (!Number.isFinite(unit.mpMax) && Number.isFinite(unit.maxMovementPoints)) unit.mpMax = unit.maxMovementPoints;
-
   if (!Number.isFinite(unit.mp)) unit.mp = 0;
   if (!Number.isFinite(unit.mpMax)) unit.mpMax = unit.mp;
 
+  // Action points
   if (!Number.isFinite(unit.apMax)) unit.apMax = 1;
   if (!Number.isFinite(unit.ap)) unit.ap = unit.apMax;
 
@@ -32,8 +42,17 @@ export function ensureUnitCombatFields(unit) {
   if (!Number.isFinite(unit.tempArmorBonus)) unit.tempArmorBonus = 0;
   if (!unit.armorClass) unit.armorClass = 'NONE';
 
+  // Weapons
+  if (!Array.isArray(unit.weapons)) unit.weapons = [];
+  if (!Number.isFinite(unit.activeWeaponIndex)) unit.activeWeaponIndex = 0;
+
+  // Status flags
   unit.status = unit.status || {};
 }
+
+/* =========================================================
+   AP helpers
+   ========================================================= */
 
 export function canSpendAp(unit, n = 1) {
   ensureUnitCombatFields(unit);
@@ -47,6 +66,10 @@ export function spendAp(unit, n = 1) {
   return true;
 }
 
+/* =========================================================
+   Defence action
+   ========================================================= */
+
 export function applyDefence(unit) {
   ensureUnitCombatFields(unit);
 
@@ -54,11 +77,11 @@ export function applyDefence(unit) {
     return { ok: false, reason: 'no_ap' };
   }
 
-  // Consume all points
+  // Consume everything
   unit.mp = 0;
   unit.ap = 0;
 
-  // +1 armor for the rest of the turn
+  // +1 armor until end of turn
   unit.tempArmorBonus = (unit.tempArmorBonus || 0) + 1;
 
   // Heal 10% max HP
@@ -68,21 +91,95 @@ export function applyDefence(unit) {
 
   unit.status.defending = true;
 
-  return { ok: true, heal, tempArmorBonus: unit.tempArmorBonus };
+  return {
+    ok: true,
+    heal,
+    tempArmorBonus: unit.tempArmorBonus,
+  };
 }
+
+/* =========================================================
+   Attack action (NEW — REQUIRED BY WorldSceneUI)
+   ========================================================= */
+
+export function applyAttack(attacker, target, opts = {}) {
+  ensureUnitCombatFields(attacker);
+  ensureUnitCombatFields(target);
+
+  // Basic validation
+  if (!attacker || !target) {
+    return { ok: false, reason: 'invalid_target' };
+  }
+
+  if (!canSpendAp(attacker, 1)) {
+    return { ok: false, reason: 'no_ap' };
+  }
+
+  // Select weapon
+  const weapons = attacker.weapons || [];
+  const idx = Number.isFinite(attacker.activeWeaponIndex)
+    ? attacker.activeWeaponIndex
+    : 0;
+
+  const weaponId = weapons[idx] || weapons[0];
+  if (!weaponId) {
+    return { ok: false, reason: 'no_weapon' };
+  }
+
+  const weapon = getWeaponDef(weaponId);
+
+  // Distance check (hex distance must be provided by caller)
+  const dist = Number.isFinite(opts.distance) ? opts.distance : null;
+  if (dist != null) {
+    if (dist < weapon.rangeMin || dist > weapon.rangeMax) {
+      return { ok: false, reason: 'out_of_range' };
+    }
+  }
+
+  // Spend AP (damage resolution later)
+  spendAp(attacker, 1);
+
+  attacker.status.attackedThisTurn = true;
+
+  // NOTE:
+  // Actual damage calculation will be done in CombatResolver.js
+  // For now we only return an intent object.
+
+  return {
+    ok: true,
+    weaponId,
+    baseDamage: weapon.baseDamage,
+    armorClassMult: weapon.armorClassMult,
+    distanceCurve: weapon.distanceCurve || {},
+    attacker,
+    target,
+  };
+}
+
+/* =========================================================
+   Turn cleanup
+   ========================================================= */
 
 export function clearTurnTempBonuses(unit) {
   ensureUnitCombatFields(unit);
+
   unit.tempArmorBonus = 0;
+
   if (unit.status) {
     unit.status.defending = false;
+    unit.status.attackedThisTurn = false;
   }
 }
+
+/* =========================================================
+   Default export (safe for legacy imports)
+   ========================================================= */
 
 export default {
   ensureUnitCombatFields,
   canSpendAp,
   spendAp,
   applyDefence,
+  applyAttack,
   clearTurnTempBonuses,
 };
