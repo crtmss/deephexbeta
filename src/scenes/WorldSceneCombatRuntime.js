@@ -5,7 +5,47 @@
 //
 // This is called on ALL clients (host included)
 
-import { spawnDamageNumber, spawnDeathFX } from './WorldSceneCombatFX.js';
+// IMPORTANT:
+// In your project you said you DON'T have WorldSceneCombatFX.js.
+// Static import would crash the module graph.
+// So we do a safe dynamic import once, and gracefully no-op if missing.
+
+let __combatFx = null;
+let __combatFxTried = false;
+
+async function __loadCombatFX() {
+  if (__combatFxTried) return __combatFx;
+  __combatFxTried = true;
+  try {
+    // Path as originally expected
+    __combatFx = await import('./WorldSceneCombatFX.js');
+  } catch (e) {
+    __combatFx = null;
+  }
+  return __combatFx;
+}
+
+async function spawnDamageNumberSafe(scene, q, r, dmg) {
+  try {
+    const fx = await __loadCombatFX();
+    if (fx && typeof fx.spawnDamageNumber === 'function') {
+      fx.spawnDamageNumber(scene, q, r, dmg);
+    }
+  } catch (e) {
+    // non-fatal
+  }
+}
+
+async function spawnDeathFXSafe(scene, unit) {
+  try {
+    const fx = await __loadCombatFX();
+    if (fx && typeof fx.spawnDeathFX === 'function') {
+      fx.spawnDeathFX(scene, unit);
+    }
+  } catch (e) {
+    // non-fatal
+  }
+}
 
 export function applyCombatEvent(scene, event) {
   if (!scene || !event) return;
@@ -27,7 +67,10 @@ export function applyCombatEvent(scene, event) {
   }
 
   // Apply authoritative damage (clients apply; host may also apply for reconciliation safety)
-  const hpBefore = Number.isFinite(defender.hp) ? defender.hp : (Number.isFinite(defender.maxHp) ? defender.maxHp : 0);
+  const hpBefore = Number.isFinite(defender.hp)
+    ? defender.hp
+    : (Number.isFinite(defender.maxHp) ? defender.maxHp : 0);
+
   defender.hp = Math.max(0, hpBefore - (Number.isFinite(damage) ? damage : 0));
 
   defender.lastHit = {
@@ -36,12 +79,8 @@ export function applyCombatEvent(scene, event) {
     damage,
   };
 
-  // Stage F: floating damage number
-  try {
-    spawnDamageNumber(scene, defender.q, defender.r, Number.isFinite(damage) ? damage : 0);
-  } catch (e) {
-    // non-fatal
-  }
+  // Stage F: floating damage number (safe even if FX module absent)
+  spawnDamageNumberSafe(scene, defender.q, defender.r, Number.isFinite(damage) ? damage : 0);
 
   // Stage F: combat log -> History panel (optional)
   try {
@@ -70,16 +109,21 @@ export function applyCombatEvent(scene, event) {
   if (defender.hp <= 0) {
     defender.isDead = true;
 
-    // Stage F: death FX
-    try {
-      spawnDeathFX(scene, defender);
-    } catch (e) {}
+    // Stage F: death FX (safe even if FX module absent)
+    spawnDeathFXSafe(scene, defender);
 
     removeUnit(scene, defender);
   }
 
   // Hook for visuals / logs
   scene.onCombatResolved?.(event);
+
+  // ✅ IMPORTANT: refresh unit panel if it shows attacker/defender
+  try {
+    if (scene.selectedUnit === attacker || scene.selectedUnit === defender) {
+      scene.refreshUnitActionPanel?.();
+    }
+  } catch (e) {}
 }
 
 /* ========================================================= */
