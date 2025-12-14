@@ -5,8 +5,11 @@ import { findPath as aStarFindPath } from '../engine/AStar.js';
 import { setupLogisticsPanel } from './WorldSceneLogistics.js';
 import { setupEconomyUI } from './WorldSceneEconomy.js';
 
-// Stage B combat
+// Stage B/D combat
 import { applyAttack, applyDefence } from '../units/UnitActions.js';
+
+// Stage F: attack preview
+import { updateCombatPreview, clearCombatPreview } from './WorldSceneCombatPreview.js';
 
 /* ---------------- Camera controls (unused unless called) ---------------- */
 export function setupCameraControls(scene) {
@@ -109,6 +112,9 @@ export function setupTurnUI(scene) {
     this.selectedHex = null;
     this.clearPathPreview?.();
 
+    // Stage F: clear attack preview
+    clearCombatPreview(this);
+
     origOpenLogi?.call(this);
   };
 
@@ -178,6 +184,8 @@ function isPlayerUnit(u) {
 
 /**
  * Stage B: apply kill handling (remove from arrays, destroy GO)
+ * NOTE: In host-authoritative mode, kills should primarily come from combat events.
+ * This function is still kept for legacy/local fallback.
  */
 function killUnit(scene, unit) {
   if (!scene || !unit) return;
@@ -204,7 +212,72 @@ function killUnit(scene, unit) {
 }
 
 /**
- * Sets up unit selection + path preview + movement + Stage B attack/defence hotkeys.
+ * Axial hex distance helper (for preview if needed elsewhere).
+ */
+function hexDistance(q1, r1, q2, r2) {
+  const dq = q2 - q1;
+  const dr = r2 - r1;
+  const ds = -dq - dr;
+  return (Math.abs(dq) + Math.abs(dr) + Math.abs(ds)) / 2;
+}
+
+/**
+ * Host-authoritative: send attack intent from clients.
+ * If scene.sendCombatIntent exists, we use it.
+ * Otherwise fallback to local applyAttack (singleplayer/dev).
+ */
+function trySendAttackIntent(scene, attacker, defender) {
+  if (!scene || !attacker || !defender) return false;
+
+  const weapons = attacker.weapons || [];
+  const weaponId = weapons[attacker.activeWeaponIndex] || weapons[0] || null;
+
+  const attackerId =
+    attacker.id ??
+    attacker.unitId ??
+    attacker.uuid ??
+    attacker.netId ??
+    `${attacker.unitName || attacker.name}@${attacker.q},${attacker.r}`;
+
+  const defenderId =
+    defender.id ??
+    defender.unitId ??
+    defender.uuid ??
+    defender.netId ??
+    `${defender.unitName || defender.name}@${defender.q},${defender.r}`;
+
+  // Deterministic ordering / idempotency token:
+  // Prefer crypto.randomUUID if available (browser), else fallback.
+  const nonce =
+    (typeof crypto !== 'undefined' && crypto.randomUUID)
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.floor(Math.random() * 1e9)}`;
+
+  const intent = {
+    type: 'intent:attack',
+    attackerId: String(attackerId),
+    defenderId: String(defenderId),
+    weaponId,
+    nonce,
+    sender: scene.playerName || null,
+  };
+
+  if (typeof scene.sendCombatIntent === 'function') {
+    scene.sendCombatIntent(intent);
+    return true;
+  }
+
+  // Optional: if you wired Stage E bridge directly on host
+  if (scene.isHost && typeof scene.handleCombatIntent === 'function') {
+    scene.handleCombatIntent(intent);
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Sets up unit selection + path preview + movement + Stage B/F attack/defence hotkeys.
  */
 export function setupWorldInputUI(scene) {
   // ensure arrays for preview are present
@@ -213,6 +286,11 @@ export function setupWorldInputUI(scene) {
 
   // Stage B: command mode
   scene.unitCommandMode = scene.unitCommandMode || null; // null | 'attack'
+
+  // Provide distance helper for preview module (safe)
+  if (typeof scene.hexDistance !== 'function') {
+    scene.hexDistance = hexDistance;
+  }
 
   // Stage B: hotkeys (A=attack mode, D=defence, ESC=cancel mode)
   scene.input.keyboard?.on('keydown', (ev) => {
@@ -224,6 +302,7 @@ export function setupWorldInputUI(scene) {
       if (scene.unitCommandMode) {
         scene.unitCommandMode = null;
         scene.clearPathPreview?.();
+        clearCombatPreview(scene);
         console.log('[UNITS] Command mode cleared');
       }
       return;
@@ -242,6 +321,13 @@ export function setupWorldInputUI(scene) {
     if (key === 'a') {
       scene.unitCommandMode = (scene.unitCommandMode === 'attack') ? null : 'attack';
       scene.clearPathPreview?.();
+
+      if (scene.unitCommandMode === 'attack') {
+        updateCombatPreview(scene);
+      } else {
+        clearCombatPreview(scene);
+      }
+
       console.log('[UNITS] Attack mode:', scene.unitCommandMode === 'attack' ? 'ON' : 'OFF');
       return;
     }
@@ -258,6 +344,7 @@ export function setupWorldInputUI(scene) {
         scene.selectedUnit.setAlpha?.(0.85);
       } catch (e) {}
       scene.updateSelectionHighlight?.();
+      scene.refreshUnitActionPanel?.();
       return;
     }
   });
@@ -281,41 +368,62 @@ export function setupWorldInputUI(scene) {
 
     const { q, r } = rounded;
 
-    // Stage B: if we're in attack mode and clicked an enemy -> attack
+    // Stage F: if in attack mode and clicked an enemy -> send intent (client) / resolve (host)
     const clickedUnit = getUnitAtHex(scene, q, r);
     if (scene.unitCommandMode === 'attack' && scene.selectedUnit && clickedUnit && isEnemy(clickedUnit)) {
       // Turn check
       const ownerName = scene.selectedUnit.playerName || scene.selectedUnit.name;
       if (scene.turnOwner && ownerName !== scene.turnOwner) return;
 
-      const atk = applyAttack(scene.selectedUnit, clickedUnit);
-      if (!atk.ok) {
-        console.log('[ATTACK] failed:', atk.reason);
-        return;
-      }
-      const r2 = atk.result;
-      console.log(
-        `[ATTACK] ${scene.selectedUnit.name} -> enemy (${clickedUnit.q},${clickedUnit.r}) with ${r2.weaponId}: dmg=${r2.finalDamage} dist=${r2.distance} ` +
-        `mult(ac=${r2.armorClassMult}, dist=${r2.distanceMult}, armorPts=${r2.armorPointsMult})`
-      );
+      // Host-authoritative path:
+      // - Clients send intent if possible
+      // - Host can resolve directly (fallback)
+      const sent = trySendAttackIntent(scene, scene.selectedUnit, clickedUnit);
 
-      if (clickedUnit.hp <= 0) {
-        console.log('[ATTACK] target destroyed');
-        killUnit(scene, clickedUnit);
+      if (!sent) {
+        // Fallback: local resolve (dev/singleplayer)
+        const atk = applyAttack(scene.selectedUnit, clickedUnit, {
+          turnOwner: scene.turnOwner,
+          turnNumber: scene.turnNumber,
+          roomCode: scene.roomCode,
+          seed: scene.seed,
+        });
+        if (!atk.ok) {
+          console.log('[ATTACK] failed:', atk.reason);
+          return;
+        }
+
+        // Legacy debug output (kept)
+        const r2 = atk.details || atk.result || null;
+        if (r2) {
+          console.log(
+            `[ATTACK] ${scene.selectedUnit.name} -> enemy (${clickedUnit.q},${clickedUnit.r}) with ${r2.weaponId}: dmg=${atk.damage ?? r2.finalDamage} dist=${r2.distance}`
+          );
+        }
+
+        if (clickedUnit.hp <= 0) {
+          console.log('[ATTACK] target destroyed');
+          killUnit(scene, clickedUnit);
+        }
       }
 
-      // After attack we can exit attack mode automatically (safe UX)
+      // After attack attempt exit attack mode (good UX)
       scene.unitCommandMode = null;
+      clearCombatPreview(scene);
+      scene.refreshUnitActionPanel?.();
       return;
     }
 
     // First, check if there's a unit on this hex and toggle selection.
     if (clickedUnit) {
-      // If clicked on enemy while NOT in attack mode, keep old behavior:
-      // selection toggles only for players/haulers (existing code).
       scene.toggleSelectedUnitAtHex?.(q, r);
       scene.clearPathPreview?.();
       scene.selectedHex = null;
+
+      // Exit attack mode on selecting something else
+      scene.unitCommandMode = null;
+      clearCombatPreview(scene);
+
       scene.debugHex?.(q, r);
       return;
     }
@@ -333,6 +441,13 @@ export function setupWorldInputUI(scene) {
 
     // If we have a selected unit, treat this as a move order
     if (scene.selectedUnit) {
+      // If attack mode active and clicked ground: just cancel attack mode (safer UX)
+      if (scene.unitCommandMode === 'attack') {
+        scene.unitCommandMode = null;
+        clearCombatPreview(scene);
+        return;
+      }
+
       // Stage A: units cannot occupy the same hex.
       // Treat any other unit/hauler/enemy as blocking for pathfinding.
       const blocked = t => {
@@ -387,6 +502,8 @@ export function setupWorldInputUI(scene) {
             } else {
               scene.syncPlayerMove?.(scene.selectedUnit);
             }
+
+            scene.refreshUnitActionPanel?.();
           });
         }
       }
@@ -400,10 +517,13 @@ export function setupWorldInputUI(scene) {
     if (scene.isDragging) return;
     if (!scene.selectedUnit || scene.isUnitMoving) return;
 
-    // If in attack mode, we could show attack preview later. For now, disable path preview.
+    // Stage F: in attack mode -> show attack preview (no path preview)
     if (scene.unitCommandMode === 'attack') {
       scene.clearPathPreview?.();
+      updateCombatPreview(scene);
       return;
+    } else {
+      clearCombatPreview(scene);
     }
 
     const worldPoint = pointer.positionToCamera(scene.cameras.main);
@@ -483,6 +603,7 @@ export function setupWorldInputUI(scene) {
 
   scene.input.on('pointerout', () => {
     scene.clearPathPreview?.();
+    clearCombatPreview(scene);
   });
 }
 
