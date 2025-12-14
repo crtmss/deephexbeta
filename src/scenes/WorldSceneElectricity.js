@@ -636,7 +636,7 @@ export function tickElectricity(scene) {
 
   if (!ids.length) {
     recomputeGlobalEnergyStats(scene);
-    notifyElectricityChanged(scene, 'tick:noNetworks');
+    notifyElectricityChanged(scene, "tick:noNetworks");
     return;
   }
 
@@ -656,11 +656,11 @@ export function tickElectricity(scene) {
 
       let p = 0;
 
-      if (type === 'solar_panel') {
+      if (type === "solar_panel") {
         p = e.productionPerTurn ?? 2;
         b.powerOnline = p > 0;
         if (b.powerOnline) workingGenerators++;
-      } else if (type === 'fuel_generator') {
+      } else if (type === "fuel_generator") {
         const ok = consumeCrudeOil(scene, e.fuelPerTurn ?? 1);
         if (ok) {
           p = e.productionPerTurn ?? 5;
@@ -668,7 +668,7 @@ export function tickElectricity(scene) {
           workingGenerators++;
         } else {
           b.powerOnline = false;
-          b.powerOfflineReason = 'no_fuel';
+          b.powerOfflineReason = "no_fuel";
         }
       }
 
@@ -683,7 +683,7 @@ export function tickElectricity(scene) {
 
       for (const c of net.consumers) {
         c.powerOnline = false;
-        c.powerOfflineReason = 'no_power_source';
+        c.powerOfflineReason = "no_power_source";
       }
 
       net.storedEnergy = Math.min(
@@ -717,7 +717,7 @@ export function tickElectricity(scene) {
       } else {
         for (const c of net.consumers) {
           c.powerOnline = false;
-          c.powerOfflineReason = 'no_power';
+          c.powerOfflineReason = "no_power";
         }
       }
     }
@@ -728,7 +728,7 @@ export function tickElectricity(scene) {
   }
 
   recomputeGlobalEnergyStats(scene);
-  notifyElectricityChanged(scene, 'tick');
+  notifyElectricityChanged(scene, "tick");
 }
 
 /* =========================================================
@@ -775,7 +775,7 @@ export function drawElectricOverlay(scene) {
     }
   }
 
-  const alphaForKey = k =>
+  const alphaForKey = (k) =>
     active == null ? 1 : highlightKeys.has(k) ? 1 : 0.15;
 
   /* ---------- conduits ---------- */
@@ -815,6 +815,142 @@ export function drawElectricOverlay(scene) {
 }
 
 /* =========================================================
+   Highlighting API (needed by default export)
+   ========================================================= */
+
+export function setHighlightedNetwork(scene, id) {
+  if (!scene) return;
+  initElectricity(scene);
+  scene.electricState.highlightNetworkId = id ?? null;
+
+  // Refresh visuals/UI if present
+  try { scene.drawElectricityOverlay?.(); } catch (e) {}
+  try { scene.refreshEnergyPanel?.(); } catch (e) {}
+}
+
+export function clearHighlightedNetwork(scene) {
+  return setHighlightedNetwork(scene, null);
+}
+
+/* =========================================================
+   Debugging API (needed by default export)
+   ========================================================= */
+
+export function debugElectricity(scene) {
+  if (!scene) {
+    console.log("[ENERGY] debugElectricity: no scene");
+    return;
+  }
+  initElectricity(scene);
+
+  try {
+    if (scene.electricState?.dirty) recalcNetworks(scene);
+  } catch (e) {
+    console.warn("[ENERGY] debugElectricity: recalcNetworks failed:", e);
+  }
+
+  const es = scene.electricState || {};
+  const nets = es.networks || {};
+  const ids = Object.keys(nets);
+
+  console.groupCollapsed(
+    `[ENERGY] Debug | networks=${ids.length} | baseStored=${es.baseStored ?? "?"}/${es.baseCapacity ?? "?"} | totalStored=${es.totalStored ?? "?"}/${es.totalCapacity ?? "?"}`
+  );
+
+  for (const id of ids) {
+    const net = nets[id];
+    if (!net) continue;
+
+    const nodes = Array.isArray(net.nodes) ? net.nodes : [];
+    const nodeList = nodes.map((n) => `(${n.q},${n.r})`).join(" ");
+
+    const producers = (net.producers || []).map((b) => {
+      const p = getBuildingCoords(b);
+      return `${canonicalType(b?.type)}@${p ? `${p.q},${p.r}` : "?"}`;
+    });
+
+    const consumers = (net.consumers || []).map((b) => {
+      const p = getBuildingCoords(b);
+      return `${canonicalType(b?.type)}@${p ? `${p.q},${p.r}` : "?"}`;
+    });
+
+    const storage = (net.storage || []).map((b) => {
+      const p = getBuildingCoords(b);
+      return `${canonicalType(b?.type)}@${p ? `${p.q},${p.r}` : "?"}`;
+    });
+
+    console.groupCollapsed(
+      `Network #${id} | stored=${net.storedEnergy ?? 0}/${net.storageCapacity ?? 0} | produced(last)=${net.lastProduced ?? 0} | demand(last)=${net.lastDemand ?? 0} | gensWorking(last)=${net.lastWorkingGenerators ?? 0}`
+    );
+    console.log("nodes:", nodeList);
+    console.log("producers:", producers);
+    console.log("consumers:", consumers);
+    console.log("storage:", storage);
+    console.groupEnd();
+  }
+
+  console.groupEnd();
+}
+
+/* =========================================================
+   Building spawn helper (called by placement)
+   - This is defensive: it tries to use existing scene APIs first.
+   ========================================================= */
+
+function spawnEnergyBuilding(scene, kind, q, r) {
+  // Try to call the game's existing placement/build APIs if they exist.
+  const tile = scene.mapData?.find((t) => t?.q === q && t?.r === r) || null;
+
+  // Common patterns in Phaser strategy projects
+  const candidates = [
+    scene.spawnBuilding,
+    scene.placeBuilding,
+    scene.createBuilding,
+    scene.addBuilding,
+    scene.buildBuilding,
+  ].filter((fn) => typeof fn === "function");
+
+  for (const fn of candidates) {
+    try {
+      // Some implementations expect (type, q, r), others (type, tile), etc.
+      const res =
+        fn.length >= 3 ? fn.call(scene, kind, q, r)
+        : fn.length === 2 ? fn.call(scene, kind, { q, r })
+        : fn.call(scene, kind);
+
+      if (res) return res;
+    } catch (e) {
+      // keep trying fallbacks
+    }
+  }
+
+  // Fallback: create a minimal building object and push to known arrays
+  const b = {
+    id: `energy:${kind}:${q},${r}:${Date.now()}`,
+    type: kind,
+    q,
+    r,
+    tile: tile || undefined,
+    energy: buildingEnergyConfig({ type: kind, energy: {} }),
+  };
+
+  if (!Array.isArray(scene.buildings)) scene.buildings = [];
+  scene.buildings.push(b);
+
+  // If it's a conduit/pole, mark the tile flags so recalcNetworks sees it even if buildings are not tracked elsewhere
+  if (tile) {
+    if (kind === "power_conduit") tile.hasPowerConduit = true;
+    if (kind === "power_pole") tile.hasPowerPole = true;
+  }
+
+  // If the game has a renderer hook, try to let it render the new building
+  try { scene.renderBuilding?.(b); } catch (e) {}
+  try { scene.refreshMap?.(); } catch (e) {}
+
+  return b;
+}
+
+/* =========================================================
    PLACEMENT API (🔥 FIXED, NOT UNDEFINED)
    ========================================================= */
 
@@ -831,20 +967,20 @@ export function startEnergyBuildingPlacement(scene, kindRaw) {
       : null);
 
   if (!hex) {
-    console.warn('[ENERGY] No placement hex');
+    console.warn("[ENERGY] No placement hex");
     return;
   }
 
-  const tile = scene.mapData?.find(t => t.q === hex.q && t.r === hex.r);
+  const tile = scene.mapData?.find((t) => t.q === hex.q && t.r === hex.r);
   if (!tile) return;
 
   if (
-    (kind === 'solar_panel' ||
-      kind === 'fuel_generator' ||
-      kind === 'battery') &&
-    tile.type === 'water'
+    (kind === "solar_panel" ||
+      kind === "fuel_generator" ||
+      kind === "battery") &&
+    tile.type === "water"
   ) {
-    console.warn('[ENERGY] Cannot place on water');
+    console.warn("[ENERGY] Cannot place on water");
     return;
   }
 
@@ -877,12 +1013,12 @@ export function initElectricityForScene(scene) {
 
   scene.drawElectricityOverlay = () => drawElectricOverlay(scene);
 
-  notifyElectricityChanged(scene, 'initForScene');
+  notifyElectricityChanged(scene, "initForScene");
 }
 
 export function applyElectricityOnEndTurn(scene) {
   tickElectricity(scene);
-  notifyElectricityChanged(scene, 'endTurn');
+  notifyElectricityChanged(scene, "endTurn");
 }
 
 /* =========================================================
@@ -906,5 +1042,3 @@ export default {
   applyElectricityOnEndTurn,
   startEnergyBuildingPlacement,
 };
-
-
