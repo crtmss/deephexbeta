@@ -186,6 +186,21 @@ export function setupUnitActionPanel(scene) {
     .setDepth(PANEL_DEPTH);
   container.visible = false;
 
+  // =========================================================
+  // LAYERING FIX (CRITICAL)
+  // =========================================================
+  // makeTextButton() immediately adds its graphics/text/hit objects
+  // into `container`. In the earlier version of this file we added
+  // the background/bezel AFTER creating buttons, which put the BG on
+  // top of buttons (Phaser container render order = child order).
+  // That caused exactly the "layers overlap" issue you see.
+  //
+  // To guarantee correct z-order:
+  //  1) Add bg/bezel/blocker FIRST.
+  //  2) Create buttons/text afterwards.
+  //  3) Keep blocker BELOW buttons so it doesn't steal pointer events.
+  // =========================================================
+
   const bg = scene.add.graphics();
   bg.fillStyle(0x0f2233, 0.94);
   bg.fillRoundedRect(0, 0, W, H, 14);
@@ -197,6 +212,18 @@ export function setupUnitActionPanel(scene) {
   for (let i = 1; i <= 2; i++) {
     bezel.strokeRect(10 * i, 10 * i, W - 20 * i, H - 20 * i);
   }
+
+  // Click-blocker so clicks on empty parts of the panel don't leak into the world.
+  // Must stay BELOW buttons/labels in display order.
+  const blocker = scene.add.rectangle(0, 0, W, H, 0x000000, 0)
+    .setOrigin(0, 0)
+    .setInteractive({ useHandCursor: false });
+  blocker.on('pointerdown', (pointer, lx, ly, event) => {
+    event?.stopPropagation?.();
+  });
+
+  // Add base layers FIRST (fixes overlap/"greyed" buttons)
+  container.add([bg, bezel, blocker]);
 
   // Title + stats
   const titleText = scene.add.text(16, 12, 'Unit', {
@@ -357,15 +384,9 @@ export function setupUnitActionPanel(scene) {
     tp.buttons.push(b);
   }
 
-  // Click-blocker so clicks on panel don't move units/build
-  const blocker = scene.add.rectangle(0, 0, W, H, 0x000000, 0)
-    .setOrigin(0, 0)
-    .setInteractive({ useHandCursor: false });
-  blocker.on('pointerdown', (pointer, lx, ly, event) => {
-    event?.stopPropagation?.();
-  });
-
-  container.add([bg, bezel, blocker, titleText, statsText, weaponLabel, weaponText, pageTitle, pageBody, backBtn.g, backBtn.t, backBtn.hit, tp.label]);
+  // NOTE: bg/bezel/blocker were already added FIRST.
+  // Now add UI content above them.
+  container.add([titleText, statsText, weaponLabel, weaponText, pageTitle, pageBody, backBtn.g, backBtn.t, backBtn.hit, tp.label]);
   // NOTE: buttons were already added to container in makeTextButton
   // We'll manage visibility per-page.
 
