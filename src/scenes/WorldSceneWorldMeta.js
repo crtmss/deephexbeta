@@ -57,8 +57,9 @@ export function getWorldSummaryForSeed(seedStr, width, height) {
 }
 
 // ====== COORDS HELPERS ======
-import { hexToPixel, pixelToHex, roundHex, LIFT_PER_LVL } from './WorldSceneMap.js';
-import { effectiveElevationLocal } from './WorldSceneGeography.js';
+// IMPORTANT: coords/elevation must match the renderer in WorldSceneMap.js,
+// otherwise units will visually drift off the grid and picking/selection breaks.
+import { hexToPixel, pixelToHex, roundHex, LIFT_PER_LVL, effectiveElevation } from './WorldSceneMap.js';
 
 export function getTile(scene, q, r) {
   return (scene.mapData || []).find(h => h.q === q && h.r === r);
@@ -81,8 +82,12 @@ export function axialToWorld(scene, q, r) {
       ? scene.LIFT_PER_LVL
       : (typeof LIFT_PER_LVL === 'number' ? LIFT_PER_LVL : 4);
 
-  const elev = tile ? effectiveElevationLocal(tile) : 0;
+  // MUST match WorldSceneMap.js: effectiveElevation(tile, waterLevel)
+  const wl = (typeof scene?.waterLevel === 'number')
+    ? scene.waterLevel
+    : (typeof scene?.worldWaterLevel === 'number' ? scene.worldWaterLevel : undefined);
 
+  const elev = tile ? effectiveElevation(tile, wl) : 0;
   return { x: base.x + ox, y: (base.y + oy) - liftLvl * elev };
 }
 
@@ -108,7 +113,12 @@ export function worldToAxial(scene, x, y) {
   // refine 2 iterations (enough for stable pick)
   for (let i = 0; i < 2; i++) {
     const t = getTile(scene, rounded.q, rounded.r);
-    const elev = t ? effectiveElevationLocal(t) : 0;
+
+    const wl = (typeof scene?.waterLevel === 'number')
+      ? scene.waterLevel
+      : (typeof scene?.worldWaterLevel === 'number' ? scene.worldWaterLevel : undefined);
+
+    const elev = t ? effectiveElevation(t, wl) : 0;
     const py2 = (y - oy) + liftLvl * elev;
     const hr = pixelToHex(px, py2, size);
     rounded = roundHex(hr.q, hr.r);
@@ -119,7 +129,6 @@ export function worldToAxial(scene, x, y) {
 
 /**
  * Re-snap ALL in-world icons/containers to correct elevated positions.
- * Call after water level changes (because effectiveElevationLocal changes).
  */
 export function refreshAllIconWorldPositions(scene) {
   const snapObj = (obj) => {
@@ -241,7 +250,6 @@ export function endTurn(scene) {
 
   console.log(`[TURN] Ending turn for ${scene.turnOwner} (Turn ${scene.turnNumber})`);
 
-  // важное: эти вызовы могут менять экономику/логистику, но не должны ломать переключение хода
   applyShipRoutesOnEndTurn(scene);
   applyHaulerRoutesOnEndTurn(scene);
   applyLogisticsOnEndTurn(scene);
@@ -294,7 +302,7 @@ export function endTurn(scene) {
 
   console.log(`[TURN] New turn owner: ${scene.turnOwner} (Turn ${scene.turnNumber})`);
 
-  // FIX: UI показывает номер хода (как было раньше)
+  // UI показывает номер хода
   updateTurnText(scene, scene.turnNumber);
 
   scene.printTurnSummary?.();
