@@ -8,7 +8,6 @@ import { setupBuildingsUI } from './WorldSceneBuildingsUI.js';
 import { setupEnergyPanel } from './WorldSceneEnergyUI.js';
 import { setupHexInfoPanel } from './WorldSceneHexInfo.js';
 
-// Logistics UI (panel) — endTurn runtime is inside merged WorldMeta file now
 import { setupLogisticsPanel } from './WorldSceneLogistics.js';
 
 // UI (HUD, tabs, input)
@@ -33,7 +32,7 @@ import { applyCombatEvent } from './WorldSceneCombatRuntime.js';
 
 import { supabase as sharedSupabase } from '../net/SupabaseClient.js';
 
-// NEW: merged file provides meta + coords + turns
+// merged world meta + coords + turn
 import {
   getWorldSummaryForSeed,
   axialToWorld,
@@ -43,7 +42,7 @@ import {
   getNextPlayer as getNextPlayerImpl,
 } from './WorldSceneWorldMeta.js';
 
-// NEW: AI moved to units folder
+// AI moved to units folder
 import { moveEnemies as moveEnemiesImpl } from '../units/WorldSceneAI.js';
 
 export default class WorldScene extends Phaser.Scene {
@@ -83,7 +82,9 @@ export default class WorldScene extends Phaser.Scene {
 
     this.uiLocked = false;
 
-    const { seed, playerName, roomCode, isHost, supabase, lobbyState } = this.scene.settings.data || {};
+    const { seed, playerName, roomCode, isHost, supabase, lobbyState } =
+      this.scene.settings.data || {};
+
     this.seed = seed || '000000';
     this.playerName = playerName || 'Player';
     this.roomCode = roomCode || this.seed;
@@ -138,6 +139,12 @@ export default class WorldScene extends Phaser.Scene {
     this.worldToAxial = (x, y) => worldToAxial(this, x, y);
     this.refreshAllIconWorldPositions = () => refreshAllIconWorldPositions(this);
 
+    // IMPORTANT: bind these BEFORE UI/input setup
+    this.applyCombatEvent = (ev) => applyCombatEvent(this, ev);
+    this.moveEnemies = () => moveEnemiesImpl(this);
+    this.endTurn = () => endTurnImpl(this);
+    this.getNextPlayer = (players, currentName) => getNextPlayerImpl(players, currentName);
+
     // Apply water level & draw world once
     this.recomputeWaterFromLevel();
 
@@ -153,13 +160,15 @@ export default class WorldScene extends Phaser.Scene {
     attachSelectionHighlight(this);
     setupWorldMenus(this);
     setupBuildingsUI(this);
+
     setupTurnUI(this);
     setupLogisticsPanel(this);
     setupEnergyPanel(this);
     setupHexInfoPanel(this);
     setupHistoryUI(this);
 
-    if (this.turnOwner) updateTurnText(this, this.turnOwner);
+    // FIX: UI показывает номер хода
+    updateTurnText(this, this.turnNumber);
 
     this.addWorldMetaBadge();
 
@@ -167,16 +176,6 @@ export default class WorldScene extends Phaser.Scene {
     initDebugMenu(this);
 
     this.refreshAllIconWorldPositions();
-
-    // Combat applier
-    this.applyCombatEvent = (ev) => applyCombatEvent(this, ev);
-
-    // AI (now in units/)
-    this.moveEnemies = () => moveEnemiesImpl(this);
-
-    // Turn logic (now in merged file)
-    this.endTurn = () => endTurnImpl(this);
-    this.getNextPlayer = (players, currentName) => getNextPlayerImpl(players, currentName);
 
     /* Supabase sync bridge stub */
     if (this.supabase && this.roomCode && this.playerName) {
@@ -382,7 +381,7 @@ Biomes: ${biome}`;
   }
 }
 
-/* ===== prototypes оставляем как есть (можно вынести позже) ===== */
+/* ===== prototypes left as-is ===== */
 
 WorldScene.prototype.setSelectedUnit = function (unit) {
   this.selectedUnit = unit;
