@@ -88,7 +88,11 @@ export default class WorldScene extends Phaser.Scene {
     this.seed = seed || '000000';
     this.playerName = playerName || 'Player';
     this.roomCode = roomCode || this.seed;
-    this.isHost = !!isHost;
+
+    // In singleplayer / local testing, scene.settings.data.isHost is обычно undefined.
+    // If we default to false, AI никогда не ходит, потому что endTurn запускает AI только у host.
+    // Поэтому: undefined -> true (локальный хост), иначе уважаем явно заданное значение.
+    this.isHost = (typeof isHost === 'undefined') ? true : !!isHost;
 
     this.supabase = supabase || sharedSupabase || null;
     this.lobbyState = lobbyState || { units: {}, enemies: [] };
@@ -139,7 +143,7 @@ export default class WorldScene extends Phaser.Scene {
     this.worldToAxial = (x, y) => worldToAxial(this, x, y);
     this.refreshAllIconWorldPositions = () => refreshAllIconWorldPositions(this);
 
-    // IMPORTANT: bind these BEFORE UI/input setup
+    // bind these BEFORE UI/input setup
     this.applyCombatEvent = (ev) => applyCombatEvent(this, ev);
     this.moveEnemies = () => moveEnemiesImpl(this);
     this.endTurn = () => endTurnImpl(this);
@@ -167,7 +171,6 @@ export default class WorldScene extends Phaser.Scene {
     setupHexInfoPanel(this);
     setupHistoryUI(this);
 
-    // FIX: UI показывает номер хода
     updateTurnText(this, this.turnNumber);
 
     this.addWorldMetaBadge();
