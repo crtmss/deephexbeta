@@ -184,7 +184,7 @@ import { applyLogisticsOnEndTurn } from './WorldSceneLogistics.js';
 import { applyLogisticsRoutesOnEndTurn } from './WorldSceneLogisticsRuntime.js';
 
 import { updateTurnText } from './WorldSceneUI.js';
-import { ensureUnitCombatFields } from '../units/UnitState.js';
+import { ensureUnitCombatFields } from '../units/UnitActions.js';
 import { applyElectricityOnEndTurn } from './WorldSceneElectricity.js';
 
 export function getNextPlayer(players, currentName) {
