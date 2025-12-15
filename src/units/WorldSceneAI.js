@@ -81,4 +81,86 @@ export function moveEnemies(scene) {
 
     // 1) Attack if possible
     const weapons = enemy.weapons || [];
-    const weaponId = weapons[enemy.activeWeaponIndex] || wea
+    const weaponId = weapons[enemy.activeWeaponIndex] || weapons[0] || null;
+
+    if (weaponId && enemy.ap > 0) {
+      const v = validateAttack(enemy, nearest, weaponId);
+      if (v.ok) {
+        spendAp(enemy, 1);
+
+        // keep your current convention: attacks may reduce MP
+        if ((enemy.mp || 0) > 0) enemy.mp = Math.max(0, enemy.mp - 1);
+        if (Number.isFinite(enemy.movementPoints)) enemy.movementPoints = enemy.mp;
+
+        ensureUnitCombatFields(nearest);
+        const r = resolveAttack(enemy, nearest, weaponId);
+
+        const attackerId = String(
+          enemy.id ?? enemy.unitId ?? enemy.uuid ?? enemy.netId ?? `${enemy.unitName || enemy.name}@${enemy.q},${enemy.r}`
+        );
+        const defenderId = String(
+          nearest.id ?? nearest.unitId ?? nearest.uuid ?? nearest.netId ?? `${nearest.unitName || nearest.name}@${nearest.q},${nearest.r}`
+        );
+
+        const event = {
+          type: 'combat:attack',
+          attackerId,
+          defenderId,
+          weaponId,
+          damage: r.finalDamage,
+          distance: r.distance,
+          turnNumber: scene.turnNumber,
+          timestamp: Date.now(),
+        };
+
+        scene.applyCombatEvent?.(event);
+        continue;
+      }
+    }
+
+    // 2) Move towards target using A*
+    if ((enemy.mp || 0) <= 0) continue;
+
+    const path = computePathWithAStar(
+      enemy,
+      { q: nearest.q, r: nearest.r },
+      scene.mapData,
+      (t) => isBlocked(t, enemy)
+    );
+
+    if (!path || path.length < 2) continue;
+
+    let mp = enemy.mp || 0;
+    let lastStep = null;
+
+    for (let i = 1; i < path.length; i++) {
+      const step = path[i];
+      const tile = getTile(scene, step.q, step.r);
+      const cost = tile?.movementCost || 1;
+      if (cost > mp) break;
+
+      const occ = getUnitAt(step.q, step.r);
+      if (occ && occ !== enemy) break;
+
+      mp -= cost;
+      lastStep = step;
+
+      const d2 = hexDistance(step.q, step.r, nearest.q, nearest.r);
+      if (d2 <= 1) break;
+    }
+
+    if (lastStep) {
+      enemy.mp = mp;
+      if (Number.isFinite(enemy.movementPoints)) enemy.movementPoints = mp;
+
+      const { x, y } = axialToWorld(scene, lastStep.q, lastStep.r);
+      try { enemy.setPosition?.(x, y); }
+      catch { enemy.x = x; enemy.y = y; }
+
+      enemy.q = lastStep.q;
+      enemy.r = lastStep.r;
+    }
+  }
+
+  scene.refreshUnitActionPanel?.();
+}
