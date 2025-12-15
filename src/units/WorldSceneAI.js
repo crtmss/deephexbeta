@@ -1,7 +1,7 @@
 // src/units/WorldSceneAI.js
 import { findPath as aStarFindPath } from '../engine/AStar.js';
 import { validateAttack, resolveAttack } from './CombatResolver.js';
-mport { ensureUnitCombatFields, spendAp } from './UnitActions.js';
+import { ensureUnitCombatFields, spendAp } from './UnitActions.js';
 
 // NOTE: WorldSceneWorldMeta.js теперь содержит coords helpers
 import { getTile, axialToWorld } from '../scenes/WorldSceneWorldMeta.js';
