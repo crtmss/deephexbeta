@@ -102,9 +102,7 @@ export function worldToAxial(scene, x, y) {
 
   // initial guess ignoring elevation
   const px = x - ox;
-  let py = y - oy;
-
-  let { q, r } = pixelToHex(px, py, size);
+  let { q, r } = pixelToHex(px, (y - oy), size);
   let rounded = roundHex(q, r);
 
   // refine 2 iterations (enough for stable pick)
@@ -243,6 +241,7 @@ export function endTurn(scene) {
 
   console.log(`[TURN] Ending turn for ${scene.turnOwner} (Turn ${scene.turnNumber})`);
 
+  // важное: эти вызовы могут менять экономику/логистику, но не должны ломать переключение хода
   applyShipRoutesOnEndTurn(scene);
   applyHaulerRoutesOnEndTurn(scene);
   applyLogisticsOnEndTurn(scene);
@@ -270,31 +269,35 @@ export function endTurn(scene) {
   // Reset points BEFORE AI acts
   resetUnitsForNewTurn(scene);
 
+  // Host runs AI slice
   if (scene.isHost) {
     scene.moveEnemies?.();
   }
 
-  const idx = (scene.players || []).findIndex(p =>
-    p.playerName === scene.turnOwner ||
-    p.name === scene.turnOwner
+  const playersArr = scene.players || [];
+  const idx = playersArr.findIndex(p =>
+    (typeof p === 'string' ? p : (p.playerName || p.name)) === scene.turnOwner
   );
 
-  const nextIdx = idx === -1
+  const nextIdx = (idx === -1)
     ? 0
-    : (idx + 1) % scene.players.length;
+    : ((idx + 1) % Math.max(1, playersArr.length));
 
+  const pNext = playersArr[nextIdx];
   const nextOwner =
-    scene.players[nextIdx].playerName ||
-    scene.players[nextIdx].name;
+    (typeof pNext === 'string')
+      ? pNext
+      : (pNext?.playerName || pNext?.name || scene.turnOwner);
 
   scene.turnOwner = nextOwner;
   scene.turnNumber += 1;
 
   console.log(`[TURN] New turn owner: ${scene.turnOwner} (Turn ${scene.turnNumber})`);
 
-  updateTurnText(scene, scene.turnOwner);
-  scene.printTurnSummary?.();
+  // FIX: UI показывает номер хода (как было раньше)
+  updateTurnText(scene, scene.turnNumber);
 
+  scene.printTurnSummary?.();
   scene.refreshUnitActionPanel?.();
 
   scene.uiLocked = false;
