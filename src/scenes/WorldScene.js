@@ -54,13 +54,10 @@ import ElectricitySystem, {
 
 // Combat runtime is applied on the main map (no separate CombatScene).
 import { applyCombatEvent } from './WorldSceneCombatRuntime.js';
-import { ensureUnitCombatFields, spendAp } from '../units/UnitActions.js';
 import { resolveAttack, validateAttack } from '../units/CombatResolver.js';
+import { ensureUnitCombatFields, spendAp } from '../units/UnitState.js';
 
 import { supabase as sharedSupabase } from '../net/SupabaseClient.js';
-
-// NEW: Unit action panel (Stage C)
-import { setupUnitActionPanel } from './WorldSceneUnitPanel.js';
 
 /* =========================
    Deterministic world summary (UI-only)
@@ -304,9 +301,6 @@ export default class WorldScene extends Phaser.Scene {
     // NEW: History UI (panel to the left of resources panel)
     setupHistoryUI(this);
 
-    // NEW: unit panel (Stage C)
-    setupUnitActionPanel(this);
-
     if (this.turnOwner) {
       updateTurnText(this, this.turnOwner);
     }
@@ -321,6 +315,9 @@ export default class WorldScene extends Phaser.Scene {
 
     // After everything exists: ensure icons are snapped to correct lifted positions
     this.refreshAllIconWorldPositions();
+
+    // Expose combat event applier on scene (used by AI + net bridge)
+    this.applyCombatEvent = (ev) => applyCombatEvent(this, ev);
 
     /* =========================
        Supabase sync bridge stub
@@ -360,10 +357,6 @@ export default class WorldScene extends Phaser.Scene {
     }
 
     this.printTurnSummary?.();
-
-    // Combat is resolved on the WorldScene map. Expose event applier for net/AI.
-    // (No separate CombatScene is used.)
-    this.applyCombatEvent = (event) => applyCombatEvent(this, event);
   }
 
   getNextPlayer(players, currentName) {
@@ -629,6 +622,9 @@ Biomes: ${biome}`;
       console.error('[ENERGY] Error during end-turn electricity tick:', err);
     }
 
+    // Reset points BEFORE AI acts, so AI isn't "stuck" and doesn't look random.
+    resetUnitsForNewTurn(this);
+
     if (this.isHost) {
       this.moveEnemies();
     }
@@ -652,31 +648,37 @@ Biomes: ${biome}`;
     console.log(`[TURN] New turn owner: ${this.turnOwner} (Turn ${this.turnNumber})`);
 
     updateTurnText(this, this.turnOwner);
-
-    // ✅ FIX: refresh MP/AP for units of the new owner
-    resetUnitsForNewTurn(this);
-
     this.printTurnSummary?.();
+
+    // Ensure unit panel refreshes each turn
+    this.refreshUnitActionPanel?.();
 
     this.uiLocked = false;
   }
 
+  /**
+   * Enemy AI (host): NOT RANDOM.
+   * - If any player unit in weapon range and has AP -> attack.
+   * - Else if has MP -> A* chase the nearest player unit.
+   */
   moveEnemies() {
-    // Host-authoritative AI turn (simplified):
-    //  1) If any player unit is in weapon range -> attack.
-    //  2) Else move towards the nearest player unit using A* (like mobile base).
-    //  3) No stacking: AI will not move onto occupied tiles.
-    if (!this.enemies || this.enemies.length === 0) return;
-
     const scene = this;
+    if (!scene.enemies || scene.enemies.length === 0) return;
 
-    const allUnits = () => ([]).concat(scene.units || [], scene.players || [], scene.enemies || [], scene.haulers || []);
-    const getUnitAt = (q, r) => allUnits().find(u => u && u.q === q && u.r === r) || null;
-    const isBlocked = (t, self) => {
-      if (!t) return true;
-      if (t.type === 'water' || t.type === 'mountain') return true;
-      const occ = getUnitAt(t.q, t.r);
-      if (occ && occ !== self) return true;
+    const getUnitAt = (q, r) => {
+      const all = []
+        .concat(scene.units || [])
+        .concat(scene.players || [])
+        .concat(scene.enemies || [])
+        .concat(scene.haulers || []);
+      return all.find(u => u && !u.isDead && u.q === q && u.r === r) || null;
+    };
+
+    const isBlocked = (tile, mover) => {
+      if (!tile) return true;
+      if (tile.type === 'water' || tile.type === 'mountain') return true;
+      const occ = getUnitAt(tile.q, tile.r);
+      if (occ && occ !== mover) return true; // no stacking
       return false;
     };
 
@@ -687,7 +689,11 @@ Biomes: ${biome}`;
       return (Math.abs(dq) + Math.abs(dr) + Math.abs(ds)) / 2;
     };
 
-    const playerTargets = (scene.units || []).filter(u => u && u.isPlayer && !u.isDead);
+    const playerTargets =
+      (scene.units || []).filter(u => u && u.isPlayer && !u.isDead).length
+        ? (scene.units || []).filter(u => u && u.isPlayer && !u.isDead)
+        : (scene.players || []).filter(u => u && u.isPlayer && !u.isDead);
+
     if (playerTargets.length === 0) return;
 
     for (const enemy of scene.enemies) {
@@ -696,7 +702,7 @@ Biomes: ${biome}`;
 
       ensureUnitCombatFields(enemy);
 
-      // Pick nearest visible target (no FOW yet)
+      // Pick nearest target
       let nearest = null;
       let nearestDist = Infinity;
       for (const p of playerTargets) {
@@ -705,18 +711,17 @@ Biomes: ${biome}`;
       }
       if (!nearest) continue;
 
-      // --- 1) Try attack if in range and has AP ---
+      // --- 1) attack if possible ---
       const weapons = enemy.weapons || [];
       const weaponId = weapons[enemy.activeWeaponIndex] || weapons[0] || null;
       if (weaponId && enemy.ap > 0) {
         const v = validateAttack(enemy, nearest, weaponId);
         if (v.ok) {
-          // Spend AP
+          // Spend AP + also 1 MP if any left (your rule)
           spendAp(enemy, 1);
-          // Optional: also spend 1 MP if any left (per your rule)
           if ((enemy.mp || 0) > 0) enemy.mp = Math.max(0, enemy.mp - 1);
+          if (Number.isFinite(enemy.movementPoints)) enemy.movementPoints = enemy.mp;
 
-          // Resolve damage and broadcast/apply as an event
           ensureUnitCombatFields(nearest);
           const r = resolveAttack(enemy, nearest, weaponId);
 
@@ -734,35 +739,34 @@ Biomes: ${biome}`;
             timestamp: Date.now(),
           };
 
-          // Apply on host (and let existing hooks update UI)
           scene.applyCombatEvent?.(event);
-          continue; // enemy used its action this simple AI tick
+          continue;
         }
       }
 
-      // --- 2) Move towards target using A* ---
-      // If no MP, skip
+      // --- 2) move towards target using A* ---
       if ((enemy.mp || 0) <= 0) continue;
 
       const path = computePathWithAStar(enemy, { q: nearest.q, r: nearest.r }, scene.mapData, (t) => isBlocked(t, enemy));
       if (!path || path.length < 2) continue;
 
-      // Walk up to MP (cost-aware)
       let mp = enemy.mp || 0;
       let lastStep = null;
+
       for (let i = 1; i < path.length; i++) {
         const step = path[i];
         const tile = getTile(scene, step.q, step.r);
         const cost = tile?.movementCost || 1;
         if (cost > mp) break;
-        // Don't move onto the target's hex (occupied). Stop adjacent.
+
+        // Don't move onto occupied hex
         const occ = getUnitAt(step.q, step.r);
         if (occ && occ !== enemy) break;
 
         mp -= cost;
         lastStep = step;
 
-        // Stop early if we got adjacent (so attack can happen next turn)
+        // Stop when adjacent (so can attack next time)
         const d2 = hexDistance(step.q, step.r, nearest.q, nearest.r);
         if (d2 <= 1) break;
       }
@@ -776,6 +780,8 @@ Biomes: ${biome}`;
         enemy.r = lastStep.r;
       }
     }
+
+    scene.refreshUnitActionPanel?.();
   }
 
   recomputeWaterFromLevel() {
@@ -866,16 +872,13 @@ function computePathWithAStar(unit, targetHex, mapData, blockedPred) {
   return aStarFindPath(start, goal, mapData, isBlocked);
 }
 
-/**
- * Reset MP/AP at the start of each unit's turn owner.
- * (keeps mp/movementPoints + ap in sync).
- */
 function resetUnitsForNewTurn(scene) {
-  if (!scene) return;
+  const owner = scene.turnOwner || null;
+  const all = []
+    .concat(scene.units || [])
+    .concat(scene.players || [])
+    .concat(scene.enemies || []);
 
-  const owner = scene.turnOwner;
-
-  const all = ([]).concat(scene.units || [], scene.players || [], scene.enemies || []);
   for (const u of all) {
     if (!u || u.isDead) continue;
     ensureUnitCombatFields(u);
@@ -917,8 +920,16 @@ WorldScene.prototype.setSelectedUnit = function (unit) {
   this.updateSelectionHighlight?.();
 
   if (unit) {
-    this.openRootUnitMenu?.(unit);
+    // Stage C: always show the bottom-center unit panel (players + enemies)
+    this.openUnitActionPanel?.(unit);
+
+    // Keep legacy mobile-base radial menu for production/build actions
+    // (do not show it for enemies).
+    if (!(unit.isEnemy || unit.controller === 'ai')) {
+      this.openRootUnitMenu?.(unit);
+    }
   } else {
+    this.closeUnitActionPanel?.();
     this.closeAllMenus?.();
   }
 };
@@ -931,10 +942,11 @@ WorldScene.prototype.toggleSelectedUnitAtHex = function (q, r) {
 
   // ✅ include enemies so clicking them opens info panel
   const unit =
+    (this.units || []).find(u => u.q === q && u.r === r) ||
     (this.players || []).find(u => u.q === q && u.r === r) ||
     (this.enemies || []).find(u => u.q === q && u.r === r) ||
-    (this.units || []).find(u => u.q === q && u.r === r) ||
-    (this.haulers || []).find(h => h.q === q && h.r === r);
+    (this.haulers || []).find(h => h.q === q && h.r === r) ||
+    null;
 
   this.setSelectedUnit(unit || null);
 };
