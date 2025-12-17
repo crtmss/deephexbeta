@@ -367,8 +367,11 @@ export function setupWorldInputUI(scene) {
     if (scene.isDragging) return;
     if (pointer.rightButtonDown && pointer.rightButtonDown()) return;
 
-    const worldPoint = pointer.positionToCamera(scene.cameras.main);
-    const rounded = scene.worldToAxial(worldPoint.x, worldPoint.y);
+    // IMPORTANT:
+    // Use pointer.worldX/worldY (already camera-adjusted) to keep picking consistent
+    // with the hover logic in WorldSceneMap.drawHexMap().
+    // Using positionToCamera() here can drift under zoom/scroll and break selection.
+    const rounded = scene.worldToAxial(pointer.worldX, pointer.worldY);
 
     if (
       rounded.q < 0 ||
@@ -556,8 +559,11 @@ export function setupWorldInputUI(scene) {
       return;
     }
 
-    const worldPoint = pointer.positionToCamera(scene.cameras.main);
-    const rounded = scene.worldToAxial(worldPoint.x, worldPoint.y);
+    // IMPORTANT:
+    // Use pointer.worldX/worldY (already camera-adjusted) to keep picking consistent
+    // with the hover logic in WorldSceneMap.drawHexMap().
+    // Using positionToCamera() here can produce drift under zoom/scroll.
+    const rounded = scene.worldToAxial(pointer.worldX, pointer.worldY);
 
     if (
       rounded.q < 0 ||
