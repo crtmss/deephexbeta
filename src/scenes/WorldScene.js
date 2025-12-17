@@ -3,6 +3,7 @@ import HexMap from '../engine/HexMap.js';
 
 import { drawLocationsAndRoads } from './WorldSceneMapLocations.js';
 import { setupWorldMenus, attachSelectionHighlight } from './WorldSceneMenus.js';
+import { setupUnitActionPanel } from './WorldSceneUnitPanel.js';
 import { startHexTransformTool } from './HexTransformTool.js';
 import { setupBuildingsUI } from './WorldSceneBuildingsUI.js';
 import { setupEnergyPanel } from './WorldSceneEnergyUI.js';
@@ -89,9 +90,7 @@ export default class WorldScene extends Phaser.Scene {
     this.playerName = playerName || 'Player';
     this.roomCode = roomCode || this.seed;
 
-    // In singleplayer / local testing, scene.settings.data.isHost is обычно undefined.
-    // If we default to false, AI никогда не ходит, потому что endTurn запускает AI только у host.
-    // Поэтому: undefined -> true (локальный хост), иначе уважаем явно заданное значение.
+    // local/dev: if not provided, act as host so AI runs.
     this.isHost = (typeof isHost === 'undefined') ? true : !!isHost;
 
     this.supabase = supabase || sharedSupabase || null;
@@ -163,6 +162,10 @@ export default class WorldScene extends Phaser.Scene {
     // UI setup
     attachSelectionHighlight(this);
     setupWorldMenus(this);
+
+    // ✅ CRITICAL: without this, openUnitActionPanel/refreshUnitActionPanel never exist
+    setupUnitActionPanel(this);
+
     setupBuildingsUI(this);
 
     setupTurnUI(this);
