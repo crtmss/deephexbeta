@@ -57,9 +57,13 @@ export function getWorldSummaryForSeed(seedStr, width, height) {
 }
 
 // ====== COORDS HELPERS ======
-// IMPORTANT: coords/elevation must match the renderer in WorldSceneMap.js,
-// otherwise units will visually drift off the grid and picking/selection breaks.
-import { hexToPixel, pixelToHex, roundHex, LIFT_PER_LVL, effectiveElevation } from './WorldSceneMap.js';
+import {
+  hexToPixel,
+  pixelToHex,
+  roundHex,
+  LIFT_PER_LVL,
+  effectiveElevation
+} from './WorldSceneMap.js';
 
 export function getTile(scene, q, r) {
   return (scene.mapData || []).find(h => h.q === q && h.r === r);
@@ -82,18 +86,17 @@ export function axialToWorld(scene, q, r) {
       ? scene.LIFT_PER_LVL
       : (typeof LIFT_PER_LVL === 'number' ? LIFT_PER_LVL : 4);
 
-  // MUST match WorldSceneMap.js: effectiveElevation(tile, waterLevel)
   const wl = (typeof scene?.waterLevel === 'number')
     ? scene.waterLevel
     : (typeof scene?.worldWaterLevel === 'number' ? scene.worldWaterLevel : undefined);
 
   const elev = tile ? effectiveElevation(tile, wl) : 0;
+
   return { x: base.x + ox, y: (base.y + oy) - liftLvl * elev };
 }
 
 /**
  * World -> axial, WITH elevation compensation.
- * We do a small iterative refinement: guess hex, read its elevation, re-project.
  */
 export function worldToAxial(scene, x, y) {
   const size = scene.hexSize;
@@ -105,12 +108,10 @@ export function worldToAxial(scene, x, y) {
       ? scene.LIFT_PER_LVL
       : (typeof LIFT_PER_LVL === 'number' ? LIFT_PER_LVL : 4);
 
-  // initial guess ignoring elevation
   const px = x - ox;
   let { q, r } = pixelToHex(px, (y - oy), size);
   let rounded = roundHex(q, r);
 
-  // refine 2 iterations (enough for stable pick)
   for (let i = 0; i < 2; i++) {
     const t = getTile(scene, rounded.q, rounded.r);
 
@@ -255,7 +256,6 @@ export function endTurn(scene) {
   applyLogisticsOnEndTurn(scene);
   applyLogisticsRoutesOnEndTurn(scene);
 
-  // Electricity tick
   try {
     if (typeof applyElectricityOnEndTurn === 'function') {
       applyElectricityOnEndTurn(scene);
@@ -274,12 +274,12 @@ export function endTurn(scene) {
     console.error('[ENERGY] Error during end-turn electricity tick:', err);
   }
 
-  // Reset points BEFORE AI acts
   resetUnitsForNewTurn(scene);
 
-  // Host runs AI slice
-  if (scene.isHost) {
-    scene.moveEnemies?.();
+  // === AI ALWAYS ACTS AFTER PLAYER TURN ===
+  if (scene.moveEnemies) {
+    console.log('[AI] Executing AI turn');
+    scene.moveEnemies();
   }
 
   const playersArr = scene.players || [];
@@ -287,9 +287,8 @@ export function endTurn(scene) {
     (typeof p === 'string' ? p : (p.playerName || p.name)) === scene.turnOwner
   );
 
-  const nextIdx = (idx === -1)
-    ? 0
-    : ((idx + 1) % Math.max(1, playersArr.length));
+  const nextIdx =
+    (idx === -1) ? 0 : ((idx + 1) % Math.max(1, playersArr.length));
 
   const pNext = playersArr[nextIdx];
   const nextOwner =
@@ -302,7 +301,6 @@ export function endTurn(scene) {
 
   console.log(`[TURN] New turn owner: ${scene.turnOwner} (Turn ${scene.turnNumber})`);
 
-  // UI показывает номер хода
   updateTurnText(scene, scene.turnNumber);
 
   scene.printTurnSummary?.();
