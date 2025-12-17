@@ -3,8 +3,8 @@ import { findPath as aStarFindPath } from '../engine/AStar.js';
 import { validateAttack, resolveAttack } from './CombatResolver.js';
 import { ensureUnitCombatFields, spendAp } from './UnitActions.js';
 
-// NOTE: WorldSceneWorldMeta.js теперь содержит coords helpers
-import { getTile, axialToWorld } from '../scenes/WorldSceneWorldMeta.js';
+// NOTE: WorldSceneWorldMeta.js содержит coords helpers
+import { getTile } from '../scenes/WorldSceneWorldMeta.js';
 
 export function computePathWithAStar(unit, targetHex, mapData, blockedPred) {
   const start = { q: unit.q, r: unit.r };
@@ -15,14 +15,13 @@ export function computePathWithAStar(unit, targetHex, mapData, blockedPred) {
   const isBlocked = tile => {
     if (!tile) return true;
     return blockedPred ? blockedPred(tile) : false;
-    // NOTE: AStar.js expects "isBlocked(tile) === true" meaning cannot enter
   };
 
   return aStarFindPath(start, goal, mapData, isBlocked);
 }
 
 /**
- * Enemy AI (host): NOT RANDOM.
+ * Enemy AI (NOT RANDOM).
  * - If any player unit in weapon range and has AP -> attack.
  * - Else if has MP -> A* chase the nearest player unit.
  */
@@ -40,10 +39,8 @@ export function moveEnemies(scene) {
 
   const isBlocked = (tile, mover) => {
     if (!tile) return true;
-    // terrain blocks
     if (tile.type === 'water' || tile.type === 'mountain') return true;
 
-    // occupancy blocks (except mover itself)
     const occ = getUnitAt(tile.q, tile.r);
     if (occ && occ !== mover) return true;
 
@@ -70,16 +67,19 @@ export function moveEnemies(scene) {
 
     ensureUnitCombatFields(enemy);
 
-    // pick nearest target
+    // === pick nearest target ===
     let nearest = null;
     let nearestDist = Infinity;
     for (const p of playerTargets) {
       const d = hexDistance(enemy.q, enemy.r, p.q, p.r);
-      if (d < nearestDist) { nearestDist = d; nearest = p; }
+      if (d < nearestDist) {
+        nearestDist = d;
+        nearest = p;
+      }
     }
     if (!nearest) continue;
 
-    // 1) Attack if possible
+    // === 1) ATTACK if possible ===
     const weapons = enemy.weapons || [];
     const weaponId = weapons[enemy.activeWeaponIndex] || weapons[0] || null;
 
@@ -88,24 +88,16 @@ export function moveEnemies(scene) {
       if (v.ok) {
         spendAp(enemy, 1);
 
-        // keep your current convention: attacks may reduce MP
         if ((enemy.mp || 0) > 0) enemy.mp = Math.max(0, enemy.mp - 1);
         if (Number.isFinite(enemy.movementPoints)) enemy.movementPoints = enemy.mp;
 
         ensureUnitCombatFields(nearest);
         const r = resolveAttack(enemy, nearest, weaponId);
 
-        const attackerId = String(
-          enemy.id ?? enemy.unitId ?? enemy.uuid ?? enemy.netId ?? `${enemy.unitName || enemy.name}@${enemy.q},${enemy.r}`
-        );
-        const defenderId = String(
-          nearest.id ?? nearest.unitId ?? nearest.uuid ?? nearest.netId ?? `${nearest.unitName || nearest.name}@${nearest.q},${nearest.r}`
-        );
-
         const event = {
           type: 'combat:attack',
-          attackerId,
-          defenderId,
+          attackerId: String(enemy.id ?? enemy.name),
+          defenderId: String(nearest.id ?? nearest.name),
           weaponId,
           damage: r.finalDamage,
           distance: r.distance,
@@ -118,47 +110,46 @@ export function moveEnemies(scene) {
       }
     }
 
-    // 2) Move towards target using A*
+    // === 2) MOVE towards target using A* ===
     if ((enemy.mp || 0) <= 0) continue;
 
     const path = computePathWithAStar(
       enemy,
       { q: nearest.q, r: nearest.r },
       scene.mapData,
-      (t) => isBlocked(t, enemy)
+      t => isBlocked(t, enemy)
     );
 
     if (!path || path.length < 2) continue;
 
     let mp = enemy.mp || 0;
-    let lastStep = null;
+    let lastIndex = 0;
 
     for (let i = 1; i < path.length; i++) {
       const step = path[i];
       const tile = getTile(scene, step.q, step.r);
       const cost = tile?.movementCost || 1;
+
       if (cost > mp) break;
 
       const occ = getUnitAt(step.q, step.r);
       if (occ && occ !== enemy) break;
 
       mp -= cost;
-      lastStep = step;
+      lastIndex = i;
 
       const d2 = hexDistance(step.q, step.r, nearest.q, nearest.r);
       if (d2 <= 1) break;
     }
 
-    if (lastStep) {
+    if (lastIndex > 0) {
+      const pathToMove = path.slice(0, lastIndex + 1);
+
       enemy.mp = mp;
       if (Number.isFinite(enemy.movementPoints)) enemy.movementPoints = mp;
 
-      const { x, y } = axialToWorld(scene, lastStep.q, lastStep.r);
-      try { enemy.setPosition?.(x, y); }
-      catch { enemy.x = x; enemy.y = y; }
-
-      enemy.q = lastStep.q;
-      enemy.r = lastStep.r;
+      // 🔥 FIX: move using the SAME pipeline as player units
+      scene.startStepMovement(enemy, pathToMove);
     }
   }
 
