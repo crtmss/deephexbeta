@@ -53,10 +53,34 @@ function getTile(scene, q, r) {
   return (scene.mapData || []).find(t => t && t.q === q && t.r === r) || null;
 }
 
+/**
+ * ✅ FIX: Single source of truth for "land" tiles.
+ * Units may spawn ONLY on land:
+ * - not water
+ * - not mountain
+ * - not under water / covered by water flags (some maps keep groundType but are flooded)
+ */
+function isLandTile(t) {
+  if (!t) return false;
+
+  // Primary type check
+  if (t.type === 'water' || t.type === 'mountain') return false;
+
+  // Flood flags (important!)
+  if (t.isUnderWater === true) return false;
+  if (t.isWater === true) return false;
+  if (t.isCoveredByWater === true) return false;
+
+  // Some generators keep groundType='mountain' but type differs
+  if (t.groundType === 'mountain') return false;
+
+  return true;
+}
+
 function isBlockedForUnit(scene, q, r) {
   const t = getTile(scene, q, r);
-  if (!t) return true;
-  if (t.type === 'water' || t.type === 'mountain') return true;
+  if (!isLandTile(t)) return true;
+
   // No stacking: any unit occupying blocks
   const occ = (scene.units || []).find(u => u && u.q === q && u.r === r);
   return !!occ;
@@ -81,7 +105,8 @@ function pickSpawnTiles(scene, count) {
   const map = scene.mapData || [];
   if (!map.length) return [];
 
-  const land = map.filter(t => t.type !== 'water' && t.type !== 'mountain');
+  // ✅ FIX: land = ONLY tiles that pass isLandTile()
+  const land = map.filter(isLandTile);
   if (!land.length) return [];
 
   const w = scene.mapWidth || 25;
@@ -156,9 +181,6 @@ function createMobileBase(scene, spawnTile, player, color, playerIndex) {
   unit.name = unit.playerName;
   unit.playerIndex = playerIndex; // slot index 0..3
 
-  // --- Canonical unit state (HP/Armor/MP/AP) ---
-  // We keep legacy fields (movementPoints/maxMovementPoints, hp/maxHp)
-  // via applyUnitStateToPhaserUnit().
   const def = getUnitDef('mobile_base');
   const st = createUnitState({
     type: 'mobile_base',
@@ -169,7 +191,6 @@ function createMobileBase(scene, spawnTile, player, color, playerIndex) {
     r: spawnTile.r,
     facing: 0,
   });
-  // Ensure IDs/names remain as before for existing UI/turn logic.
   unit.unitName = def.name;
   applyUnitStateToPhaserUnit(unit, st);
 
@@ -183,12 +204,8 @@ function createMobileBase(scene, spawnTile, player, color, playerIndex) {
 
 /**
  * Creates a simple enemy unit.
- *
- * ✅ FIX: triangle size scales with hex size (so it doesn't look tiny/huge after hex resize).
- * Position is taken from scene.axialToWorld(), which now includes elevation lift.
  */
 function createEnemyUnit(scene, spawnTile) {
-  // Reuse the same Raider def + behavior, but keep the legacy type for compatibility.
   const u = createRaider(scene, spawnTile.q, spawnTile.r, {
     controller: 'ai',
     color: ENEMY_COLOR,
@@ -289,7 +306,6 @@ function createRaider(scene, q, r, opts = {}) {
   unit.rotation = Math.PI;
   if (typeof unit.setStrokeStyle === 'function') unit.setStrokeStyle(2, 0x000000, 0.6);
 
-  // AI brain hints
   if (controller === 'ai') {
     unit.controller = 'ai';
     unit.aiProfile = 'aggressive';
@@ -300,13 +316,6 @@ function createRaider(scene, q, r, opts = {}) {
 
 /**
  * Main entry: called from WorldScene.create().
- *
- * Responsibility in the multiplayer model:
- * - Read the lobby state (if any) from Supabase via LobbyManager
- *   or from scene.lobbyState (passed by LobbyScene).
- * - Infer the list of players (up to 4).
- * - Map that to concrete Phaser units on the map.
- * - Spawn a few neutral enemies (host only).
  */
 export async function spawnUnitsAndEnemies() {
   const scene = /** @type {any} */ (this);
@@ -317,11 +326,9 @@ export async function spawnUnitsAndEnemies() {
 
   let lobbyPlayers = null;
 
-  // 1) Prefer already-fetched lobby state from scene data
   if (scene.lobbyState && Array.isArray(scene.lobbyState.players)) {
     lobbyPlayers = scene.lobbyState.players;
   } else if (scene.roomCode) {
-    // 2) Fallback: fetch from Supabase
     try {
       const { data, error } = await getLobbyState(scene.roomCode);
       if (!error && data && data.state && Array.isArray(data.state.players)) {
@@ -335,7 +342,6 @@ export async function spawnUnitsAndEnemies() {
   const localPlayerId = scene.playerId || null;
   const localName = scene.playerName || (scene.isHost ? 'Host' : 'Player');
 
-  // 3) Singleplayer fallback: no lobby or empty players array
   if (!Array.isArray(lobbyPlayers) || lobbyPlayers.length === 0) {
     lobbyPlayers = [{
       id: 'p1',
@@ -346,7 +352,6 @@ export async function spawnUnitsAndEnemies() {
     }];
   }
 
-  // 4) Sort players by slot for deterministic colors / spawn order
   const lobbyMaxPlayers = 4;
   const sortedPlayers = lobbyPlayers
     .slice()
@@ -364,13 +369,10 @@ export async function spawnUnitsAndEnemies() {
 
   const spawnTiles = pickSpawnTiles(scene, sortedPlayers.length);
   if (spawnTiles.length === 0) {
-    console.warn('[Units] No valid spawn tiles found – map may be all water.');
+    console.warn('[Units] No valid land spawn tiles found (all blocked/flooded?).');
     return;
   }
 
-  // --- Spawn players (connected humans only) ---
-  // If the lobby contains placeholder slots (e.g. blue unit) that are not connected,
-  // we spawn AI Raiders instead of extra player mobile bases.
   scene.players.length = 0;
 
   const connectedPlayers = [];
@@ -387,9 +389,16 @@ export async function spawnUnitsAndEnemies() {
     const tile = spawnTiles[idx] || spawnTiles[spawnTiles.length - 1];
     const color = PLAYER_COLORS[idx % PLAYER_COLORS.length];
 
+    // ✅ hard safety: if picked tile became invalid (shouldn’t, but just in case)
+    if (!isLandTile(tile)) {
+      console.warn('[Units] Picked spawn tile is not land, searching neighbor/fallback…', tile);
+      const fallback = (scene.mapData || []).find(isLandTile);
+      if (!fallback) return;
+      tile.q = fallback.q; tile.r = fallback.r;
+    }
+
     const unit = createMobileBase(scene, tile, player, color, idx);
 
-    // Mark which unit belongs to the local player
     unit.isLocalPlayer =
       (localPlayerId && player.id === localPlayerId) ||
       (!localPlayerId && player.name === localName);
@@ -398,29 +407,28 @@ export async function spawnUnitsAndEnemies() {
     scene.players.push(unit);
   });
 
-  // --- Spawn AI Raiders in place of disconnected/AI lobby slots ---
-  // Host-authoritative: only host spawns AI units.
   if (scene.isHost) {
     scene.enemies.length = 0;
     aiSlots.forEach(({ idx }) => {
       const tile = spawnTiles[idx] || spawnTiles[spawnTiles.length - 1];
       if (!tile) return;
-      // If the tile is occupied by a player base, try a neighbor.
+
       let q = tile.q;
       let r = tile.r;
+
       if (isBlockedForUnit(scene, q, r)) {
         const free = findFreeNeighbor(scene, q, r);
         if (!free) return;
         q = free.q; r = free.r;
       }
+
       const enemy = createEnemyUnit(scene, { q, r });
       scene.units.push(enemy);
       scene.enemies.push(enemy);
     });
   }
 
-  // --- Spawn neutral enemies (host only, so they don't multiply across clients) ---
-  // Keep a few extra raiders around the center if there are no AI slots.
+  // Neutral enemies (host only)
   if (scene.isHost && (scene.enemies.length === 0)) {
     const map = scene.mapData || [];
     if (map.length > 0) {
@@ -432,16 +440,18 @@ export async function spawnUnitsAndEnemies() {
       if (originTile) {
         const enemySpawnCandidates = [];
 
-        // simple BFS from center, looking for non-water/non-mountain
         const seen = new Set();
         const qd = [originTile];
         seen.add(keyOf(originTile.q, originTile.r));
 
         while (qd.length && enemySpawnCandidates.length < 6) {
           const cur = qd.shift();
-          if (cur.type !== 'water' && cur.type !== 'mountain') {
+
+          // ✅ FIX: only land candidates
+          if (isLandTile(cur)) {
             enemySpawnCandidates.push(cur);
           }
+
           for (const [dq, dr] of neighborsOddR(cur.q, cur.r)) {
             const nq = cur.q + dq;
             const nr = cur.r + dr;
@@ -455,6 +465,8 @@ export async function spawnUnitsAndEnemies() {
         }
 
         enemySpawnCandidates.slice(0, 3).forEach(tile => {
+          // safety: no spawn on non-land
+          if (!isLandTile(tile)) return;
           const enemy = createEnemyUnit(scene, tile);
           scene.units.push(enemy);
           scene.enemies.push(enemy);
@@ -472,8 +484,6 @@ export async function spawnUnitsAndEnemies() {
 
 /* =========================================================
    Mobile Base production (Stage A extension)
-   - Creates Transporter / Raider adjacent to selected Mobile Base
-   - Keeps existing menu system integration (WorldSceneMenus.js)
    ========================================================= */
 
 const UNIT_COSTS = {
@@ -496,7 +506,6 @@ function trySpendResources(scene, cost) {
 function selectedMobileBase(scene) {
   const u = scene.menuContextSelection || scene.selectedUnit || null;
   if (u && (u.type === 'mobile_base' || u.unitType === 'mobile_base')) return u;
-  // fallback: local player's mobile base
   const mb = (scene.players || []).find(p => p && (p.type === 'mobile_base' || p.unitType === 'mobile_base'));
   return mb || null;
 }
@@ -505,19 +514,22 @@ function spawnUnitNearBase(scene, base, unitType) {
   if (!scene || !base) return null;
   const spot = findFreeNeighbor(scene, base.q, base.r);
   if (!spot) {
-    console.warn('[UNITS] No free adjacent hex to spawn unit near base.');
+    console.warn('[UNITS] No free adjacent LAND hex to spawn unit near base.');
     return null;
   }
 
   let unit = null;
   if (unitType === 'transporter') unit = createTransporter(scene, spot.q, spot.r, base);
-  else if (unitType === 'raider') unit = createRaider(scene, spot.q, spot.r, { controller: 'player', ownerId: base.playerId, ownerSlot: base.playerIndex ?? base.ownerSlot ?? 0, ownerName: base.playerName || base.name });
+  else if (unitType === 'raider') unit = createRaider(scene, spot.q, spot.r, {
+    controller: 'player',
+    ownerId: base.playerId,
+    ownerSlot: base.playerIndex ?? base.ownerSlot ?? 0,
+    ownerName: base.playerName || base.name
+  });
 
   if (!unit) return null;
 
-  // ensure IDs exist and are stable-ish
   if (!unit.id && !unit.unitId) {
-    // applyUnitStateToPhaserUnit should already have unit.unitId
     unit.id = unit.unitId || `u_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
   }
 
@@ -536,7 +548,6 @@ export function buildTransporterAtSelectedUnit() {
     return null;
   }
 
-  // Only allow producing on your turn (safe default)
   const ownerName = base.playerName || base.name;
   if (scene.turnOwner && ownerName !== scene.turnOwner) return null;
 
@@ -577,8 +588,6 @@ export function buildRaiderAtSelectedUnit() {
 
 /* =========================================================
    AI (very simple, host-authoritative)
-   - Shoot if any player unit is in range
-   - Otherwise move towards closest player unit
    ========================================================= */
 
 const WEAPONS = {
@@ -621,16 +630,10 @@ function resolveDamage(attacker, defender, weaponId, dist) {
 
 function applyDamageToUnit(scene, defender, dmg) {
   defender.hp = Math.max(0, (defender.hp || 0) - dmg);
-  if (defender.status) {
-    defender.status.defending = false;
-  }
-  // Keep UnitFactory canonical field in sync if present
-  if (Number.isFinite(defender.hp)) {
-    // ok
-  }
+  if (defender.status) defender.status.defending = false;
+
   if (defender.hp <= 0) {
     defender.isDead = true;
-    // Remove from arrays
     scene.units = (scene.units || []).filter(u => u !== defender);
     scene.players = (scene.players || []).filter(u => u !== defender);
     scene.enemies = (scene.enemies || []).filter(u => u !== defender);
@@ -663,7 +666,6 @@ function pickBestWeapon(attacker, dist) {
     const w = WEAPONS[wid];
     if (!w) continue;
     if (dist <= w.range) {
-      // prefer higher base damage
       if (!best || w.damage > best.damage) best = w;
     }
   }
@@ -674,7 +676,6 @@ function tryAttack(scene, attacker) {
   const targets = getAttackableTargets(scene, attacker);
   if (!targets.length) return false;
 
-  // Find closest in any weapon range
   for (const { unit: defender, dist } of targets) {
     const wid = pickBestWeapon(attacker, dist);
     if (!wid) continue;
@@ -691,25 +692,30 @@ function stepTowards(scene, unit, targetQ, targetR) {
   const neigh = neighborsOddR(unit.q, unit.r);
   let best = null;
   let bestD = Infinity;
+
   for (const [dq, dr] of neigh) {
     const nq = unit.q + dq;
     const nr = unit.r + dr;
     if (nq < 0 || nr < 0 || nq >= (scene.mapWidth || 0) || nr >= (scene.mapHeight || 0)) continue;
     if (isBlockedForUnit(scene, nq, nr)) continue;
+
     const t = getTile(scene, nq, nr);
-    if (!t || t.type === 'water' || t.type === 'mountain') continue;
+    if (!isLandTile(t)) continue;
+
     const d = axialDistance(nq, nr, targetQ, targetR);
     if (d < bestD) {
       bestD = d;
       best = { q: nq, r: nr };
     }
   }
+
   if (!best) return false;
 
   unit.q = best.q;
   unit.r = best.r;
   unit.mp = Math.max(0, (unit.mp || unit.movementPoints || 0) - 1);
   unit.movementPoints = unit.mp;
+
   const pos = scene.axialToWorld(best.q, best.r);
   try { unit.setPosition?.(pos.x, pos.y); } catch (e) { unit.x = pos.x; unit.y = pos.y; }
   return true;
@@ -721,19 +727,16 @@ export function applyEnemyAIOnEndTurn(scene) {
   const players = scene.players || [];
   if (!enemies.length || !players.length) return;
 
-  // Simple: each enemy tries to attack, else moves towards nearest player unit.
   for (const e of enemies.slice()) {
     if (!e || e.isDead) continue;
-    // reset MP/AP each turn if available
+
     if (Number.isFinite(e.mpMax)) e.mp = e.mpMax;
     if (Number.isFinite(e.apMax)) e.ap = e.apMax;
     e.movementPoints = e.mp;
 
-    // Attack if possible
     const didAttack = tryAttack(scene, e);
     if (didAttack) continue;
 
-    // Move towards closest target
     const targets = getAttackableTargets(scene, e);
     const nearest = targets[0];
     if (!nearest) continue;
@@ -742,7 +745,6 @@ export function applyEnemyAIOnEndTurn(scene) {
     while (steps-- > 0) {
       const moved = stepTowards(scene, e, nearest.unit.q, nearest.unit.r);
       if (!moved) break;
-      // If after moving we can shoot, do it and stop.
       if (tryAttack(scene, e)) break;
     }
   }
@@ -751,9 +753,6 @@ export function applyEnemyAIOnEndTurn(scene) {
 /**
  * Update unit orientation based on movement direction.
  * Called from WorldScene.startStepMovement().
- *
- * Keeps the rule:
- * - "Facing along the path" and flipping / rotating accordingly.
  */
 export function updateUnitOrientation(scene, unit, fromQ, fromR, toQ, toR) {
   if (!unit) return;
@@ -789,7 +788,6 @@ export function updateUnitOrientation(scene, unit, fromQ, fromR, toQ, toR) {
 
 /**
  * Placeholder for future real-time sync subscription.
- * For now this is a no-op so imports are safe.
  */
 export async function subscribeToGameUpdates(_scene, _roomCode) {
   return {
