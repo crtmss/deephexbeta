@@ -1,35 +1,126 @@
 // src/units/WorldSceneAI.js
-import { findPath as aStarFindPath } from '../engine/AStar.js';
+
 import { validateAttack, resolveAttack } from './CombatResolver.js';
 import { ensureUnitCombatFields, spendAp } from './UnitActions.js';
 
 // NOTE: WorldSceneWorldMeta.js теперь содержит coords helpers
 import { getTile } from '../scenes/WorldSceneWorldMeta.js';
 
-export function computePathWithAStar(unit, targetHex, mapData, blockedPred) {
-  const start = { q: unit.q, r: unit.r };
-  const goal = { q: targetHex.q, r: targetHex.r };
-
-  if (start.q === goal.q && start.r === goal.r) return [start];
-
-  const isBlocked = (tile) => {
-    if (!tile) return true;
-    return blockedPred ? blockedPred(tile) : false;
-  };
-
-  return aStarFindPath(start, goal, mapData, isBlocked);
+function unitLabel(u) {
+  return String(
+    u?.unitName ?? u?.name ?? u?.id ?? u?.unitId ?? u?.uuid ?? u?.netId ?? 'unit'
+  );
 }
 
-function hexDistance(q1, r1, q2, r2) {
+function hexDistanceAxial(q1, r1, q2, r2) {
+  // axial distance
   const dq = q2 - q1;
   const dr = r2 - r1;
-  const ds = -dq - dr;
+  const ds = -(dq + dr);
   return (Math.abs(dq) + Math.abs(dr) + Math.abs(ds)) / 2;
+}
+
+function axialNeighbors(q, r) {
+  // axial directions (same as your HexMap.neighbors)
+  return [
+    { q: q + 1, r: r + 0 },
+    { q: q + 1, r: r - 1 },
+    { q: q + 0, r: r - 1 },
+    { q: q - 1, r: r + 0 },
+    { q: q - 1, r: r + 1 },
+    { q: q + 0, r: r + 1 },
+  ];
+}
+
+/**
+ * A* for AXIAL coordinates.
+ * Returns path as [{q,r}, ...] including start and goal.
+ * If unreachable: []
+ */
+function findPathAxial(start, goal, mapData, isBlocked) {
+  const key = (q, r) => `${q},${r}`;
+
+  // Fast tile lookup
+  const tileByKey = new Map();
+  for (const t of (mapData || [])) {
+    if (!t) continue;
+    tileByKey.set(key(t.q, t.r), t);
+  }
+
+  const startKey = key(start.q, start.r);
+  const goalKey = key(goal.q, goal.r);
+
+  const open = new Set([startKey]);
+  const cameFrom = new Map();
+  const gScore = new Map();
+  const fScore = new Map();
+
+  gScore.set(startKey, 0);
+  fScore.set(startKey, hexDistanceAxial(start.q, start.r, goal.q, goal.r));
+
+  const getLowestF = () => {
+    let bestK = null;
+    let bestF = Infinity;
+    for (const k of open) {
+      const f = fScore.get(k) ?? Infinity;
+      if (f < bestF) {
+        bestF = f;
+        bestK = k;
+      }
+    }
+    return bestK;
+  };
+
+  const parseKey = (k) => {
+    const [qs, rs] = k.split(',');
+    return { q: Number(qs), r: Number(rs) };
+  };
+
+  while (open.size > 0) {
+    const currentK = getLowestF();
+    if (!currentK) break;
+
+    if (currentK === goalKey) {
+      // reconstruct
+      const path = [];
+      let k = currentK;
+      while (k) {
+        const { q, r } = parseKey(k);
+        path.push({ q, r });
+        k = cameFrom.get(k) || null;
+      }
+      return path.reverse();
+    }
+
+    open.delete(currentK);
+    const cur = parseKey(currentK);
+
+    for (const nb of axialNeighbors(cur.q, cur.r)) {
+      const nbK = key(nb.q, nb.r);
+      const tile = tileByKey.get(nbK);
+
+      if (!tile) continue;
+      if (isBlocked(tile)) continue;
+
+      const moveCost = tile.movementCost || 1;
+      const tentativeG = (gScore.get(currentK) ?? Infinity) + moveCost;
+
+      if (tentativeG < (gScore.get(nbK) ?? Infinity)) {
+        cameFrom.set(nbK, currentK);
+        gScore.set(nbK, tentativeG);
+        fScore.set(nbK, tentativeG + hexDistanceAxial(nb.q, nb.r, goal.q, goal.r));
+        open.add(nbK);
+      }
+    }
+  }
+
+  return [];
 }
 
 function moveAlongPath(scene, unit, path) {
   return new Promise((resolve) => {
     if (!scene?.startStepMovement || typeof scene.startStepMovement !== 'function') {
+      // fallback: snap to last
       const last = path?.[path.length - 1];
       if (last) {
         unit.q = last.q;
@@ -42,21 +133,31 @@ function moveAlongPath(scene, unit, path) {
       resolve();
       return;
     }
-
     scene.startStepMovement(unit, path, () => resolve());
   });
 }
 
-function unitLabel(u) {
-  return String(
-    u?.unitName ?? u?.name ?? u?.id ?? u?.unitId ?? u?.uuid ?? u?.netId ?? 'unit'
-  );
+export function computePathWithAStar(unit, targetHex, mapData, blockedPred) {
+  const start = { q: unit.q, r: unit.r };
+  const goal = { q: targetHex.q, r: targetHex.r };
+
+  if (start.q === goal.q && start.r === goal.r) return [start];
+
+  const isBlocked = (tile) => {
+    if (!tile) return true;
+    return blockedPred ? blockedPred(tile) : false;
+  };
+
+  // 🔥 FIX: use AXIAL pathfinding (engine/AStar.js is odd-r offset and mismatches your world)
+  return findPathAxial(start, goal, mapData, isBlocked);
 }
 
 /**
  * Enemy AI:
  * - If any player unit in weapon range and has AP -> attack.
  * - Else if has MP -> A* chase the nearest player unit.
+ *
+ * Movement is sequential to avoid tween conflicts.
  */
 export async function moveEnemies(scene) {
   if (!scene || !Array.isArray(scene.enemies) || scene.enemies.length === 0) {
@@ -76,8 +177,10 @@ export async function moveEnemies(scene) {
   const isBlocked = (tile, mover) => {
     if (!tile) return true;
 
+    // terrain blocks
     if (tile.type === 'water' || tile.type === 'mountain') return true;
 
+    // occupancy blocks (except mover itself)
     const occ = getUnitAt(tile.q, tile.r);
     if (occ && occ !== mover) return true;
 
@@ -98,7 +201,6 @@ export async function moveEnemies(scene) {
     return;
   }
 
-  // Process sequentially (avoids overlapping movement tweens / state issues)
   for (const enemy of scene.enemies) {
     if (!enemy || enemy.isDead) continue;
     if (enemy.controller !== 'ai' && !enemy.isEnemy) continue;
@@ -112,21 +214,17 @@ export async function moveEnemies(scene) {
     let nearest = null;
     let nearestDist = Infinity;
     for (const p of playerTargets) {
-      const d = hexDistance(enemy.q, enemy.r, p.q, p.r);
+      const d = hexDistanceAxial(enemy.q, enemy.r, p.q, p.r);
       if (d < nearestDist) {
         nearestDist = d;
         nearest = p;
       }
     }
-
-    if (!nearest) {
-      console.log(`[AI] ${eName}: no nearest target found (unexpected).`);
-      continue;
-    }
+    if (!nearest) continue;
 
     console.log(`[AI] ${eName}: nearest target=${unitLabel(nearest)} at (${nearest.q},${nearest.r}) dist=${nearestDist}`);
 
-    // 1) ATTACK if possible
+    // 1) Attack if possible
     const weapons = enemy.weapons || [];
     const weaponId = weapons[enemy.activeWeaponIndex] || weapons[0] || null;
 
@@ -161,7 +259,7 @@ export async function moveEnemies(scene) {
       console.log(`[AI] ${eName}: no attack (weaponId=${weaponId}, ap=${enemy.ap})`);
     }
 
-    // 2) MOVE
+    // 2) Move
     if ((enemy.mp || 0) <= 0) {
       console.log(`[AI] ${eName}: cannot move, mp=${enemy.mp}`);
       continue;
@@ -174,17 +272,12 @@ export async function moveEnemies(scene) {
       (t) => isBlocked(t, enemy)
     );
 
-    if (!path) {
-      console.log(`[AI] ${eName}: A* returned null/undefined path.`);
-      continue;
-    }
-
     console.log(
-      `[AI] ${eName}: A* pathLen=${path.length} start=(${path[0]?.q},${path[0]?.r}) goal=(${nearest.q},${nearest.r})`
+      `[AI] ${eName}: pathLen=${path.length} start=(${path[0]?.q},${path[0]?.r}) goal=(${nearest.q},${nearest.r})`
     );
 
-    if (path.length < 2) {
-      console.log(`[AI] ${eName}: path too short (already at goal or blocked immediately).`);
+    if (!path || path.length < 2) {
+      console.log(`[AI] ${eName}: path too short/unreachable.`);
       continue;
     }
 
@@ -210,7 +303,7 @@ export async function moveEnemies(scene) {
       mp -= cost;
       lastIndex = i;
 
-      if (hexDistance(step.q, step.r, nearest.q, nearest.r) <= 1) {
+      if (hexDistanceAxial(step.q, step.r, nearest.q, nearest.r) <= 1) {
         console.log(`[AI] ${eName}: stopping early near target.`);
         break;
       }
@@ -222,7 +315,7 @@ export async function moveEnemies(scene) {
     }
 
     const lastStep = path[lastIndex];
-    console.log(`[AI] ${eName}: moving along pathLen=${lastIndex + 1}, lastStep=(${lastStep.q},${lastStep.r}), mpAfter=${mp}`);
+    console.log(`[AI] ${eName}: moving pathLen=${lastIndex + 1}, lastStep=(${lastStep.q},${lastStep.r}), mpAfter=${mp}`);
 
     enemy.mp = mp;
     if (Number.isFinite(enemy.movementPoints)) enemy.movementPoints = mp;
