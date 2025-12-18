@@ -15,7 +15,6 @@ export function computePathWithAStar(unit, targetHex, mapData, blockedPred) {
   const isBlocked = (tile) => {
     if (!tile) return true;
     return blockedPred ? blockedPred(tile) : false;
-    // NOTE: AStar.js expects "isBlocked(tile) === true" meaning cannot enter
   };
 
   return aStarFindPath(start, goal, mapData, isBlocked);
@@ -29,10 +28,8 @@ function hexDistance(q1, r1, q2, r2) {
 }
 
 function moveAlongPath(scene, unit, path) {
-  // Use the same movement pipeline as the player (tweens + orientation + q/r update).
   return new Promise((resolve) => {
     if (!scene?.startStepMovement || typeof scene.startStepMovement !== 'function') {
-      // Fallback: apply last step immediately (should not happen in normal WorldScene)
       const last = path?.[path.length - 1];
       if (last) {
         unit.q = last.q;
@@ -50,17 +47,22 @@ function moveAlongPath(scene, unit, path) {
   });
 }
 
+function unitLabel(u) {
+  return String(
+    u?.unitName ?? u?.name ?? u?.id ?? u?.unitId ?? u?.uuid ?? u?.netId ?? 'unit'
+  );
+}
+
 /**
  * Enemy AI:
  * - If any player unit in weapon range and has AP -> attack.
  * - Else if has MP -> A* chase the nearest player unit.
- *
- * IMPORTANT:
- * - We move enemies SEQUENTIALLY (await), otherwise multiple parallel tweens fight over
- *   scene.isUnitMoving and can create the illusion of "AI doesn't move" / desync.
  */
 export async function moveEnemies(scene) {
-  if (!scene || !Array.isArray(scene.enemies) || scene.enemies.length === 0) return;
+  if (!scene || !Array.isArray(scene.enemies) || scene.enemies.length === 0) {
+    console.log('[AI] No enemies array or empty.');
+    return;
+  }
 
   const getUnitAt = (q, r) => {
     const all = []
@@ -74,10 +76,8 @@ export async function moveEnemies(scene) {
   const isBlocked = (tile, mover) => {
     if (!tile) return true;
 
-    // terrain blocks
     if (tile.type === 'water' || tile.type === 'mountain') return true;
 
-    // occupancy blocks (except mover itself)
     const occ = getUnitAt(tile.q, tile.r);
     if (occ && occ !== mover) return true;
 
@@ -89,54 +89,64 @@ export async function moveEnemies(scene) {
       ? (scene.units || []).filter(u => u && u.isPlayer && !u.isDead)
       : (scene.players || []).filter(u => u && u.isPlayer && !u.isDead);
 
+  console.log(
+    `[AI] moveEnemies(): enemies=${scene.enemies.length}, playerTargets=${playerTargets.length}, turn=${scene.turnNumber}`
+  );
+
   if (playerTargets.length === 0) {
-    console.log('[AI] No player targets found (isPlayer flags?)');
+    console.log('[AI] No player targets found. Check isPlayer flags on your player units.');
     return;
   }
 
-  // Sequentially process each enemy to avoid movement-state conflicts.
+  // Process sequentially (avoids overlapping movement tweens / state issues)
   for (const enemy of scene.enemies) {
     if (!enemy || enemy.isDead) continue;
     if (enemy.controller !== 'ai' && !enemy.isEnemy) continue;
 
     ensureUnitCombatFields(enemy);
 
+    const eName = unitLabel(enemy);
+    console.log(`[AI] Enemy ${eName} at (${enemy.q},${enemy.r}) mp=${enemy.mp}/${enemy.mpMax} ap=${enemy.ap}/${enemy.apMax}`);
+
     // pick nearest target
     let nearest = null;
     let nearestDist = Infinity;
     for (const p of playerTargets) {
       const d = hexDistance(enemy.q, enemy.r, p.q, p.r);
-      if (d < nearestDist) { nearestDist = d; nearest = p; }
+      if (d < nearestDist) {
+        nearestDist = d;
+        nearest = p;
+      }
     }
-    if (!nearest) continue;
 
-    // 1) Attack if possible
+    if (!nearest) {
+      console.log(`[AI] ${eName}: no nearest target found (unexpected).`);
+      continue;
+    }
+
+    console.log(`[AI] ${eName}: nearest target=${unitLabel(nearest)} at (${nearest.q},${nearest.r}) dist=${nearestDist}`);
+
+    // 1) ATTACK if possible
     const weapons = enemy.weapons || [];
     const weaponId = weapons[enemy.activeWeaponIndex] || weapons[0] || null;
 
     if (weaponId && (enemy.ap || 0) > 0) {
       const v = validateAttack(enemy, nearest, weaponId);
+      console.log(`[AI] ${eName}: attackCheck weapon=${weaponId} ok=${!!v?.ok} reason=${v?.reason ?? ''}`);
+
       if (v.ok) {
         spendAp(enemy, 1);
 
-        // keep your current convention: attacks may reduce MP
         if ((enemy.mp || 0) > 0) enemy.mp = Math.max(0, enemy.mp - 1);
         if (Number.isFinite(enemy.movementPoints)) enemy.movementPoints = enemy.mp;
 
         ensureUnitCombatFields(nearest);
         const r = resolveAttack(enemy, nearest, weaponId);
 
-        const attackerId = String(
-          enemy.id ?? enemy.unitId ?? enemy.uuid ?? enemy.netId ?? `${enemy.unitName || enemy.name}@${enemy.q},${enemy.r}`
-        );
-        const defenderId = String(
-          nearest.id ?? nearest.unitId ?? nearest.uuid ?? nearest.netId ?? `${nearest.unitName || nearest.name}@${nearest.q},${nearest.r}`
-        );
-
         scene.applyCombatEvent?.({
           type: 'combat:attack',
-          attackerId,
-          defenderId,
+          attackerId: String(enemy.id ?? enemy.unitId ?? enemy.uuid ?? enemy.netId ?? `${enemy.unitName || enemy.name}@${enemy.q},${enemy.r}`),
+          defenderId: String(nearest.id ?? nearest.unitId ?? nearest.uuid ?? nearest.netId ?? `${nearest.unitName || nearest.name}@${nearest.q},${nearest.r}`),
           weaponId,
           damage: r.finalDamage,
           distance: r.distance,
@@ -144,13 +154,18 @@ export async function moveEnemies(scene) {
           timestamp: Date.now(),
         });
 
-        // Move to next enemy
+        console.log(`[AI] ${eName}: attacked ${unitLabel(nearest)} dmg=${r.finalDamage} dist=${r.distance}`);
         continue;
       }
+    } else {
+      console.log(`[AI] ${eName}: no attack (weaponId=${weaponId}, ap=${enemy.ap})`);
     }
 
-    // 2) Move towards target using A*
-    if ((enemy.mp || 0) <= 0) continue;
+    // 2) MOVE
+    if ((enemy.mp || 0) <= 0) {
+      console.log(`[AI] ${eName}: cannot move, mp=${enemy.mp}`);
+      continue;
+    }
 
     const path = computePathWithAStar(
       enemy,
@@ -159,7 +174,19 @@ export async function moveEnemies(scene) {
       (t) => isBlocked(t, enemy)
     );
 
-    if (!path || path.length < 2) continue;
+    if (!path) {
+      console.log(`[AI] ${eName}: A* returned null/undefined path.`);
+      continue;
+    }
+
+    console.log(
+      `[AI] ${eName}: A* pathLen=${path.length} start=(${path[0]?.q},${path[0]?.r}) goal=(${nearest.q},${nearest.r})`
+    );
+
+    if (path.length < 2) {
+      console.log(`[AI] ${eName}: path too short (already at goal or blocked immediately).`);
+      continue;
+    }
 
     let mp = enemy.mp || 0;
     let lastIndex = 0;
@@ -169,28 +196,43 @@ export async function moveEnemies(scene) {
       const tile = getTile(scene, step.q, step.r);
       const cost = tile?.movementCost || 1;
 
-      if (cost > mp) break;
-
       const occ = getUnitAt(step.q, step.r);
+      const blocked = isBlocked(tile, enemy);
+
+      console.log(
+        `[AI] ${eName}: step#${i} -> (${step.q},${step.r}) cost=${cost} mpLeft=${mp} blocked=${blocked} occ=${occ ? unitLabel(occ) : 'none'} tileType=${tile?.type ?? 'n/a'}`
+      );
+
+      if (blocked) break;
+      if (cost > mp) break;
       if (occ && occ !== enemy) break;
 
       mp -= cost;
       lastIndex = i;
 
-      // stop early when close to target (keeps enemies from "overrunning")
-      if (hexDistance(step.q, step.r, nearest.q, nearest.r) <= 1) break;
+      if (hexDistance(step.q, step.r, nearest.q, nearest.r) <= 1) {
+        console.log(`[AI] ${eName}: stopping early near target.`);
+        break;
+      }
     }
 
-    if (lastIndex > 0) {
-      enemy.mp = mp;
-      if (Number.isFinite(enemy.movementPoints)) enemy.movementPoints = mp;
-
-      const pathToMove = path.slice(0, lastIndex + 1);
-
-      // 🔥 FIX: animate + update using the same movement system as the player
-      await moveAlongPath(scene, enemy, pathToMove);
+    if (lastIndex <= 0) {
+      console.log(`[AI] ${eName}: no valid movement step found (lastIndex=${lastIndex}).`);
+      continue;
     }
+
+    const lastStep = path[lastIndex];
+    console.log(`[AI] ${eName}: moving along pathLen=${lastIndex + 1}, lastStep=(${lastStep.q},${lastStep.r}), mpAfter=${mp}`);
+
+    enemy.mp = mp;
+    if (Number.isFinite(enemy.movementPoints)) enemy.movementPoints = mp;
+
+    const pathToMove = path.slice(0, lastIndex + 1);
+    await moveAlongPath(scene, enemy, pathToMove);
+
+    console.log(`[AI] ${eName}: move complete now at (${enemy.q},${enemy.r})`);
   }
 
   scene.refreshUnitActionPanel?.();
+  console.log('[AI] moveEnemies(): done.');
 }
