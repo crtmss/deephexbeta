@@ -261,6 +261,8 @@ function createTransporter(scene, q, r, owner) {
 /**
  * Creates a Raider.
  * If controller='ai', unit is enemy and tinted purple by default.
+ *
+ * ✅ FIX: triangle is centered around (0,0) in local space.
  */
 function createRaider(scene, q, r, opts = {}) {
   const controller = opts.controller || 'player';
@@ -272,11 +274,15 @@ function createRaider(scene, q, r, opts = {}) {
     ? (opts.color ?? ENEMY_COLOR)
     : colorForSlot(opts.ownerSlot ?? 0);
 
+  // ✅ CENTERED triangle points:
+  // top:    (0, -s)
+  // left:   (-0.9s, +0.78s)
+  // right:  (+0.9s, +0.78s)
   const unit = scene.add.triangle(
     pos.x, pos.y,
-    0, s,
-    -Math.round(s * 0.9), -Math.round(s * 0.78),
-    Math.round(s * 0.9), -Math.round(s * 0.78),
+    0, -s,
+    -Math.round(s * 0.9), Math.round(s * 0.78),
+    Math.round(s * 0.9),  Math.round(s * 0.78),
     fillColor
   ).setDepth(controller === 'ai' ? UNIT_Z.enemy : UNIT_Z.player);
 
@@ -303,7 +309,10 @@ function createRaider(scene, q, r, opts = {}) {
   });
   unit.unitName = def.name;
   applyUnitStateToPhaserUnit(unit, st);
+
+  // Keep legacy orientation: old code used PI (down). You can change later if needed.
   unit.rotation = Math.PI;
+
   if (typeof unit.setStrokeStyle === 'function') unit.setStrokeStyle(2, 0x000000, 0.6);
 
   if (controller === 'ai') {
@@ -583,6 +592,7 @@ export function buildRaiderAtSelectedUnit() {
   const unit = spawnUnitNearBase(scene, base, 'raider');
   scene.updateResourceUI?.();
   scene.refreshResourcesPanel?.();
+  scene.refreshUnitActionPanel?.();
   return unit;
 }
 
