@@ -38,7 +38,8 @@ export const UNIT_DEFS = /** @type {Record<string, UnitDef>} */ ({
     hpMax: 50,
     armorPoints: 4,
     armorClass: 'HEAVY',
-    mpMax: 2,
+    // Ground movement: 3 MP baseline
+    mpMax: 3,
     apMax: 1,
     weapons: ['hmg', 'hmg'],
     meta: { canProduce: ['transporter', 'raider'] },
@@ -62,7 +63,8 @@ export const UNIT_DEFS = /** @type {Record<string, UnitDef>} */ ({
     hpMax: 6,
     armorPoints: 1,
     armorClass: 'LIGHT',
-    mpMax: 2,
+    // Ground movement: 3 MP baseline
+    mpMax: 3,
     apMax: 1,
     weapons: ['smg', 'cutter'],
     meta: {},
@@ -76,7 +78,8 @@ export const UNIT_DEFS = /** @type {Record<string, UnitDef>} */ ({
     hpMax: 6,
     armorPoints: 1,
     armorClass: 'LIGHT',
-    mpMax: 2,
+    // Ground movement: 3 MP baseline
+    mpMax: 3,
     apMax: 1,
     weapons: ['smg', 'cutter'],
     meta: {},
