@@ -61,7 +61,13 @@ export function computePathWithAStar(unit, targetHex, mapData, blockedPred) {
     return blockedPred ? blockedPred(tile) : false;
   };
 
-  return aStarFindPath(start, goal, mapData, isBlocked, { getMoveCost: stepMoveCost });
+  // DEBUG is enabled here so you can see exactly why pathLen=0.
+  // Turn off later by setting debug:false.
+  return aStarFindPath(start, goal, mapData, isBlocked, {
+    getMoveCost: stepMoveCost,
+    debug: true,
+    debugTag: `A*:${unitLabel(unit)}@${start.q},${start.r}->${goal.q},${goal.r}`,
+  });
 }
 
 export async function moveEnemies(scene) {
