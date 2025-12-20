@@ -2,35 +2,11 @@
 //
 // Pathfinding for hex grids using ODD-R OFFSET layout (pointy-top).
 //
-// IMPORTANT:
-// - This project stores tiles as offset coords: { q, r } where r is the row,
-//   and odd rows are shifted (odd-r).
-// - Therefore neighbors MUST depend on row parity (r % 2).
-//
-// Backwards compatibility:
-// - Historically this file behaved like a simple Dijkstra (no heuristic) and used tile.movementCost.
-// - We keep backwards compatibility, but also support dynamic movement rules that depend on
-//   both the current tile and the neighbor tile (e.g. elevation climb cost / climb limits).
-//
-// Signature (backwards compatible):
-//   findPath(start, goal, mapData, isBlocked, [opts])
-//
-// Where opts can be:
-//   {
-//     getMoveCost?: (fromTile, toTile) => number,
-//   }
-//
-// If getMoveCost returns Infinity / non-finite, that edge is treated as impassable.
+// Supports dynamic movement cost via opts.getMoveCost(fromTile, toTile).
+// Optional diagnostics via opts.debug === true.
 
-/**
- * @param {{q:number,r:number}} start
- * @param {{q:number,r:number}} goal
- * @param {Array<any>} mapData
- * @param {(tile:any)=>boolean} isBlocked
- * @param {{getMoveCost?:(fromTile:any,toTile:any)=>number}|undefined} [opts]
- * @returns {Array<{q:number,r:number}>}
- */
 export function findPath(start, goal, mapData, isBlocked, opts) {
+  const debug = !!opts?.debug;
   const key = (q, r) => `${q},${r}`;
 
   if (!start || !goal || !Array.isArray(mapData)) return [];
@@ -41,7 +17,7 @@ export function findPath(start, goal, mapData, isBlocked, opts) {
     return [{ q: start.q, r: start.r }];
   }
 
-  // Fast lookup by coordinate (mapData can be up to 29x29 ~ 841).
+  // --- Build tile lookup
   const tileByKey = new Map();
   for (const t of mapData) {
     if (!t) continue;
@@ -54,17 +30,26 @@ export function findPath(start, goal, mapData, isBlocked, opts) {
   const startTile = tileByKey.get(startKey);
   const goalTile = tileByKey.get(goalKey);
 
-  // If start/goal are not in mapData -> unreachable
-  if (!startTile || !goalTile) return [];
-
-  // If start/goal are blocked -> unreachable
-  if (typeof isBlocked === 'function') {
-    if (isBlocked(startTile)) return [];
-    if (isBlocked(goalTile)) return [];
+  if (!startTile || !goalTile) {
+    if (debug) {
+      console.warn('[A*][DEBUG] Start or goal not in mapData', {
+        start, goal, hasStart: !!startTile, hasGoal: !!goalTile
+      });
+    }
+    return [];
   }
 
-  // odd-r neighbors (pointy-top). Depends on row parity.
-  // This matches redblobgames "odd-r" offset coordinate system.
+  if (isBlocked?.(startTile) || isBlocked?.(goalTile)) {
+    if (debug) {
+      console.warn('[A*][DEBUG] Start or goal blocked', {
+        startBlocked: isBlocked?.(startTile),
+        goalBlocked: isBlocked?.(goalTile),
+      });
+    }
+    return [];
+  }
+
+  // --- odd-r neighbors (pointy-top)
   const getNeighbors = (q, r) => {
     const even = (r % 2) === 0;
     return even
@@ -87,14 +72,13 @@ export function findPath(start, goal, mapData, isBlocked, opts) {
   };
 
   const getMoveCost =
-    (opts && typeof opts.getMoveCost === 'function')
+    typeof opts?.getMoveCost === 'function'
       ? opts.getMoveCost
       : (_fromTile, toTile) => (toTile?.movementCost || 1);
 
-  // Dijkstra frontier (small maps: linear scan is OK).
+  // --- Dijkstra
   const frontier = [{ q: start.q, r: start.r }];
-  const inFrontier = new Set([startKey]); // avoids endless duplicate pushes
-
+  const inFrontier = new Set([startKey]);
   const cameFrom = {};
   const costSoFar = {};
 
@@ -121,7 +105,6 @@ export function findPath(start, goal, mapData, isBlocked, opts) {
     const current = popLowest();
     if (!current) break;
 
-    // Early exit if reached goal
     if (current.q === goal.q && current.r === goal.r) break;
 
     const currentKey = key(current.q, current.r);
@@ -137,19 +120,15 @@ export function findPath(start, goal, mapData, isBlocked, opts) {
 
       const nextTile = tileByKey.get(nextKey);
       if (!nextTile) continue;
-
-      if (typeof isBlocked === 'function' && isBlocked(nextTile)) continue;
+      if (isBlocked?.(nextTile)) continue;
 
       const edgeCost = getMoveCost(currentTile, nextTile);
-      // Infinity / NaN / <=0 => impassable
       if (!Number.isFinite(edgeCost) || edgeCost <= 0) continue;
 
       const newCost = baseCost + edgeCost;
-
       if (!(nextKey in costSoFar) || newCost < costSoFar[nextKey]) {
         costSoFar[nextKey] = newCost;
         cameFrom[nextKey] = { q: current.q, r: current.r };
-
         if (!inFrontier.has(nextKey)) {
           frontier.push({ q: nq, r: nr });
           inFrontier.add(nextKey);
@@ -158,8 +137,38 @@ export function findPath(start, goal, mapData, isBlocked, opts) {
     }
   }
 
-  // Reconstruct path
-  if (!(goalKey in cameFrom)) return []; // unreachable
+  // --- Reconstruct
+  if (!(goalKey in cameFrom)) {
+    if (debug) {
+      console.warn(`[A*][DEBUG] No path found from (${start.q},${start.r}) to (${goal.q},${goal.r})`);
+      console.log('[A*][DEBUG] Start tile:', startTile);
+
+      console.group('[A*][DEBUG] Neighbors analysis');
+      for (const dir of getNeighbors(start.q, start.r)) {
+        const nq = start.q + dir.dq;
+        const nr = start.r + dir.dr;
+        const t = tileByKey.get(key(nq, nr));
+
+        if (!t) {
+          console.log(`-> (${nq},${nr}): OUT_OF_MAP`);
+          continue;
+        }
+        if (isBlocked?.(t)) {
+          console.log(`-> (${nq},${nr}): BLOCKED`, t.type);
+          continue;
+        }
+
+        const c = getMoveCost(startTile, t);
+        if (!Number.isFinite(c)) {
+          console.log(`-> (${nq},${nr}): COST=Infinity`);
+        } else {
+          console.log(`-> (${nq},${nr}): OK cost=${c}`);
+        }
+      }
+      console.groupEnd();
+    }
+    return [];
+  }
 
   const path = [];
   let cur = { q: goal.q, r: goal.r };
