@@ -34,18 +34,10 @@ function unitLabel(u) {
 }
 
 function hexDistanceOddR(q1, r1, q2, r2) {
-  // distance works the same if you treat q,r as axial-ish; this is fine for greedy scoring.
   const dq = q2 - q1;
   const dr = r2 - r1;
   const ds = -dq - dr;
   return (Math.abs(dq) + Math.abs(dr) + Math.abs(ds)) / 2;
-}
-
-function neighborsOddR(q, r) {
-  const even = (r % 2 === 0);
-  return even
-    ? [{ dq: +1, dr: 0 }, { dq: 0, dr: -1 }, { dq: -1, dr: -1 }, { dq: -1, dr: 0 }, { dq: -1, dr: +1 }, { dq: 0, dr: +1 }]
-    : [{ dq: +1, dr: 0 }, { dq: +1, dr: -1 }, { dq: 0, dr: -1 }, { dq: -1, dr: 0 }, { dq: 0, dr: +1 }, { dq: +1, dr: +1 }];
 }
 
 function moveAlongPath(scene, unit, path) {
@@ -91,7 +83,12 @@ export async function moveEnemies(scene) {
     if (!tile) return true;
 
     // Blocks: water/mountain OR flooded
-    if (tile.type === 'water' || tile.type === 'mountain' || tile.isUnderWater === true || tile.isCoveredByWater === true) return true;
+    if (
+      tile.type === 'water' ||
+      tile.type === 'mountain' ||
+      tile.isUnderWater === true ||
+      tile.isCoveredByWater === true
+    ) return true;
 
     // Occupancy blocks (no stacking)
     const occ = getUnitAt(tile.q, tile.r);
@@ -165,7 +162,7 @@ export async function moveEnemies(scene) {
       }
     }
 
-    // 2) Move (A* first)
+    // 2) Move (A* only). If path not found -> stay.
     if ((enemy.mp || 0) <= 0) {
       console.log(`[AI] ${eName}: cannot move, mp=${enemy.mp}`);
       continue;
@@ -180,81 +177,42 @@ export async function moveEnemies(scene) {
 
     console.log(`[AI] ${eName}: A* pathLen=${path.length}`);
 
-    let moved = false;
-
-    // If path exists, walk along it as far as MP allows
-    if (path && path.length >= 2) {
-      let mp = enemy.mp || 0;
-      let lastIndex = 0;
-
-      for (let i = 1; i < path.length; i++) {
-        const step = path[i];
-        const tile = getTile(scene, step.q, step.r);
-        const prevTile = getTile(scene, path[i - 1].q, path[i - 1].r);
-        const cost = stepMoveCost(prevTile, tile);
-        if (!Number.isFinite(cost) || cost === Infinity) break;
-
-        if (!tile || isBlocked(tile, enemy)) break;
-        if (cost > mp) break;
-
-        mp -= cost;
-        lastIndex = i;
-
-        if (hexDistanceOddR(step.q, step.r, nearest.q, nearest.r) <= 1) break;
-      }
-
-      if (lastIndex > 0) {
-        enemy.mp = mp;
-        if (Number.isFinite(enemy.movementPoints)) enemy.movementPoints = mp;
-
-        const pathToMove = path.slice(0, lastIndex + 1);
-        console.log(`[AI] ${eName}: moving by A* steps=${pathToMove.length - 1} last=(${pathToMove.at(-1).q},${pathToMove.at(-1).r}) mpAfter=${mp}`);
-        await moveAlongPath(scene, enemy, pathToMove);
-        moved = true;
-      }
+    if (!path || path.length < 2) {
+      console.log(`[AI] ${eName}: no A* path found -> staying in place.`);
+      continue;
     }
 
-    // 🔥 Fallback if unreachable: greedy 1 step (still respects terrain/occupancy/mp)
-    if (!moved) {
-      const mp = enemy.mp || 0;
-      const dirs = neighborsOddR(enemy.q, enemy.r);
+    // walk along path as far as MP allows
+    let mp = enemy.mp || 0;
+    let lastIndex = 0;
 
-      let best = null;
-      let bestScore = Infinity;
+    for (let i = 1; i < path.length; i++) {
+      const step = path[i];
+      const tile = getTile(scene, step.q, step.r);
+      const prevTile = getTile(scene, path[i - 1].q, path[i - 1].r);
 
-      for (const d of dirs) {
-        const nq = enemy.q + d.dq;
-        const nr = enemy.r + d.dr;
+      const cost = stepMoveCost(prevTile, tile);
+      if (!Number.isFinite(cost) || cost === Infinity) break;
 
-        const tile = getTile(scene, nq, nr);
-        if (!tile) continue;
-        if (isBlocked(tile, enemy)) continue;
+      if (!tile || isBlocked(tile, enemy)) break;
+      if (cost > mp) break;
 
-        const fromTile = getTile(scene, enemy.q, enemy.r);
-        const cost = stepMoveCost(fromTile, tile);
-        if (!Number.isFinite(cost) || cost === Infinity) continue;
-        if (cost > mp) continue;
+      mp -= cost;
+      lastIndex = i;
 
-        const dist = hexDistanceOddR(nq, nr, nearest.q, nearest.r);
+      if (hexDistanceOddR(step.q, step.r, nearest.q, nearest.r) <= 1) break;
+    }
 
-        // Prefer decreasing distance; tie-break by lower cost
-        const score = dist * 10 + cost;
-        if (score < bestScore) {
-          bestScore = score;
-          best = { q: nq, r: nr, cost, dist };
-        }
-      }
+    if (lastIndex > 0) {
+      enemy.mp = mp;
+      if (Number.isFinite(enemy.movementPoints)) enemy.movementPoints = mp;
 
-      if (best) {
-        enemy.mp = mp - best.cost;
-        if (Number.isFinite(enemy.movementPoints)) enemy.movementPoints = enemy.mp;
+      const pathToMove = path.slice(0, lastIndex + 1);
+      console.log(`[AI] ${eName}: moving by A* steps=${pathToMove.length - 1} last=(${pathToMove[pathToMove.length - 1].q},${pathToMove[pathToMove.length - 1].r}) mpAfter=${mp}`);
 
-        console.log(`[AI] ${eName}: fallback step -> (${best.q},${best.r}) dist=${best.dist} mpAfter=${enemy.mp}`);
-        await moveAlongPath(scene, enemy, [{ q: enemy.q, r: enemy.r }, { q: best.q, r: best.r }]);
-        moved = true;
-      } else {
-        console.log(`[AI] ${eName}: fallback step failed (all neighbors blocked/costly).`);
-      }
+      await moveAlongPath(scene, enemy, pathToMove);
+    } else {
+      console.log(`[AI] ${eName}: A* path exists but first step not affordable/blocked -> staying.`);
     }
   }
 
