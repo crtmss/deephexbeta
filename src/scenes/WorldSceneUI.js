@@ -1,170 +1,142 @@
-// src/scenes/WorldSceneUI.js
-//
-// Turn UI, camera, and world input logic for the WorldScene.
-//
-// NOTE: This file grew a lot during stage A/B/F changes. It is intentionally
-// kept as “UI & input glue” and delegates core rules to other modules.
+// deephexbeta/src/scenes/WorldSceneUI.js
 
+import { refreshUnits } from './WorldSceneActions.js';
 import { findPath as aStarFindPath } from '../engine/AStar.js';
-import { validateAttack, resolveAttack } from '../units/CombatResolver.js';
-import { ensureUnitCombatFields } from '../units/UnitActions.js';
+import { setupLogisticsPanel } from './WorldSceneLogistics.js';
+import { setupEconomyUI } from './WorldSceneEconomy.js';
 
-// NOTE: These are provided by WorldSceneWorldMeta.js merge
-import { getTile } from './WorldSceneWorldMeta.js';
+// Stage B/D combat
+import { applyAttack, applyDefence } from '../units/UnitActions.js';
 
-import {
-  buildTransporterAtSelectedUnit,
-  buildRaiderAtSelectedUnit,
-} from './WorldSceneUnits.js';
+// Stage F: attack preview
+import { updateCombatPreview, clearCombatPreview } from './WorldSceneCombatPreview.js';
 
-// ------------------------------------------------------------
-// Camera Controls
-// ------------------------------------------------------------
+/* ---------------- Camera controls (unused unless called) ---------------- */
 export function setupCameraControls(scene) {
-  const cam = scene.cameras.main;
-  cam.setZoom(1);
-
+  scene.input.setDefaultCursor('grab');
   scene.isDragging = false;
-  scene.dragStart = { x: 0, y: 0 };
-  scene.camStart = { x: 0, y: 0 };
 
   scene.input.on('pointerdown', pointer => {
-    if (scene.logisticsInputLocked) return;
-    // Right click drag OR middle mouse drag
-    if (pointer.rightButtonDown() || pointer.middleButtonDown()) {
+    if (pointer.rightButtonDown()) {
       scene.isDragging = true;
-      scene.dragStart.x = pointer.x;
-      scene.dragStart.y = pointer.y;
-      scene.camStart.x = cam.scrollX;
-      scene.camStart.y = cam.scrollY;
+      scene.input.setDefaultCursor('grabbing');
+      scene.dragStartX = pointer.x;
+      scene.dragStartY = pointer.y;
+      scene.cameraStartX = scene.cameras.main.scrollX;
+      scene.cameraStartY = scene.cameras.main.scrollY;
     }
   });
 
-  scene.input.on('pointerup', pointer => {
-    if (pointer.rightButtonReleased() || pointer.middleButtonReleased()) {
+  scene.input.on('pointerup', () => {
+    if (scene.isDragging) {
       scene.isDragging = false;
+      scene.input.setDefaultCursor('grab');
     }
   });
 
   scene.input.on('pointermove', pointer => {
-    if (!scene.isDragging) return;
-    const dx = pointer.x - scene.dragStart.x;
-    const dy = pointer.y - scene.dragStart.y;
-    cam.scrollX = scene.camStart.x - dx / cam.zoom;
-    cam.scrollY = scene.camStart.y - dy / cam.zoom;
+    if (scene.isDragging) {
+      const dx = pointer.x - scene.dragStartX;
+      const dy = pointer.y - scene.dragStartY;
+      scene.cameras.main.scrollX =
+        scene.cameraStartX - dx / scene.cameras.main.zoom;
+      scene.cameras.main.scrollY =
+        scene.cameraStartY - dy / scene.cameras.main.zoom;
+    }
   });
 
-  scene.input.on('wheel', (pointer, gameObjects, deltaX, deltaY) => {
-    if (scene.logisticsInputLocked) return;
-    const zoomStep = 0.0015;
-    const newZoom = Phaser.Math.Clamp(cam.zoom - deltaY * zoomStep, 0.5, 2.2);
-
-    // zoom toward mouse
-    const wx = pointer.worldX;
-    const wy = pointer.worldY;
-    const before = cam.getWorldPoint(pointer.x, pointer.y);
-    cam.setZoom(newZoom);
-    const after = cam.getWorldPoint(pointer.x, pointer.y);
-    cam.scrollX += before.x - after.x;
-    cam.scrollY += before.y - after.y;
+  scene.input.on('wheel', (pointer, _, __, deltaY) => {
+    const cam = scene.cameras.main;
+    let z = cam.zoom - deltaY * 0.001;
+    z = Phaser.Math.Clamp(z, 0.5, 2.5);
+    cam.setZoom(z);
   });
 }
 
-// ------------------------------------------------------------
-// Turn UI
-// ------------------------------------------------------------
-export function updateTurnText(scene, turnNumber) {
-  if (!scene.turnText) return;
-  scene.turnText.setText(`Player Turn: ${turnNumber}`);
-}
-
+/* ---------------- Turn UI + economy + logistics ---------------- */
 export function setupTurnUI(scene) {
-  const w = scene.scale.width;
+  // Centralised economy UI (resource HUD, top tabs, resources panel)
+  setupEconomyUI(scene);
 
-  scene.turnText = scene.add.text(10, 10, 'Player Turn: 1', {
-    fontSize: '16px',
-    color: '#000',
-    backgroundColor: '#ffffff88',
-    padding: { x: 6, y: 3 }
-  }).setScrollFactor(0).setDepth(1000);
+  // Turn label – positioned under the (now taller) resource HUD
+  const baseY = 170;
 
-  const endTurnBtn = scene.add.text(10, 40, 'End Turn', {
-    fontSize: '16px',
-    color: '#fff',
-    backgroundColor: '#228be6',
-    padding: { x: 8, y: 4 }
-  }).setScrollFactor(0).setInteractive({ useHandCursor: true }).setDepth(1000);
+  scene.turnText = scene.add.text(20, baseY, 'Player Turn: ...', {
+    fontSize: '18px',
+    fill: '#e8f6ff',
+    backgroundColor: '#133046',
+    padding: { x: 10, y: 5 },
+  }).setScrollFactor(0).setDepth(100).setInteractive();
 
-  endTurnBtn.on('pointerdown', () => {
-    scene.endTurn?.();
+  // End Turn button
+  scene.endTurnButton = scene.add.text(20, baseY + 30, 'End Turn', {
+    fontSize: '18px',
+    fill: '#fff',
+    backgroundColor: '#3da9fc',
+    padding: { x: 10, y: 5 },
+  }).setScrollFactor(0).setDepth(100).setInteractive();
+
+  scene.endTurnButton.on('pointerdown', () => {
+    scene.endTurn();
   });
 
-  const refreshBtn = scene.add.text(10, 70, 'Refresh', {
-    fontSize: '16px',
-    color: '#fff',
+  // Refresh button (refresh units + redraw world)
+  scene.refreshButton = scene.add.text(20, baseY + 63, 'Refresh', {
+    fontSize: '18px',
+    fill: '#fff',
     backgroundColor: '#444',
-    padding: { x: 8, y: 4 }
-  }).setScrollFactor(0).setInteractive({ useHandCursor: true }).setDepth(1000);
+    padding: { x: 10, y: 5 },
+  }).setScrollFactor(0).setDepth(100).setInteractive();
 
-  refreshBtn.on('pointerdown', () => {
-    window.location.reload();
+  scene.refreshButton.on('pointerdown', () => {
+    refreshUnits(scene);
+    scene.redrawWorld?.();
   });
 
-  // Build buttons (simple)
-  const buildTransporterBtn = scene.add.text(w - 160, 10, 'Build Transporter', {
-    fontSize: '14px',
-    color: '#fff',
-    backgroundColor: '#2f9e44',
-    padding: { x: 8, y: 4 }
-  }).setScrollFactor(0).setInteractive({ useHandCursor: true }).setDepth(1000);
+  // Logistics panel + helpers (the UI itself lives in WorldSceneLogistics)
+  setupLogisticsPanel(scene);
 
-  buildTransporterBtn.on('pointerdown', () => {
-    buildTransporterAtSelectedUnit.call(scene);
-  });
+  // Wrap logistics open/close to:
+  // - lock world input (no mobile base movement while logistics is open)
+  // - clear any selected unit and path preview when opening
+  const origOpenLogi = scene.openLogisticsPanel;
+  const origCloseLogi = scene.closeLogisticsPanel;
 
-  const buildRaiderBtn = scene.add.text(w - 160, 40, 'Build Raider', {
-    fontSize: '14px',
-    color: '#fff',
-    backgroundColor: '#9c36b5',
-    padding: { x: 8, y: 4 }
-  }).setScrollFactor(0).setInteractive({ useHandCursor: true }).setDepth(1000);
+  scene.logisticsInputLocked = false;
 
-  buildRaiderBtn.on('pointerdown', () => {
-    buildRaiderAtSelectedUnit.call(scene);
-  });
+  scene.openLogisticsPanel = function () {
+    this.logisticsInputLocked = true;
+
+    // Unselect any unit and clear move preview when opening logistics
+    this.setSelectedUnit?.(null);
+    this.selectedHex = null;
+    this.clearPathPreview?.();
+
+    // Stage F: clear attack preview
+    clearCombatPreview(this);
+
+    origOpenLogi?.call(this);
+  };
+
+  scene.closeLogisticsPanel = function () {
+    this.logisticsInputLocked = false;
+    origCloseLogi?.call(this);
+  };
 }
 
-// ------------------------------------------------------------
-// Selection / Combat UI helpers
-// ------------------------------------------------------------
-function getMP(unit) {
-  if (!unit) return 0;
-  if (Number.isFinite(unit.mp)) return unit.mp;
-  if (Number.isFinite(unit.movementPoints)) return unit.movementPoints;
-  if (Number.isFinite(unit.mpMax)) return unit.mpMax;
-  return 0;
+export function updateTurnText(scene, currentTurn) {
+  if (scene.turnText) {
+    scene.turnText.setText('Player Turn: ' + currentTurn);
+  }
 }
 
-function setMP(unit, mp) {
-  if (!unit) return;
-  unit.mp = mp;
-  if (Number.isFinite(unit.movementPoints)) unit.movementPoints = mp;
-}
+/* =========================
+   Path preview & selection UI
+   ========================= */
 
-function getAP(unit) {
-  if (!unit) return 0;
-  if (Number.isFinite(unit.ap)) return unit.ap;
-  if (Number.isFinite(unit.apMax)) return unit.apMax;
-  return 0;
-}
-
-function setAP(unit, ap) {
-  if (!unit) return;
-  unit.ap = ap;
-}
-
-function clamp(n, lo, hi) {
-  return Math.max(lo, Math.min(hi, n));
+// local helper, same as in WorldScene
+function getTile(scene, q, r) {
+  return (scene.mapData || []).find(h => h.q === q && h.r === r);
 }
 
 // helper: find any unit/hauler on given hex
@@ -185,25 +157,28 @@ function getUnitAtHex(scene, q, r) {
   );
 }
 
-// wrapper around shared A* to keep logic here
+/* ---------------- Movement rules patch ----------------
+   Rules:
+   - Units cannot step if |Δelevation| > 1 between adjacent hexes
+   - Base move cost = 1 (all land)
+   - Forest adds +1
+   - Uphill (toElev > fromElev) adds +1
+-------------------------------------------------------- */
+
 function tileElevation(t) {
-  const v = (t && Number.isFinite(t.visualElevation)) ? t.visualElevation
-    : (t && Number.isFinite(t.elevation)) ? t.elevation
-    : (t && Number.isFinite(t.baseElevation)) ? t.baseElevation
-    : 0;
-  return v;
+  if (!t) return 0;
+  if (Number.isFinite(t.visualElevation)) return t.visualElevation;
+  if (Number.isFinite(t.elevation)) return t.elevation;
+  if (Number.isFinite(t.baseElevation)) return t.baseElevation;
+  return 0;
 }
 
-// Movement rules (ground units):
-// - cannot step if |Δelevation| > 1
-// - base cost = 1 for land
-// - forest adds +1
-// - uphill (toElev > fromElev) adds +1
 function stepMoveCost(fromTile, toTile) {
   if (!fromTile || !toTile) return Infinity;
 
   const e0 = tileElevation(fromTile);
   const e1 = tileElevation(toTile);
+
   if (Math.abs(e1 - e0) > 1) return Infinity;
 
   let cost = 1;
@@ -212,6 +187,7 @@ function stepMoveCost(fromTile, toTile) {
   return cost;
 }
 
+// wrapper around shared A* to keep logic here
 function computePathWithAStar(scene, unit, targetHex, blockedPred) {
   const start = { q: unit.q, r: unit.r };
   const goal = { q: targetHex.q, r: targetHex.r };
@@ -225,6 +201,8 @@ function computePathWithAStar(scene, unit, targetHex, blockedPred) {
     return blockedPred ? blockedPred(tile) : false;
   };
 
+  // If AStar.js supports dynamic move cost, it will use this.
+  // If not, it'll ignore the 5th argument; UI trimming/preview still applies rules below.
   return aStarFindPath(start, goal, scene.mapData, isBlocked, { getMoveCost: stepMoveCost });
 }
 
@@ -275,101 +253,230 @@ function hexDistance(q1, r1, q2, r2) {
   return (Math.abs(dq) + Math.abs(dr) + Math.abs(ds)) / 2;
 }
 
-// ------------------------------------------------------------
-// Combat preview (Stage F - minimal)
-// ------------------------------------------------------------
-function clearCombatPreview(scene) {
-  if (!scene) return;
-  if (scene.combatPreviewText) {
-    scene.combatPreviewText.destroy();
-    scene.combatPreviewText = null;
-  }
-}
-
-function updateCombatPreview(scene) {
-  if (!scene?.selectedUnit || scene.unitCommandMode !== 'attack') return;
-
-  const pointer = scene.input.activePointer;
-  const rounded = scene.worldToAxial(pointer.worldX, pointer.worldY);
-
-  const target = getUnitAtHex(scene, rounded.q, rounded.r);
-  if (!target || !isEnemy(target)) {
-    clearCombatPreview(scene);
-    return;
-  }
-
-  const attacker = scene.selectedUnit;
-  ensureUnitCombatFields(attacker);
-  ensureUnitCombatFields(target);
+/**
+ * Host-authoritative: send attack intent from clients.
+ * If scene.sendCombatIntent exists, we use it.
+ * Otherwise fallback to local applyAttack (singleplayer/dev).
+ */
+function trySendAttackIntent(scene, attacker, defender) {
+  if (!scene || !attacker || !defender) return false;
 
   const weapons = attacker.weapons || [];
   const weaponId = weapons[attacker.activeWeaponIndex] || weapons[0] || null;
-  if (!weaponId) {
-    clearCombatPreview(scene);
-    return;
-  }
 
-  const v = validateAttack(attacker, target, weaponId);
-  if (!v.ok) {
-    clearCombatPreview(scene);
-    return;
-  }
+  const attackerId =
+    attacker.id ??
+    attacker.unitId ??
+    attacker.uuid ??
+    attacker.netId ??
+    `${attacker.unitName || attacker.name}@${attacker.q},${attacker.r}`;
 
-  // Simple preview: show target HP after a single attack
-  const sim = resolveAttack(attacker, target, weaponId, { simulate: true });
-  const hpAfter = Math.max(0, (target.hp || 0) - (sim.finalDamage || 0));
+  const defenderId =
+    defender.id ??
+    defender.unitId ??
+    defender.uuid ??
+    defender.netId ??
+    `${defender.unitName || defender.name}@${defender.q},${defender.r}`;
 
-  if (scene.combatPreviewText) scene.combatPreviewText.destroy();
+  const nonce =
+    (typeof crypto !== 'undefined' && crypto.randomUUID)
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.floor(Math.random() * 1e9)}`;
 
-  const { x, y } = scene.axialToWorld(target.q, target.r);
-  scene.combatPreviewText = scene.add.text(x, y - 22, `HP → ${hpAfter}`, {
-    fontSize: '12px',
-    color: '#fff',
-    backgroundColor: '#000000aa',
-    padding: { x: 4, y: 2 }
-  }).setOrigin(0.5).setDepth(2000);
-}
-
-// ------------------------------------------------------------
-// World Input UI (selection + movement)
-// ------------------------------------------------------------
-export function setupWorldInputUI(scene) {
-  scene.pathPreviewTiles = [];
-  scene.pathPreviewLabels = [];
-
-  scene.clearPathPreview = () => {
-    (scene.pathPreviewTiles || []).forEach(g => g?.destroy?.());
-    (scene.pathPreviewLabels || []).forEach(t => t?.destroy?.());
-    scene.pathPreviewTiles = [];
-    scene.pathPreviewLabels = [];
+  const intent = {
+    type: 'intent:attack',
+    attackerId: String(attackerId),
+    defenderId: String(defenderId),
+    weaponId,
+    nonce,
+    sender: scene.playerName || null,
   };
 
-  scene.input.on('pointerdown', pointer => {
-    if (scene.logisticsInputLocked) return;
-    if (scene.isDragging) return;
+  if (typeof scene.sendCombatIntent === 'function') {
+    scene.sendCombatIntent(intent);
+    return true;
+  }
 
-    const rounded = scene.worldToAxial(pointer.worldX, pointer.worldY);
-    const { q, r } = rounded;
+  if (scene.isHost && typeof scene.handleCombatIntent === 'function') {
+    scene.handleCombatIntent(intent);
+    return true;
+  }
 
-    if (
-      q < 0 || r < 0 ||
-      q >= scene.mapWidth || r >= scene.mapHeight
-    ) {
-      scene.clearPathPreview?.();
-      clearCombatPreview(scene);
+  return false;
+}
+
+/* ---------------- MP helpers (keep legacy + canonical fields in sync) ---------------- */
+
+function getMP(unit) {
+  const mpA = Number.isFinite(unit.movementPoints) ? unit.movementPoints : null;
+  const mpB = Number.isFinite(unit.mp) ? unit.mp : null;
+  return (mpB != null) ? mpB : (mpA != null ? mpA : 0);
+}
+
+function setMP(unit, val) {
+  const v = Math.max(0, Number.isFinite(val) ? val : 0);
+  unit.mp = v;
+  if (Number.isFinite(unit.movementPoints)) unit.movementPoints = v;
+}
+
+/**
+ * Sets up unit selection + path preview + movement + Stage B/F attack/defence hotkeys.
+ */
+export function setupWorldInputUI(scene) {
+  // ensure arrays for preview are present
+  scene.pathPreviewTiles = scene.pathPreviewTiles || [];
+  scene.pathPreviewLabels = scene.pathPreviewLabels || [];
+
+  // Stage B: command mode
+  scene.unitCommandMode = scene.unitCommandMode || null; // null | 'attack'
+
+  // Provide distance helper for preview module (safe)
+  if (typeof scene.hexDistance !== 'function') {
+    scene.hexDistance = hexDistance;
+  }
+
+  // Stage B: hotkeys (A=attack mode, D=defence, ESC=cancel mode)
+  scene.input.keyboard?.on('keydown', (ev) => {
+    if (!scene || scene.logisticsInputLocked) return;
+
+    const key = String(ev.key || '').toLowerCase();
+
+    if (key === 'escape') {
+      if (scene.unitCommandMode) {
+        scene.unitCommandMode = null;
+        scene.clearPathPreview?.();
+        clearCombatPreview(scene);
+        console.log('[UNITS] Command mode cleared');
+      }
       return;
     }
 
-    const clickedUnit = getUnitAtHex(scene, q, r);
+    if (!scene.selectedUnit) return;
+    if (!isPlayerUnit(scene.selectedUnit)) return;
 
-    // If clicked a unit, select it (and open panel)
-    if (clickedUnit) {
-      scene.setSelectedUnit?.(clickedUnit);
+    // Optional: only allow acting on your turnOwner
+    const ownerName = scene.selectedUnit.playerName || scene.selectedUnit.name;
+    if (scene.turnOwner && ownerName !== scene.turnOwner) {
+      // Not your turn: ignore
+      return;
+    }
+
+    if (key === 'a') {
+      scene.unitCommandMode = (scene.unitCommandMode === 'attack') ? null : 'attack';
+      scene.clearPathPreview?.();
+
+      if (scene.unitCommandMode === 'attack') {
+        updateCombatPreview(scene);
+      } else {
+        clearCombatPreview(scene);
+      }
+
+      console.log('[UNITS] Attack mode:', scene.unitCommandMode === 'attack' ? 'ON' : 'OFF');
+      return;
+    }
+
+    if (key === 'd') {
+      const res = applyDefence(scene.selectedUnit);
+      if (!res.ok) {
+        console.log('[DEFENCE] failed:', res.reason);
+        return;
+      }
+      console.log('[DEFENCE] applied to', scene.selectedUnit.name || scene.selectedUnit.unitId);
+      // Visual cue: tint darker if possible
+      try {
+        scene.selectedUnit.setAlpha?.(0.85);
+      } catch (e) {}
       scene.updateSelectionHighlight?.();
       scene.refreshUnitActionPanel?.();
-      scene.clearPathPreview?.();
-      clearCombatPreview(scene);
       return;
+    }
+  });
+
+  scene.input.on('pointerdown', pointer => {
+    // Block world input when Logistics panel is open / logistics interactions active
+    if (scene.logisticsInputLocked) return;
+
+    if (scene.isDragging) return;
+    if (pointer.rightButtonDown && pointer.rightButtonDown()) return;
+
+    // IMPORTANT:
+    // Use pointer.worldX/worldY (already camera-adjusted) to keep picking consistent
+    // with the hover logic in WorldSceneMap.drawHexMap().
+    // Using positionToCamera() here can drift under zoom/scroll and break selection.
+    const rounded = scene.worldToAxial(pointer.worldX, pointer.worldY);
+
+    if (
+      rounded.q < 0 ||
+      rounded.r < 0 ||
+      rounded.q >= scene.mapWidth ||
+      rounded.r >= scene.mapHeight
+    ) return;
+
+    const { q, r } = rounded;
+
+    // Stage F: if in attack mode and clicked an enemy -> send intent (client) / resolve (host)
+    const clickedUnit = getUnitAtHex(scene, q, r);
+    if (scene.unitCommandMode === 'attack' && scene.selectedUnit && clickedUnit && isEnemy(clickedUnit)) {
+      // Turn check
+      const ownerName = scene.selectedUnit.playerName || scene.selectedUnit.name;
+      if (scene.turnOwner && ownerName !== scene.turnOwner) return;
+
+      const sent = trySendAttackIntent(scene, scene.selectedUnit, clickedUnit);
+
+      if (!sent) {
+        // Fallback: local resolve (dev/singleplayer)
+        const dist = (typeof scene.hexDistance === 'function')
+          ? scene.hexDistance(scene.selectedUnit.q, scene.selectedUnit.r, clickedUnit.q, clickedUnit.r)
+          : null;
+
+        const atk = applyAttack(scene.selectedUnit, clickedUnit, { distance: dist });
+        if (!atk.ok) {
+          console.log('[ATTACK] failed:', atk.reason);
+          return;
+        }
+
+        // Note: in host-authoritative mode the real damage should come via events.
+        // This fallback keeps old behavior for singleplayer/dev builds.
+        const details = atk.details || atk.result || null;
+        if (details) {
+          console.log(
+            `[ATTACK] ${scene.selectedUnit.name} -> enemy (${clickedUnit.q},${clickedUnit.r}) with ${details.weaponId}`
+          );
+        }
+
+        if (clickedUnit.hp <= 0) {
+          console.log('[ATTACK] target destroyed');
+          killUnit(scene, clickedUnit);
+        }
+      }
+
+      // After attack attempt exit attack mode (good UX)
+      scene.unitCommandMode = null;
+      clearCombatPreview(scene);
+      scene.refreshUnitActionPanel?.();
+      return;
+    }
+
+    // First, check if there's a unit on this hex and toggle selection.
+    if (clickedUnit) {
+      scene.toggleSelectedUnitAtHex?.(q, r);
+      scene.clearPathPreview?.();
+      scene.selectedHex = null;
+
+      // Exit attack mode on selecting something else
+      scene.unitCommandMode = null;
+      clearCombatPreview(scene);
+
+      scene.debugHex?.(q, r);
+      return;
+    }
+
+    // No unit here: it's a ground/location click
+    const tile = getTile(scene, q, r);
+    if (tile && tile.isLocation) {
+      console.log(
+        `[LOCATION] Clicked on location: ${tile.locationType || 'Unknown'} at (${q},${r})`
+      );
     }
 
     scene.selectedHex = rounded;
@@ -416,10 +523,11 @@ export function setupWorldInputUI(scene) {
         for (let i = 0; i < fullPath.length; i++) {
           const step = fullPath[i];
           const tile2 = getTile(scene, step.q, step.r);
-          const prev = i > 0 ? getTile(scene, fullPath[i - 1].q, fullPath[i - 1].r) : null;
-          const cost = i === 0 ? 0 : stepMoveCost(prev, tile2);
-          if (!Number.isFinite(cost) || cost === Infinity) break;
-          if (i > 0 && costSum + cost > movementPoints) break;
+          const prevTile = (i > 0) ? getTile(scene, fullPath[i - 1].q, fullPath[i - 1].r) : null;
+
+          const stepCost = (i === 0) ? 0 : stepMoveCost(prevTile, tile2);
+          if (!Number.isFinite(stepCost) || stepCost === Infinity) break;
+          if (i > 0 && costSum + stepCost > movementPoints) break;
 
           // Extra safety: stop if any intermediate destination becomes occupied (except start)
           if (i > 0) {
@@ -428,7 +536,7 @@ export function setupWorldInputUI(scene) {
           }
 
           trimmedPath.push(step);
-          if (i > 0) costSum += cost;
+          if (i > 0) costSum += stepCost;
         }
 
         if (trimmedPath.length > 1) {
@@ -521,11 +629,12 @@ export function setupWorldInputUI(scene) {
       for (let i = 0; i < path.length; i++) {
         const step = path[i];
         const tile = getTile(scene, step.q, step.r);
-        const prev = i > 0 ? getTile(scene, path[i - 1].q, path[i - 1].r) : null;
-        const cost = i === 0 ? 0 : stepMoveCost(prev, tile);
-        if (!Number.isFinite(cost) || cost === Infinity) break;
+        const prevTile = (i > 0) ? getTile(scene, path[i - 1].q, path[i - 1].r) : null;
 
-        if (i > 0 && costSum + cost > movementPoints) break;
+        const stepCost = (i === 0) ? 0 : stepMoveCost(prevTile, tile);
+        if (!Number.isFinite(stepCost) || stepCost === Infinity) break;
+
+        if (i > 0 && costSum + stepCost > movementPoints) break;
 
         // Don't preview through occupied hexes (except start)
         if (i > 0) {
@@ -534,7 +643,7 @@ export function setupWorldInputUI(scene) {
         }
 
         maxPath.push(step);
-        if (i > 0) costSum += cost;
+        if (i > 0) costSum += stepCost;
       }
 
       const graphics = scene.add.graphics();
@@ -556,17 +665,22 @@ export function setupWorldInputUI(scene) {
 
       const baseColor = '#e8f6ff';
       const outOfRangeColor = '#ff7b7b';
-      costSum = 0;
+
+      // labels: cumulative cost
+      let sum = 0;
       for (let i = 0; i < maxPath.length; i++) {
         const step = maxPath[i];
         const tile = getTile(scene, step.q, step.r);
-        const prev = i > 0 ? getTile(scene, maxPath[i - 1].q, maxPath[i - 1].r) : null;
-        const cost = i === 0 ? 0 : stepMoveCost(prev, tile);
-        if (!Number.isFinite(cost) || cost === Infinity) break;
-        if (i > 0) costSum += cost;
+        const prevTile = (i > 0) ? getTile(scene, maxPath[i - 1].q, maxPath[i - 1].r) : null;
+
+        const stepCost = (i === 0) ? 0 : stepMoveCost(prevTile, tile);
+        if (!Number.isFinite(stepCost) || stepCost === Infinity) break;
+
+        if (i > 0) sum += stepCost;
+
         const { x, y } = scene.axialToWorld(step.q, step.r);
-        const labelColor = costSum <= movementPoints ? baseColor : outOfRangeColor;
-        const label = scene.add.text(x, y, `${costSum}`, {
+        const labelColor = sum <= movementPoints ? baseColor : outOfRangeColor;
+        const label = scene.add.text(x, y, `${sum}`, {
           fontSize: '10px',
           color: labelColor,
           fontStyle: 'bold',
