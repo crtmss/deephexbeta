@@ -262,7 +262,8 @@ function createTransporter(scene, q, r, owner) {
  * Creates a Raider.
  * If controller='ai', unit is enemy and tinted purple by default.
  *
- * ✅ FIX: triangle is centered around (0,0) in local space.
+ * ✅ FIX: triangle is centered AND its origin is set to the center,
+ * so pos.x/pos.y corresponds to the center of the hex.
  */
 function createRaider(scene, q, r, opts = {}) {
   const controller = opts.controller || 'player';
@@ -274,7 +275,7 @@ function createRaider(scene, q, r, opts = {}) {
     ? (opts.color ?? ENEMY_COLOR)
     : colorForSlot(opts.ownerSlot ?? 0);
 
-  // ✅ CENTERED triangle points:
+  // ✅ CENTERED triangle points (local space around 0,0):
   // top:    (0, -s)
   // left:   (-0.9s, +0.78s)
   // right:  (+0.9s, +0.78s)
@@ -285,6 +286,11 @@ function createRaider(scene, q, r, opts = {}) {
     Math.round(s * 0.9),  Math.round(s * 0.78),
     fillColor
   ).setDepth(controller === 'ai' ? UNIT_Z.enemy : UNIT_Z.player);
+
+  // ✅ CRITICAL FIX: ensure shape origin is centered (otherwise it can look offset)
+  unit.setOrigin(0.5, 0.5);
+  unit.setPosition(pos.x, pos.y);
+  unit.updateData?.();
 
   unit.q = q;
   unit.r = r;
