@@ -50,7 +50,7 @@ function moveAlongPath(scene, unit, path) {
   });
 }
 
-export function computePathWithAStar(unit, targetHex, mapData, blockedPred) {
+export function computePathWithAStar(unit, targetHex, mapData, blockedPred, debugTag = null) {
   const start = { q: unit.q, r: unit.r };
   const goal = { q: targetHex.q, r: targetHex.r };
 
@@ -61,12 +61,10 @@ export function computePathWithAStar(unit, targetHex, mapData, blockedPred) {
     return blockedPred ? blockedPred(tile) : false;
   };
 
-  // DEBUG is enabled here so you can see exactly why pathLen=0.
-  // Turn off later by setting debug:false.
   return aStarFindPath(start, goal, mapData, isBlocked, {
     getMoveCost: stepMoveCost,
-    debug: true,
-    debugTag: `A*:${unitLabel(unit)}@${start.q},${start.r}->${goal.q},${goal.r}`,
+    debug: true, // включено для диагностики; выключишь потом
+    debugTag: debugTag || `A*:${unitLabel(unit)}@${start.q},${start.r}->${goal.q},${goal.r}`,
   });
 }
 
@@ -85,18 +83,22 @@ export async function moveEnemies(scene) {
     return all.find(u => u && !u.isDead && u.q === q && u.r === r) || null;
   };
 
-  const isBlocked = (tile, mover) => {
+  // "Hard" terrain blocking for ground units
+  const isTerrainBlocked = (tile) => {
     if (!tile) return true;
-
-    // Blocks: water/mountain OR flooded
     if (
       tile.type === 'water' ||
       tile.type === 'mountain' ||
       tile.isUnderWater === true ||
       tile.isCoveredByWater === true
     ) return true;
+    return false;
+  };
 
-    // Occupancy blocks (no stacking)
+  // Standard blocking including occupancy (no stacking)
+  const isBlocked = (tile, mover) => {
+    if (isTerrainBlocked(tile)) return true;
+
     const occ = getUnitAt(tile.q, tile.r);
     if (occ && occ !== mover) return true;
 
@@ -146,6 +148,7 @@ export async function moveEnemies(scene) {
       if (v.ok) {
         spendAp(enemy, 1);
 
+        // keep convention: attacks may reduce MP
         if ((enemy.mp || 0) > 0) enemy.mp = Math.max(0, enemy.mp - 1);
         if (Number.isFinite(enemy.movementPoints)) enemy.movementPoints = enemy.mp;
 
@@ -174,11 +177,34 @@ export async function moveEnemies(scene) {
       continue;
     }
 
+    const goalQ = nearest.q;
+    const goalR = nearest.r;
+
+    // KEY FIX:
+    // Allow A* to treat the GOAL tile as passable even if occupied by the target unit.
+    // Otherwise goalBlocked=true and pathLen=0 forever.
+    const blockedForPath = (tile) => {
+      if (!tile) return true;
+
+      // Terrain restrictions always apply (even for goal)
+      if (isTerrainBlocked(tile)) return true;
+
+      // If this is the goal tile, DO NOT block by occupancy.
+      if (tile.q === goalQ && tile.r === goalR) return false;
+
+      // Otherwise apply normal occupancy rules
+      const occ = getUnitAt(tile.q, tile.r);
+      if (occ && occ !== enemy) return true;
+
+      return false;
+    };
+
     const path = computePathWithAStar(
       enemy,
-      { q: nearest.q, r: nearest.r },
+      { q: goalQ, r: goalR },
       scene.mapData,
-      (t) => isBlocked(t, enemy)
+      blockedForPath,
+      `A*:${eName}@${enemy.q},${enemy.r}->${goalQ},${goalR}`
     );
 
     console.log(`[AI] ${eName}: A* pathLen=${path.length}`);
@@ -200,13 +226,15 @@ export async function moveEnemies(scene) {
       const cost = stepMoveCost(prevTile, tile);
       if (!Number.isFinite(cost) || cost === Infinity) break;
 
+      // IMPORTANT: for actual movement we DO NOT allow stepping onto an occupied tile (including goal).
       if (!tile || isBlocked(tile, enemy)) break;
       if (cost > mp) break;
 
       mp -= cost;
       lastIndex = i;
 
-      if (hexDistanceOddR(step.q, step.r, nearest.q, nearest.r) <= 1) break;
+      // If we reached adjacency, we can stop early
+      if (hexDistanceOddR(step.q, step.r, goalQ, goalR) <= 1) break;
     }
 
     if (lastIndex > 0) {
@@ -214,7 +242,8 @@ export async function moveEnemies(scene) {
       if (Number.isFinite(enemy.movementPoints)) enemy.movementPoints = mp;
 
       const pathToMove = path.slice(0, lastIndex + 1);
-      console.log(`[AI] ${eName}: moving by A* steps=${pathToMove.length - 1} last=(${pathToMove[pathToMove.length - 1].q},${pathToMove[pathToMove.length - 1].r}) mpAfter=${mp}`);
+      const last = pathToMove[pathToMove.length - 1];
+      console.log(`[AI] ${eName}: moving by A* steps=${pathToMove.length - 1} last=(${last.q},${last.r}) mpAfter=${mp}`);
 
       await moveAlongPath(scene, enemy, pathToMove);
     } else {
