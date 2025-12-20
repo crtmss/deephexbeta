@@ -5,6 +5,30 @@ import { ensureUnitCombatFields, spendAp } from './UnitActions.js';
 
 import { getTile } from '../scenes/WorldSceneWorldMeta.js';
 
+function tileElevation(t) {
+  const v = (t && Number.isFinite(t.visualElevation)) ? t.visualElevation
+    : (t && Number.isFinite(t.elevation)) ? t.elevation
+    : (t && Number.isFinite(t.baseElevation)) ? t.baseElevation
+    : 0;
+  return v;
+}
+
+// Movement rules (ground units):
+// - cannot step if |Δelevation| > 1
+// - base cost = 1 for land
+// - forest adds +1
+// - uphill adds +1
+function stepMoveCost(fromTile, toTile) {
+  if (!fromTile || !toTile) return Infinity;
+  const e0 = tileElevation(fromTile);
+  const e1 = tileElevation(toTile);
+  if (Math.abs(e1 - e0) > 1) return Infinity;
+  let cost = 1;
+  if (toTile.hasForest) cost += 1;
+  if (e1 > e0) cost += 1;
+  return cost;
+}
+
 function unitLabel(u) {
   return String(u?.unitName ?? u?.name ?? u?.id ?? u?.unitId ?? u?.uuid ?? u?.netId ?? 'unit');
 }
@@ -45,7 +69,7 @@ export function computePathWithAStar(unit, targetHex, mapData, blockedPred) {
     return blockedPred ? blockedPred(tile) : false;
   };
 
-  return aStarFindPath(start, goal, mapData, isBlocked);
+  return aStarFindPath(start, goal, mapData, isBlocked, { getMoveCost: stepMoveCost });
 }
 
 export async function moveEnemies(scene) {
@@ -166,7 +190,9 @@ export async function moveEnemies(scene) {
       for (let i = 1; i < path.length; i++) {
         const step = path[i];
         const tile = getTile(scene, step.q, step.r);
-        const cost = tile?.movementCost || 1;
+        const prevTile = getTile(scene, path[i - 1].q, path[i - 1].r);
+        const cost = stepMoveCost(prevTile, tile);
+        if (!Number.isFinite(cost) || cost === Infinity) break;
 
         if (!tile || isBlocked(tile, enemy)) break;
         if (cost > mp) break;
@@ -204,7 +230,9 @@ export async function moveEnemies(scene) {
         if (!tile) continue;
         if (isBlocked(tile, enemy)) continue;
 
-        const cost = tile.movementCost || 1;
+        const fromTile = getTile(scene, enemy.q, enemy.r);
+        const cost = stepMoveCost(fromTile, tile);
+        if (!Number.isFinite(cost) || cost === Infinity) continue;
         if (cost > mp) continue;
 
         const dist = hexDistanceOddR(nq, nr, nearest.q, nearest.r);
