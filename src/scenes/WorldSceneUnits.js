@@ -13,6 +13,7 @@ import { getUnitDef } from '../units/UnitDefs.js';
 const UNIT_Z = {
   player: 2000,
   enemy:  2000,
+  building: 1500, // ✅ PATCH: needed for Raider Camp marker
 };
 
 const PLAYER_COLORS = [
@@ -23,6 +24,9 @@ const PLAYER_COLORS = [
 ];
 
 const ENEMY_COLOR = 0xaa66ff;
+
+// ✅ PATCH: Raider Camp visuals
+const CAMP_COLOR = 0x7b3fe4; // purple-ish
 
 // NEW: combat unit colors (tint derived from owner slot)
 function colorForSlot(slot) {
@@ -77,13 +81,24 @@ function isLandTile(t) {
   return true;
 }
 
+/**
+ * ✅ PATCH: robust occupancy check across all unit arrays
+ */
+function isOccupied(scene, q, r) {
+  const all = []
+    .concat(scene.units || [])
+    .concat(scene.players || [])
+    .concat(scene.enemies || [])
+    .concat(scene.haulers || []);
+  return !!all.find(u => u && !u.isDead && u.q === q && u.r === r);
+}
+
 function isBlockedForUnit(scene, q, r) {
   const t = getTile(scene, q, r);
   if (!isLandTile(t)) return true;
 
   // No stacking: any unit occupying blocks
-  const occ = (scene.units || []).find(u => u && u.q === q && u.r === r);
-  return !!occ;
+  return isOccupied(scene, q, r);
 }
 
 function findFreeNeighbor(scene, q, r) {
@@ -203,62 +218,6 @@ function createMobileBase(scene, spawnTile, player, color, playerIndex) {
 }
 
 /**
- * Creates a simple enemy unit.
- */
-function createEnemyUnit(scene, spawnTile) {
-  const u = createRaider(scene, spawnTile.q, spawnTile.r, {
-    controller: 'ai',
-    color: ENEMY_COLOR,
-  });
-  u.type = 'enemy_raider';
-  u.isEnemy = true;
-  u.isPlayer = false;
-  u.controller = 'ai';
-  u.aiProfile = 'aggressive';
-  return u;
-}
-
-/**
- * Creates a player-controlled Transporter (circle).
- */
-function createTransporter(scene, q, r, owner) {
-  const pos = scene.axialToWorld(q, r);
-  const size = (typeof scene.hexSize === 'number') ? scene.hexSize : 22;
-  const radius = Math.max(8, Math.round(size * 0.52));
-
-  const slot = owner?.playerIndex ?? owner?.ownerSlot ?? 0;
-  const color = colorForSlot(slot);
-
-  const unit = scene.add.circle(pos.x, pos.y, radius, color).setDepth(UNIT_Z.player);
-  unit.q = q;
-  unit.r = r;
-  unit.type = 'transporter';
-  unit.isPlayer = true;
-  unit.isEnemy = false;
-
-  unit.playerId = owner?.playerId ?? owner?.ownerId ?? null;
-  unit.playerName = owner?.playerName ?? owner?.name ?? 'Player';
-  unit.name = unit.playerName;
-  unit.playerIndex = slot;
-
-  const def = getUnitDef('transporter');
-  const st = createUnitState({
-    type: 'transporter',
-    ownerId: unit.playerId,
-    ownerSlot: slot,
-    controller: 'player',
-    q,
-    r,
-    facing: 0,
-  });
-  unit.unitName = def.name;
-  applyUnitStateToPhaserUnit(unit, st);
-  if (typeof unit.setStrokeStyle === 'function') unit.setStrokeStyle(2, 0x000000, 0.6);
-
-  return unit;
-}
-
-/**
  * Creates a Raider.
  * If controller='ai', unit is enemy and tinted purple by default.
  *
@@ -326,7 +285,199 @@ function createRaider(scene, q, r, opts = {}) {
     unit.aiProfile = 'aggressive';
   }
 
+  // Ensure stable id for respawn tracking
+  if (!unit.id && !unit.unitId) {
+    unit.id = `ai_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+  }
+
   return unit;
+}
+
+/**
+ * Creates a simple enemy unit.
+ */
+function createEnemyUnit(scene, spawnTile) {
+  const u = createRaider(scene, spawnTile.q, spawnTile.r, {
+    controller: 'ai',
+    color: ENEMY_COLOR,
+  });
+  u.type = 'enemy_raider';
+  u.isEnemy = true;
+  u.isPlayer = false;
+  u.controller = 'ai';
+  u.aiProfile = 'aggressive';
+  return u;
+}
+
+/**
+ * ✅ PATCH: Exported helper for new AI respawn system (Raider Camp).
+ */
+export function spawnEnemyRaiderAt(scene, q, r) {
+  const u = createRaider(scene, q, r, { controller: 'ai', color: ENEMY_COLOR });
+  u.type = 'enemy_raider';
+  u.isEnemy = true;
+  u.isPlayer = false;
+  u.controller = 'ai';
+  u.aiProfile = 'camp_raider';
+
+  scene.units = scene.units || [];
+  scene.enemies = scene.enemies || [];
+  scene.units.push(u);
+  scene.enemies.push(u);
+
+  return u;
+}
+
+/**
+ * Creates a player-controlled Transporter (circle).
+ */
+function createTransporter(scene, q, r, owner) {
+  const pos = scene.axialToWorld(q, r);
+  const size = (typeof scene.hexSize === 'number') ? scene.hexSize : 22;
+  const radius = Math.max(8, Math.round(size * 0.52));
+
+  const slot = owner?.playerIndex ?? owner?.ownerSlot ?? 0;
+  const color = colorForSlot(slot);
+
+  const unit = scene.add.circle(pos.x, pos.y, radius, color).setDepth(UNIT_Z.player);
+  unit.q = q;
+  unit.r = r;
+  unit.type = 'transporter';
+  unit.isPlayer = true;
+  unit.isEnemy = false;
+
+  unit.playerId = owner?.playerId ?? owner?.ownerId ?? null;
+  unit.playerName = owner?.playerName ?? owner?.name ?? 'Player';
+  unit.name = unit.playerName;
+  unit.playerIndex = slot;
+
+  const def = getUnitDef('transporter');
+  const st = createUnitState({
+    type: 'transporter',
+    ownerId: unit.playerId,
+    ownerSlot: slot,
+    controller: 'player',
+    q,
+    r,
+    facing: 0,
+  });
+  unit.unitName = def.name;
+  applyUnitStateToPhaserUnit(unit, st);
+  if (typeof unit.setStrokeStyle === 'function') unit.setStrokeStyle(2, 0x000000, 0.6);
+
+  return unit;
+}
+
+/* =========================================================
+   ✅ PATCH: Raider Camp (spawned at game start by host)
+   ========================================================= */
+
+/**
+ * Create Raider Camp marker.
+ * Stored as scene.raiderCamp = {q,r,radius,marker,alertTargetId,respawnQueue}
+ */
+function createRaiderCamp(scene, q, r) {
+  const pos = scene.axialToWorld(q, r);
+  const size = (typeof scene.hexSize === 'number') ? scene.hexSize : 22;
+
+  const w = Math.max(12, Math.round(size * 0.9));
+  const h = Math.max(12, Math.round(size * 0.9));
+
+  const marker = scene.add.polygon(
+    pos.x, pos.y,
+    [0, -h, w, 0, 0, h, -w, 0],
+    CAMP_COLOR,
+    0.95
+  ).setDepth(UNIT_Z.building);
+
+  marker.setOrigin?.(0.5, 0.5);
+  marker.setStrokeStyle?.(2, 0x000000, 0.6);
+
+  const camp = {
+    q, r,
+    radius: 4,
+    marker,
+    type: 'raider_camp',
+    alertTargetId: null,
+    respawnQueue: [], // [{dueTurn:number}]
+  };
+
+  scene.buildings = scene.buildings || [];
+  scene.buildings.push({
+    type: 'raider_camp',
+    q, r,
+    container: marker,
+    campRef: camp,
+  });
+
+  scene.raiderCamp = camp;
+  return camp;
+}
+
+function pickRandomFreeLandTile(scene) {
+  const land = (scene.mapData || []).filter(isLandTile);
+  if (!land.length) return null;
+
+  for (let i = 0; i < 250; i++) {
+    const t = land[Math.floor(Math.random() * land.length)];
+    if (!t) continue;
+    if (isOccupied(scene, t.q, t.r)) continue;
+    return t;
+  }
+
+  for (const t of land) {
+    if (!t) continue;
+    if (!isOccupied(scene, t.q, t.r)) return t;
+  }
+
+  return null;
+}
+
+function spawnInitialRaidersAroundCamp(scene, camp, maxUnits = 4) {
+  if (!camp) return;
+
+  const candidates = [];
+  const map = scene.mapData || [];
+
+  // prefer near ring 1..2 first
+  for (let rr = 1; rr <= 2; rr++) {
+    for (const t of map) {
+      if (!t || !isLandTile(t)) continue;
+      if (axialDistance(t.q, t.r, camp.q, camp.r) !== rr) continue;
+      if (isBlockedForUnit(scene, t.q, t.r)) continue;
+      candidates.push(t);
+    }
+  }
+
+  // then any within camp radius
+  if (candidates.length < maxUnits) {
+    for (const t of map) {
+      if (!t || !isLandTile(t)) continue;
+      const d = axialDistance(t.q, t.r, camp.q, camp.r);
+      if (d < 1 || d > camp.radius) continue;
+      if (isBlockedForUnit(scene, t.q, t.r)) continue;
+      candidates.push(t);
+    }
+  }
+
+  // shuffle
+  for (let i = candidates.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
+  }
+
+  let spawned = 0;
+  for (const t of candidates) {
+    if (spawned >= maxUnits) break;
+    if (isBlockedForUnit(scene, t.q, t.r)) continue;
+
+    const u = spawnEnemyRaiderAt(scene, t.q, t.r);
+    u.homeQ = camp.q;
+    u.homeR = camp.r;
+    u.aiProfile = 'camp_raider';
+
+    spawned++;
+  }
 }
 
 /**
@@ -487,6 +638,18 @@ export async function spawnUnitsAndEnemies() {
           scene.enemies.push(enemy);
         });
       }
+    }
+  }
+
+  // ✅ PATCH: Create Raider Camp at start (host only) + spawn up to 4 raiders around
+  if (scene.isHost && !scene.raiderCamp) {
+    const campTile = pickRandomFreeLandTile(scene);
+    if (campTile) {
+      const camp = createRaiderCamp(scene, campTile.q, campTile.r);
+      spawnInitialRaidersAroundCamp(scene, camp, 4);
+      console.log(`[CAMP] Raider Camp created at (${camp.q},${camp.r}) radius=${camp.radius}`);
+    } else {
+      console.warn('[CAMP] Could not find free land tile for Raider Camp.');
     }
   }
 
