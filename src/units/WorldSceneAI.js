@@ -4,6 +4,7 @@ import { validateAttack, resolveAttack } from './CombatResolver.js';
 import { ensureUnitCombatFields, spendAp } from './UnitActions.js';
 
 import { getTile } from '../scenes/WorldSceneWorldMeta.js';
+import { spawnEnemyRaiderAt } from '../scenes/WorldSceneUnits.js';
 
 function tileElevation(t) {
   const v = (t && Number.isFinite(t.visualElevation)) ? t.visualElevation
@@ -33,11 +34,18 @@ function unitLabel(u) {
   return String(u?.unitName ?? u?.name ?? u?.id ?? u?.unitId ?? u?.uuid ?? u?.netId ?? 'unit');
 }
 
-function hexDistanceOddR(q1, r1, q2, r2) {
+function axialDistance(q1, r1, q2, r2) {
   const dq = q2 - q1;
   const dr = r2 - r1;
   const ds = -dq - dr;
   return (Math.abs(dq) + Math.abs(dr) + Math.abs(ds)) / 2;
+}
+
+function neighborsOddR(q, r) {
+  const even = (r % 2 === 0);
+  return even
+    ? [[+1, 0], [0, -1], [-1, -1], [-1, 0], [-1, +1], [0, +1]]
+    : [[+1, 0], [+1, -1], [0, -1], [-1, 0], [0, +1], [+1, +1]];
 }
 
 function moveAlongPath(scene, unit, path) {
@@ -63,194 +71,479 @@ export function computePathWithAStar(unit, targetHex, mapData, blockedPred, debu
 
   return aStarFindPath(start, goal, mapData, isBlocked, {
     getMoveCost: stepMoveCost,
-    debug: true, // включено для диагностики; выключишь потом
+    debug: false, // включай true только при отладке
     debugTag: debugTag || `A*:${unitLabel(unit)}@${start.q},${start.r}->${goal.q},${goal.r}`,
   });
 }
 
+function isTerrainBlocked(tile) {
+  if (!tile) return true;
+  if (
+    tile.type === 'water' ||
+    tile.type === 'mountain' ||
+    tile.isUnderWater === true ||
+    tile.isCoveredByWater === true
+  ) return true;
+  return false;
+}
+
+function pickRandomPatrolGoal(scene, campQ, campR, radius, getUnitAt, mover) {
+  const candidates = [];
+  for (const t of (scene.mapData || [])) {
+    if (!t) continue;
+    if (isTerrainBlocked(t)) continue;
+    if (axialDistance(t.q, t.r, campQ, campR) > radius) continue;
+
+    const occ = getUnitAt(t.q, t.r);
+    if (occ && occ !== mover) continue;
+
+    candidates.push(t);
+  }
+  if (!candidates.length) return null;
+  return candidates[Math.floor(Math.random() * candidates.length)];
+}
+
+function processCampRespawns(scene, camp) {
+  if (!scene.isHost || !camp) return;
+
+  camp.respawnQueue = Array.isArray(camp.respawnQueue) ? camp.respawnQueue : [];
+
+  // current alive camp raiders
+  const aliveRaiders = (scene.enemies || []).filter(e => e && !e.isDead && (e.aiProfile === 'camp_raider'));
+  const maxUnits = 4;
+
+  // spawn due items
+  const due = [];
+  const keep = [];
+  for (const it of camp.respawnQueue) {
+    if (it && Number.isFinite(it.dueTurn) && it.dueTurn <= scene.turnNumber) due.push(it);
+    else keep.push(it);
+  }
+  camp.respawnQueue = keep;
+
+  if (!due.length) return;
+
+  // spawn as many as we can (respect maxUnits)
+  let slots = Math.max(0, maxUnits - aliveRaiders.length);
+  while (slots > 0 && due.length > 0) {
+    due.pop();
+
+    // try spawn on camp itself or nearest free ring
+    let spawnSpot = null;
+
+    // ring search increasing distance
+    for (let d = 1; d <= camp.radius; d++) {
+      for (const t of (scene.mapData || [])) {
+        if (!t) continue;
+        if (isTerrainBlocked(t)) continue;
+        if (axialDistance(t.q, t.r, camp.q, camp.r) !== d) continue;
+
+        const occ = getUnitAt(scene, t.q, t.r);
+        if (occ) continue;
+
+        spawnSpot = t;
+        break;
+      }
+      if (spawnSpot) break;
+    }
+
+    if (!spawnSpot) break;
+
+    const u = spawnEnemyRaiderAt(scene, spawnSpot.q, spawnSpot.r);
+    u.homeQ = camp.q;
+    u.homeR = camp.r;
+    u.aiProfile = 'camp_raider';
+
+    slots--;
+    console.log(`[CAMP] Respawned Raider at (${u.q},${u.r}) on turn ${scene.turnNumber}`);
+  }
+}
+
+function getUnitAt(scene, q, r) {
+  const all = []
+    .concat(scene.units || [])
+    .concat(scene.players || [])
+    .concat(scene.enemies || [])
+    .concat(scene.haulers || []);
+  return all.find(u => u && !u.isDead && u.q === q && u.r === r) || null;
+}
+
+function enqueueRespawn(scene, camp, deadUnit) {
+  if (!scene.isHost || !camp) return;
+
+  // max 4 alive + pending
+  const aliveRaiders = (scene.enemies || []).filter(e => e && !e.isDead && (e.aiProfile === 'camp_raider'));
+  const pending = Array.isArray(camp.respawnQueue) ? camp.respawnQueue.length : 0;
+
+  if (aliveRaiders.length + pending >= 4) return;
+
+  camp.respawnQueue = Array.isArray(camp.respawnQueue) ? camp.respawnQueue : [];
+  camp.respawnQueue.push({ dueTurn: scene.turnNumber + 5 });
+
+  console.log(`[CAMP] Raider died (${unitLabel(deadUnit)}). Scheduled respawn at turn ${scene.turnNumber + 5}`);
+}
+
+function trackDeathsAndScheduleRespawn(scene, camp) {
+  if (!scene.isHost || !camp) return;
+
+  // Track by IDs to detect missing ones (killed/destroyed)
+  scene._campPrevRaiderIds = scene._campPrevRaiderIds || new Set();
+
+  const current = new Set();
+  for (const e of (scene.enemies || [])) {
+    if (!e || e.isDead) continue;
+    if (e.aiProfile !== 'camp_raider') continue;
+    const id = String(e.id ?? e.unitId ?? e.uuid ?? e.netId ?? `${unitLabel(e)}@${e.q},${e.r}`);
+    current.add(id);
+  }
+
+  // IDs that disappeared since last tick = died
+  for (const prevId of scene._campPrevRaiderIds) {
+    if (!current.has(prevId)) {
+      enqueueRespawn(scene, camp, { id: prevId });
+    }
+  }
+
+  scene._campPrevRaiderIds = current;
+}
+
+function campDetectIntruder(scene, camp) {
+  if (!camp) return null;
+  const radius = camp.radius || 4;
+
+  const playerUnits = (scene.units || []).filter(u => u && u.isPlayer && !u.isDead);
+  let best = null;
+  let bestD = Infinity;
+
+  for (const p of playerUnits) {
+    const d = axialDistance(p.q, p.r, camp.q, camp.r);
+    if (d <= radius && d < bestD) {
+      bestD = d;
+      best = p;
+    }
+  }
+  return best;
+}
+
+function setCampTarget(camp, targetUnit) {
+  if (!camp || !targetUnit) return;
+  const id = String(targetUnit.id ?? targetUnit.unitId ?? targetUnit.uuid ?? targetUnit.netId ?? `${unitLabel(targetUnit)}@${targetUnit.q},${targetUnit.r}`);
+  camp.alertTargetId = id;
+}
+
+function getCampTargetUnit(scene, camp) {
+  if (!camp?.alertTargetId) return null;
+  const id = camp.alertTargetId;
+
+  const all = []
+    .concat(scene.units || [])
+    .concat(scene.players || [])
+    .concat(scene.enemies || [])
+    .concat(scene.haulers || []);
+
+  const u = all.find(x => x && !x.isDead && String(x.id ?? x.unitId ?? x.uuid ?? x.netId ?? `${unitLabel(x)}@${x.q},${x.r}`) === id);
+  return u || null;
+}
+
 export async function moveEnemies(scene) {
-  if (!scene || !Array.isArray(scene.enemies) || scene.enemies.length === 0) {
-    console.log('[AI] No enemies array or empty.');
-    return;
+  if (!scene || !Array.isArray(scene.enemies) || scene.enemies.length === 0) return;
+
+  const camp = scene.raiderCamp || null;
+
+  // Host-only: respawn logic & death tracking
+  if (scene.isHost && camp) {
+    trackDeathsAndScheduleRespawn(scene, camp);
+    processCampRespawns(scene, camp);
   }
 
-  const getUnitAt = (q, r) => {
-    const all = []
-      .concat(scene.units || [])
-      .concat(scene.players || [])
-      .concat(scene.enemies || [])
-      .concat(scene.haulers || []);
-    return all.find(u => u && !u.isDead && u.q === q && u.r === r) || null;
-  };
+  // Camp detection: if any player enters radius => set target
+  if (camp) {
+    const intruder = campDetectIntruder(scene, camp);
+    if (intruder) {
+      setCampTarget(camp, intruder);
+    }
+  }
 
-  // "Hard" terrain blocking for ground units
-  const isTerrainBlocked = (tile) => {
-    if (!tile) return true;
-    if (
-      tile.type === 'water' ||
-      tile.type === 'mountain' ||
-      tile.isUnderWater === true ||
-      tile.isCoveredByWater === true
-    ) return true;
-    return false;
-  };
+  const targetUnit = camp ? getCampTargetUnit(scene, camp) : null;
 
-  // Standard blocking including occupancy (no stacking)
+  // isBlocked for actual movement (no stacking)
   const isBlocked = (tile, mover) => {
+    if (!tile) return true;
     if (isTerrainBlocked(tile)) return true;
-
-    const occ = getUnitAt(tile.q, tile.r);
+    const occ = getUnitAt(scene, tile.q, tile.r);
     if (occ && occ !== mover) return true;
-
     return false;
   };
 
-  const playerTargets =
-    (scene.units || []).filter(u => u && u.isPlayer && !u.isDead).length
-      ? (scene.units || []).filter(u => u && u.isPlayer && !u.isDead)
-      : (scene.players || []).filter(u => u && u.isPlayer && !u.isDead);
-
-  console.log(`[AI] moveEnemies(): enemies=${scene.enemies.length}, playerTargets=${playerTargets.length}, turn=${scene.turnNumber}`);
-
-  if (playerTargets.length === 0) {
-    console.log('[AI] No player targets found. Check isPlayer flags.');
-    return;
-  }
-
-  for (const enemy of scene.enemies) {
+  const enemies = scene.enemies || [];
+  for (const enemy of enemies) {
     if (!enemy || enemy.isDead) continue;
     if (enemy.controller !== 'ai' && !enemy.isEnemy) continue;
 
     ensureUnitCombatFields(enemy);
 
+    // Ensure ground units have 3 MP as requested
+    enemy.mpMax = 3;
+    if (!Number.isFinite(enemy.mp)) enemy.mp = enemy.mpMax;
+    if (!Number.isFinite(enemy.apMax)) enemy.apMax = 1;
+    if (!Number.isFinite(enemy.ap)) enemy.ap = enemy.apMax;
+
     const eName = unitLabel(enemy);
-    console.log(`[AI] Enemy ${eName} at (${enemy.q},${enemy.r}) mp=${enemy.mp}/${enemy.mpMax} ap=${enemy.ap}/${enemy.apMax}`);
 
-    // pick nearest target
-    let nearest = null;
-    let nearestDist = Infinity;
-    for (const p of playerTargets) {
-      const d = hexDistanceOddR(enemy.q, enemy.r, p.q, p.r);
-      if (d < nearestDist) { nearestDist = d; nearest = p; }
-    }
-    if (!nearest) continue;
+    // Only camp raiders use the new logic
+    const isCampRaider = (enemy.aiProfile === 'camp_raider') && !!camp;
+    if (!isCampRaider) {
+      // fallback: old behaviour (chase nearest player unit)
+      const players = (scene.units || []).filter(u => u && u.isPlayer && !u.isDead);
+      if (!players.length) continue;
 
-    console.log(`[AI] ${eName}: nearest target=${unitLabel(nearest)} at (${nearest.q},${nearest.r}) dist=${nearestDist}`);
-
-    // 1) Attack if possible
-    const weapons = enemy.weapons || [];
-    const weaponId = weapons[enemy.activeWeaponIndex] || weapons[0] || null;
-
-    if (weaponId && (enemy.ap || 0) > 0) {
-      const v = validateAttack(enemy, nearest, weaponId);
-      console.log(`[AI] ${eName}: attackCheck weapon=${weaponId} ok=${!!v?.ok} reason=${v?.reason ?? ''}`);
-
-      if (v.ok) {
-        spendAp(enemy, 1);
-
-        // keep convention: attacks may reduce MP
-        if ((enemy.mp || 0) > 0) enemy.mp = Math.max(0, enemy.mp - 1);
-        if (Number.isFinite(enemy.movementPoints)) enemy.movementPoints = enemy.mp;
-
-        ensureUnitCombatFields(nearest);
-        const r = resolveAttack(enemy, nearest, weaponId);
-
-        scene.applyCombatEvent?.({
-          type: 'combat:attack',
-          attackerId: String(enemy.id ?? enemy.unitId ?? enemy.uuid ?? enemy.netId ?? `${enemy.unitName || enemy.name}@${enemy.q},${enemy.r}`),
-          defenderId: String(nearest.id ?? nearest.unitId ?? nearest.uuid ?? nearest.netId ?? `${nearest.unitName || nearest.name}@${nearest.q},${nearest.r}`),
-          weaponId,
-          damage: r.finalDamage,
-          distance: r.distance,
-          turnNumber: scene.turnNumber,
-          timestamp: Date.now(),
-        });
-
-        console.log(`[AI] ${eName}: attacked ${unitLabel(nearest)} dmg=${r.finalDamage} dist=${r.distance}`);
-        continue;
+      let nearest = null, bestD = Infinity;
+      for (const p of players) {
+        const d = axialDistance(enemy.q, enemy.r, p.q, p.r);
+        if (d < bestD) { bestD = d; nearest = p; }
       }
-    }
+      if (!nearest) continue;
 
-    // 2) Move (A* only). If path not found -> stay.
-    if ((enemy.mp || 0) <= 0) {
-      console.log(`[AI] ${eName}: cannot move, mp=${enemy.mp}`);
+      // attack if possible
+      const weapons = enemy.weapons || [];
+      const weaponId = weapons[enemy.activeWeaponIndex] || weapons[0] || null;
+      if (weaponId && (enemy.ap || 0) > 0) {
+        const v = validateAttack(enemy, nearest, weaponId);
+        if (v.ok) {
+          spendAp(enemy, 1);
+          ensureUnitCombatFields(nearest);
+          resolveAttack(enemy, nearest, weaponId);
+          continue;
+        }
+      }
+
+      // move toward nearest
+      if ((enemy.mp || 0) <= 0) continue;
+
+      const goalQ = nearest.q, goalR = nearest.r;
+      const blockedForPath = (tile) => {
+        if (!tile) return true;
+        if (isTerrainBlocked(tile)) return true;
+        if (tile.q === goalQ && tile.r === goalR) return false;
+        const occ = getUnitAt(scene, tile.q, tile.r);
+        if (occ && occ !== enemy) return true;
+        return false;
+      };
+
+      const path = computePathWithAStar(enemy, { q: goalQ, r: goalR }, scene.mapData, blockedForPath);
+      if (!path || path.length < 2) continue;
+
+      let mp = enemy.mp;
+      let lastIndex = 0;
+
+      for (let i = 1; i < path.length; i++) {
+        const step = path[i];
+        const tile = getTile(scene, step.q, step.r);
+        const prevTile = getTile(scene, path[i - 1].q, path[i - 1].r);
+
+        const cost = stepMoveCost(prevTile, tile);
+        if (!Number.isFinite(cost) || cost === Infinity) break;
+        if (!tile || isBlocked(tile, enemy)) break;
+        if (cost > mp) break;
+
+        mp -= cost;
+        lastIndex = i;
+
+        if (axialDistance(step.q, step.r, goalQ, goalR) <= 1) break;
+      }
+
+      if (lastIndex > 0) {
+        enemy.mp = mp;
+        if (Number.isFinite(enemy.movementPoints)) enemy.movementPoints = mp;
+        await moveAlongPath(scene, enemy, path.slice(0, lastIndex + 1));
+      }
+
       continue;
     }
 
-    const goalQ = nearest.q;
-    const goalR = nearest.r;
+    // ---- NEW CAMP RAIDER AI ----
+    // Modes:
+    // - PATROL inside camp radius randomly, if no target
+    // - CHASE target if exists
+    // - RETURN to camp radius after target lost/dead
+    const radius = camp.radius || 4;
+    const inCampZone = axialDistance(enemy.q, enemy.r, camp.q, camp.r) <= radius;
 
-    // KEY FIX:
-    // Allow A* to treat the GOAL tile as passable even if occupied by the target unit.
-    // Otherwise goalBlocked=true and pathLen=0 forever.
+    // 1) If we have a valid target -> CHASE
+    if (targetUnit) {
+      // attack if possible
+      const weapons = enemy.weapons || [];
+      const weaponId = weapons[enemy.activeWeaponIndex] || weapons[0] || null;
+
+      if (weaponId && (enemy.ap || 0) > 0) {
+        const v = validateAttack(enemy, targetUnit, weaponId);
+        if (v.ok) {
+          spendAp(enemy, 1);
+          ensureUnitCombatFields(targetUnit);
+          resolveAttack(enemy, targetUnit, weaponId);
+          // if target died, clear camp target next tick (getCampTargetUnit will return null)
+          continue;
+        }
+      }
+
+      // move toward target
+      if ((enemy.mp || 0) <= 0) continue;
+
+      const goalQ = targetUnit.q, goalR = targetUnit.r;
+
+      const blockedForPath = (tile) => {
+        if (!tile) return true;
+        if (isTerrainBlocked(tile)) return true;
+        // allow goal occupied (target)
+        if (tile.q === goalQ && tile.r === goalR) return false;
+        const occ = getUnitAt(scene, tile.q, tile.r);
+        if (occ && occ !== enemy) return true;
+        return false;
+      };
+
+      const path = computePathWithAStar(
+        enemy,
+        { q: goalQ, r: goalR },
+        scene.mapData,
+        blockedForPath
+      );
+
+      if (!path || path.length < 2) {
+        // can't reach target => stay (no fallback)
+        continue;
+      }
+
+      let mp = enemy.mp;
+      let lastIndex = 0;
+
+      for (let i = 1; i < path.length; i++) {
+        const step = path[i];
+        const tile = getTile(scene, step.q, step.r);
+        const prevTile = getTile(scene, path[i - 1].q, path[i - 1].r);
+
+        const cost = stepMoveCost(prevTile, tile);
+        if (!Number.isFinite(cost) || cost === Infinity) break;
+        if (!tile || isBlocked(tile, enemy)) break;
+        if (cost > mp) break;
+
+        mp -= cost;
+        lastIndex = i;
+
+        // stop if adjacent
+        if (axialDistance(step.q, step.r, goalQ, goalR) <= 1) break;
+      }
+
+      if (lastIndex > 0) {
+        enemy.mp = mp;
+        if (Number.isFinite(enemy.movementPoints)) enemy.movementPoints = mp;
+        await moveAlongPath(scene, enemy, path.slice(0, lastIndex + 1));
+      }
+
+      continue;
+    }
+
+    // 2) No target: if not in camp zone -> RETURN
+    if (!inCampZone) {
+      if ((enemy.mp || 0) <= 0) continue;
+
+      const goalQ = camp.q;
+      const goalR = camp.r;
+
+      // We want to return into zone, not necessarily onto camp tile.
+      const blockedForPath = (tile) => {
+        if (!tile) return true;
+        if (isTerrainBlocked(tile)) return true;
+        const occ = getUnitAt(scene, tile.q, tile.r);
+        if (occ && occ !== enemy) return true;
+        return false;
+      };
+
+      const path = computePathWithAStar(enemy, { q: goalQ, r: goalR }, scene.mapData, blockedForPath);
+      if (!path || path.length < 2) continue;
+
+      let mp = enemy.mp;
+      let lastIndex = 0;
+
+      for (let i = 1; i < path.length; i++) {
+        const step = path[i];
+        const tile = getTile(scene, step.q, step.r);
+        const prevTile = getTile(scene, path[i - 1].q, path[i - 1].r);
+
+        const cost = stepMoveCost(prevTile, tile);
+        if (!Number.isFinite(cost) || cost === Infinity) break;
+        if (!tile || isBlocked(tile, enemy)) break;
+        if (cost > mp) break;
+
+        mp -= cost;
+        lastIndex = i;
+
+        // stop as soon as we are back in camp zone
+        if (axialDistance(step.q, step.r, camp.q, camp.r) <= radius) break;
+      }
+
+      if (lastIndex > 0) {
+        enemy.mp = mp;
+        if (Number.isFinite(enemy.movementPoints)) enemy.movementPoints = mp;
+        await moveAlongPath(scene, enemy, path.slice(0, lastIndex + 1));
+      }
+
+      continue;
+    }
+
+    // 3) PATROL random inside camp zone
+    if ((enemy.mp || 0) <= 0) continue;
+
+    // choose random goal tile within zone and walk a bit
+    const patrolGoal = pickRandomPatrolGoal(scene, camp.q, camp.r, radius, (q,r)=>getUnitAt(scene,q,r), enemy);
+    if (!patrolGoal) continue;
+
+    const goalQ = patrolGoal.q;
+    const goalR = patrolGoal.r;
+
     const blockedForPath = (tile) => {
       if (!tile) return true;
-
-      // Terrain restrictions always apply (even for goal)
       if (isTerrainBlocked(tile)) return true;
-
-      // If this is the goal tile, DO NOT block by occupancy.
-      if (tile.q === goalQ && tile.r === goalR) return false;
-
-      // Otherwise apply normal occupancy rules
-      const occ = getUnitAt(tile.q, tile.r);
+      const occ = getUnitAt(scene, tile.q, tile.r);
       if (occ && occ !== enemy) return true;
-
+      // stay within zone for patrol (hard constraint)
+      if (axialDistance(tile.q, tile.r, camp.q, camp.r) > radius) return true;
       return false;
     };
 
-    const path = computePathWithAStar(
-      enemy,
-      { q: goalQ, r: goalR },
-      scene.mapData,
-      blockedForPath,
-      `A*:${eName}@${enemy.q},${enemy.r}->${goalQ},${goalR}`
-    );
+    const path = computePathWithAStar(enemy, { q: goalQ, r: goalR }, scene.mapData, blockedForPath);
+    if (!path || path.length < 2) continue;
 
-    console.log(`[AI] ${eName}: A* pathLen=${path.length}`);
-
-    if (!path || path.length < 2) {
-      console.log(`[AI] ${eName}: no A* path found -> staying in place.`);
-      continue;
-    }
-
-    // walk along path as far as MP allows
-    let mp = enemy.mp || 0;
+    let mp = enemy.mp;
     let lastIndex = 0;
 
-    for (let i = 1; i < path.length; i++) {
+    // Patrol: we usually want only 1-2 steps to look "random"
+    const maxSteps = 2;
+
+    for (let i = 1; i < path.length && i <= maxSteps; i++) {
       const step = path[i];
       const tile = getTile(scene, step.q, step.r);
       const prevTile = getTile(scene, path[i - 1].q, path[i - 1].r);
 
       const cost = stepMoveCost(prevTile, tile);
       if (!Number.isFinite(cost) || cost === Infinity) break;
-
-      // IMPORTANT: for actual movement we DO NOT allow stepping onto an occupied tile (including goal).
       if (!tile || isBlocked(tile, enemy)) break;
       if (cost > mp) break;
 
       mp -= cost;
       lastIndex = i;
-
-      // If we reached adjacency, we can stop early
-      if (hexDistanceOddR(step.q, step.r, goalQ, goalR) <= 1) break;
     }
 
     if (lastIndex > 0) {
       enemy.mp = mp;
       if (Number.isFinite(enemy.movementPoints)) enemy.movementPoints = mp;
-
-      const pathToMove = path.slice(0, lastIndex + 1);
-      const last = pathToMove[pathToMove.length - 1];
-      console.log(`[AI] ${eName}: moving by A* steps=${pathToMove.length - 1} last=(${last.q},${last.r}) mpAfter=${mp}`);
-
-      await moveAlongPath(scene, enemy, pathToMove);
-    } else {
-      console.log(`[AI] ${eName}: A* path exists but first step not affordable/blocked -> staying.`);
+      await moveAlongPath(scene, enemy, path.slice(0, lastIndex + 1));
     }
   }
 
+  // If camp target disappeared (dead), clear it so raiders return
+  if (camp && camp.alertTargetId && !getCampTargetUnit(scene, camp)) {
+    camp.alertTargetId = null;
+  }
+
   scene.refreshUnitActionPanel?.();
-  console.log('[AI] moveEnemies(): done.');
 }
