@@ -320,6 +320,23 @@ function setMP(unit, val) {
   if (Number.isFinite(unit.movementPoints)) unit.movementPoints = v;
 }
 
+/* ---------------- Auto-move helpers ---------------- */
+
+function cancelAutoMove(unit) {
+  if (!unit) return;
+  if (unit.autoMove && unit.autoMove.active) {
+    unit.autoMove.active = false;
+  }
+}
+
+function setAutoMoveTarget(unit, q, r) {
+  if (!unit) return;
+  unit.autoMove = {
+    active: true,
+    target: { q, r }
+  };
+}
+
 /* ---------------- Path preview helpers ---------------- */
 
 /**
@@ -437,11 +454,20 @@ export function setupWorldInputUI(scene) {
     const key = String(ev.key || '').toLowerCase();
 
     if (key === 'escape') {
+      // First: cancel command mode
       if (scene.unitCommandMode) {
         scene.unitCommandMode = null;
         scene.clearPathPreview?.();
         clearCombatPreview(scene);
         console.log('[UNITS] Command mode cleared');
+        return;
+      }
+
+      // Second: cancel selected unit auto-move
+      if (scene.selectedUnit && isPlayerUnit(scene.selectedUnit)) {
+        cancelAutoMove(scene.selectedUnit);
+        console.log('[MOVE] Auto-move cancelled');
+        scene.refreshUnitActionPanel?.();
       }
       return;
     }
@@ -494,10 +520,6 @@ export function setupWorldInputUI(scene) {
     if (scene.isDragging) return;
     if (pointer.rightButtonDown && pointer.rightButtonDown()) return;
 
-    // IMPORTANT:
-    // Use pointer.worldX/worldY (already camera-adjusted) to keep picking consistent
-    // with the hover logic in WorldSceneMap.drawHexMap().
-    // Using positionToCamera() here can drift under zoom/scroll and break selection.
     const rounded = scene.worldToAxial(pointer.worldX, pointer.worldY);
 
     if (
@@ -548,6 +570,10 @@ export function setupWorldInputUI(scene) {
       // After attack attempt exit attack mode (good UX)
       scene.unitCommandMode = null;
       clearCombatPreview(scene);
+
+      // Auto-move should stop after an attack
+      cancelAutoMove(scene.selectedUnit);
+
       scene.refreshUnitActionPanel?.();
       return;
     }
@@ -611,6 +637,9 @@ export function setupWorldInputUI(scene) {
       const fullPath = computePathWithAStar(scene, scene.selectedUnit, rounded, blocked);
 
       if (fullPath && fullPath.length > 1) {
+        // ✅ AUTO-MOVE: store target (even if we can't reach it this turn)
+        setAutoMoveTarget(scene.selectedUnit, rounded.q, rounded.r);
+
         let movementPoints = getMP(scene.selectedUnit);
         const trimmedPath = [];
         let costSum = 0;
@@ -648,6 +677,12 @@ export function setupWorldInputUI(scene) {
                 const mpBefore = getMP(unit);
                 const mpAfter = Math.max(0, mpBefore - costSum);
                 setMP(unit, mpAfter);
+
+                // If we reached the auto-move target in this same move, stop auto-move.
+                const target = unit.autoMove?.target;
+                if (target && unit.q === target.q && unit.r === target.r) {
+                  unit.autoMove.active = false;
+                }
               }
             } catch (e) {}
 
@@ -689,10 +724,6 @@ export function setupWorldInputUI(scene) {
       return;
     }
 
-    // IMPORTANT:
-    // Use pointer.worldX/worldY (already camera-adjusted) to keep picking consistent
-    // with the hover logic in WorldSceneMap.drawHexMap().
-    // Using positionToCamera() here can produce drift under zoom/scroll.
     const rounded = scene.worldToAxial(pointer.worldX, pointer.worldY);
 
     if (
@@ -743,7 +774,7 @@ export function setupWorldInputUI(scene) {
       }
 
       // labels: cumulative cost for the entire usable path (colored by reachable this turn vs beyond)
-      const baseColor = '#e8f6ff';      // reachable
+      const baseColor = '#e8f6ff';       // reachable
       const outOfRangeColor = '#ffcf5a'; // beyond
 
       for (let i = 0; i < usablePath.length; i++) {
