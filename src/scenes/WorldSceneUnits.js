@@ -13,7 +13,7 @@ import { getUnitDef } from '../units/UnitDefs.js';
 const UNIT_Z = {
   player: 2000,
   enemy:  2000,
-  building: 1500, // ✅ PATCH: needed for Raider Camp marker
+  building: 1500, // Raider Camp marker
 };
 
 const PLAYER_COLORS = [
@@ -23,10 +23,8 @@ const PLAYER_COLORS = [
   0xffe14b, // P4 - yellow
 ];
 
+// Enemy color still used as fallback tint
 const ENEMY_COLOR = 0xaa66ff;
-
-// ✅ PATCH: Raider Camp visuals
-const CAMP_COLOR = 0x7b3fe4; // purple-ish
 
 // NEW: combat unit colors (tint derived from owner slot)
 function colorForSlot(slot) {
@@ -58,7 +56,7 @@ function getTile(scene, q, r) {
 }
 
 /**
- * ✅ FIX: Single source of truth for "land" tiles.
+ * Single source of truth for "land" tiles.
  * Units may spawn ONLY on land:
  * - not water
  * - not mountain
@@ -82,7 +80,7 @@ function isLandTile(t) {
 }
 
 /**
- * ✅ PATCH: robust occupancy check across all unit arrays
+ * Robust occupancy check across all unit arrays + buildings.
  */
 function isOccupied(scene, q, r) {
   const all = []
@@ -90,14 +88,21 @@ function isOccupied(scene, q, r) {
     .concat(scene.players || [])
     .concat(scene.enemies || [])
     .concat(scene.haulers || []);
-  return !!all.find(u => u && !u.isDead && u.q === q && u.r === r);
+
+  if (all.find(u => u && !u.isDead && u.q === q && u.r === r)) return true;
+
+  // Buildings occupy a hex too (camp must not overlap)
+  const buildings = (scene.buildings || []);
+  if (buildings.find(b => b && typeof b.q === 'number' && typeof b.r === 'number' && b.q === q && b.r === r)) return true;
+
+  return false;
 }
 
 function isBlockedForUnit(scene, q, r) {
   const t = getTile(scene, q, r);
   if (!isLandTile(t)) return true;
 
-  // No stacking: any unit occupying blocks
+  // No stacking: any unit or building occupying blocks
   return isOccupied(scene, q, r);
 }
 
@@ -120,7 +125,7 @@ function pickSpawnTiles(scene, count) {
   const map = scene.mapData || [];
   if (!map.length) return [];
 
-  // ✅ FIX: land = ONLY tiles that pass isLandTile()
+  // land = ONLY tiles that pass isLandTile()
   const land = map.filter(isLandTile);
   if (!land.length) return [];
 
@@ -173,8 +178,8 @@ function pickSpawnTiles(scene, count) {
 /**
  * Creates a mobile base unit (player "king" piece).
  *
- * ✅ FIX: radius scales with hex size so it still "fits" after resizing the grid.
- * Position is taken from scene.axialToWorld(), which now includes elevation lift.
+ * radius scales with hex size so it still "fits" after resizing the grid.
+ * Position is taken from scene.axialToWorld(), which includes elevation lift.
  */
 function createMobileBase(scene, spawnTile, player, color, playerIndex) {
   const pos = scene.axialToWorld(spawnTile.q, spawnTile.r);
@@ -219,14 +224,16 @@ function createMobileBase(scene, spawnTile, player, color, playerIndex) {
 
 /**
  * Creates a Raider.
- * If controller='ai', unit is enemy and tinted purple by default.
+ * If controller='ai', unit is enemy.
  *
- * ✅ FIX: triangle is centered AND its origin is set to the center,
- * so pos.x/pos.y corresponds to the center of the hex.
+ * ✅ FIX: Raider is a Container centered on hex.
+ * The triangle is drawn around (0,0), so it NEVER drifts into 6 offset positions.
+ * Orientation uses unit.rotation exactly like before.
  */
 function createRaider(scene, q, r, opts = {}) {
   const controller = opts.controller || 'player';
   const pos = scene.axialToWorld(q, r);
+
   const size = (typeof scene.hexSize === 'number') ? scene.hexSize : 22;
   const s = Math.max(12, Math.round(size * 0.75));
 
@@ -234,22 +241,37 @@ function createRaider(scene, q, r, opts = {}) {
     ? (opts.color ?? ENEMY_COLOR)
     : colorForSlot(opts.ownerSlot ?? 0);
 
-  // ✅ CENTERED triangle points (local space around 0,0):
-  // top:    (0, -s)
-  // left:   (-0.9s, +0.78s)
-  // right:  (+0.9s, +0.78s)
-  const unit = scene.add.triangle(
-    pos.x, pos.y,
-    0, -s,
-    -Math.round(s * 0.9), Math.round(s * 0.78),
-    Math.round(s * 0.9),  Math.round(s * 0.78),
-    fillColor
-  ).setDepth(controller === 'ai' ? UNIT_Z.enemy : UNIT_Z.player);
+  // Container anchored at hex center
+  const unit = scene.add.container(pos.x, pos.y).setDepth(controller === 'ai' ? UNIT_Z.enemy : UNIT_Z.player);
 
-  // ✅ CRITICAL FIX: ensure shape origin is centered (otherwise it can look offset)
-  unit.setOrigin(0.5, 0.5);
-  unit.setPosition(pos.x, pos.y);
-  unit.updateData?.();
+  // Draw triangle centered at (0,0). Default pointing RIGHT (rotation=0)
+  const g = scene.add.graphics();
+  g.fillStyle(fillColor, 1);
+  g.lineStyle(2, 0x000000, 0.6);
+
+  // Triangle geometry (pointing right)
+  const apexX = +s * 0.95;
+  const baseX = -s * 0.65;
+  const halfBaseY = s * 0.65;
+
+  g.beginPath();
+  g.moveTo(apexX, 0);
+  g.lineTo(baseX, -halfBaseY);
+  g.lineTo(baseX, +halfBaseY);
+  g.closePath();
+  g.fillPath();
+  g.strokePath();
+
+  unit.add(g);
+
+  // Make container interactive if other systems rely on it
+  // (keeps compatibility with click-selection logic that may attach input later)
+  try {
+    unit.setSize(Math.max(24, s * 2), Math.max(24, s * 2));
+    unit.setInteractive();
+  } catch (_) {}
+
+  unit._triangleGfx = g;
 
   unit.q = q;
   unit.r = r;
@@ -270,15 +292,13 @@ function createRaider(scene, q, r, opts = {}) {
     controller: controller,
     q,
     r,
-    facing: 3,
+    facing: 0,
   });
   unit.unitName = def.name;
   applyUnitStateToPhaserUnit(unit, st);
 
-  // Keep legacy orientation: old code used PI (down). You can change later if needed.
-  unit.rotation = Math.PI;
-
-  if (typeof unit.setStrokeStyle === 'function') unit.setStrokeStyle(2, 0x000000, 0.6);
+  // Default orientation: pointing right (rotation=0) unless overwritten later
+  unit.rotation = (typeof unit.facingAngle === 'number') ? unit.facingAngle : 0;
 
   if (controller === 'ai') {
     unit.controller = 'ai';
@@ -295,6 +315,7 @@ function createRaider(scene, q, r, opts = {}) {
 
 /**
  * Creates a simple enemy unit.
+ * (kept for compatibility, but we no longer spawn these globally)
  */
 function createEnemyUnit(scene, spawnTile) {
   const u = createRaider(scene, spawnTile.q, spawnTile.r, {
@@ -310,7 +331,7 @@ function createEnemyUnit(scene, spawnTile) {
 }
 
 /**
- * ✅ PATCH: Exported helper for new AI respawn system (Raider Camp).
+ * Exported helper for AI respawn system (Raider Camp).
  */
 export function spawnEnemyRaiderAt(scene, q, r) {
   const u = createRaider(scene, q, r, { controller: 'ai', color: ENEMY_COLOR });
@@ -369,35 +390,60 @@ function createTransporter(scene, q, r, owner) {
 }
 
 /* =========================================================
-   ✅ PATCH: Raider Camp (spawned at game start by host)
+   Raider Camp (spawned at game start by host)
    ========================================================= */
 
 /**
- * Create Raider Camp marker.
- * Stored as scene.raiderCamp = {q,r,radius,marker,alertTargetId,respawnQueue}
+ * Create Raider Camp marker as a building-like container on a specific hex.
+ * Stored as scene.raiderCamp = {q,r,radius,container,alertTargetId,respawnQueue}
+ *
+ * ✅ FIX:
+ * - camp is ON a specific hex (q,r)
+ * - looks like a building plate, with background color = ownerColor (AI = blue)
  */
 function createRaiderCamp(scene, q, r) {
   const pos = scene.axialToWorld(q, r);
   const size = (typeof scene.hexSize === 'number') ? scene.hexSize : 22;
 
-  const w = Math.max(12, Math.round(size * 0.9));
-  const h = Math.max(12, Math.round(size * 0.9));
+  const ownerSlot = 1; // AI should be blue like P2 in your palette
+  const ownerColor = colorForSlot(ownerSlot);
 
-  const marker = scene.add.polygon(
-    pos.x, pos.y,
-    [0, -h, w, 0, 0, h, -w, 0],
-    CAMP_COLOR,
-    0.95
-  ).setDepth(UNIT_Z.building);
+  const cont = scene.add.container(pos.x, pos.y).setDepth(UNIT_Z.building);
 
-  marker.setOrigin?.(0.5, 0.5);
-  marker.setStrokeStyle?.(2, 0x000000, 0.6);
+  const w = Math.max(28, Math.round(size * 1.35));
+  const h = Math.max(22, Math.round(size * 1.10));
+
+  const plate = scene.add.graphics();
+  plate.fillStyle(ownerColor, 1);
+  plate.lineStyle(2, 0x000000, 0.55);
+  // rounded rect centered at (0,0)
+  const rx = -w / 2;
+  const ry = -h / 2;
+  plate.fillRoundedRect(rx, ry, w, h, 7);
+  plate.strokeRoundedRect(rx, ry, w, h, 7);
+
+  const icon = scene.add.text(0, -1, '⛺', {
+    fontFamily: 'Arial',
+    fontSize: `${Math.max(14, Math.round(size * 0.75))}px`,
+    color: '#ffffff',
+    stroke: '#0b0b0b',
+    strokeThickness: 3,
+  }).setOrigin(0.5);
+
+  cont.add([plate, icon]);
+
+  try {
+    cont.setSize(w, h);
+    cont.setInteractive();
+  } catch (_) {}
 
   const camp = {
     q, r,
     radius: 4,
-    marker,
+    container: cont,
     type: 'raider_camp',
+    ownerSlot,
+    ownerColor,
     alertTargetId: null,
     respawnQueue: [], // [{dueTurn:number}]
   };
@@ -406,7 +452,9 @@ function createRaiderCamp(scene, q, r) {
   scene.buildings.push({
     type: 'raider_camp',
     q, r,
-    container: marker,
+    container: cont,
+    ownerSlot,
+    ownerColor,
     campRef: camp,
   });
 
@@ -433,7 +481,7 @@ function pickRandomFreeLandTile(scene) {
   return null;
 }
 
-function spawnInitialRaidersAroundCamp(scene, camp, maxUnits = 4) {
+function spawnInitialRaidersAroundCamp(scene, camp, maxUnits = 3) {
   if (!camp) return;
 
   const candidates = [];
@@ -489,6 +537,7 @@ export async function spawnUnitsAndEnemies() {
   scene.units   = scene.units   || [];
   scene.players = scene.players || [];
   scene.enemies = scene.enemies || [];
+  scene.buildings = scene.buildings || [];
 
   let lobbyPlayers = null;
 
@@ -555,7 +604,7 @@ export async function spawnUnitsAndEnemies() {
     const tile = spawnTiles[idx] || spawnTiles[spawnTiles.length - 1];
     const color = PLAYER_COLORS[idx % PLAYER_COLORS.length];
 
-    // ✅ hard safety: if picked tile became invalid (shouldn’t, but just in case)
+    // hard safety
     if (!isLandTile(tile)) {
       console.warn('[Units] Picked spawn tile is not land, searching neighbor/fallback…', tile);
       const fallback = (scene.mapData || []).find(isLandTile);
@@ -573,83 +622,26 @@ export async function spawnUnitsAndEnemies() {
     scene.players.push(unit);
   });
 
+  // =========================================================
+  // ✅ PATCH: Enemy spawning logic changed:
+  // - NO aiSlots spawning
+  // - NO neutral enemies spawning
+  // - ONLY Raider Camp + exactly 3 raiders around it (host only)
+  // =========================================================
   if (scene.isHost) {
+    // remove any old enemies that might exist from previous runs
     scene.enemies.length = 0;
-    aiSlots.forEach(({ idx }) => {
-      const tile = spawnTiles[idx] || spawnTiles[spawnTiles.length - 1];
-      if (!tile) return;
+    scene.units = (scene.units || []).filter(u => !(u && (u.isEnemy || u.controller === 'ai')));
 
-      let q = tile.q;
-      let r = tile.r;
-
-      if (isBlockedForUnit(scene, q, r)) {
-        const free = findFreeNeighbor(scene, q, r);
-        if (!free) return;
-        q = free.q; r = free.r;
+    if (!scene.raiderCamp) {
+      const campTile = pickRandomFreeLandTile(scene);
+      if (campTile) {
+        const camp = createRaiderCamp(scene, campTile.q, campTile.r);
+        spawnInitialRaidersAroundCamp(scene, camp, 3);
+        console.log(`[CAMP] Raider Camp created at (${camp.q},${camp.r}) radius=${camp.radius}`);
+      } else {
+        console.warn('[CAMP] Could not find free land tile for Raider Camp.');
       }
-
-      const enemy = createEnemyUnit(scene, { q, r });
-      scene.units.push(enemy);
-      scene.enemies.push(enemy);
-    });
-  }
-
-  // Neutral enemies (host only)
-  if (scene.isHost && (scene.enemies.length === 0)) {
-    const map = scene.mapData || [];
-    if (map.length > 0) {
-      const byKey = new Map(map.map(t => [keyOf(t.q, t.r), t]));
-      const centerQ = Math.floor(scene.mapWidth / 2);
-      const centerR = Math.floor(scene.mapHeight / 2);
-
-      const originTile = byKey.get(keyOf(centerQ, centerR)) || map[0];
-      if (originTile) {
-        const enemySpawnCandidates = [];
-
-        const seen = new Set();
-        const qd = [originTile];
-        seen.add(keyOf(originTile.q, originTile.r));
-
-        while (qd.length && enemySpawnCandidates.length < 6) {
-          const cur = qd.shift();
-
-          // ✅ FIX: only land candidates
-          if (isLandTile(cur)) {
-            enemySpawnCandidates.push(cur);
-          }
-
-          for (const [dq, dr] of neighborsOddR(cur.q, cur.r)) {
-            const nq = cur.q + dq;
-            const nr = cur.r + dr;
-            const k = keyOf(nq, nr);
-            if (seen.has(k)) continue;
-            const nt = byKey.get(k);
-            if (!nt) continue;
-            seen.add(k);
-            qd.push(nt);
-          }
-        }
-
-        enemySpawnCandidates.slice(0, 3).forEach(tile => {
-          // safety: no spawn on non-land
-          if (!isLandTile(tile)) return;
-          const enemy = createEnemyUnit(scene, tile);
-          scene.units.push(enemy);
-          scene.enemies.push(enemy);
-        });
-      }
-    }
-  }
-
-  // ✅ PATCH: Create Raider Camp at start (host only) + spawn up to 4 raiders around
-  if (scene.isHost && !scene.raiderCamp) {
-    const campTile = pickRandomFreeLandTile(scene);
-    if (campTile) {
-      const camp = createRaiderCamp(scene, campTile.q, campTile.r);
-      spawnInitialRaidersAroundCamp(scene, camp, 4);
-      console.log(`[CAMP] Raider Camp created at (${camp.q},${camp.r}) radius=${camp.radius}`);
-    } else {
-      console.warn('[CAMP] Could not find free land tile for Raider Camp.');
     }
   }
 
