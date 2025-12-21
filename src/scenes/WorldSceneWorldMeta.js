@@ -218,6 +218,7 @@ export function resetUnitsForNewTurn(scene) {
 
     const uOwner = u.playerName || u.name || null;
 
+    // AI/enemies: always reset on their turn cycle
     if (u.isEnemy || u.controller === 'ai') {
       u.mp = u.mpMax;
       u.ap = u.apMax;
@@ -230,6 +231,7 @@ export function resetUnitsForNewTurn(scene) {
       continue;
     }
 
+    // Player units: reset only for the active turn owner
     if (owner && uOwner === owner) {
       u.mp = u.mpMax;
       u.ap = u.apMax;
@@ -251,6 +253,7 @@ export function endTurn(scene) {
 
   console.log(`[TURN] Ending turn for ${scene.turnOwner} (Turn ${scene.turnNumber})`);
 
+  // 1) Apply all "end of turn" systems for the CURRENT owner
   applyShipRoutesOnEndTurn(scene);
   applyHaulerRoutesOnEndTurn(scene);
   applyLogisticsOnEndTurn(scene);
@@ -274,14 +277,7 @@ export function endTurn(scene) {
     console.error('[ENERGY] Error during end-turn electricity tick:', err);
   }
 
-  resetUnitsForNewTurn(scene);
-
-  // === AI ALWAYS ACTS AFTER PLAYER TURN ===
-  if (scene.moveEnemies) {
-    console.log('[AI] Executing AI turn');
-    scene.moveEnemies();
-  }
-
+  // 2) Advance to next owner FIRST (so that "resetUnitsForNewTurn" applies to the correct side)
   const playersArr = scene.players || [];
   const idx = playersArr.findIndex(p =>
     (typeof p === 'string' ? p : (p.playerName || p.name)) === scene.turnOwner
@@ -302,6 +298,16 @@ export function endTurn(scene) {
   console.log(`[TURN] New turn owner: ${scene.turnOwner} (Turn ${scene.turnNumber})`);
 
   updateTurnText(scene, scene.turnNumber);
+
+  // 3) Now reset MP/AP for the NEW owner
+  resetUnitsForNewTurn(scene);
+
+  // 4) AI acts on its turn AFTER it has been reset
+  // (This keeps "AI ALWAYS ACTS AFTER PLAYER TURN" behavior, but correctly aligned with turnOwner.)
+  if (scene.moveEnemies) {
+    console.log('[AI] Executing AI turn');
+    scene.moveEnemies();
+  }
 
   scene.printTurnSummary?.();
   scene.refreshUnitActionPanel?.();
