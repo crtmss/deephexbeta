@@ -1,5 +1,5 @@
 // deephexbeta/src/scenes/WorldSceneUI.js
-// :contentReference[oaicite:0]{index=0}
+// :contentReference[oaicite:1]{index=1}
 
 import { refreshUnits } from './WorldSceneActions.js';
 import { findPath as aStarFindPath } from '../engine/AStar.js';
@@ -211,8 +211,23 @@ function isEnemy(u) {
   return !!(u && (u.isEnemy || u.controller === 'ai') && !u.isPlayer);
 }
 
-function isPlayerUnit(u) {
-  return !!(u && u.isPlayer);
+/**
+ * Управляемый объект игрока:
+ * - НЕ enemy/ai
+ * - обычно isPlayer=true
+ * - но также поддерживаем объекты без isPlayer (рейдеры/мобильная база и т.п.)
+ *   если у них есть mp/mpMax или movementPoints.
+ */
+function isControllable(u) {
+  if (!u) return false;
+  if (u.isEnemy || u.controller === 'ai') return false;
+
+  if (u.isPlayer) return true;
+
+  // fallback: если объект имеет MP-поля, считаем его управляемым
+  if (Number.isFinite(u.mpMax) || Number.isFinite(u.mp) || Number.isFinite(u.movementPoints)) return true;
+
+  return false;
 }
 
 /**
@@ -314,6 +329,14 @@ function getMP(unit) {
   return (mpB != null) ? mpB : (mpA != null ? mpA : 0);
 }
 
+function getMPMax(unit) {
+  const a = Number.isFinite(unit.mpMax) ? unit.mpMax : null;
+  const b = Number.isFinite(unit.movementPointsMax) ? unit.movementPointsMax : null;
+  const c = Number.isFinite(unit.maxMovementPoints) ? unit.maxMovementPoints : null;
+  const cur = getMP(unit);
+  return (a ?? b ?? c ?? cur ?? 0) || 0;
+}
+
 function setMP(unit, val) {
   const v = Math.max(0, Number.isFinite(val) ? val : 0);
   unit.mp = v;
@@ -362,7 +385,6 @@ function splitPathByMP(scene, unit, fullPath, blockedPred) {
     return { within, beyond, usablePath, costs, cum, cutIndex: 0, mp };
   }
 
-  // Validate path step-by-step using stepMoveCost + occupancy rule (defensive; A* should already avoid blocked tiles)
   let sum = 0;
   usablePath.push(fullPath[0]);
   costs.push(0);
@@ -374,13 +396,11 @@ function splitPathByMP(scene, unit, fullPath, blockedPred) {
     const prevTile = getTile(scene, prev.q, prev.r);
     const curTile = getTile(scene, cur.q, cur.r);
 
-    // If caller provided blockedPred, re-check it for safety
     if (blockedPred && blockedPred(curTile)) break;
 
     const stepCost = stepMoveCost(prevTile, curTile);
     if (!Number.isFinite(stepCost) || stepCost === Infinity) break;
 
-    // Extra safety: stop if path passes through occupied hexes (except start hex)
     const occ = getUnitAtHex(scene, cur.q, cur.r);
     if (occ && occ !== unit) break;
 
@@ -390,23 +410,55 @@ function splitPathByMP(scene, unit, fullPath, blockedPred) {
     cum.push(sum);
   }
 
-  // Determine cutIndex: farthest reachable node index within MP
   let cutIndex = 0;
   for (let i = 0; i < usablePath.length; i++) {
     if (cum[i] <= mp) cutIndex = i;
     else break;
   }
 
-  // within path is usablePath[0..cutIndex]
   for (let i = 0; i <= cutIndex; i++) within.push(usablePath[i]);
 
-  // beyond path connects from last within point
   if (usablePath.length > 1 && cutIndex < usablePath.length - 1) {
-    const startBeyond = Math.max(0, cutIndex); // keep connector point
+    const startBeyond = Math.max(0, cutIndex);
     for (let i = startBeyond; i < usablePath.length; i++) beyond.push(usablePath[i]);
   }
 
   return { within, beyond, usablePath, costs, cum, cutIndex, mp };
+}
+
+/**
+ * Возвращает массив меток { q, r, turnIndex } только в границах ходов + цель.
+ * Первый ход использует текущий MP, далее mpMax.
+ */
+function computeTurnMarkers(scene, unit, usablePath, costs) {
+  const markers = [];
+  if (!Array.isArray(usablePath) || usablePath.length < 2) return markers;
+
+  const mpMax = getMPMax(unit);
+  let turn = 1;
+  let mpLeft = getMP(unit);
+  if (mpLeft <= 0) mpLeft = mpMax;
+
+  for (let i = 1; i < usablePath.length; i++) {
+    const stepCost = costs[i] ?? 0;
+
+    if (stepCost > mpLeft) {
+      // заканчиваем ход на предыдущей клетке
+      const prev = usablePath[i - 1];
+      markers.push({ q: prev.q, r: prev.r, turnIndex: turn });
+
+      // новый ход
+      turn += 1;
+      mpLeft = mpMax;
+    }
+
+    mpLeft -= stepCost;
+  }
+
+  const goal = usablePath[usablePath.length - 1];
+  markers.push({ q: goal.q, r: goal.r, turnIndex: turn });
+
+  return markers;
 }
 
 function drawPathLine(scene, path, style) {
@@ -435,14 +487,11 @@ function drawPathLine(scene, path, style) {
  * Sets up unit selection + path preview + movement + Stage B/F attack/defence hotkeys.
  */
 export function setupWorldInputUI(scene) {
-  // ensure arrays for preview are present
   scene.pathPreviewTiles = scene.pathPreviewTiles || [];
   scene.pathPreviewLabels = scene.pathPreviewLabels || [];
 
-  // Stage B: command mode
   scene.unitCommandMode = scene.unitCommandMode || null; // null | 'attack'
 
-  // Provide distance helper for preview module (safe)
   if (typeof scene.hexDistance !== 'function') {
     scene.hexDistance = hexDistance;
   }
@@ -454,7 +503,7 @@ export function setupWorldInputUI(scene) {
     const key = String(ev.key || '').toLowerCase();
 
     if (key === 'escape') {
-      // First: cancel command mode
+      // 1) cancel command mode
       if (scene.unitCommandMode) {
         scene.unitCommandMode = null;
         scene.clearPathPreview?.();
@@ -463,8 +512,8 @@ export function setupWorldInputUI(scene) {
         return;
       }
 
-      // Second: cancel selected unit auto-move
-      if (scene.selectedUnit && isPlayerUnit(scene.selectedUnit)) {
+      // 2) cancel selected unit auto-move
+      if (scene.selectedUnit && isControllable(scene.selectedUnit)) {
         cancelAutoMove(scene.selectedUnit);
         console.log('[MOVE] Auto-move cancelled');
         scene.refreshUnitActionPanel?.();
@@ -473,12 +522,10 @@ export function setupWorldInputUI(scene) {
     }
 
     if (!scene.selectedUnit) return;
-    if (!isPlayerUnit(scene.selectedUnit)) return;
+    if (!isControllable(scene.selectedUnit)) return;
 
-    // Optional: only allow acting on your turnOwner
     const ownerName = scene.selectedUnit.playerName || scene.selectedUnit.name;
     if (scene.turnOwner && ownerName !== scene.turnOwner) {
-      // Not your turn: ignore
       return;
     }
 
@@ -486,11 +533,8 @@ export function setupWorldInputUI(scene) {
       scene.unitCommandMode = (scene.unitCommandMode === 'attack') ? null : 'attack';
       scene.clearPathPreview?.();
 
-      if (scene.unitCommandMode === 'attack') {
-        updateCombatPreview(scene);
-      } else {
-        clearCombatPreview(scene);
-      }
+      if (scene.unitCommandMode === 'attack') updateCombatPreview(scene);
+      else clearCombatPreview(scene);
 
       console.log('[UNITS] Attack mode:', scene.unitCommandMode === 'attack' ? 'ON' : 'OFF');
       return;
@@ -503,10 +547,7 @@ export function setupWorldInputUI(scene) {
         return;
       }
       console.log('[DEFENCE] applied to', scene.selectedUnit.name || scene.selectedUnit.unitId);
-      // Visual cue: tint darker if possible
-      try {
-        scene.selectedUnit.setAlpha?.(0.85);
-      } catch (e) {}
+      try { scene.selectedUnit.setAlpha?.(0.85); } catch (e) {}
       scene.updateSelectionHighlight?.();
       scene.refreshUnitActionPanel?.();
       return;
@@ -514,9 +555,7 @@ export function setupWorldInputUI(scene) {
   });
 
   scene.input.on('pointerdown', pointer => {
-    // Block world input when Logistics panel is open / logistics interactions active
     if (scene.logisticsInputLocked) return;
-
     if (scene.isDragging) return;
     if (pointer.rightButtonDown && pointer.rightButtonDown()) return;
 
@@ -531,17 +570,14 @@ export function setupWorldInputUI(scene) {
 
     const { q, r } = rounded;
 
-    // Stage F: if in attack mode and clicked an enemy -> send intent (client) / resolve (host)
     const clickedUnit = getUnitAtHex(scene, q, r);
     if (scene.unitCommandMode === 'attack' && scene.selectedUnit && clickedUnit && isEnemy(clickedUnit)) {
-      // Turn check
       const ownerName = scene.selectedUnit.playerName || scene.selectedUnit.name;
       if (scene.turnOwner && ownerName !== scene.turnOwner) return;
 
       const sent = trySendAttackIntent(scene, scene.selectedUnit, clickedUnit);
 
       if (!sent) {
-        // Fallback: local resolve (dev/singleplayer)
         const dist = (typeof scene.hexDistance === 'function')
           ? scene.hexDistance(scene.selectedUnit.q, scene.selectedUnit.r, clickedUnit.q, clickedUnit.r)
           : null;
@@ -552,8 +588,6 @@ export function setupWorldInputUI(scene) {
           return;
         }
 
-        // Note: in host-authoritative mode the real damage should come via events.
-        // This fallback keeps old behavior for singleplayer/dev builds.
         const details = atk.details || atk.result || null;
         if (details) {
           console.log(
@@ -567,24 +601,21 @@ export function setupWorldInputUI(scene) {
         }
       }
 
-      // After attack attempt exit attack mode (good UX)
       scene.unitCommandMode = null;
       clearCombatPreview(scene);
 
-      // Auto-move should stop after an attack
       cancelAutoMove(scene.selectedUnit);
 
       scene.refreshUnitActionPanel?.();
       return;
     }
 
-    // First, check if there's a unit on this hex and toggle selection.
+    // Unit selection
     if (clickedUnit) {
       scene.toggleSelectedUnitAtHex?.(q, r);
       scene.clearPathPreview?.();
       scene.selectedHex = null;
 
-      // Exit attack mode on selecting something else
       scene.unitCommandMode = null;
       clearCombatPreview(scene);
 
@@ -592,7 +623,7 @@ export function setupWorldInputUI(scene) {
       return;
     }
 
-    // No unit here: it's a ground/location click
+    // Ground click
     const tile = getTile(scene, q, r);
     if (tile && tile.isLocation) {
       console.log(
@@ -603,33 +634,27 @@ export function setupWorldInputUI(scene) {
     scene.selectedHex = rounded;
     scene.debugHex?.(q, r);
 
-    // If we have a selected unit, treat this as a move order
     if (scene.selectedUnit) {
-      // If attack mode active and clicked ground: just cancel attack mode (safer UX)
       if (scene.unitCommandMode === 'attack') {
         scene.unitCommandMode = null;
         clearCombatPreview(scene);
         return;
       }
 
-      // Only allow movement for player-controlled units
-      if (!isPlayerUnit(scene.selectedUnit)) {
+      if (!isControllable(scene.selectedUnit)) {
         scene.clearPathPreview?.();
         return;
       }
 
-      // Turn check
       const ownerName = scene.selectedUnit.playerName || scene.selectedUnit.name;
       if (scene.turnOwner && ownerName !== scene.turnOwner) {
         return;
       }
 
-      // Stage A: units cannot occupy the same hex.
       const blocked = t => {
         if (!t) return true;
         if (t.type === 'water' || t.type === 'mountain') return true;
         const occ = getUnitAtHex(scene, t.q, t.r);
-        // Allow start tile (occupied by the moving unit)
         if (occ && occ !== scene.selectedUnit) return true;
         return false;
       };
@@ -637,10 +662,10 @@ export function setupWorldInputUI(scene) {
       const fullPath = computePathWithAStar(scene, scene.selectedUnit, rounded, blocked);
 
       if (fullPath && fullPath.length > 1) {
-        // ✅ AUTO-MOVE: store target (even if we can't reach it this turn)
+        // ✅ AUTO-MOVE always stores target
         setAutoMoveTarget(scene.selectedUnit, rounded.q, rounded.r);
 
-        let movementPoints = getMP(scene.selectedUnit);
+        const movementPoints = getMP(scene.selectedUnit);
         const trimmedPath = [];
         let costSum = 0;
 
@@ -653,7 +678,6 @@ export function setupWorldInputUI(scene) {
           if (!Number.isFinite(stepCost) || stepCost === Infinity) break;
           if (i > 0 && costSum + stepCost > movementPoints) break;
 
-          // Extra safety: stop if any intermediate destination becomes occupied (except start)
           if (i > 0) {
             const occ = getUnitAtHex(scene, step.q, step.r);
             if (occ && occ !== scene.selectedUnit) break;
@@ -664,7 +688,6 @@ export function setupWorldInputUI(scene) {
         }
 
         if (trimmedPath.length > 1) {
-          // Ensure destination not occupied (no stacking)
           const dest = trimmedPath[trimmedPath.length - 1];
           const destOcc = getUnitAtHex(scene, dest.q, dest.r);
           if (destOcc && destOcc !== scene.selectedUnit) return;
@@ -675,10 +698,8 @@ export function setupWorldInputUI(scene) {
               const unit = scene.selectedUnit;
               if (unit) {
                 const mpBefore = getMP(unit);
-                const mpAfter = Math.max(0, mpBefore - costSum);
-                setMP(unit, mpAfter);
+                setMP(unit, mpBefore - costSum);
 
-                // If we reached the auto-move target in this same move, stop auto-move.
                 const target = unit.autoMove?.target;
                 if (target && unit.q === target.q && unit.r === target.r) {
                   unit.autoMove.active = false;
@@ -686,10 +707,7 @@ export function setupWorldInputUI(scene) {
               }
             } catch (e) {}
 
-            // Combat is resolved directly on the WorldScene (no separate CombatScene).
-            // Movement is always applied locally; multiplayer sync (if present) happens here.
             scene.syncPlayerMove?.(scene.selectedUnit);
-
             scene.refreshUnitActionPanel?.();
           });
         }
@@ -702,7 +720,6 @@ export function setupWorldInputUI(scene) {
     if (scene.isDragging) return;
     if (!scene.selectedUnit || scene.isUnitMoving) return;
 
-    // Stage F: attack preview
     if (scene.unitCommandMode === 'attack') {
       scene.clearPathPreview?.();
       updateCombatPreview(scene);
@@ -711,13 +728,11 @@ export function setupWorldInputUI(scene) {
       clearCombatPreview(scene);
     }
 
-    // Only show path preview for player units
-    if (!isPlayerUnit(scene.selectedUnit)) {
+    if (!isControllable(scene.selectedUnit)) {
       scene.clearPathPreview?.();
       return;
     }
 
-    // Turn check
     const ownerName = scene.selectedUnit.playerName || scene.selectedUnit.name;
     if (scene.turnOwner && ownerName !== scene.turnOwner) {
       scene.clearPathPreview?.();
@@ -753,42 +768,42 @@ export function setupWorldInputUI(scene) {
         within,
         beyond,
         usablePath,
+        costs,
         cum,
         mp: movementPoints,
       } = splitPathByMP(scene, scene.selectedUnit, fullPath, blocked);
 
       if (usablePath.length <= 1) return;
 
-      // Two-tone path preview:
-      // - within MP: cyan
-      // - beyond MP: warm yellow
-      const withinColor = 0x64ffda;
-      const beyondColor = 0xffd166;
+      // ✅ Colors: cyan + grey
+      const withinColor = 0x00ffff; // cyan
+      const beyondColor = 0x8a8a8a; // grey
 
       if (within.length > 1) {
         drawPathLine(scene, within, { color: withinColor, alpha: 0.95, width: 3, depth: 50 });
       }
-
       if (beyond.length > 1) {
         drawPathLine(scene, beyond, { color: beyondColor, alpha: 0.85, width: 3, depth: 50 });
       }
 
-      // labels: cumulative cost for the entire usable path (colored by reachable this turn vs beyond)
-      const baseColor = '#e8f6ff';       // reachable
-      const outOfRangeColor = '#ffcf5a'; // beyond
+      // ✅ Only show "turns to goal" markers
+      const markers = computeTurnMarkers(scene, scene.selectedUnit, usablePath, costs);
 
-      for (let i = 0; i < usablePath.length; i++) {
-        const step = usablePath[i];
-        const sum = cum[i] ?? 0;
+      for (const m of markers) {
+        const { x, y } = scene.axialToWorld(m.q, m.r);
 
-        const { x, y } = scene.axialToWorld(step.q, step.r);
-        const labelColor = sum <= movementPoints ? baseColor : outOfRangeColor;
+        // marker color: reachable this turn => cyan, else grey
+        const idx = usablePath.findIndex(p => p.q === m.q && p.r === m.r);
+        const c = (idx >= 0) ? (cum[idx] ?? 0) : 0;
+        const labelColor = (c <= movementPoints) ? '#00ffff' : '#b0b0b0';
 
-        const label = scene.add.text(x, y, `${sum}`, {
-          fontSize: '10px',
+        const label = scene.add.text(x, y - 10, `${m.turnIndex}`, {
+          fontSize: '12px',
           color: labelColor,
           fontStyle: 'bold',
-        }).setOrigin(0.5).setDepth(51);
+          backgroundColor: 'rgba(0,0,0,0.35)',
+          padding: { x: 4, y: 2 },
+        }).setOrigin(0.5).setDepth(52);
 
         scene.pathPreviewLabels.push(label);
       }
