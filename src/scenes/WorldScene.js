@@ -1,4 +1,6 @@
 // src/scenes/WorldScene.js
+// :contentReference[oaicite:1]{index=1}
+
 import HexMap from '../engine/HexMap.js';
 import { findPath as aStarFindPath } from '../engine/AStar.js';
 
@@ -60,13 +62,50 @@ function getUnitAtHex(scene, q, r) {
   const players = scene.players || [];
   const enemies = scene.enemies || [];
   const haulers = scene.haulers || [];
+  const ships = scene.ships || [];
   return (
     units.find(u => u && u.q === q && u.r === r) ||
     players.find(u => u && u.q === q && u.r === r) ||
     enemies.find(e => e && e.q === q && e.r === r) ||
     haulers.find(h => h && h.q === q && h.r === r) ||
+    ships.find(s => s && s.q === q && s.r === r) ||
     null
   );
+}
+
+function isControllable(u) {
+  if (!u) return false;
+  if (u.isDead) return false;
+  if (u.isEnemy || u.controller === 'ai') return false;
+
+  // canonical
+  if (u.isPlayer) return true;
+
+  // support objects without isPlayer (e.g., raiders/mobile base/etc.)
+  if (Number.isFinite(u.mpMax) || Number.isFinite(u.mp) || Number.isFinite(u.movementPoints)) return true;
+
+  return false;
+}
+
+function getOwnerName(scene, u) {
+  if (!u) return null;
+
+  // Most common
+  if (typeof u.playerName === 'string' && u.playerName) return u.playerName;
+  if (typeof u.ownerName === 'string' && u.ownerName) return u.ownerName;
+  if (typeof u.owner === 'string' && u.owner) return u.owner;
+  if (typeof u.faction === 'string' && u.faction) return u.faction;
+
+  // Some units only have "name", but that might be a unit type.
+  // We only use it as owner if it matches a known player or current turn owner.
+  const n = (typeof u.name === 'string' && u.name) ? u.name : null;
+  if (n && (n === scene.turnOwner || n === scene.playerName)) return n;
+
+  // If it's a controllable object with no owner fields, assume it belongs to local player
+  // (this fixes "raider/mobile base doesn't move on end turn" in singleplayer/local dev).
+  if (isControllable(u) && scene?.playerName) return scene.playerName;
+
+  return null;
 }
 
 function tileElevation(t) {
@@ -276,7 +315,8 @@ export default class WorldScene extends Phaser.Scene {
     this.players = this.players && this.players.length ? this.players : this.units.filter(u => u.isPlayer);
     this.enemies = this.enemies && this.enemies.length ? this.enemies : this.units.filter(u => u.isEnemy);
 
-    this.turnOwner = this.players[0]?.playerName || this.players[0]?.name || null;
+    // If players array is empty, still allow singleplayer turnOwner
+    this.turnOwner = this.players[0]?.playerName || this.players[0]?.name || this.playerName || null;
 
     // UI setup
     attachSelectionHighlight(this);
@@ -421,8 +461,14 @@ Biomes: ${biome}`;
         return;
       }
 
-      const step = path[index];
-      const { x, y } = scene.axialToWorld(step.q, step.r);
+      const nextStep = path[index];
+
+      // ✅ turn BEFORE moving
+      try {
+        updateUnitOrientation(scene, unit, unit.q, unit.r, nextStep.q, nextStep.r);
+      } catch (e) {}
+
+      const { x, y } = scene.axialToWorld(nextStep.q, nextStep.r);
 
       scene.tweens.add({
         targets: unit,
@@ -431,13 +477,8 @@ Biomes: ${biome}`;
         duration: 160,
         ease: 'Sine.easeInOut',
         onComplete: () => {
-          const prevQ = unit.q;
-          const prevR = unit.r;
-
-          unit.q = step.q;
-          unit.r = step.r;
-
-          updateUnitOrientation(scene, unit, prevQ, prevR, unit.q, unit.r);
+          unit.q = nextStep.q;
+          unit.r = nextStep.r;
 
           index += 1;
           stepNext();
@@ -449,10 +490,11 @@ Biomes: ${biome}`;
   }
 
   /**
-   * Civ-style auto move: units with unit.autoMove = { active:true, target:{q,r} }
-   * will move up to their MP at the start of their owner's turn.
+   * Civ-style auto move:
+   * any controllable object with unit.autoMove = { active:true, target:{q,r} }
+   * will move up to its MP at the start of its owner's turn.
    *
-   * Runs sequentially to avoid tween overlap and keep logic deterministic.
+   * Runs sequentially to avoid tween overlap.
    */
   runAutoMovesForTurnOwner() {
     if (this.uiLocked) return;
@@ -461,15 +503,19 @@ Biomes: ${biome}`;
     const owner = this.turnOwner || null;
     if (!owner) return;
 
-    // Only process player units of current owner (enemies act via moveEnemies)
+    // Include *all* potentially controllable collections
     const all = []
       .concat(this.units || [])
-      .concat(this.players || []);
+      .concat(this.players || [])
+      .concat(this.haulers || [])
+      .concat(this.ships || []);
 
     const queue = all.filter(u => {
-      if (!u || u.isDead) return false;
-      if (!u.isPlayer) return false;
-      const uOwner = u.playerName || u.name || null;
+      if (!isControllable(u)) return false;
+
+      const uOwner = getOwnerName(this, u);
+      if (!uOwner) return false;
+
       if (uOwner !== owner) return false;
 
       const am = u.autoMove;
@@ -483,9 +529,8 @@ Biomes: ${biome}`;
       }
 
       const unit = queue.shift();
-      if (!unit || unit.isDead) return runNext();
+      if (!isControllable(unit)) return runNext();
 
-      // If unit spent its MP already (e.g., moved manually), skip until next turn
       const mp = getMP(unit);
       if (mp <= 0) return runNext();
 
@@ -517,19 +562,16 @@ Biomes: ${biome}`;
       }
 
       this.startStepMovement(unit, segment, () => {
-        // Spend MP
         const mpBefore = getMP(unit);
         setMP(unit, mpBefore - costSum);
 
-        // Sync final position (same as manual move)
+        // If you sync per-unit in multiplayer, keep it here.
         this.syncPlayerMove?.(unit);
 
-        // Arrived?
         if (unit.q === target.q && unit.r === target.r) {
           unit.autoMove.active = false;
         }
 
-        // Continue with next unit
         runNext();
       });
     };
@@ -626,6 +668,7 @@ WorldScene.prototype.toggleSelectedUnitAtHex = function (q, r) {
     (this.players || []).find(u => u.q === q && u.r === r) ||
     (this.enemies || []).find(u => u.q === q && u.r === r) ||
     (this.haulers || []).find(h => h.q === q && h.r === r) ||
+    (this.ships || []).find(s => s.q === q && s.r === r) ||
     null;
 
   this.setSelectedUnit(unit || null);
