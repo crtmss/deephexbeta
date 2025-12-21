@@ -1,5 +1,6 @@
 // src/scenes/WorldScene.js
 import HexMap from '../engine/HexMap.js';
+import { findPath as aStarFindPath } from '../engine/AStar.js';
 
 import { drawLocationsAndRoads } from './WorldSceneMapLocations.js';
 import { setupWorldMenus, attachSelectionHighlight } from './WorldSceneMenus.js';
@@ -45,6 +46,115 @@ import {
 
 // AI moved to units folder
 import { moveEnemies as moveEnemiesImpl } from '../units/WorldSceneAI.js';
+
+/* ---------------------------
+   Auto-move helpers (Civ-style)
+   --------------------------- */
+
+function getTile(scene, q, r) {
+  return (scene.mapData || []).find(h => h.q === q && h.r === r);
+}
+
+function getUnitAtHex(scene, q, r) {
+  const units = scene.units || [];
+  const players = scene.players || [];
+  const enemies = scene.enemies || [];
+  const haulers = scene.haulers || [];
+  return (
+    units.find(u => u && u.q === q && u.r === r) ||
+    players.find(u => u && u.q === q && u.r === r) ||
+    enemies.find(e => e && e.q === q && e.r === r) ||
+    haulers.find(h => h && h.q === q && h.r === r) ||
+    null
+  );
+}
+
+function tileElevation(t) {
+  if (!t) return 0;
+  if (Number.isFinite(t.visualElevation)) return t.visualElevation;
+  if (Number.isFinite(t.elevation)) return t.elevation;
+  if (Number.isFinite(t.baseElevation)) return t.baseElevation;
+  return 0;
+}
+
+// Must match WorldSceneUI.js rules
+function stepMoveCost(fromTile, toTile) {
+  if (!fromTile || !toTile) return Infinity;
+
+  const e0 = tileElevation(fromTile);
+  const e1 = tileElevation(toTile);
+
+  if (Math.abs(e1 - e0) > 1) return Infinity;
+
+  let cost = 1;
+  if (toTile.hasForest) cost += 1;
+  if (e1 > e0) cost += 1;
+  return cost;
+}
+
+function getMP(unit) {
+  const mpA = Number.isFinite(unit.movementPoints) ? unit.movementPoints : null;
+  const mpB = Number.isFinite(unit.mp) ? unit.mp : null;
+  return (mpB != null) ? mpB : (mpA != null ? mpA : 0);
+}
+
+function setMP(unit, val) {
+  const v = Math.max(0, Number.isFinite(val) ? val : 0);
+  unit.mp = v;
+  if (Number.isFinite(unit.movementPoints)) unit.movementPoints = v;
+}
+
+function computePath(scene, unit, target, blockedPred) {
+  const start = { q: unit.q, r: unit.r };
+  const goal = { q: target.q, r: target.r };
+  if (start.q === goal.q && start.r === goal.r) return [start];
+
+  const isBlocked = (tile) => {
+    if (!tile) return true;
+    return blockedPred ? blockedPred(tile) : false;
+  };
+
+  // If AStar ignores options, OK — we still validate cost in split.
+  return aStarFindPath(start, goal, scene.mapData, isBlocked, { getMoveCost: stepMoveCost });
+}
+
+/**
+ * Validates the full path (stops at first illegal/blocked/occupied step) and
+ * returns a segment that fits in current MP.
+ */
+function buildMoveSegmentForThisTurn(scene, unit, fullPath, blockedPred) {
+  const mp = getMP(unit);
+  if (!Array.isArray(fullPath) || fullPath.length < 2) {
+    return { segment: [], costSum: 0 };
+  }
+
+  const usable = [fullPath[0]];
+  let sum = 0;
+
+  for (let i = 1; i < fullPath.length; i++) {
+    const prev = usable[usable.length - 1];
+    const cur = fullPath[i];
+
+    const prevTile = getTile(scene, prev.q, prev.r);
+    const curTile = getTile(scene, cur.q, cur.r);
+
+    if (blockedPred && blockedPred(curTile)) break;
+
+    const stepCost = stepMoveCost(prevTile, curTile);
+    if (!Number.isFinite(stepCost) || stepCost === Infinity) break;
+
+    const occ = getUnitAtHex(scene, cur.q, cur.r);
+    if (occ && occ !== unit) break;
+
+    if (sum + stepCost > mp) break;
+
+    sum += stepCost;
+    usable.push(cur);
+  }
+
+  if (usable.length < 2) return { segment: [], costSum: 0 };
+  return { segment: usable, costSum: sum };
+}
 
 export default class WorldScene extends Phaser.Scene {
   constructor() {
@@ -145,7 +255,16 @@ export default class WorldScene extends Phaser.Scene {
     // bind these BEFORE UI/input setup
     this.applyCombatEvent = (ev) => applyCombatEvent(this, ev);
     this.moveEnemies = () => moveEnemiesImpl(this);
-    this.endTurn = () => endTurnImpl(this);
+
+    // Wrap endTurn so that AFTER advancing to the next owner + reset,
+    // we can run auto-moves for the new active side.
+    this.endTurn = () => {
+      endTurnImpl(this);
+      // If endTurnImpl early-returned due to lock, don't do anything.
+      if (this.uiLocked) return;
+      this.runAutoMovesForTurnOwner?.();
+    };
+
     this.getNextPlayer = (players, currentName) => getNextPlayerImpl(players, currentName);
 
     // Apply water level & draw world once
@@ -219,6 +338,9 @@ export default class WorldScene extends Phaser.Scene {
     }
 
     this.printTurnSummary?.();
+
+    // If you start a turn already having queued auto-moves (e.g. loaded state), run them:
+    this.runAutoMovesForTurnOwner?.();
   }
 
   addWorldMetaBadge() {
@@ -324,6 +446,95 @@ Biomes: ${biome}`;
     }
 
     stepNext();
+  }
+
+  /**
+   * Civ-style auto move: units with unit.autoMove = { active:true, target:{q,r} }
+   * will move up to their MP at the start of their owner's turn.
+   *
+   * Runs sequentially to avoid tween overlap and keep logic deterministic.
+   */
+  runAutoMovesForTurnOwner() {
+    if (this.uiLocked) return;
+    if (this.isUnitMoving) return;
+
+    const owner = this.turnOwner || null;
+    if (!owner) return;
+
+    // Only process player units of current owner (enemies act via moveEnemies)
+    const all = []
+      .concat(this.units || [])
+      .concat(this.players || []);
+
+    const queue = all.filter(u => {
+      if (!u || u.isDead) return false;
+      if (!u.isPlayer) return false;
+      const uOwner = u.playerName || u.name || null;
+      if (uOwner !== owner) return false;
+
+      const am = u.autoMove;
+      return !!(am && am.active && am.target && Number.isFinite(am.target.q) && Number.isFinite(am.target.r));
+    });
+
+    const runNext = () => {
+      if (queue.length === 0) {
+        this.refreshUnitActionPanel?.();
+        return;
+      }
+
+      const unit = queue.shift();
+      if (!unit || unit.isDead) return runNext();
+
+      // If unit spent its MP already (e.g., moved manually), skip until next turn
+      const mp = getMP(unit);
+      if (mp <= 0) return runNext();
+
+      const target = unit.autoMove.target;
+      if (unit.q === target.q && unit.r === target.r) {
+        unit.autoMove.active = false;
+        return runNext();
+      }
+
+      const blocked = (t) => {
+        if (!t) return true;
+        if (t.type === 'water' || t.type === 'mountain') return true;
+        const occ = getUnitAtHex(this, t.q, t.r);
+        if (occ && occ !== unit) return true;
+        return false;
+      };
+
+      const fullPath = computePath(this, unit, target, blocked);
+      if (!fullPath || fullPath.length < 2) {
+        // No path: cancel auto-move to avoid infinite attempts
+        unit.autoMove.active = false;
+        return runNext();
+      }
+
+      const { segment, costSum } = buildMoveSegmentForThisTurn(this, unit, fullPath, blocked);
+      if (!segment || segment.length < 2) {
+        // Can't advance this turn (blocked or not enough MP)
+        return runNext();
+      }
+
+      this.startStepMovement(unit, segment, () => {
+        // Spend MP
+        const mpBefore = getMP(unit);
+        setMP(unit, mpBefore - costSum);
+
+        // Sync final position (same as manual move)
+        this.syncPlayerMove?.(unit);
+
+        // Arrived?
+        if (unit.q === target.q && unit.r === target.r) {
+          unit.autoMove.active = false;
+        }
+
+        // Continue with next unit
+        runNext();
+      });
+    };
+
+    runNext();
   }
 
   recomputeWaterFromLevel() {
