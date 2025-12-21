@@ -1,4 +1,5 @@
 // deephexbeta/src/scenes/WorldSceneUI.js
+// :contentReference[oaicite:0]{index=0}
 
 import { refreshUnits } from './WorldSceneActions.js';
 import { findPath as aStarFindPath } from '../engine/AStar.js';
@@ -319,6 +320,100 @@ function setMP(unit, val) {
   if (Number.isFinite(unit.movementPoints)) unit.movementPoints = v;
 }
 
+/* ---------------- Path preview helpers ---------------- */
+
+/**
+ * Takes a full A* path and splits it into:
+ * - within: the segment this unit can traverse this turn (<= MP)
+ * - beyond: the rest of the path (starts at last point of within so the line connects)
+ *
+ * Also returns:
+ * - usablePath: the validated prefix of fullPath up to the first illegal step (Infinity etc.)
+ * - costs: per-step move costs (index aligned to usablePath; costs[0]=0)
+ * - cum: cumulative cost per node in usablePath (cum[0]=0)
+ * - cutIndex: last index (in usablePath) that is reachable this turn
+ */
+function splitPathByMP(scene, unit, fullPath, blockedPred) {
+  const mp = getMP(unit);
+  const within = [];
+  const beyond = [];
+  const usablePath = [];
+  const costs = [];
+  const cum = [];
+
+  if (!Array.isArray(fullPath) || fullPath.length === 0) {
+    return { within, beyond, usablePath, costs, cum, cutIndex: 0, mp };
+  }
+
+  // Validate path step-by-step using stepMoveCost + occupancy rule (defensive; A* should already avoid blocked tiles)
+  let sum = 0;
+  usablePath.push(fullPath[0]);
+  costs.push(0);
+  cum.push(0);
+
+  for (let i = 1; i < fullPath.length; i++) {
+    const prev = fullPath[i - 1];
+    const cur = fullPath[i];
+    const prevTile = getTile(scene, prev.q, prev.r);
+    const curTile = getTile(scene, cur.q, cur.r);
+
+    // If caller provided blockedPred, re-check it for safety
+    if (blockedPred && blockedPred(curTile)) break;
+
+    const stepCost = stepMoveCost(prevTile, curTile);
+    if (!Number.isFinite(stepCost) || stepCost === Infinity) break;
+
+    // Extra safety: stop if path passes through occupied hexes (except start hex)
+    const occ = getUnitAtHex(scene, cur.q, cur.r);
+    if (occ && occ !== unit) break;
+
+    sum += stepCost;
+    usablePath.push(cur);
+    costs.push(stepCost);
+    cum.push(sum);
+  }
+
+  // Determine cutIndex: farthest reachable node index within MP
+  let cutIndex = 0;
+  for (let i = 0; i < usablePath.length; i++) {
+    if (cum[i] <= mp) cutIndex = i;
+    else break;
+  }
+
+  // within path is usablePath[0..cutIndex]
+  for (let i = 0; i <= cutIndex; i++) within.push(usablePath[i]);
+
+  // beyond path connects from last within point
+  if (usablePath.length > 1 && cutIndex < usablePath.length - 1) {
+    const startBeyond = Math.max(0, cutIndex); // keep connector point
+    for (let i = startBeyond; i < usablePath.length; i++) beyond.push(usablePath[i]);
+  }
+
+  return { within, beyond, usablePath, costs, cum, cutIndex, mp };
+}
+
+function drawPathLine(scene, path, style) {
+  if (!Array.isArray(path) || path.length < 2) return null;
+
+  const g = scene.add.graphics();
+  g.lineStyle(style.width ?? 2, style.color ?? 0xffffff, style.alpha ?? 0.9);
+  g.setDepth(style.depth ?? 50);
+
+  for (let i = 0; i < path.length - 1; i++) {
+    const a = path[i];
+    const b = path[i + 1];
+    const wa = scene.axialToWorld(a.q, a.r);
+    const wb = scene.axialToWorld(b.q, b.r);
+    g.beginPath();
+    g.moveTo(wa.x, wa.y);
+    g.lineTo(wb.x, wb.y);
+    g.strokePath();
+  }
+
+  scene.pathPreviewTiles.push(g);
+  return g;
+}
+
 /**
  * Sets up unit selection + path preview + movement + Stage B/F attack/defence hotkeys.
  */
@@ -618,73 +713,52 @@ export function setupWorldInputUI(scene) {
       return false;
     };
 
-    const path = computePathWithAStar(scene, scene.selectedUnit, rounded, blocked);
+    const fullPath = computePathWithAStar(scene, scene.selectedUnit, rounded, blocked);
 
     scene.clearPathPreview?.();
-    if (path && path.length > 1) {
-      let movementPoints = getMP(scene.selectedUnit);
-      let costSum = 0;
-      const maxPath = [];
 
-      for (let i = 0; i < path.length; i++) {
-        const step = path[i];
-        const tile = getTile(scene, step.q, step.r);
-        const prevTile = (i > 0) ? getTile(scene, path[i - 1].q, path[i - 1].r) : null;
+    if (fullPath && fullPath.length > 1) {
+      const {
+        within,
+        beyond,
+        usablePath,
+        cum,
+        mp: movementPoints,
+      } = splitPathByMP(scene, scene.selectedUnit, fullPath, blocked);
 
-        const stepCost = (i === 0) ? 0 : stepMoveCost(prevTile, tile);
-        if (!Number.isFinite(stepCost) || stepCost === Infinity) break;
+      if (usablePath.length <= 1) return;
 
-        if (i > 0 && costSum + stepCost > movementPoints) break;
+      // Two-tone path preview:
+      // - within MP: cyan
+      // - beyond MP: warm yellow
+      const withinColor = 0x64ffda;
+      const beyondColor = 0xffd166;
 
-        // Don't preview through occupied hexes (except start)
-        if (i > 0) {
-          const occ = getUnitAtHex(scene, step.q, step.r);
-          if (occ && occ !== scene.selectedUnit) break;
-        }
-
-        maxPath.push(step);
-        if (i > 0) costSum += stepCost;
+      if (within.length > 1) {
+        drawPathLine(scene, within, { color: withinColor, alpha: 0.95, width: 3, depth: 50 });
       }
 
-      const graphics = scene.add.graphics();
-      graphics.lineStyle(2, 0x64ffda, 0.9);
-      graphics.setDepth(50);
-
-      for (let i = 0; i < maxPath.length - 1; i++) {
-        const a = maxPath[i];
-        const b = maxPath[i + 1];
-        const wa = scene.axialToWorld(a.q, a.r);
-        const wb = scene.axialToWorld(b.q, b.r);
-        graphics.beginPath();
-        graphics.moveTo(wa.x, wa.y);
-        graphics.lineTo(wb.x, wb.y);
-        graphics.strokePath();
+      if (beyond.length > 1) {
+        drawPathLine(scene, beyond, { color: beyondColor, alpha: 0.85, width: 3, depth: 50 });
       }
 
-      scene.pathPreviewTiles.push(graphics);
+      // labels: cumulative cost for the entire usable path (colored by reachable this turn vs beyond)
+      const baseColor = '#e8f6ff';      // reachable
+      const outOfRangeColor = '#ffcf5a'; // beyond
 
-      const baseColor = '#e8f6ff';
-      const outOfRangeColor = '#ff7b7b';
-
-      // labels: cumulative cost
-      let sum = 0;
-      for (let i = 0; i < maxPath.length; i++) {
-        const step = maxPath[i];
-        const tile = getTile(scene, step.q, step.r);
-        const prevTile = (i > 0) ? getTile(scene, maxPath[i - 1].q, maxPath[i - 1].r) : null;
-
-        const stepCost = (i === 0) ? 0 : stepMoveCost(prevTile, tile);
-        if (!Number.isFinite(stepCost) || stepCost === Infinity) break;
-
-        if (i > 0) sum += stepCost;
+      for (let i = 0; i < usablePath.length; i++) {
+        const step = usablePath[i];
+        const sum = cum[i] ?? 0;
 
         const { x, y } = scene.axialToWorld(step.q, step.r);
         const labelColor = sum <= movementPoints ? baseColor : outOfRangeColor;
+
         const label = scene.add.text(x, y, `${sum}`, {
           fontSize: '10px',
           color: labelColor,
           fontStyle: 'bold',
         }).setOrigin(0.5).setDepth(51);
+
         scene.pathPreviewLabels.push(label);
       }
     }
