@@ -94,6 +94,20 @@ export function setupTurnUI(scene) {
     scene.redrawWorld?.();
   });
 
+  // ✅ Hotkey: Enter -> End Turn (also Numpad Enter)
+  // Avoid triggering while logistics is open or UI is locked.
+  scene.input.keyboard?.on('keydown-ENTER', () => {
+    if (scene.logisticsInputLocked) return;
+    if (scene.uiLocked) return;
+    scene.endTurn?.();
+  });
+
+  scene.input.keyboard?.on('keydown-NUMPAD_ENTER', () => {
+    if (scene.logisticsInputLocked) return;
+    if (scene.uiLocked) return;
+    scene.endTurn?.();
+  });
+
   // Logistics panel + helpers (the UI itself lives in WorldSceneLogistics)
   setupLogisticsPanel(scene);
 
