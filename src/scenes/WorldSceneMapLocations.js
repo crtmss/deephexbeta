@@ -200,7 +200,7 @@ function deterministicAStar(byKey, width, height, start, goal) {
 
     closed.add(cur.k);
 
-    for (const [dq, dr] of neighborsOddR(0, 0)) {
+    for (const [dq, dr] of neighborsOddR(cur.q, cur.r)) {
       const nq = cur.q + dq;
       const nr = cur.r + dr;
       if (!inBounds(nq, nr, width, height)) continue;
