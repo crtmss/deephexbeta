@@ -49,6 +49,9 @@ import {
 // AI moved to units folder
 import { moveEnemies as moveEnemiesImpl } from '../units/WorldSceneAI.js';
 
+// ✅ NEW: ensure lore/POI exists before first draw
+import { generateRuinLoreForTile } from './LoreGeneration.js';
+
 /* ---------------------------
    Auto-move helpers (Civ-style)
    --------------------------- */
@@ -202,6 +205,25 @@ export default class WorldScene extends Phaser.Scene {
 
   preload() {}
 
+  /**
+   * ✅ Ensure lore/POI is generated BEFORE first draw.
+   * We can't call ensureWorldLoreGenerated directly (it's internal),
+   * but generateRuinLoreForTile triggers it safely.
+   */
+  ensureLoreReadyBeforeFirstDraw() {
+    if (this.__worldLoreGenerated) return;
+    if (!Array.isArray(this.mapData) || this.mapData.length === 0) return;
+
+    const firstLand = this.mapData.find(t => t && t.type !== 'water');
+    if (!firstLand) return;
+
+    try {
+      generateRuinLoreForTile(this, firstLand);
+    } catch (e) {
+      console.warn('[LORE] Failed to generate lore before draw:', e);
+    }
+  }
+
   async create() {
     this.hexSize = 22;
     this.mapWidth = 29;
@@ -305,6 +327,9 @@ export default class WorldScene extends Phaser.Scene {
     };
 
     this.getNextPlayer = (players, currentName) => getNextPlayerImpl(players, currentName);
+
+    // ✅ NEW: Ensure lore exists before any draw (including recomputeWaterFromLevel->redrawWorld)
+    this.ensureLoreReadyBeforeFirstDraw();
 
     // Apply water level & draw world once
     this.recomputeWaterFromLevel();
