@@ -15,6 +15,34 @@
 import { effectiveElevationLocal } from './WorldSceneGeography.js';
 
 /* =========================================================
+   POI ICONS (NEW)
+   ========================================================= */
+
+// Icon shown in History line when entry.poiType is present.
+// These can be different from map icons if you prefer.
+const POI_EVENT_ICON = {
+  settlement: '🏘️',
+  ruin: '🏚️',
+  raider_camp: '☠️',
+  roadside_camp: '🏕️',
+  watchtower: '🏰',
+  mine: '⚒️',
+  shrine: '⛩️',
+  crash_site: '💥',
+  wreck: '⚓',
+  vehicle: '🚗',
+  abandoned_vehicle: '🚗',
+};
+
+function getEntryIcon(entry) {
+  const pt = String(entry?.poiType || '').toLowerCase();
+  if (pt && POI_EVENT_ICON[pt]) return POI_EVENT_ICON[pt];
+
+  // Optional: infer from entry.type if you ever want.
+  return '';
+}
+
+/* =========================================================
    SETUP
    ========================================================= */
 
@@ -229,7 +257,12 @@ export function refreshHistoryPanel(scene) {
     for (const ev of entries) {
       const year = typeof ev.year === 'number' ? ev.year : 5000;
       const body = ev.text || '';
-      const label = `${year} — ${body}`;
+
+      // NEW: show POI icon if present
+      const icon = getEntryIcon(ev);
+      const iconPrefix = icon ? `${icon} ` : '';
+
+      const label = `${iconPrefix}${year} — ${body}`;
 
       const hasTargets = entryHasTargets(ev);
       const baseColor = hasTargets ? '#6bf7ff' : '#b7d7ff';
