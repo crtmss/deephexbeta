@@ -36,8 +36,7 @@ function inBounds(q, r, w, h) {
    POI flags: now driven by mapInfo.objects (seed -> lore -> POI)
    --------------------------------------------------------------- */
 /**
- * Apply POI flags (hasRuin / hasCrashSite / hasVehicle) onto tiles
- * based on deterministic map objects.
+ * Apply POI flags onto tiles based on deterministic map objects.
  *
  * NOTE:
  *  - mapData is a flat array of tiles ({q,r,...}).
@@ -58,6 +57,18 @@ export function applyLocationFlags(mapData, mapObjects) {
       t.hasRuin = !!t.hasRuin;
       t.hasCrashSite = !!t.hasCrashSite;
       t.hasVehicle = !!t.hasVehicle;
+
+      // New POIs (default false if absent)
+      t.hasSettlement = !!t.hasSettlement;
+      t.hasRaiderCamp = !!t.hasRaiderCamp;
+      t.hasRoadsideCamp = !!t.hasRoadsideCamp;
+      t.hasWatchtower = !!t.hasWatchtower;
+      t.hasMinePOI = !!t.hasMinePOI;
+      t.hasShrine = !!t.hasShrine;
+
+      // optional label fields
+      if (typeof t.settlementName !== "string") t.settlementName = t.settlementName || "";
+      if (typeof t.poiName !== "string") t.poiName = t.poiName || "";
     }
     return mapData;
   }
@@ -71,9 +82,23 @@ export function applyLocationFlags(mapData, mapObjects) {
     t.hasRuin = false;
     t.hasCrashSite = false;
     t.hasVehicle = false;
+
+    // New POIs
+    t.hasSettlement = false;
+    t.hasRaiderCamp = false;
+    t.hasRoadsideCamp = false;
+    t.hasWatchtower = false;
+    t.hasMinePOI = false;
+    t.hasShrine = false;
+
+    // name helpers (optional)
+    if (typeof t.settlementName !== "string") t.settlementName = "";
+    if (typeof t.poiName !== "string") t.poiName = "";
+
     // hasObject может использоваться и в других местах, поэтому не трогаем,
     // но если POI ставится здесь, мы будем включать hasObject.
     if (typeof t.hasObject !== "boolean") t.hasObject = !!t.hasObject;
+    else t.hasObject = false;
   }
 
   // Затем проставить флаги по объектам карты
@@ -91,11 +116,37 @@ export function applyLocationFlags(mapData, mapObjects) {
     if (type === "ruin") {
       tile.hasRuin = true;
       tile.hasObject = true;
+      if (o.name) tile.poiName = String(o.name);
     } else if (type === "crash_site" || type === "wreck") {
       tile.hasCrashSite = true;
       tile.hasObject = true;
     } else if (type === "vehicle" || type === "abandoned_vehicle") {
       tile.hasVehicle = true;
+      tile.hasObject = true;
+    } else if (type === "settlement") {
+      tile.hasSettlement = true;
+      tile.hasObject = true;
+      // prefer explicit object name, then legacy cityName
+      const n = o.name ? String(o.name) : (tile.cityName ? String(tile.cityName) : "");
+      tile.settlementName = n;
+      tile.poiName = n || tile.poiName;
+      // keep old fields for compatibility
+      if (n) tile.cityName = n;
+      if (o.faction) tile.owningFaction = o.faction;
+    } else if (type === "raider_camp") {
+      tile.hasRaiderCamp = true;
+      tile.hasObject = true;
+    } else if (type === "roadside_camp") {
+      tile.hasRoadsideCamp = true;
+      tile.hasObject = true;
+    } else if (type === "watchtower") {
+      tile.hasWatchtower = true;
+      tile.hasObject = true;
+    } else if (type === "mine") {
+      tile.hasMinePOI = true;
+      tile.hasObject = true;
+    } else if (type === "shrine") {
+      tile.hasShrine = true;
       tile.hasObject = true;
     }
   }
@@ -189,9 +240,18 @@ function addRoad(mapData, a, b) {
   b.hasRoad = true;
 }
 
+function clearRoads(mapData) {
+  if (!Array.isArray(mapData)) return;
+  for (const t of mapData) {
+    if (!t) continue;
+    t.hasRoad = false;
+    if (t.roadLinks) t.roadLinks = null;
+  }
+}
+
 /**
  * Generate deterministic road network:
- * - Connects significant POIs (ruins, crash sites, vehicles, wrecks)
+ * - Connects significant POIs
  * - Also records connections on scene.roadConnections for lore.
  */
 function generateDeterministicRoads(scene, mapData, width, height, mapObjects) {
@@ -199,11 +259,17 @@ function generateDeterministicRoads(scene, mapData, width, height, mapObjects) {
   const roadConns = scene.roadConnections || [];
   scene.roadConnections = roadConns;
 
-  // Significant POIs
+  // Significant POIs (expanded)
   const pts = mapObjects.filter((o) => {
     const T = String(o.type || "").toLowerCase();
     return (
+      T === "settlement" ||
       T === "ruin" ||
+      T === "raider_camp" ||
+      T === "roadside_camp" ||
+      T === "watchtower" ||
+      T === "mine" ||
+      T === "shrine" ||
       T === "crash_site" ||
       T === "vehicle" ||
       T === "wreck"
@@ -212,6 +278,7 @@ function generateDeterministicRoads(scene, mapData, width, height, mapObjects) {
 
   pts.sort((a, b) => a.q - b.q || a.r - b.r);
 
+  // If we have too few points, roads won't show; that's fine.
   for (let i = 0; i + 1 < pts.length; i++) {
     const A = pts[i];
     const B = pts[i + 1];
@@ -284,19 +351,58 @@ export function drawLocationsAndRoads() {
 
   if (!Array.isArray(map) || !map.length) return;
 
+  // -----------------------------------------------------------
+  // IMPORTANT FIX:
+  // Ensure lore (and thus scene.mapInfo.objects) exists BEFORE we:
+  //  - applyLocationFlags
+  //  - generate roads
+  //  - draw POI icons
+  //
+  // We can't call ensureWorldLoreGenerated directly (it's internal),
+  // but generateRuinLoreForTile() calls it. So we "touch" one land tile.
+  // -----------------------------------------------------------
+  if (!scene.__worldLoreGenerated) {
+    const firstLand = map.find(t => t && t.type !== "water");
+    if (firstLand) {
+      generateRuinLoreForTile(scene, firstLand);
+    }
+  }
+
+  // Fetch objects AFTER lore ensured
   const mapObjects =
     scene.mapInfo && Array.isArray(scene.mapInfo.objects)
       ? scene.mapInfo.objects
       : [];
 
+  // Build an objects hash so we can re-generate roads if POIs changed
+  const objectsHash = mapObjects
+    .map(o => `${String(o.type || "").toLowerCase()}:${o.q},${o.r}`)
+    .sort()
+    .join("|");
+
+  const prevHash = map.__roadsHash || "";
+  const needRebuildRoads = !map.__roadsApplied || (prevHash !== objectsHash);
+
   // Применяем флаги POI к тайлам на основе mapInfo.objects
   applyLocationFlags(map, mapObjects);
 
-  if (!map.__roadsApplied) {
+  if (needRebuildRoads) {
+    // clear previous roads if any
+    clearRoads(map);
+    scene.roadConnections = [];
     generateDeterministicRoads(scene, map, scene.mapWidth, scene.mapHeight, mapObjects);
+
     Object.defineProperty(map, "__roadsApplied", {
       value: true,
       enumerable: false,
+      writable: true,
+      configurable: true,
+    });
+    Object.defineProperty(map, "__roadsHash", {
+      value: objectsHash,
+      enumerable: false,
+      writable: true,
+      configurable: true,
     });
   }
 
@@ -400,6 +506,14 @@ export function drawLocationsAndRoads() {
       });
     }
 
+    /* ---------------- Settlement (NEW ICON) ---------------- */
+    if (t.hasSettlement) {
+      // Different from existing POI icons
+      const s = addEmoji(t.q, t.r, 0, 0, "🏘️", size * 0.85, 106);
+      s.x = cx;
+      s.y = cy;
+    }
+
     /* ---------------- Ruins ---------------- */
     if (t.hasRuin) {
       const ruin = addEmoji(t.q, t.r, 0, 0, "🏚️", size * 0.8, 106);
@@ -408,23 +522,60 @@ export function drawLocationsAndRoads() {
       generateRuinLoreForTile(scene, t);
     }
 
-    /* ---------------- Other POIs ---------------- */
+    /* ---------------- Crash / Wreck ---------------- */
     if (t.hasCrashSite) {
       const crash = addEmoji(t.q, t.r, 0, 0, "🚀", size * 0.8, 106);
       crash.x = cx;
       crash.y = cy;
     }
+
+    /* ---------------- Vehicle ---------------- */
     if (t.hasVehicle) {
       const veh = addEmoji(t.q, t.r, 0, 0, "🚙", size * 0.8, 106);
       veh.x = cx;
       veh.y = cy;
+    }
+
+    /* ---------------- Raider camp (NEW ICON) ---------------- */
+    if (t.hasRaiderCamp) {
+      const rc = addEmoji(t.q, t.r, 0, 0, "☠️", size * 0.8, 106);
+      rc.x = cx;
+      rc.y = cy;
+    }
+
+    /* ---------------- Roadside camp (NEW ICON) ---------------- */
+    if (t.hasRoadsideCamp) {
+      const camp = addEmoji(t.q, t.r, 0, 0, "🏕️", size * 0.78, 106);
+      camp.x = cx;
+      camp.y = cy;
+    }
+
+    /* ---------------- Watchtower (NEW ICON) ---------------- */
+    if (t.hasWatchtower) {
+      const wt = addEmoji(t.q, t.r, 0, 0, "🏰", size * 0.78, 106);
+      wt.x = cx;
+      wt.y = cy;
+    }
+
+    /* ---------------- Mine POI (NEW ICON) ---------------- */
+    if (t.hasMinePOI) {
+      const m = addEmoji(t.q, t.r, 0, 0, "⚒️", size * 0.78, 106);
+      m.x = cx;
+      m.y = cy;
+    }
+
+    /* ---------------- Shrine (NEW ICON) ---------------- */
+    if (t.hasShrine) {
+      const sh = addEmoji(t.q, t.r, 0, 0, "⛩️", size * 0.78, 106);
+      sh.x = cx;
+      sh.y = cy;
     }
   }
 
   // Safety: make sure everything is snapped to current elevation (water level)
   refreshLocationIcons(scene);
 
-  // After POIs / ruins have had their city/faction lore assigned,
+  // After POIs / lore have had their city/faction assignments,
   // generate road history entries for the connections we recorded earlier.
   generateRoadLoreForExistingConnections(scene);
 }
