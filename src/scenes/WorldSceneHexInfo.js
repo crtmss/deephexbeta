@@ -127,6 +127,7 @@ function summarizeBuilding(b) {
 function summarizeMapObject(o) {
   const bits = [];
   if (o.type) bits.push(String(o.type));
+  if (o.name) bits.push(`name:${o.name}`);
   if (o.faction) bits.push(`faction:${o.faction}`);
   if (o.city) bits.push(`city:${o.city}`);
   return bits.length ? bits.join(' ') : tryName(o);
@@ -262,9 +263,21 @@ export function setupHexInfoPanel(scene) {
 
     // POI / Roads
     const poiFlags = [];
+
+    // New POIs (lore-driven)
+    if (t.hasSettlement) poiFlags.push(`Settlement${t.settlementName ? `:${t.settlementName}` : ''}`);
+    if (t.hasRaiderCamp) poiFlags.push('Raider Camp');
+    if (t.hasRoadsideCamp) poiFlags.push('Roadside Camp');
+    if (t.hasWatchtower) poiFlags.push('Watchtower');
+    if (t.hasMinePOI) poiFlags.push('Mine');
+    if (t.hasShrine) poiFlags.push('Shrine');
+
+    // Existing POIs
     if (t.hasRuin) poiFlags.push('Ruin');
     if (t.hasCrashSite) poiFlags.push('Crash Site');
     if (t.hasVehicle) poiFlags.push('Vehicle');
+
+    // Generic flags
     if (t.hasObject) poiFlags.push('Object');
     if (t.hasRoad) poiFlags.push('Road');
     if (t.hasForest) poiFlags.push('Forest');
@@ -344,7 +357,10 @@ export function setupHexInfoPanel(scene) {
     // Debug: show raw tile keys summary (useful for verifying bindings)
     const raw = pick(t, [
       'q','r','type','groundType','baseElevation','elevation','visualElevation',
-      'isUnderWater','waterDepth','hasRuin','hasCrashSite','hasVehicle','hasObject',
+      'isUnderWater','waterDepth',
+      // POI flags
+      'hasSettlement','settlementName','hasRuin','hasRaiderCamp','hasRoadsideCamp','hasWatchtower','hasMinePOI','hasShrine',
+      'hasCrashSite','hasVehicle','hasObject',
       'hasRoad','hasForest','hasPowerConduit','hasPowerPole'
     ]);
     lines.push('Raw Tile Snapshot:');
