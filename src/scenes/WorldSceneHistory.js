@@ -49,10 +49,15 @@ function getEntryIcon(entry) {
 export function setupHistoryUI(scene) {
   const margin = 12;
 
-  const PANEL_WIDTH = 420;
-  const PANEL_HEIGHT = 360;
+  // v2: make History panel match Logistics panel footprint better
+  // (large, near top-right, similar style).
+  //
+  // If you already have a "logisticsPanel" or similar, we place next to it
+  // in a stable way; otherwise use top-right anchor.
+  const PANEL_WIDTH = 520;
+  const PANEL_HEIGHT = 520;
 
-  // Position: to the left of resources panel if present
+  // Position: to the left of resources panel if present, else top-right.
   let panelX;
   let panelY;
 
@@ -60,7 +65,8 @@ export function setupHistoryUI(scene) {
     panelX = scene.resourcesPanel.x - PANEL_WIDTH - 16;
     panelY = scene.resourcesPanel.y;
   } else {
-    panelX = margin;
+    // top-right-ish
+    panelX = (scene.scale?.width ?? 900) - PANEL_WIDTH - margin;
     panelY = 70;
   }
 
@@ -71,7 +77,7 @@ export function setupHistoryUI(scene) {
   container.setScrollFactor(0);
   container.setDepth(depthBase);
 
-  // ---- Background ----
+  // ---- Background (match Logistics vibe) ----
   const bg = scene.add.rectangle(
     0,
     0,
@@ -85,8 +91,8 @@ export function setupHistoryUI(scene) {
 
   // ---- Title ----
   const title = scene.add.text(
-    12,
-    6,
+    14,
+    8,
     'History',
     {
       fontFamily: 'monospace',
@@ -96,11 +102,20 @@ export function setupHistoryUI(scene) {
   );
   container.add(title);
 
+  // ---- Divider line under title ----
+  const divider = scene.add.graphics();
+  divider.lineStyle(1, 0x34d2ff, 0.35);
+  divider.beginPath();
+  divider.moveTo(12, 32);
+  divider.lineTo(PANEL_WIDTH - 12, 32);
+  divider.strokePath();
+  container.add(divider);
+
   // ---- Scrollable entries container (inside panel) ----
   const CONTENT_X = 12;
-  const CONTENT_Y = 34;
+  const CONTENT_Y = 40;
   const CONTENT_W = PANEL_WIDTH - 24;
-  const CONTENT_H = PANEL_HEIGHT - CONTENT_Y - 10;
+  const CONTENT_H = PANEL_HEIGHT - CONTENT_Y - 12;
 
   const entriesContainer = scene.add.container(CONTENT_X, CONTENT_Y);
   container.add(entriesContainer);
@@ -135,32 +150,12 @@ export function setupHistoryUI(scene) {
   scene.historyEntriesMask = entriesMask;
   scene.isHistoryPanelOpen = false;
 
-  // ---- Toggle button ----
-  const button = scene.add.text(
-    panelX,
-    panelY - 26,
-    'History',
-    {
-      fontFamily: 'monospace',
-      fontSize: '15px',
-      color: '#d0f2ff',
-      backgroundColor: '#092038',
-      padding: { x: 8, y: 4 },
-    }
-  )
-    .setScrollFactor(0)
-    .setDepth(depthBase + 1)
-    .setInteractive({ useHandCursor: true });
-
-  button.on('pointerdown', () => {
-    if (scene.isHistoryPanelOpen) {
-      closeHistoryPanel(scene);
-    } else {
-      openHistoryPanel(scene);
-    }
-  });
-
-  scene.historyButton = button;
+  // ---- IMPORTANT: remove legacy toggle button (the one you said is лишняя) ----
+  // History should be opened via the main tab bar (next to Energy), not via a floating button.
+  if (scene.historyButton) {
+    try { scene.historyButton.destroy(); } catch (_e) {}
+    scene.historyButton = null;
+  }
 
   // Public helpers
   scene.openHistoryPanel = () => openHistoryPanel(scene);
@@ -180,7 +175,7 @@ export function setupHistoryUI(scene) {
 
     if (px < x0 || px > x1 || py < y0 || py > y1) return;
 
-    const step = 30;
+    const step = 34;
     scene.historyScrollPos += Math.sign(dy) * step;
     refreshHistoryPanel(scene);
   });
@@ -220,9 +215,18 @@ export function refreshHistoryPanel(scene) {
   prevTexts.forEach(t => t.destroy());
   scene.historyEntryTexts = [];
 
-  const entries = Array.isArray(scene.historyEntries)
+  // v2: show 2x fewer entries (cap)
+  const ALL = Array.isArray(scene.historyEntries)
     ? scene.historyEntries.slice().sort((a, b) => (a.year || 0) - (b.year || 0))
     : [];
+
+  // Reduce: keep the newest N by default (most relevant for player),
+  // but preserve chronological ordering inside the shown slice.
+  const CAP = Math.max(8, Math.floor((ALL.length || 0) / 2));
+  const entries =
+    (ALL.length > CAP)
+      ? ALL.slice(ALL.length - CAP)
+      : ALL;
 
   const maxWidth = scene.historyPanelWidth - 24;
 
@@ -267,7 +271,7 @@ export function refreshHistoryPanel(scene) {
       const hasTargets = entryHasTargets(ev);
       const baseColor = hasTargets ? '#6bf7ff' : '#b7d7ff';
 
-      // Разбиваем текст на сегменты: обычные и "городские"
+      // Split into segments: normal and "city" names (legacy behavior)
       const segments = splitTextByCityNames(label, outposts, outpostNames);
 
       const normalStyle = {
@@ -289,6 +293,9 @@ export function refreshHistoryPanel(scene) {
 
       let xCursor = 0;
       let lineBottom = yCursor;
+
+      // v2: allow hover highlight for ANY coordinate-bearing entry (not only city name tokens)
+      const hoverTarget = getPrimaryEntryTarget(ev);
 
       for (const seg of segments) {
         const segStyle = seg.city ? cityStyle : normalStyle;
@@ -317,15 +324,25 @@ export function refreshHistoryPanel(scene) {
 
           const tObj = scene.add.text(xCursor, yCursor, token, segStyle).setOrigin(0, 0);
 
-          // Клик по всей строке (как раньше)
+          // Click on the whole entry (as before)
           if (hasTargets) {
             tObj.setInteractive({ useHandCursor: true });
             tObj.on('pointerdown', () => {
               focusEntry(scene, ev);
             });
+
+            // NEW: hover highlight for any entry with coords
+            if (hoverTarget) {
+              tObj.on('pointerover', () => {
+                highlightHistoryHex(scene, hoverTarget.q, hoverTarget.r);
+              });
+              tObj.on('pointerout', () => {
+                highlightHistoryHex(scene, null, null);
+              });
+            }
           }
 
-          // Доп. логика для названий городов
+          // City-name segment interactions (kept)
           if (seg.city && token.trim().length > 0) {
             const city = seg.city;
             tObj.setInteractive({ useHandCursor: true });
@@ -415,6 +432,26 @@ function splitTextByCityNames(text, outposts, outpostNames) {
     segments.push({ text: text.slice(pos), city: null });
   }
   return segments;
+}
+
+/**
+ * NEW:
+ * Pick a single coordinate to highlight for an entry on hover.
+ * - prefer entry.q/r
+ * - else from
+ * - else to
+ * - else first target
+ */
+function getPrimaryEntryTarget(entry) {
+  if (!entry) return null;
+  if (typeof entry.q === 'number' && typeof entry.r === 'number') return { q: entry.q, r: entry.r };
+  if (entry.from && hasCoord(entry.from)) return { q: entry.from.q, r: entry.from.r };
+  if (entry.to && hasCoord(entry.to)) return { q: entry.to.q, r: entry.to.r };
+  if (Array.isArray(entry.targets)) {
+    const t = entry.targets.find(hasCoord);
+    if (t) return { q: t.q, r: t.r };
+  }
+  return null;
 }
 
 /**
