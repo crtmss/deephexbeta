@@ -207,6 +207,9 @@ export default class WorldScene extends Phaser.Scene {
    * ✅ Ensure lore/POI is generated BEFORE first draw.
    * We can't call ensureWorldLoreGenerated directly (it's internal),
    * but generateRuinLoreForTile triggers it safely.
+   *
+   * IMPORTANT: Discovery now creates the first settlement (in LoreGeneration.js),
+   * and lore caps AI factions to max 2.
    */
   ensureLoreReadyBeforeFirstDraw() {
     if (this.__worldLoreGenerated) return;
@@ -655,6 +658,10 @@ Biomes: ${biome}`;
   }
 
   redrawWorld() {
+    // ✅ Safety: any external redraw (water-level changes etc.)
+    // must not happen before lore exists, otherwise POIs/history can desync.
+    this.ensureLoreReadyBeforeFirstDraw();
+
     drawHexMap.call(this);
     drawLocationsAndRoads.call(this);
     spawnFishResources.call(this);
