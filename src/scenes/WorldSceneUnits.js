@@ -226,9 +226,9 @@ function createMobileBase(scene, spawnTile, player, color, playerIndex) {
  * Creates a Raider.
  * If controller='ai', unit is enemy.
  *
- * ✅ FIX: Raider is a Container centered on hex.
+ * ✅ Raider is a Container centered on hex.
  * The triangle is drawn around (0,0), so it NEVER drifts into 6 offset positions.
- * Orientation uses unit.rotation exactly like before.
+ * Orientation uses unit.rotation.
  */
 function createRaider(scene, q, r, opts = {}) {
   const controller = opts.controller || 'player';
@@ -265,7 +265,6 @@ function createRaider(scene, q, r, opts = {}) {
   unit.add(g);
 
   // Make container interactive if other systems rely on it
-  // (keeps compatibility with click-selection logic that may attach input later)
   try {
     unit.setSize(Math.max(24, s * 2), Math.max(24, s * 2));
     unit.setInteractive();
@@ -297,8 +296,8 @@ function createRaider(scene, q, r, opts = {}) {
   unit.unitName = def.name;
   applyUnitStateToPhaserUnit(unit, st);
 
-  // Default orientation: pointing right (rotation=0) unless overwritten later
-  unit.rotation = (typeof unit.facingAngle === 'number') ? unit.facingAngle : 0;
+  unit.facingAngle = 0;
+  unit.rotation = 0;
 
   if (controller === 'ai') {
     unit.controller = 'ai';
@@ -882,6 +881,9 @@ function stepTowards(scene, unit, targetQ, targetR) {
 
   if (!best) return false;
 
+  // ✅ IMPORTANT: Face the tile BEFORE we "teleport" / setPosition
+  updateUnitOrientation(scene, unit, unit.q, unit.r, best.q, best.r);
+
   unit.q = best.q;
   unit.r = best.r;
   unit.mp = Math.max(0, (unit.mp || unit.movementPoints || 0) - 1);
@@ -923,37 +925,68 @@ export function applyEnemyAIOnEndTurn(scene) {
 
 /**
  * Update unit orientation based on movement direction.
- * Called from WorldScene.startStepMovement().
+ *
+ * ✅ FIX (core):
+ * Your grid uses ODD-R neighbors (see neighborsOddR),
+ * but the previous version tried to map dq/dr like axial-cube neighbors.
+ * That mismatch is why units "turn wrong".
+ *
+ * New behavior:
+ * - Determine direction index by matching (dq,dr) against neighborsOddR(fromR parity)
+ * - Convert that dir index into an angle, with a single consistent convention:
+ *     dir 0 = +X (east)  -> angle 0
+ *     then clockwise steps of 60°:
+ *       0: E, 1: NE, 2: NW, 3: W, 4: SW, 5: SE
+ *
+ * Notes:
+ * - This matches the order returned by neighborsOddR for BOTH parities.
+ * - We also store unit.facing = dir and unit.facingAngle = angle.
+ * - For Graphics/Containers: use unit.rotation.
+ * - For Sprites that rely on flipX: we set flipX only when we have that API.
  */
 export function updateUnitOrientation(scene, unit, fromQ, fromR, toQ, toR) {
   if (!unit) return;
 
   const dq = toQ - fromQ;
   const dr = toR - fromR;
-
   if (dq === 0 && dr === 0) return;
 
-  const key = dq + ',' + dr;
-  const ANGLES = {
-    '1,0':   0,
-    '1,-1':  -Math.PI / 3,
-    '0,-1':  -2 * Math.PI / 3,
-    '-1,0':  Math.PI,
-    '-1,1':  2 * Math.PI / 3,
-    '0,1':   Math.PI / 3,
-  };
+  // Match against odd-r neighbor deltas for THIS row parity
+  const neigh = neighborsOddR(fromQ, fromR); // fromQ unused, but signature kept
+  let dir = -1;
+  for (let i = 0; i < neigh.length; i++) {
+    const [ndq, ndr] = neigh[i];
+    if (ndq === dq && ndr === dr) {
+      dir = i;
+      break;
+    }
+  }
 
-  const angle = ANGLES[key] !== undefined ? ANGLES[key] : 0;
+  // If somehow not a direct neighbor (teleport), fall back to "closest axial-ish angle"
+  if (dir === -1) {
+    // crude fallback: prefer horizontal axis
+    if (Math.abs(dq) >= Math.abs(dr)) dir = (dq >= 0) ? 0 : 3;
+    else dir = (dr >= 0) ? 5 : 2;
+  }
 
+  // Angle convention (dir 0 = east)
+  const angle = dir * (Math.PI / 3);
+
+  // Apply to Phaser display object:
+  // - Containers/Graphics: rotation is correct
+  // - Circles: rotation does nothing visually (fine)
   if (typeof unit.rotation === 'number') {
     unit.rotation = angle;
   }
 
+  // Optional flip for sprite-based units (if any)
   if (typeof unit.setFlipX === 'function') {
-    const goingLeft = (dq < 0);
-    unit.setFlipX(goingLeft);
+    // facing west-ish => flip
+    const westish = (dir === 3 || dir === 2 || dir === 4);
+    unit.setFlipX(westish);
   }
 
+  unit.facing = dir;
   unit.facingAngle = angle;
 }
 
