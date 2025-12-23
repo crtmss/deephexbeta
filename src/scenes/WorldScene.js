@@ -10,8 +10,6 @@ import { setupUnitActionPanel } from './WorldSceneUnitPanel.js';
 import { startHexTransformTool } from './HexTransformTool.js';
 import { setupBuildingsUI } from './WorldSceneBuildingsUI.js';
 import { setupEnergyPanel } from './WorldSceneEnergyUI.js';
-import { setupHexInfoPanel } from './WorldSceneHexInfo.js';
-
 import { setupLogisticsPanel } from './WorldSceneLogistics.js';
 
 // UI (HUD, tabs, input)
@@ -355,7 +353,6 @@ export default class WorldScene extends Phaser.Scene {
     setupTurnUI(this);
     setupLogisticsPanel(this);
     setupEnergyPanel(this);
-    setupHexInfoPanel(this);
     setupHistoryUI(this);
 
     updateTurnText(this, this.turnNumber);
