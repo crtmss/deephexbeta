@@ -1,4 +1,4 @@
-// deephexbeta/src/scenes/WorldSceneUI.js
+// src/scenes/WorldSceneUI.js
 
 import { refreshUnits } from './WorldSceneActions.js';
 import { findPath as aStarFindPath } from '../engine/AStar.js';
@@ -94,24 +94,33 @@ export function setupTurnUI(scene) {
   });
 
   // ✅ Hotkey: Enter -> End Turn (also Numpad Enter)
-  // Avoid triggering while logistics is open or UI is locked.
-  scene.input.keyboard?.on('keydown-ENTER', () => {
+  // Avoid triggering while logistics is open, UI locked, OR if a text input is focused.
+  const safeEndTurn = () => {
     if (scene.logisticsInputLocked) return;
     if (scene.uiLocked) return;
-    scene.endTurn?.();
-  });
+    if (scene.isHistoryPanelOpen) return; // don't end turn while reading history
+    if (scene.isUnitMoving) return;
 
-  scene.input.keyboard?.on('keydown-NUMPAD_ENTER', () => {
-    if (scene.logisticsInputLocked) return;
-    if (scene.uiLocked) return;
+    const ae = (typeof document !== 'undefined') ? document.activeElement : null;
+    const tag = ae?.tagName ? String(ae.tagName).toLowerCase() : '';
+    if (tag === 'input' || tag === 'textarea') return;
+
     scene.endTurn?.();
-  });
+  };
+
+  // Guard against multiple bindings if scene restarts
+  if (!scene.__endTurnHotkeyBound) {
+    scene.__endTurnHotkeyBound = true;
+
+    scene.input.keyboard?.on('keydown-ENTER', safeEndTurn);
+    scene.input.keyboard?.on('keydown-NUMPAD_ENTER', safeEndTurn);
+  }
 
   // Logistics panel + helpers (the UI itself lives in WorldSceneLogistics)
   setupLogisticsPanel(scene);
 
   // Wrap logistics open/close to:
-  // - lock world input (no mobile base movement while logistics is open)
+  // - lock world input (no movement while logistics is open)
   // - clear any selected unit and path preview when opening
   const origOpenLogi = scene.openLogisticsPanel;
   const origCloseLogi = scene.closeLogisticsPanel;
@@ -509,9 +518,30 @@ export function setupWorldInputUI(scene) {
     scene.hexDistance = hexDistance;
   }
 
+  // Prevent world input while hovering over history panel
+  // (panel is on screen space, pointer world coords still update).
+  const isPointerOverHistoryPanel = (pointer) => {
+    if (!scene.isHistoryPanelOpen) return false;
+    const p = scene.historyPanelContainer;
+    if (!p || !p.visible) return false;
+
+    const px = pointer.x;
+    const py = pointer.y;
+    const x0 = p.x;
+    const y0 = p.y;
+    const x1 = p.x + (scene.historyPanelWidth || 0);
+    const y1 = p.y + (scene.historyPanelHeight || 0);
+
+    return px >= x0 && px <= x1 && py >= y0 && py <= y1;
+  };
+
   // Stage B: hotkeys (A=attack mode, D=defence, ESC=cancel mode)
   scene.input.keyboard?.on('keydown', (ev) => {
     if (!scene || scene.logisticsInputLocked) return;
+
+    const ae = (typeof document !== 'undefined') ? document.activeElement : null;
+    const tag = ae?.tagName ? String(ae.tagName).toLowerCase() : '';
+    if (tag === 'input' || tag === 'textarea') return;
 
     const key = String(ev.key || '').toLowerCase();
 
@@ -571,6 +601,7 @@ export function setupWorldInputUI(scene) {
     if (scene.logisticsInputLocked) return;
     if (scene.isDragging) return;
     if (pointer.rightButtonDown && pointer.rightButtonDown()) return;
+    if (isPointerOverHistoryPanel(pointer)) return;
 
     const rounded = scene.worldToAxial(pointer.worldX, pointer.worldY);
 
@@ -750,6 +781,7 @@ export function setupWorldInputUI(scene) {
   scene.input.on('pointermove', pointer => {
     if (scene.logisticsInputLocked) return;
     if (scene.isDragging) return;
+    if (isPointerOverHistoryPanel(pointer)) return;
     if (!scene.selectedUnit || scene.isUnitMoving) return;
 
     if (scene.unitCommandMode === 'attack') {
