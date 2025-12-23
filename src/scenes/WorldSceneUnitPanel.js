@@ -66,6 +66,84 @@ function weaponTooltipText(unit) {
   return lines.join('\n');
 }
 
+/* =========================================================
+   HEX INSPECT (tile info inside the unit panel)
+   ========================================================= */
+
+function getTileAt(scene, q, r) {
+  return (scene.mapData || []).find(t => t && t.q === q && t.r === r) || null;
+}
+
+function summarizeHex(scene, q, r) {
+  const t = getTileAt(scene, q, r);
+  if (!t) {
+    return {
+      title: `Hex (${q}, ${r})`,
+      lines: [`Tile not found.`],
+    };
+  }
+
+  const bits = [];
+
+  const terrain = t.type || 'unknown';
+  const ground = t.groundType || '—';
+  const elev =
+    Number.isFinite(t.visualElevation) ? t.visualElevation :
+    (Number.isFinite(t.elevation) ? t.elevation :
+    (Number.isFinite(t.baseElevation) ? t.baseElevation : 0));
+
+  bits.push(`Terrain: ${terrain}   Ground: ${ground}`);
+  bits.push(`Elevation: ${fmt(elev)}   Underwater: ${t.isUnderWater ? 'YES' : 'NO'}`);
+
+  // Roads / forest
+  const flags = [];
+  if (t.hasRoad) flags.push('Road');
+  if (t.hasForest) flags.push('Forest');
+
+  // POIs
+  if (t.hasSettlement) flags.push(`Settlement${t.settlementName ? ` (${t.settlementName})` : ''}`);
+  if (t.hasRuin) flags.push('Ruin');
+  if (t.hasRaiderCamp) flags.push('Raider camp');
+  if (t.hasRoadsideCamp) flags.push('Roadside camp');
+  if (t.hasWatchtower) flags.push('Watchtower');
+  if (t.hasMinePOI) flags.push('Mine');
+  if (t.hasShrine) flags.push('Shrine');
+
+  if (t.hasCrashSite) flags.push('Crash site');
+  if (t.hasWreck) flags.push('Wreck');
+  if (t.hasVehicle) flags.push('Vehicle');
+
+  if (flags.length) bits.push(`Features: ${flags.join(', ')}`);
+  else bits.push(`Features: —`);
+
+  // Resources on this hex (scene.resources entries)
+  const res = (scene.resources || []).filter(o => o && o.q === q && o.r === r);
+  if (res.length) {
+    const names = res.map(o => o.name || o.type || o.kind || 'resource');
+    bits.push(`Resources: ${names.slice(0, 5).join(', ')}${names.length > 5 ? ` +${names.length - 5}` : ''}`);
+  } else {
+    bits.push(`Resources: —`);
+  }
+
+  // mapInfo objects (lore POIs list)
+  const objs = (scene.mapInfo?.objects || []).filter(o => o && o.q === q && o.r === r);
+  if (objs.length) {
+    const names = objs.map(o => o.name || o.type || 'object');
+    bits.push(`Map objects: ${names.slice(0, 4).join(', ')}${names.length > 4 ? ` +${names.length - 4}` : ''}`);
+  }
+
+  return { title: `Hex (${q}, ${r})`, lines: bits };
+}
+
+function isHexInspect(obj) {
+  return !!(obj && obj.__hexInspect && Number.isFinite(obj.q) && Number.isFinite(obj.r));
+}
+
+function makeHexInspectObj(q, r) {
+  return { __hexInspect: true, q, r };
+}
+
+
 function setFacing(scene, unit, dirIndex) {
   if (!scene || !unit) return;
   const d = clamp(dirIndex | 0, 0, 5);
@@ -429,6 +507,27 @@ export function setupUnitActionPanel(scene) {
     scene.children.bringToTop(scene.unitActionPanel.container);
   };
 
+  // NEW: open hex inspector inside the same panel (no buttons)
+  scene.openHexInspectPanel = function (q, r) {
+    if (!scene.unitActionPanel) return;
+    if (!Number.isFinite(q) || !Number.isFinite(r)) return;
+
+    // Hex can only be inspected when no unit is selected (caller enforces too)
+    scene.selectedHex = { q, r };
+
+    // Clear command mode / previews
+    scene.unitCommandMode = null;
+    scene.clearPathPreview?.();
+
+    const obj = makeHexInspectObj(q, r);
+    scene.unitPanelState.page = 'root';
+    scene.unitPanelState.turnPickerOpen = false;
+    scene.unitActionPanel.container.visible = true;
+    scene.refreshUnitActionPanel?.(obj);
+    scene.children.bringToTop(scene.unitActionPanel.container);
+  };
+
+
   scene.closeUnitActionPanel = function () {
     if (!scene.unitActionPanel) return;
     scene.unitPanelState.page = 'root';
@@ -440,11 +539,84 @@ export function setupUnitActionPanel(scene) {
   scene.refreshUnitActionPanel = function (unitMaybe) {
     const panel = scene.unitActionPanel;
     if (!panel) return;
+
     const unit = unitMaybe || scene.selectedUnit;
+    const hexMode = isHexInspect(unit);
+
+    // Hide if nothing selected
     if (!unit) {
       scene.closeUnitActionPanel?.();
       return;
     }
+
+    // =========================================================
+    // HEX INSPECT MODE (no buttons, no weapon, just tile info)
+    // =========================================================
+    if (hexMode) {
+      const q = unit.q;
+      const r = unit.r;
+
+      // Title
+      const hx = summarizeHex(scene, q, r);
+      panel.titleText.setText(hx.title);
+
+      // Stats text (multi-line)
+      panel.statsText.setText(hx.lines.join('\n'));
+
+      // Hide weapon area completely
+      panel.weaponLabel.setVisible(false);
+      panel.weaponText.setVisible(false);
+
+      // Hide switch weapon if present
+      const sw = panel.buttons.switchWeapon;
+      if (sw) {
+        sw.g.setVisible(false);
+        sw.t.setVisible(false);
+        sw.hit.setVisible(false);
+        if (sw.hit?.input) sw.hit.disableInteractive();
+        if (sw.t?.input) sw.t.disableInteractive();
+      }
+
+      // Hide all action buttons & subpages
+      for (const k of Object.keys(panel.buttons || {})) {
+        const b = panel.buttons[k];
+        if (!b) continue;
+        b.g.setVisible(false);
+        b.t.setVisible(false);
+        b.hit.setVisible(false);
+        if (b.hit?.input) b.hit.disableInteractive();
+        if (b.t?.input) b.t.disableInteractive();
+      }
+
+      panel.pageTitle.setVisible(false);
+      panel.pageBody.setVisible(false);
+      panel.backBtn.g.setVisible(false);
+      panel.backBtn.t.setVisible(false);
+      panel.backBtn.hit.setVisible(false);
+      if (panel.backBtn.hit?.input) panel.backBtn.hit.disableInteractive();
+
+      // Turn picker hidden too
+      panel.turnPicker?.label?.setVisible(false);
+      if (panel.turnPicker?.buttons?.length) {
+        for (const b of panel.turnPicker.buttons) {
+          b.g.setVisible(false);
+          b.t.setVisible(false);
+          b.hit.setVisible(false);
+          if (b.hit?.input) b.hit.disableInteractive();
+          if (b.t?.input) b.t.disableInteractive();
+        }
+      }
+
+      return;
+    }
+
+    // =========================================================
+    // UNIT MODE (original behavior)
+    // =========================================================
+
+    // Ensure weapon area visible
+    panel.weaponLabel.setVisible(true);
+    panel.weaponText.setVisible(true);
 
     // Title
     const nm = unit.unitName || unit.type || 'Unit';
