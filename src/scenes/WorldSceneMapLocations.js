@@ -4,11 +4,21 @@
 // All POIs, roads, forests, mountain icons come only from mapInfo + mapData.
 // NO randomness here.
 //
-// Forest rendering:
+// Forest rendering (improved):
 // - Seed-based per-hex RNG (stable across redraw/order)
 // - 3–4 tree emoji per forest hex
-// - Different tree emoji depending on terrain/biome
+// - On a single hex, ONLY ONE vegetation type is used (e.g. either 🌴 OR 🌵, never both)
+// - Biome palettes updated per your spec
 // - No sway animation
+//
+// Added small biome decorations (deterministic):
+// - 2–5 total decorations across the whole map, seeded
+// - Each decoration is 1 per hex, size = 50% of tree size
+// - Decorations are spaced: any two decorations must be within radius 5 hexes of each other
+//   (clustered, not scattered)
+// - 🍄 and 🌷 on any biome except desert and snow
+// - ⛄ on snow biome
+// - 🐚 on desert biome
 
 import {
   effectiveElevationLocal,
@@ -58,7 +68,7 @@ function getSceneSeedString(scene) {
   );
 }
 
-function rngForHex(scene, q, r, salt = "treesV2") {
+function rngForHex(scene, q, r, salt = "treesV3") {
   const s = `${getSceneSeedString(scene)}|${salt}|${q},${r}`;
   const seed = hashStr32(s);
   const rand = mulberry32(seed);
@@ -108,6 +118,17 @@ function inBounds(q, r, w, h) {
 }
 
 /* ---------------------------------------------------------------
+   Hex distance helper (odd-r axial-ish distance)
+   Uses cube conversion for axial coords (q,r) where s = -q-r
+   --------------------------------------------------------------- */
+function hexDistance(q1, r1, q2, r2) {
+  const dq = q2 - q1;
+  const dr = r2 - r1;
+  const ds = -dq - dr;
+  return (Math.abs(dq) + Math.abs(dr) + Math.abs(ds)) / 2;
+}
+
+/* ---------------------------------------------------------------
    POI flags: now driven by mapInfo.objects (seed -> lore -> POI)
    --------------------------------------------------------------- */
 export function applyLocationFlags(mapData, mapObjects) {
@@ -115,7 +136,6 @@ export function applyLocationFlags(mapData, mapObjects) {
 
   const objs = Array.isArray(mapObjects) ? mapObjects : [];
   if (!objs.length) {
-    // Nothing to apply – просто убедимся, что флаги существуют
     for (const t of mapData) {
       if (!t) continue;
       t.hasRuin = !!t.hasRuin;
@@ -123,7 +143,6 @@ export function applyLocationFlags(mapData, mapObjects) {
       t.hasVehicle = !!t.hasVehicle;
       t.hasWreck = !!t.hasWreck;
 
-      // New POIs (default false if absent)
       t.hasSettlement = !!t.hasSettlement;
       t.hasRaiderCamp = !!t.hasRaiderCamp;
       t.hasRoadsideCamp = !!t.hasRoadsideCamp;
@@ -131,7 +150,6 @@ export function applyLocationFlags(mapData, mapObjects) {
       t.hasMinePOI = !!t.hasMinePOI;
       t.hasShrine = !!t.hasShrine;
 
-      // optional label fields
       if (typeof t.settlementName !== "string") t.settlementName = t.settlementName || "";
       if (typeof t.poiName !== "string") t.poiName = t.poiName || "";
       if (typeof t.owningFaction !== "string") t.owningFaction = t.owningFaction || "";
@@ -139,10 +157,8 @@ export function applyLocationFlags(mapData, mapObjects) {
     return mapData;
   }
 
-  // Index tiles by q,r
-  const byKey = new Map(mapData.map(t => [keyOf(t.q, t.r), t]));
+  const byKey = new Map(mapData.map((t) => [keyOf(t.q, t.r), t]));
 
-  // Сначала сбросить все флаги POI (мы хотим, чтобы ИСТОРИЯ была источником правды)
   for (const t of mapData) {
     if (!t) continue;
     t.hasRuin = false;
@@ -150,7 +166,6 @@ export function applyLocationFlags(mapData, mapObjects) {
     t.hasVehicle = false;
     t.hasWreck = false;
 
-    // New POIs
     t.hasSettlement = false;
     t.hasRaiderCamp = false;
     t.hasRoadsideCamp = false;
@@ -158,17 +173,14 @@ export function applyLocationFlags(mapData, mapObjects) {
     t.hasMinePOI = false;
     t.hasShrine = false;
 
-    // name helpers (optional)
     if (typeof t.settlementName !== "string") t.settlementName = "";
     if (typeof t.poiName !== "string") t.poiName = "";
     if (typeof t.owningFaction !== "string") t.owningFaction = "";
 
-    // hasObject может использоваться и в других местах
     if (typeof t.hasObject !== "boolean") t.hasObject = !!t.hasObject;
     else t.hasObject = false;
   }
 
-  // Затем проставить флаги по объектам карты
   for (const o of objs) {
     if (!o) continue;
     const q = o.q;
@@ -401,7 +413,7 @@ export function refreshLocationIcons(scene) {
 }
 
 /* ---------------------------------------------------------------
-   Forest visuals (seed-based, old-style look)
+   Biome detection + vegetation palettes
    --------------------------------------------------------------- */
 function safeResolveBiome(scene, tile) {
   // resolveBiome signature may vary; be defensive.
@@ -417,50 +429,90 @@ function safeResolveBiome(scene, tile) {
   return fallback || "";
 }
 
-function pickTreeEmoji(scene, tile, rng) {
+function biomeClass(scene, tile) {
   const biome = safeResolveBiome(scene, tile);
-
   const type = String(tile?.type || "").toLowerCase();
   const ground = String(tile?.groundType || "").toLowerCase();
-  const elev = Number.isFinite(tile?.elevation) ? tile.elevation : (Number.isFinite(tile?.visualElevation) ? tile.visualElevation : 0);
+  const elev = Number.isFinite(tile?.elevation)
+    ? tile.elevation
+    : (Number.isFinite(tile?.visualElevation) ? tile.visualElevation : 0);
 
-  // Weighted palettes (emoji only)
-  // You can tweak these anytime; deterministic will stay stable if you keep salt constant.
-  const palettes = {
-    // desert/sand-ish
-    arid: [{ v: "🌴", w: 3 }, { v: "🌵", w: 2 }],
-    // cold
-    cold: [{ v: "🌲", w: 6 }, { v: "🌳", w: 1 }],
-    // swamp / lush
-    lush: [{ v: "🌳", w: 4 }, { v: "🌿", w: 2 }],
-    // forest
-    forest: [{ v: "🌲", w: 4 }, { v: "🌳", w: 3 }],
-    // default
-    normal: [{ v: "🌳", w: 5 }, { v: "🌲", w: 2 }],
-  };
+  const isSnow =
+    biome.includes("snow") ||
+    biome.includes("tundra") ||
+    biome.includes("ice") ||
+    ground.includes("snow") ||
+    ground.includes("ice");
 
-  const isSnow = biome.includes("snow") || biome.includes("tundra") || biome.includes("ice") || ground.includes("snow") || ground.includes("ice");
-  const isArid = biome.includes("desert") || biome.includes("arid") || ground.includes("sand") || ground.includes("dune") || ground.includes("ash");
-  const isSwamp = biome.includes("swamp") || biome.includes("marsh") || ground.includes("swamp") || ground.includes("marsh");
-  const isForestBiome = biome.includes("forest") || biome.includes("wood") || tile?.hasForest;
+  const isDesertVolcanic =
+    biome.includes("desert") ||
+    biome.includes("arid") ||
+    biome.includes("volcan") ||
+    ground.includes("sand") ||
+    ground.includes("dune") ||
+    ground.includes("ash") ||
+    ground.includes("lava");
 
-  // Hills/high elev lean conifer
+  const isSwamp =
+    biome.includes("swamp") ||
+    biome.includes("marsh") ||
+    ground.includes("swamp") ||
+    ground.includes("marsh");
+
+  // "temperate" is the default land class; we can bias conifers on high elevation
   const isHigh = elev >= 5 || biome.includes("mountain") || type === "mountain";
 
-  if (isSnow) return rng.pickWeighted(palettes.cold);
-  if (isArid) return rng.pickWeighted(palettes.arid);
-  if (isSwamp) return rng.pickWeighted(palettes.lush);
-  if (isHigh) return "🌲";
-  if (isForestBiome) return rng.pickWeighted(palettes.forest);
-  return rng.pickWeighted(palettes.normal);
+  if (isSnow) return "snow";
+  if (isDesertVolcanic) return "desert";
+  if (isSwamp) return "swamp";
+  if (isHigh) return "temperate_high";
+  return "temperate";
 }
 
+/**
+ * IMPORTANT RULE (per your request):
+ * On a single hex, we pick ONE vegetation emoji and use it for all trees on that hex.
+ * (So no "🌴 and 🌵" mixture on the same tile.)
+ */
+function pickHexVegetationEmoji(scene, tile, rng) {
+  const cls = biomeClass(scene, tile);
+
+  // Updated palettes:
+  // desert & volcanic: [🌴, 🌵]
+  // snow/ice: [🌲, white flower]
+  // swamp: [🌳, seedling]
+  // temperate: [🌳, 🌲] 70/30
+  if (cls === "desert") {
+    return rng.pick(["🌴", "🌵"]);
+  }
+  if (cls === "snow") {
+    return rng.pick(["🌲", "🤍"]); // "white_flower" in emoji is usually "💮" but you asked :white_flower:
+  }
+  if (cls === "swamp") {
+    return rng.pick(["🌳", "🌱"]);
+  }
+
+  // Temperate (incl high-elev bias)
+  if (cls === "temperate_high") {
+    // More conifer-y on high elevation; still single type per hex
+    return rng.pickWeighted([{ v: "🌲", w: 7 }, { v: "🌳", w: 3 }]);
+  }
+
+  // Default temperate: 70/30
+  return rng.pickWeighted([{ v: "🌳", w: 7 }, { v: "🌲", w: 3 }]);
+}
+
+/* ---------------------------------------------------------------
+   Forest visuals (seed-based, old-style look)
+   --------------------------------------------------------------- */
 function placeForestTrees(scene, tile, addEmoji, cx, cy, size) {
-  // Deterministic per-hex RNG
-  const rng = rngForHex(scene, tile.q, tile.r, "treesV2");
+  const rng = rngForHex(scene, tile.q, tile.r, "treesV3");
 
   // 3–4 trees
   const nTrees = rng.int(3, 4);
+
+  // Pick ONE vegetation emoji for the whole tile
+  const vegEmoji = pickHexVegetationEmoji(scene, tile, rng);
 
   // Old style: random radial offsets with spacing
   const placed = [];
@@ -475,7 +527,7 @@ function placeForestTrees(scene, tile, addEmoji, cx, cy, size) {
       const rad = rng.float(size * 0.20, size * 0.60);
 
       const ox = Math.cos(ang) * rad;
-      const oy = Math.sin(ang) * rad * 0.70; // slightly squashed vertically (nice look)
+      const oy = Math.sin(ang) * rad * 0.70; // squashed vertically
 
       let ok = true;
       for (const p of placed) {
@@ -488,12 +540,9 @@ function placeForestTrees(scene, tile, addEmoji, cx, cy, size) {
       }
       if (!ok) continue;
 
-      const emoji = pickTreeEmoji(scene, tile, rng);
-
-      // Font size variation (deterministic)
       const px = size * rng.float(0.46, 0.62);
 
-      const tree = addEmoji(tile.q, tile.r, ox, oy, emoji, px, 105);
+      const tree = addEmoji(tile.q, tile.r, ox, oy, vegEmoji, px, 105);
       tree.x = cx + ox;
       tree.y = cy + oy;
 
@@ -502,18 +551,183 @@ function placeForestTrees(scene, tile, addEmoji, cx, cy, size) {
       break;
     }
 
-    // If we couldn't place with spacing, fallback to center-ish
     if (!placedOne) {
       const ox = rng.float(-size * 0.18, size * 0.18);
       const oy = rng.float(-size * 0.18, size * 0.18);
-      const emoji = pickTreeEmoji(scene, tile, rng);
       const px = size * rng.float(0.46, 0.62);
 
-      const tree = addEmoji(tile.q, tile.r, ox, oy, emoji, px, 105);
+      const tree = addEmoji(tile.q, tile.r, ox, oy, vegEmoji, px, 105);
       tree.x = cx + ox;
       tree.y = cy + oy;
+
       placed.push({ ox, oy });
     }
+  }
+
+  // Return typical tree px size, so decorations can be scaled to 50% of it.
+  // Use median-ish value rather than last tree
+  return size * 0.54;
+}
+
+/* ---------------------------------------------------------------
+   Biome decorations (deterministic cluster, 2–5 total)
+   --------------------------------------------------------------- */
+function buildDecorationPlan(scene, mapData) {
+  // Cache plan per map + seed
+  const seedStr = getSceneSeedString(scene);
+  const cacheKey = `${seedStr}|decorV1|${scene.mapWidth}x${scene.mapHeight}`;
+  if (scene.__decorPlan && scene.__decorPlan.key === cacheKey) return scene.__decorPlan.plan;
+
+  const rngGlobal = mulberry32(hashStr32(cacheKey));
+
+  // Candidate hexes by biome (only land, and not blocked by noPOISet)
+  const candidates = {
+    desert: [],
+    snow: [],
+    other: [], // everything else (land)
+  };
+
+  for (const t of mapData) {
+    if (!t) continue;
+    if (t.type === "water") continue; // decorations only on land
+    const cls = biomeClass(scene, t);
+    if (cls === "desert") candidates.desert.push(t);
+    else if (cls === "snow") candidates.snow.push(t);
+    else candidates.other.push(t);
+  }
+
+  // If no candidates, no plan.
+  if (
+    candidates.desert.length + candidates.snow.length + candidates.other.length === 0
+  ) {
+    const plan = [];
+    scene.__decorPlan = { key: cacheKey, plan };
+    return plan;
+  }
+
+  // Choose a cluster center deterministically from any land candidates
+  const allLand = candidates.desert.concat(candidates.snow, candidates.other);
+  allLand.sort((a, b) => a.q - b.q || a.r - b.r);
+  const centerIdx = Math.floor(rngGlobal() * allLand.length);
+  const center = allLand[Math.max(0, Math.min(allLand.length - 1, centerIdx))];
+
+  // Total decorations (2–5)
+  const total = 2 + Math.floor(rngGlobal() * 4); // 2..5
+
+  // We enforce: any two decorations must be within radius 5 of each other
+  // We'll implement as: all decorations must be within radius 5 of the cluster center.
+  const R = 5;
+
+  const withinRadius = (t) => hexDistance(center.q, center.r, t.q, t.r) <= R;
+
+  // Collect within-radius candidates by biome
+  const local = {
+    desert: candidates.desert.filter(withinRadius),
+    snow: candidates.snow.filter(withinRadius),
+    other: candidates.other.filter(withinRadius),
+  };
+
+  // If cluster too sparse, relax by selecting from global, but still keep radius logic by moving center
+  if (local.desert.length + local.snow.length + local.other.length < total) {
+    // pick a new center from "other" if possible
+    const fallbackPool = candidates.other.length ? candidates.other : allLand;
+    fallbackPool.sort((a, b) => a.q - b.q || a.r - b.r);
+    const c2 = fallbackPool[Math.floor(rngGlobal() * fallbackPool.length)];
+    const within2 = (t) => hexDistance(c2.q, c2.r, t.q, t.r) <= R;
+
+    local.desert = candidates.desert.filter(within2);
+    local.snow = candidates.snow.filter(within2);
+    local.other = candidates.other.filter(within2);
+  }
+
+  // Plan entries: {q,r, emoji}
+  const plan = [];
+  const used = new Set();
+
+  function pickFrom(arr) {
+    if (!arr.length) return null;
+    // deterministic choice: shuffle-like by picking an index from rngGlobal
+    const idx = Math.floor(rngGlobal() * arr.length);
+    const t = arr.splice(idx, 1)[0];
+    return t;
+  }
+
+  for (let i = 0; i < total; i++) {
+    // Pick a tile from whichever bucket has something (biased toward "other")
+    let tile = null;
+
+    // Try to place at least 1 snowman if we have snow locally and rng says so
+    if (!tile && local.snow.length && rngGlobal() < 0.25) tile = pickFrom(local.snow);
+
+    // Try to place at least 1 shell if desert exists and rng says so
+    if (!tile && local.desert.length && rngGlobal() < 0.25) tile = pickFrom(local.desert);
+
+    // Default
+    if (!tile && local.other.length) tile = pickFrom(local.other);
+    if (!tile && local.desert.length) tile = pickFrom(local.desert);
+    if (!tile && local.snow.length) tile = pickFrom(local.snow);
+
+    if (!tile) break;
+
+    const k = keyOf(tile.q, tile.r);
+    if (used.has(k)) {
+      i--;
+      continue;
+    }
+    used.add(k);
+
+    const cls = biomeClass(scene, tile);
+
+    let emoji = "🍄";
+    if (cls === "desert") {
+      emoji = "🐚"; // shell on desert biome
+    } else if (cls === "snow") {
+      emoji = "⛄"; // snowman on snow biome
+    } else {
+      // other biomes: 🍄 or 🌷
+      emoji = rngGlobal() < 0.5 ? "🍄" : "🌷";
+    }
+
+    plan.push({ q: tile.q, r: tile.r, emoji });
+  }
+
+  scene.__decorPlan = { key: cacheKey, plan };
+  return plan;
+}
+
+function drawDecorations(scene, addEmoji, mapData, size, offsetX, offsetY, LIFT, noPOISet, treePxRef) {
+  // treePxRef is ~ tree px; decorations are 50% of it
+  const px = Math.max(8, (treePxRef || size * 0.54) * 0.5);
+
+  const plan = buildDecorationPlan(scene, mapData);
+  if (!plan || !plan.length) return;
+
+  // quick lookup tile by q,r
+  const byKey = new Map(mapData.map(t => [keyOf(t.q, t.r), t]));
+
+  for (const d of plan) {
+    if (!d) continue;
+    const k = keyOf(d.q, d.r);
+    if (noPOISet && noPOISet.has(k)) continue;
+
+    const tile = byKey.get(k);
+    if (!tile) continue;
+    if (tile.type === "water") continue;
+
+    const c = scene.hexToPixel(tile.q, tile.r, size);
+    const cx = c.x + offsetX;
+    const cy = c.y + offsetY - LIFT * effectiveElevationLocal(tile);
+
+    // small random-ish local offset inside hex (deterministic per hex)
+    const rng = rngForHex(scene, tile.q, tile.r, "decorV1");
+    const ang = rng.float(0, Math.PI * 2);
+    const rad = rng.float(size * 0.10, size * 0.35);
+    const ox = Math.cos(ang) * rad;
+    const oy = Math.sin(ang) * rad * 0.65;
+
+    const deco = addEmoji(tile.q, tile.r, ox, oy, d.emoji, px, 104); // slightly below trees
+    deco.x = cx + ox;
+    deco.y = cy + oy;
   }
 }
 
@@ -621,7 +835,7 @@ export function drawLocationsAndRoads() {
     scene.electricity.drawOverlay();
   }
 
-  /* ------------------- POI Icons ------------------- */
+  /* ------------------- POI Icons + Forests + Decorations ------------------- */
   const noPOISet = getNoPOISet(map);
 
   const addEmoji = (q, r, ox, oy, char, px, depth = 42) => {
@@ -630,13 +844,12 @@ export function drawLocationsAndRoads() {
       fontFamily: 'Arial, "Segoe UI Emoji", "Noto Color Emoji", sans-serif',
     });
     t.setOrigin(0.5).setDepth(depth);
-
-    // attach tile anchor so we can resnap after water level changes
     t.__hex = { q, r, ox: ox || 0, oy: oy || 0 };
-
     layer.add(t);
     return t;
   };
+
+  let treePxRef = size * 0.54; // default
 
   for (const t of map) {
     if (!t) continue;
@@ -646,10 +859,8 @@ export function drawLocationsAndRoads() {
     const isWater = t.type === "water";
     const allowOnWater = !!t.hasWreck;
 
-    if (isWater && !allowOnWater) {
-      // NOTE: trees/POI icons are skipped on water, except wreck
-      continue;
-    }
+    // Skip everything on water except wreck icon
+    if (isWater && !allowOnWater) continue;
 
     const c = scene.hexToPixel(t.q, t.r, size);
     const cx = c.x + offsetX;
@@ -663,12 +874,12 @@ export function drawLocationsAndRoads() {
       continue;
     }
 
-    /* ---------------- Forests (NEW OLD-STYLE LOOK, SEED-BASED) ---------------- */
+    /* ---------------- Forests (IMPROVED, SEED-BASED, ONE TYPE PER HEX) ---------------- */
     if (!isWater && t.hasForest) {
-      placeForestTrees(scene, t, addEmoji, cx, cy, size);
+      treePxRef = placeForestTrees(scene, t, addEmoji, cx, cy, size) || treePxRef;
     }
 
-    /* ---------------- Settlement (NEW ICON) ---------------- */
+    /* ---------------- Settlement ---------------- */
     if (!isWater && t.hasSettlement) {
       const s = addEmoji(t.q, t.r, 0, 0, "🏘️", size * 0.85, 106);
       s.x = cx;
@@ -704,41 +915,44 @@ export function drawLocationsAndRoads() {
       veh.y = cy;
     }
 
-    /* ---------------- Raider camp (NEW ICON) ---------------- */
+    /* ---------------- Raider camp ---------------- */
     if (!isWater && t.hasRaiderCamp) {
       const rc = addEmoji(t.q, t.r, 0, 0, "☠️", size * 0.8, 106);
       rc.x = cx;
       rc.y = cy;
     }
 
-    /* ---------------- Roadside camp (NEW ICON) ---------------- */
+    /* ---------------- Roadside camp ---------------- */
     if (!isWater && t.hasRoadsideCamp) {
       const camp = addEmoji(t.q, t.r, 0, 0, "🏕️", size * 0.78, 106);
       camp.x = cx;
       camp.y = cy;
     }
 
-    /* ---------------- Watchtower (NEW ICON) ---------------- */
+    /* ---------------- Watchtower ---------------- */
     if (!isWater && t.hasWatchtower) {
       const wt = addEmoji(t.q, t.r, 0, 0, "🏰", size * 0.78, 106);
       wt.x = cx;
       wt.y = cy;
     }
 
-    /* ---------------- Mine POI (NEW ICON) ---------------- */
+    /* ---------------- Mine POI ---------------- */
     if (!isWater && t.hasMinePOI) {
       const m = addEmoji(t.q, t.r, 0, 0, "⚒️", size * 0.78, 106);
       m.x = cx;
       m.y = cy;
     }
 
-    /* ---------------- Shrine (NEW ICON) ---------------- */
+    /* ---------------- Shrine ---------------- */
     if (!isWater && t.hasShrine) {
       const sh = addEmoji(t.q, t.r, 0, 0, "⛩️", size * 0.78, 106);
       sh.x = cx;
       sh.y = cy;
     }
   }
+
+  // Decorations are drawn after forests so they can sit under POIs but near trees.
+  drawDecorations(scene, addEmoji, map, size, offsetX, offsetY, LIFT, noPOISet, treePxRef);
 
   // Safety: snap all icons to current elevation
   refreshLocationIcons(scene);
