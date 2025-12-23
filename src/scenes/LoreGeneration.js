@@ -178,8 +178,8 @@ function ensureWorldLoreGenerated(scene) {
   if (!scene || scene.__worldLoreGenerated) return;
 
   const seedStr = String(scene.seed || "000000");
-  // Bump version so deterministic output changes in a controlled way
-  const rng = xorshift32(hashStr32(`${seedStr}|worldLoreV4`));
+  // v6: fewer events, phase-based causality, faction ownership, reliable wreck spawn.
+  const rng = xorshift32(hashStr32(`${seedStr}|worldLoreV6`));
 
   const addEntry = scene.addHistoryEntry
     ? (entry) => scene.addHistoryEntry(entry)
@@ -211,14 +211,29 @@ function ensureWorldLoreGenerated(scene) {
   const isHigh = (t) => t && (typeof t.elevation === "number") && t.elevation >= 5 && t.type !== "water";
   const isForesty = (t) => t && (t.hasForest || String(t.type || "").toLowerCase() === "forest");
 
+  const dirs = [[1,0],[-1,0],[0,1],[0,-1],[1,-1],[-1,1]];
+
   const isCoast = (t) => {
     if (!t || t.type === "water") return false;
-    const dirs = [[1,0],[-1,0],[0,1],[0,-1],[1,-1],[-1,1]];
     for (const [dq, dr] of dirs) {
       const nb = getTile(t.q + dq, t.r + dr);
       if (nb && nb.type === "water") return true;
     }
     return false;
+  };
+
+  const isCoastalWater = (t) => {
+    if (!t || t.type !== "water") return false;
+    for (const [dq, dr] of dirs) {
+      const nb = getTile(t.q + dq, t.r + dr);
+      if (nb && nb.type !== "water") return true;
+    }
+    return false;
+  };
+
+  const isShallow = (t) => {
+    const d = typeof t?.waterDepth === "number" ? t.waterDepth : 2;
+    return d <= 2;
   };
 
   // --- Island name & factions ---
@@ -227,15 +242,20 @@ function ensureWorldLoreGenerated(scene) {
   const factions = pickMany(rng, FACTIONS, factionCount);
   const factionA = factions[0];
   const factionB = factions[1];
-  // const factionC = factions[2]; // reserved
+
+  // Deterministic helper: assign POI "owner/claimer" among island factions.
+  function pickFactionOwner() {
+    return factions[Math.floor(rng() * factions.length)];
+  }
 
   // ============================================================
   // POI generation: seed -> lore -> POI
-  // ============================================================
-  // New POI types:
-  //   settlement, ruin, raider_camp, roadside_camp, watchtower, mine, shrine
-  // Ensure legacy types appear:
-  //   crash_site, wreck, vehicle
+  //
+  // v6 changes:
+  // - fewer POIs (and thus fewer events)
+  // - each POI gets faction ownership where it makes sense
+  // - "wreck" is placed on *water adjacent to land* (coastal water),
+  //   which fixes cases where ship wreck never appears.
   // ============================================================
 
   // Reserve already-present POIs to avoid collisions
@@ -259,7 +279,7 @@ function ensureWorldLoreGenerated(scene) {
     return true;
   };
 
-  function pickTileFromPool(pool, { minDist = 3, tries = 80 } = {}) {
+  function pickTileFromPool(pool, { minDist = 3, tries = 90 } = {}) {
     if (!pool || !pool.length) return null;
     for (let i = 0; i < tries; i++) {
       const t = pool[Math.floor(rng() * pool.length)];
@@ -302,10 +322,13 @@ function ensureWorldLoreGenerated(scene) {
     if (tile) {
       if (type === "settlement") {
         tile.cityName = name || tile.cityName;
+        tile.settlementName = name || tile.settlementName;
         tile.owningFaction = faction || tile.owningFaction;
       }
       if (type === "ruin") {
         tile.cityName = name || tile.cityName;
+        // ruins can still be "claimed" later; store claimant separately if needed
+        if (faction) tile.ruinClaimFaction = faction;
       }
     }
   }
@@ -316,103 +339,149 @@ function ensureWorldLoreGenerated(scene) {
   const highLand = anyLand.filter(isHigh);
   const inlandLand = anyLand.filter((t) => t && !isCoast(t) && t.type !== "water");
 
-  // --- Settlements (1–3) ---
-  const settlementCount = 1 + Math.floor(rng() * 3);
+  const coastalWater = anyWater.filter(isCoastalWater);
+  const shallowCoastalWater = coastalWater.filter(isShallow);
+
+  // --- POI lists for lore state ---
   const settlements = [];
+  const ruins = [];
+  const raiderCamps = [];
+  const roadsideCamps = [];
+  const watchtowers = [];
+  const mines = [];
+  const shrines = [];
+
+  // --- Settlements (1–2) ---
+  const settlementCount = 1 + Math.floor(rng() * 2);
   for (let i = 0; i < settlementCount; i++) {
     const pool = coastLand.length ? coastLand : anyLand;
-    const t = pickTileFromPool(pool, { minDist: 5 });
+    const t = pickTileFromPool(pool, { minDist: 6 });
     if (!t) break;
     const name = makePlaceName(rng, i, "Settlement");
     addPOI({ type: "settlement", q: t.q, r: t.r, name, faction: factionA });
-    settlements.push({ name, q: t.q, r: t.r, type: "settlement" });
+    settlements.push({ name, q: t.q, r: t.r, type: "settlement", faction: factionA });
   }
 
-  // --- Ruins (2–5) ---
-  const ruinCount = 2 + Math.floor(rng() * 4);
-  const ruins = [];
+  // --- Ruins (1–3) ---
+  const ruinCount = 1 + Math.floor(rng() * 3);
   for (let i = 0; i < ruinCount; i++) {
     const pool = inlandLand.length ? inlandLand : anyLand;
-    const t = pickTileFromPool(pool, { minDist: 4 });
+    const t = pickTileFromPool(pool, { minDist: 5 });
     if (!t) break;
     const name = `Ruins of ${pick(rng, PLACE_ROOT)}${i ? "-" + (i + 1) : ""}`;
-    addPOI({ type: "ruin", q: t.q, r: t.r, name });
-    ruins.push({ name, q: t.q, r: t.r, type: "ruin" });
+    // "claimed" by a current faction (makes UI + hover + ownership meaningful)
+    const claimant = pickFactionOwner();
+    addPOI({ type: "ruin", q: t.q, r: t.r, name, faction: claimant });
+    ruins.push({ name, q: t.q, r: t.r, type: "ruin", faction: claimant });
   }
 
-  // --- Raider camps (1–3) ---
-  const raiderCampCount = 1 + Math.floor(rng() * 3);
-  const raiderCamps = [];
-  for (let i = 0; i < raiderCampCount; i++) {
+  // --- Mines (0–2), only if mountains/high exist ---
+  const mineCount = (mountainLand.length || highLand.length) ? Math.floor(rng() * 3) : 0; // 0..2
+  for (let i = 0; i < mineCount; i++) {
+    const pool = mountainLand.length ? mountainLand : (highLand.length ? highLand : anyLand);
+    const t = pickTileFromPool(pool, { minDist: 5 });
+    if (!t) break;
+    const owner = pickFactionOwner();
+    addPOI({ type: "mine", q: t.q, r: t.r, faction: owner });
+    mines.push({ q: t.q, r: t.r, type: "mine", faction: owner });
+  }
+
+  // --- Watchtowers (0–2) prefer high ground ---
+  const towerCount = (highLand.length || mountainLand.length) ? Math.floor(rng() * 3) : 0; // 0..2
+  for (let i = 0; i < towerCount; i++) {
+    const pool = highLand.length ? highLand : (mountainLand.length ? mountainLand : anyLand);
+    const t = pickTileFromPool(pool, { minDist: 5 });
+    if (!t) break;
+    const owner = pickFactionOwner();
+    addPOI({ type: "watchtower", q: t.q, r: t.r, faction: owner });
+    watchtowers.push({ q: t.q, r: t.r, type: "watchtower", faction: owner });
+  }
+
+  // --- Shrines (0–2) prefer forest/inland ---
+  const shrineCount = (forestLand.length || inlandLand.length) ? Math.floor(rng() * 3) : 0; // 0..2
+  for (let i = 0; i < shrineCount; i++) {
+    const pool = forestLand.length ? forestLand : (inlandLand.length ? inlandLand : anyLand);
+    const t = pickTileFromPool(pool, { minDist: 5 });
+    if (!t) break;
+    const owner = pickFactionOwner();
+    addPOI({ type: "shrine", q: t.q, r: t.r, faction: owner });
+    shrines.push({ q: t.q, r: t.r, type: "shrine", faction: owner });
+  }
+
+  // --- Roadside camps (1–2) ---
+  const roadsideCount = 1 + Math.floor(rng() * 2); // 1..2
+  for (let i = 0; i < roadsideCount; i++) {
     const pool = inlandLand.length ? inlandLand : anyLand;
     const t = pickTileFromPool(pool, { minDist: 4 });
     if (!t) break;
-    addPOI({ type: "raider_camp", q: t.q, r: t.r });
-    raiderCamps.push({ q: t.q, r: t.r, type: "raider_camp" });
+    const owner = pickFactionOwner();
+    addPOI({ type: "roadside_camp", q: t.q, r: t.r, faction: owner });
+    roadsideCamps.push({ q: t.q, r: t.r, type: "roadside_camp", faction: owner });
   }
 
-  // --- Roadside camps (2–6) ---
-  const roadsideCount = 2 + Math.floor(rng() * 5);
-  const roadsideCamps = [];
-  for (let i = 0; i < roadsideCount; i++) {
-    const pool = coastLand.length ? coastLand : anyLand;
-    const t = pickTileFromPool(pool, { minDist: 3 });
+  // --- Raider camps (0–2), tend to appear only if trade/routes/tension exists ---
+  // Keep them possible, but not guaranteed.
+  const raiderCampCount = (rng() < 0.65) ? Math.floor(rng() * 3) : 0; // 0..2 with 65% chance
+  for (let i = 0; i < raiderCampCount; i++) {
+    const pool = inlandLand.length ? inlandLand : anyLand;
+    const t = pickTileFromPool(pool, { minDist: 5 });
     if (!t) break;
-    addPOI({ type: "roadside_camp", q: t.q, r: t.r });
-    roadsideCamps.push({ q: t.q, r: t.r, type: "roadside_camp" });
-  }
-
-  // --- Watchtowers (1–3) ---
-  const towerCount = 1 + Math.floor(rng() * 3);
-  const watchtowers = [];
-  for (let i = 0; i < towerCount; i++) {
-    const pool = highLand.length ? highLand : (mountainLand.length ? mountainLand : anyLand);
-    const t = pickTileFromPool(pool, { minDist: 4 });
-    if (!t) break;
-    addPOI({ type: "watchtower", q: t.q, r: t.r });
-    watchtowers.push({ q: t.q, r: t.r, type: "watchtower" });
-  }
-
-  // --- Mines (1–3) ---
-  const mineCount = 1 + Math.floor(rng() * 3);
-  const mines = [];
-  for (let i = 0; i < mineCount; i++) {
-    const pool = mountainLand.length ? mountainLand : (highLand.length ? highLand : anyLand);
-    const t = pickTileFromPool(pool, { minDist: 4 });
-    if (!t) break;
-    addPOI({ type: "mine", q: t.q, r: t.r });
-    mines.push({ q: t.q, r: t.r, type: "mine" });
-  }
-
-  // --- Shrines (1–4) ---
-  const shrineCount = 1 + Math.floor(rng() * 4);
-  const shrines = [];
-  for (let i = 0; i < shrineCount; i++) {
-    const pool = forestLand.length ? forestLand : (inlandLand.length ? inlandLand : anyLand);
-    const t = pickTileFromPool(pool, { minDist: 4 });
-    if (!t) break;
-    addPOI({ type: "shrine", q: t.q, r: t.r });
-    shrines.push({ q: t.q, r: t.r, type: "shrine" });
+    // In v6, camps are "affiliated" with an island faction for ownership purposes
+    // (the player asked all objects belong to island factions).
+    // If a second faction exists, prefer them; otherwise assign randomly.
+    const owner = factionB && rng() < 0.7 ? factionB : pickFactionOwner();
+    addPOI({ type: "raider_camp", q: t.q, r: t.r, faction: owner });
+    raiderCamps.push({ q: t.q, r: t.r, type: "raider_camp", faction: owner });
   }
 
   // --- Ensure legacy POIs exist: crash_site / wreck / vehicle ---
-  const ensureTypeAtLeast = (type, count, pool, opts) => {
+  const ensureTypeAtLeast = (type, count, pool, opts, factoryMeta = null) => {
     const current = worldObjects.filter((o) => String(o.type || "").toLowerCase() === type).length;
     const need = Math.max(0, count - current);
     for (let i = 0; i < need; i++) {
       const t = pickTileFromPool(pool, opts);
       if (!t) break;
-      addPOI({ type, q: t.q, r: t.r });
+      const owner = pickFactionOwner();
+      addPOI({ type, q: t.q, r: t.r, faction: owner, meta: (typeof factoryMeta === "function" ? factoryMeta(t, owner) : factoryMeta) });
     }
   };
 
-  ensureTypeAtLeast("crash_site", 1, (coastLand.length ? coastLand : anyLand), { minDist: 4 });
-  ensureTypeAtLeast("wreck", 1, (coastLand.length ? coastLand : anyLand), { minDist: 4 });
-  ensureTypeAtLeast("vehicle", 1, (inlandLand.length ? inlandLand : anyLand), { minDist: 4 });
+  // Crash sites: land near coast
+  ensureTypeAtLeast(
+    "crash_site",
+    1,
+    (coastLand.length ? coastLand : anyLand),
+    { minDist: 5 },
+    (t, owner) => ({ salvageClaim: owner })
+  );
+
+  // Wreck: MUST be in water near coast (fixes "ship wreck doesn't spawn")
+  const wreckPool = (shallowCoastalWater.length ? shallowCoastalWater : (coastalWater.length ? coastalWater : anyWater));
+  ensureTypeAtLeast(
+    "wreck",
+    1,
+    (wreckPool.length ? wreckPool : (coastLand.length ? coastLand : anyLand)),
+    { minDist: 5 },
+    (t, owner) => ({ wreckKind: "ship", salvageClaim: owner })
+  );
+
+  // Vehicle: inland land
+  ensureTypeAtLeast(
+    "vehicle",
+    1,
+    (inlandLand.length ? inlandLand : anyLand),
+    { minDist: 5 },
+    (t, owner) => ({ salvageClaim: owner })
+  );
 
   const crashSites = worldObjects.filter((o) => {
     const t = String(o.type || "").toLowerCase();
-    return t === "crash_site" || t === "wreck";
+    return t === "crash_site";
+  });
+
+  const wrecks = worldObjects.filter((o) => {
+    const t = String(o.type || "").toLowerCase();
+    return t === "wreck";
   });
 
   const vehicles = worldObjects.filter((o) => {
@@ -421,277 +490,288 @@ function ensureWorldLoreGenerated(scene) {
   });
 
   // ============================================================
-  // Events (History) — ~3x density
+  // Phase-based Events (History) — FEWER, organic, causal.
+  //
+  // v6 target: ~10–16 events total, not spam-per-POI.
   // ============================================================
   const baseYear = 5000;
   const events = [];
-
   let yearCursor = baseYear;
-  const bumpYear = () => {
-    yearCursor += 1 + Math.floor(rng() * 4); // 1..4 years step
+
+  const bumpYear = (minStep = 1, maxStep = 3) => {
+    yearCursor += minStep + Math.floor(rng() * (maxStep - minStep + 1));
     return yearCursor;
   };
 
-  const firstSettlement = settlements[0] || null;
+  function humanCoord(q, r) {
+    return `(${q},${r})`;
+  }
 
-  // Discovery
+  function pushEvent(ev) {
+    if (!ev || typeof ev.text !== "string") return;
+    events.push(ev);
+  }
+
+  function pushPOIBeat(poi, text, extra = null) {
+    if (!poi) return;
+    pushEvent({
+      year: bumpYear(1, 3),
+      type: "poi_beat",
+      poiType: poi.type,
+      q: poi.q,
+      r: poi.r,
+      faction: poi.faction,
+      text,
+      ...(extra ? extra : {}),
+    });
+  }
+
+  // Phase 1: Discovery / landing
+  const firstSettlement = settlements[0] || null;
   if (firstSettlement) {
-    events.push({
+    pushEvent({
       year: baseYear,
-      text: `${factionA} sight ${islandName} and establish the settlement ${firstSettlement.name} near (${firstSettlement.q},${firstSettlement.r}).`,
-      type: "discovery",
+      type: "founding",
+      poiType: "settlement",
       q: firstSettlement.q,
       r: firstSettlement.r,
+      faction: factionA,
+      text: `${factionA} sight ${islandName} and establish ${firstSettlement.name} at ${humanCoord(firstSettlement.q, firstSettlement.r)}.`,
     });
   } else if (anyLand.length) {
     const t = anyLand[Math.floor(rng() * anyLand.length)];
-    events.push({
+    pushEvent({
       year: baseYear,
-      text: `${factionA} make landfall on ${islandName}, raising tents at (${t.q},${t.r}) before spreading inland.`,
-      type: "discovery",
+      type: "founding",
       q: t.q,
       r: t.r,
+      faction: factionA,
+      text: `${factionA} make landfall on ${islandName}, camping at ${humanCoord(t.q, t.r)} before scouts fan out.`,
     });
   }
 
-  function pushPOIEvent(type, q, r, text) {
-    events.push({
-      year: bumpYear(),
-      text,
-      type: "poi_spawned",
-      poiType: type,
-      q, r,
+  // Phase 2: Survey (resource/geography-driven) — 2–3 beats
+  const surveyBeats = [];
+
+  surveyBeats.push(() => ({
+    year: bumpYear(1, 2),
+    type: "survey_maps",
+    text: `Scouts return with crude charts: safe passes, flood lines, and the first routes worth marking across ${islandName}.`,
+  }));
+
+  if (resInfo.waterRatio > 0.25 || resInfo.fishNodes > 2) {
+    surveyBeats.push(() => ({
+      year: bumpYear(1, 2),
+      type: "survey_fishing",
+      text: `Fishing coves are charted; smoke racks and net lines become the earliest steady trade on ${islandName}.`,
+    }));
+  }
+  if (resInfo.forestRatio > 0.15 || resInfo.forestTiles > 35) {
+    surveyBeats.push(() => ({
+      year: bumpYear(1, 2),
+      type: "survey_forests",
+      text: `Timber in the inland thickets draws work crews off the coast; the first hauling trails are cut through brush.`,
+    }));
+  }
+  if (resInfo.mountainRatio > 0.08 || resInfo.mountainTiles > 18) {
+    surveyBeats.push(() => ({
+      year: bumpYear(1, 2),
+      type: "survey_mountains",
+      text: `Ridges and cliffs promise ore; prospectors leave cairns and paint marks where rock shows promise.`,
+    }));
+  }
+  if (resInfo.oilNodes > 0 || (resInfo.shallowWaterTiles > 18 && rng() < 0.6)) {
+    surveyBeats.push(() => ({
+      year: bumpYear(1, 2),
+      type: "survey_oil",
+      text: `Dark slicks are spotted in the shallows; crude lamps soon burn late along the docks.`,
+    }));
+  }
+
+  const surveyCount = Math.min(3, Math.max(2, 2 + Math.floor(rng() * 2))); // 2..3
+  const bag = [...surveyBeats];
+  for (let i = 0; i < surveyCount && bag.length; i++) {
+    const idx = Math.floor(rng() * bag.length);
+    const fn = bag[idx];
+    bag.splice(idx, 1);
+    pushEvent(fn());
+  }
+
+  // Phase 3: Foundations / key sites (1–4 beats, not spam)
+  if (settlements.length) {
+    pushPOIBeat(
+      settlements[0],
+      `${settlements[0].name} grows beyond tents; storehouses and repair sheds draw steady traffic from the shoreline.`,
+      { settlementName: settlements[0].name }
+    );
+  }
+  if (settlements.length > 1) {
+    pushPOIBeat(
+      settlements[1],
+      `${factionA} open a second foothold at ${settlements[1].name} ${humanCoord(settlements[1].q, settlements[1].r)} to reach the interior more safely.`,
+      { settlementName: settlements[1].name }
+    );
+  }
+  if (mines.length) {
+    const m = mines[0];
+    pushPOIBeat(
+      m,
+      `${m.faction} open a mine at ${humanCoord(m.q, m.r)}; ore begins to flow toward the coast under guard.`
+    );
+  }
+  if (watchtowers.length) {
+    const w = watchtowers[0];
+    pushPOIBeat(
+      w,
+      `${w.faction} raise a watchtower at ${humanCoord(w.q, w.r)} to keep eyes on approaches and signal the coast.`
+    );
+  }
+
+  // Ruins: 1–2 with real hooks (NO "no one agrees..." filler)
+  const ruinHooks = [
+    (rr) => `At ${rr.name} ${humanCoord(rr.q, rr.r)}, stonework shows scorch marks and collapsed roofs—signs of a sudden end.`,
+    (rr) => `At ${rr.name} ${humanCoord(rr.q, rr.r)}, cisterns and carved channels hint at a community that fought scarcity before it fell.`,
+    (rr) => `At ${rr.name} ${humanCoord(rr.q, rr.r)}, broken tools and workshop floors suggest careful craft long before the current flags arrived.`,
+  ];
+  const ruinsToDescribe = Math.min(2, ruins.length);
+  for (let i = 0; i < ruinsToDescribe; i++) {
+    const rr = ruins[i];
+    pushPOIBeat(
+      rr,
+      ruinHooks[i % ruinHooks.length](rr),
+      { ruinName: rr.name }
+    );
+  }
+
+  // Camps: summary beats (1–2)
+  if (roadsideCamps.length) {
+    const c0 = roadsideCamps[0];
+    const extra = roadsideCamps.length - 1;
+    pushEvent({
+      year: bumpYear(1, 3),
+      type: "camps_emerge",
+      poiType: "roadside_camp",
+      q: c0.q,
+      r: c0.r,
+      faction: c0.faction,
+      targets: roadsideCamps.map(c => ({ q: c.q, r: c.r })),
+      text: extra > 0
+        ? `Roadside camps appear along the safest routes—one near ${humanCoord(c0.q, c0.r)} and ${extra} more as traffic grows.`
+        : `A roadside camp forms near ${humanCoord(c0.q, c0.r)}, trading scraps and rumors with whoever passes through.`,
     });
   }
 
-  // POI appearance events (major density multiplier)
-  for (const s of settlements) {
-    pushPOIEvent("settlement", s.q, s.r, `${factionA} expand ${s.name} (${s.q},${s.r}); docks and storehouses bring steady traffic to the coast.`);
-  }
-  for (const rr of ruins) {
-    pushPOIEvent("ruin", rr.q, rr.r, `Stonework is found at ${rr.name} (${rr.q},${rr.r}); no one agrees who built it first.`);
-  }
-  for (const c of raiderCamps) {
-    pushPOIEvent("raider_camp", c.q, c.r, `A raider camp takes hold near (${c.q},${c.r}); signal fires warn travelers away.`);
-  }
-  for (const c of roadsideCamps) {
-    pushPOIEvent("roadside_camp", c.q, c.r, `A roadside camp appears at (${c.q},${c.r}), trading scraps and rumors with whoever passes through.`);
-  }
-  for (const w of watchtowers) {
-    pushPOIEvent("watchtower", w.q, w.r, `A watchtower is raised on high ground at (${w.q},${w.r}), watching the approaches.`);
-  }
-  for (const m of mines) {
-    pushPOIEvent("mine", m.q, m.r, `Miners cut a new drift at (${m.q},${m.r}); ore begins to trickle down to the shore.`);
-  }
-  for (const s of shrines) {
-    pushPOIEvent("shrine", s.q, s.r, `A shrine is set up at (${s.q},${s.r}); offerings gather there even in harsh seasons.`);
+  if (raiderCamps.length) {
+    const rc = raiderCamps[0];
+    pushEvent({
+      year: bumpYear(1, 3),
+      type: "raiders_take_hold",
+      poiType: "raider_camp",
+      q: rc.q,
+      r: rc.r,
+      faction: rc.faction,
+      targets: raiderCamps.map(c => ({ q: c.q, r: c.r })),
+      text: `Raiders tied to ${rc.faction} establish a camp near ${humanCoord(rc.q, rc.r)}, striking at isolated travelers and lightly guarded caravans.`,
+    });
+    if (watchtowers.length) {
+      const w = watchtowers[0];
+      pushEvent({
+        year: bumpYear(1, 3),
+        type: "watchtower_signals",
+        poiType: "watchtower",
+        q: w.q,
+        r: w.r,
+        faction: w.faction,
+        text: `Smoke by day and fire by night from the watchtower at ${humanCoord(w.q, w.r)} warn of raids and moving patrols.`,
+      });
+    }
   }
 
-  // Wreck / crash / vehicle events (guaranteed if POIs exist)
-  if (crashSites.length) {
+  // Salvage (wreck / crash / vehicle): 1–2 beats total
+  if (wrecks.length) {
+    const w = wrecks[Math.floor(rng() * wrecks.length)];
+    pushEvent({
+      year: bumpYear(1, 3),
+      type: "wreck_found",
+      poiType: "wreck",
+      q: w.q,
+      r: w.r,
+      faction: w.faction,
+      text: `${w.faction} claim a shipwreck near ${humanCoord(w.q, w.r)}; salvage crews strip fittings and haul usable metal ashore.`,
+    });
+  } else if (crashSites.length) {
     const c = crashSites[Math.floor(rng() * crashSites.length)];
-    events.push({
-      year: bumpYear(),
-      text: `A derelict hull is discovered near (${c.q},${c.r}); scavengers haul twisted metal inland and argue over the find.`,
-      type: "early_scavenging",
+    pushEvent({
+      year: bumpYear(1, 3),
+      type: "crash_site_found",
+      poiType: "crash_site",
       q: c.q,
       r: c.r,
+      faction: c.faction,
+      text: `${c.faction} secure a crash site at ${humanCoord(c.q, c.r)}; scavengers argue over what to keep and what to trade.`,
     });
   }
-  if (vehicles.length) {
+
+  if (vehicles.length && rng() < 0.7) {
     const v = vehicles[Math.floor(rng() * vehicles.length)];
-    events.push({
-      year: bumpYear(),
-      text: `A stranded vehicle is found at (${v.q},${v.r}); its cargo is stripped, but the frame becomes a landmark for travelers.`,
+    pushEvent({
+      year: bumpYear(1, 3),
       type: "vehicle_found",
+      poiType: "vehicle",
       q: v.q,
       r: v.r,
+      faction: v.faction,
+      text: `A stranded vehicle at ${humanCoord(v.q, v.r)} becomes a waypoint—its frame visible from afar, its cargo long gone.`,
     });
   }
 
-  // Economy & expansion (expanded pool, take more)
-  const econTemplates = [];
-
-  if (resInfo.waterRatio > 0.25 || resInfo.fishNodes > 4) {
-    econTemplates.push((year) => ({
-      year,
-      text: `${factionA} begin netting the surrounding shallows, raising fishpens and smoke racks along the coves of ${islandName}.`,
-      type: "fish_economy",
-    }));
-    econTemplates.push((year) => ({
-      year,
-      text: `Skiffs push farther offshore, following glittering shoals that circle ${islandName} each season.`,
-      type: "deep_fishing",
-    }));
-    econTemplates.push((year) => ({
-      year,
-      text: `Salt-curers and rope-makers gather near the harbors, turning fish runs into hard trade goods.`,
-      type: "coastal_industry",
-    }));
-  } else {
-    econTemplates.push((year) => ({
-      year,
-      text: `${factionA} clear thin terraces of soil and coax stubborn crops from the island's dust.`,
-      type: "meagre_farming",
-    }));
-    econTemplates.push((year) => ({
-      year,
-      text: `Small gardens and windbreaks spread around the first homes, a stubborn answer to bad seasons.`,
-      type: "subsistence",
-    }));
-  }
-
-  if (resInfo.forestRatio > 0.15 || resInfo.forestTiles > 40) {
-    econTemplates.push((year) => ({
-      year,
-      text: `Loggers move into the island's thickets, cutting timber for piers and modest halls.`,
-      type: "logging",
-    }));
-    econTemplates.push((year) => ({
-      year,
-      text: `The best trunks are hauled to the shore and shaped into hulls; small shipyards appear beside the settlements.`,
-      type: "shipbuilding",
-    }));
-    econTemplates.push((year) => ({
-      year,
-      text: `Charcoal pits burn through the night, feeding smiths with cheap fuel from the forest.`,
-      type: "charcoal",
-    }));
-  }
-
-  if (resInfo.mountainRatio > 0.08 || resInfo.mountainTiles > 20) {
-    econTemplates.push((year) => ({
-      year,
-      text: `Prospectors hammer the cliffs and ridges of ${islandName}, marking seams where metal glints in the rock.`,
-      type: "prospecting",
-    }));
-    econTemplates.push((year) => ({
-      year,
-      text: `Ore carts creak down from the ridges; crude smelters by the shore cough smoke into the wind.`,
-      type: "mining_economy",
-    }));
-    econTemplates.push((year) => ({
-      year,
-      text: `Rough forges appear near the hills; the smell of slag drifts downwind for miles.`,
-      type: "forges",
-    }));
-  }
-
-  if (resInfo.oilNodes > 0 || (resInfo.shallowWaterTiles > 20 && rng() < 0.6)) {
-    econTemplates.push((year) => ({
-      year,
-      text: `Dark slicks are spotted in the shallows; makeshift derricks are rigged over the seabed.`,
-      type: "oil_discovery",
-    }));
-    econTemplates.push((year) => ({
-      year,
-      text: `Crude is boiled down in noisy stills; lamps burn late into the night and soot stains the docks.`,
-      type: "oil_refining",
-    }));
-    econTemplates.push((year) => ({
-      year,
-      text: `Improvised pumps and hoses spread from cove to cove; traders pay well for fuel and pitch.`,
-      type: "oil_trade",
-    }));
-  }
-
-  // Generic path/trade/conflict templates (always available)
-  econTemplates.push((year) => ({
-    year,
-    text: `Trade slowly picks up; cutters from distant ports anchor off ${islandName} to barter for whatever the settlers can spare.`,
-    type: "trade_grows",
-  }));
-  econTemplates.push((year) => ({
-    year,
-    text: `Work crews mark the first overland routes on ${islandName}, clearing stones and laying crude signage.`,
-    type: "paths_built",
-  }));
-  econTemplates.push((year) => ({
-    year,
-    text: `Caravans begin to move between camps and ruins; certain crossroads become well-known stopping points.`,
-    type: "routes_used",
-  }));
-  econTemplates.push((year) => ({
-    year,
-    text: `Watchfires multiply on the ridges; travelers learn to read smoke and silence alike.`,
-    type: "watchfires",
-  }));
-
-  // Take 6–10 economy events (roughly ~3x old density)
-  const econEventsToTake = 6 + Math.floor(rng() * 5); // 6..10
-  const econPool = [...econTemplates];
-  for (let i = 0; i < econEventsToTake && econPool.length; i++) {
-    const idx = Math.floor(rng() * econPool.length);
-    const fn = econPool[idx];
-    econPool.splice(idx, 1);
-    events.push(fn(bumpYear()));
-  }
-
-  // Faction tension (expanded)
-  const multiFaction = factionB && rng() < 0.8;
-
+  // Phase 4: Tension (optional, 0–2 beats)
+  const multiFaction = factionB && rng() < 0.55;
   if (multiFaction) {
-    events.push({
-      year: bumpYear(),
-      text: `${factionB} arrive on ${islandName}, raising banners and claiming coves not far from ${firstSettlement ? firstSettlement.name : "the first landing"}.`,
+    pushEvent({
+      year: bumpYear(1, 3),
       type: "second_faction_arrives",
+      faction: factionB,
+      text: `${factionB} arrive on ${islandName} and raise banners on sheltered coves; boundary stones appear overnight.`,
     });
-
-    events.push({
-      year: bumpYear(),
-      text: `Patrols cross paths; markers are torn down and arguments over streams, coves, and ore seams grow ugly.`,
+    pushEvent({
+      year: bumpYear(1, 3),
       type: "tensions_rise",
-    });
-
-    if (rng() < 0.7) {
-      events.push({
-        year: bumpYear(),
-        text: `A season of skirmishes follows: small parties vanish on the roads, and watchfires burn late across the ridges.`,
-        type: "skirmishes",
-      });
-    }
-
-    if (rng() < 0.6 && raiderCamps.length) {
-      const rc = raiderCamps[Math.floor(rng() * raiderCamps.length)];
-      events.push({
-        year: bumpYear(),
-        text: `Under cover of the unrest, raiders expand their hold near (${rc.q},${rc.r}), preying on isolated camps.`,
-        type: "raiders_emboldened",
-        q: rc.q,
-        r: rc.r,
-      });
-    }
-  } else {
-    events.push({
-      year: bumpYear(),
-      text: `With no serious rival fleet in sight, ${factionA} focus on consolidating holdings and fortifying routes across ${islandName}.`,
-      type: "consolidation",
+      text: `Patrols cross paths, trade turns sharp, and watchfires become common on the ridges.`,
     });
   }
+
+  // Phase 5: Infrastructure (roads) — reserve a window so road entries don't always come last
+  const roadStartYear = bumpYear(1, 3);
+  pushEvent({
+    year: roadStartYear,
+    type: "routes_formalized",
+    text: `As trade stabilizes, the most-used trails are widened into proper routes—stones cleared, markers raised, and crossings mapped.`,
+  });
 
   // Optional cataclysm:
   // - NOT required
   // - If settlements exist: cataclysm MUST NOT happen (your rule).
   let finalCataclysmEvent = null;
-
   const allowCataclysm = settlements.length === 0;
-  if (allowCataclysm && rng() < 0.65) {
+  if (allowCataclysm && rng() < 0.5) {
     const disaster = pick(rng, DISASTER_TYPES);
     finalCataclysmEvent = {
-      year: bumpYear(),
+      year: bumpYear(1, 3),
       text: `When ${disaster} sweeps ${islandName}, the remaining camps are abandoned and their fires finally go cold.`,
       type: "cataclysm",
       disaster,
     };
-    events.push(finalCataclysmEvent);
+    pushEvent(finalCataclysmEvent);
 
     // In no-settlement worlds we can degrade some roadside camps into ruins
     for (const obj of worldObjects) {
       const t = String(obj.type || "").toLowerCase();
-      if (t === "roadside_camp" && rng() < 0.4) {
+      if (t === "roadside_camp" && rng() < 0.35) {
         obj.type = "ruin";
         obj.wasRoadsideCamp = true;
         obj.ruinedYear = finalCataclysmEvent.year;
+        // keep faction so it stays attributable
       }
     }
   }
@@ -711,11 +791,19 @@ function ensureWorldLoreGenerated(scene) {
       entry.r = ev.r;
     }
     if (ev.poiType) entry.poiType = ev.poiType;
+    if (ev.from && Number.isFinite(ev.from.q) && Number.isFinite(ev.from.r)) entry.from = ev.from;
+    if (ev.to && Number.isFinite(ev.to.q) && Number.isFinite(ev.to.r)) entry.to = ev.to;
+    if (Array.isArray(ev.targets) && ev.targets.length) entry.targets = ev.targets;
+    if (ev.faction) entry.faction = ev.faction;
+    if (ev.settlementName) entry.settlementName = ev.settlementName;
+    if (ev.ruinName) entry.ruinName = ev.ruinName;
+
     addEntry(entry);
   }
 
   // Backward compatibility: some UI expects loreState.outposts (names for highlighting).
   // We treat it as "named places".
+  // v6: include only named places (settlements + named ruins).
   const namedPlaces = []
     .concat(settlements)
     .concat(ruins);
@@ -723,11 +811,20 @@ function ensureWorldLoreGenerated(scene) {
   scene.loreState = {
     islandName,
     factions,
-    outposts: namedPlaces,      // legacy field (used by History UI)
+    outposts: namedPlaces, // legacy field (used by History UI)
     settlements,
     ruins,
+    mines,
+    watchtowers,
+    shrines,
+    roadsideCamps,
+    raiderCamps,
     resources: resInfo,
     disaster: finalCataclysmEvent?.disaster || null,
+
+    // v6: reserve road insertion window
+    roadStartYear,
+    __roadYearCursor: roadStartYear,
   };
 
   // Seed -> lore -> POI: commit worldObjects back into mapInfo / hexMap
@@ -749,6 +846,7 @@ export function generateRuinLoreForTile(scene, tile) {
 }
 
 // Same API as before: we add "road built" events based on recorded connections.
+// v6: insert roads into reserved timeline window so they don't always appear "last".
 export function generateRoadLoreForExistingConnections(scene) {
   if (!scene) return;
 
@@ -780,7 +878,33 @@ export function generateRoadLoreForExistingConnections(scene) {
   const factions = scene.loreState?.factions || [];
   const defaultFaction = factions[0] || "an unknown faction";
 
-  for (const conn of conns) {
+  // v6: insert roads starting from reserved cursor
+  let year = Number.isFinite(scene.loreState?.__roadYearCursor)
+    ? scene.loreState.__roadYearCursor
+    : (scene.getNextHistoryYear ? scene.getNextHistoryYear() : 5030);
+
+  const bumpRoadYear = () => {
+    year += 1; // compact sequence
+    return year;
+  };
+
+  // Keep deterministic ordering (stable by coords)
+  const sorted = [...conns].sort((a, b) => {
+    const aq = a?.from?.q ?? 0;
+    const ar = a?.from?.r ?? 0;
+    const bq = b?.from?.q ?? 0;
+    const br = b?.from?.r ?? 0;
+    if (aq !== bq) return aq - bq;
+    if (ar !== br) return ar - br;
+    const aq2 = a?.to?.q ?? 0;
+    const ar2 = a?.to?.r ?? 0;
+    const bq2 = b?.to?.q ?? 0;
+    const br2 = b?.to?.r ?? 0;
+    if (aq2 !== bq2) return aq2 - bq2;
+    return ar2 - br2;
+  });
+
+  for (const conn of sorted) {
     const fq = conn.from?.q;
     const fr = conn.from?.r;
     const tq = conn.to?.q;
@@ -797,19 +921,17 @@ export function generateRoadLoreForExistingConnections(scene) {
     const fromLabel = buildLocationLabel(conn.from, fromTile, true);
     const toLabel = buildLocationLabel(conn.to, toTile, false);
 
-    const year = scene.getNextHistoryYear
-      ? scene.getNextHistoryYear()
-      : 5030;
-
     addEntry({
-      year,
-      text: `${faction} lay a road across ${islandName}, linking ${fromLabel} with ${toLabel}.`,
+      year: bumpRoadYear(),
+      text: `${faction} formalize a route across ${islandName}, linking ${fromLabel} with ${toLabel}.`,
       type: "road_built",
       from: { q: fq, r: fr },
       to: { q: tq, r: tr },
       faction,
     });
   }
+
+  if (scene.loreState) scene.loreState.__roadYearCursor = year;
 
   scene.__roadLoreGenerated = true;
 }
@@ -830,8 +952,11 @@ function buildLocationLabel(endpoint, tile, isFrom) {
     return `the ruins of ${tile.cityName} (${q},${r})`;
   }
 
-  if (type === "crash_site" || type === "wreck") {
-    return `a crash site near (${q},${r})`;
+  if (type === "crash_site") {
+    return `a crash site at (${q},${r})`;
+  }
+  if (type === "wreck") {
+    return `a shipwreck near (${q},${r})`;
   }
   if (type === "vehicle" || type === "abandoned_vehicle") {
     return `a stranded vehicle at (${q},${r})`;
