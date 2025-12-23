@@ -637,6 +637,25 @@ export function setupWorldInputUI(scene) {
     }
 
     // Ground click
+    // If no unit is selected, allow selecting ANY hex (including water)
+    // and show its info in the Unit panel (hex inspector).
+    if (!scene.selectedUnit) {
+      scene.selectedHex = { q, r };
+      scene.selectedBuilding = null;
+
+      // Close any lingering command mode / previews
+      scene.unitCommandMode = null;
+      scene.clearPathPreview?.();
+      clearCombatPreview(scene);
+
+      // Open hex inspector in the same panel used for units
+      scene.openHexInspectPanel?.(q, r);
+
+      scene.updateSelectionHighlight?.();
+      scene.debugHex?.(q, r);
+      return;
+    }
+
     const tile = getTile(scene, q, r);
     if (tile && tile.isLocation) {
       console.log(
