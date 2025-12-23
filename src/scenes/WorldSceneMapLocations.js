@@ -3,6 +3,12 @@
 // FULLY DETERMINISTIC version.
 // All POIs, roads, forests, mountain icons come only from mapInfo + mapData.
 // NO randomness here.
+//
+// Forest rendering:
+// - Seed-based per-hex RNG (stable across redraw/order)
+// - 3–4 tree emoji per forest hex
+// - Different tree emoji depending on terrain/biome
+// - No sway animation
 
 import {
   effectiveElevationLocal,
@@ -19,13 +25,82 @@ import {
 const keyOf = (q, r) => `${q},${r}`;
 
 /* ---------------------------------------------------------------
+   Deterministic RNG helpers (seed + q,r + salt -> stable rand())
+   --------------------------------------------------------------- */
+function hashStr32(s) {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+// mulberry32: small, fast deterministic PRNG
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function rand() {
+    a |= 0;
+    a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function getSceneSeedString(scene) {
+  return (
+    (typeof scene?.seedStr === "string" && scene.seedStr) ||
+    (typeof scene?.worldSeed === "string" && scene.worldSeed) ||
+    (typeof scene?.seed === "string" && scene.seed) ||
+    (typeof scene?.mapSeed === "string" && scene.mapSeed) ||
+    String(scene?.seedStr ?? scene?.worldSeed ?? scene?.seed ?? "default-seed")
+  );
+}
+
+function rngForHex(scene, q, r, salt = "treesV2") {
+  const s = `${getSceneSeedString(scene)}|${salt}|${q},${r}`;
+  const seed = hashStr32(s);
+  const rand = mulberry32(seed);
+
+  return {
+    rand,
+    int(min, max) {
+      const a = Math.min(min, max);
+      const b = Math.max(min, max);
+      return a + Math.floor(rand() * (b - a + 1));
+    },
+    float(min, max) {
+      return min + rand() * (max - min);
+    },
+    pick(arr) {
+      if (!arr || arr.length === 0) return null;
+      return arr[Math.floor(rand() * arr.length)];
+    },
+    pickWeighted(items) {
+      // items: [{v, w}]
+      if (!Array.isArray(items) || items.length === 0) return null;
+      let sum = 0;
+      for (const it of items) sum += Math.max(0, it.w || 0);
+      if (sum <= 0) return items[0].v;
+      let x = rand() * sum;
+      for (const it of items) {
+        x -= Math.max(0, it.w || 0);
+        if (x <= 0) return it.v;
+      }
+      return items[items.length - 1].v;
+    },
+  };
+}
+
+/* ---------------------------------------------------------------
    Deterministic neighbor helpers
    --------------------------------------------------------------- */
 function neighborsOddR(q, r) {
   const even = r % 2 === 0;
   return even
-    ? [[+1,0],[0,-1],[-1,-1],[-1,0],[-1,+1],[0,+1]]
-    : [[+1,0],[+1,-1],[0,-1],[-1,0],[0,+1],[+1,+1]];
+    ? [[+1, 0], [0, -1], [-1, -1], [-1, 0], [-1, +1], [0, +1]]
+    : [[+1, 0], [+1, -1], [0, -1], [-1, 0], [0, +1], [+1, +1]];
 }
 
 function inBounds(q, r, w, h) {
@@ -35,17 +110,6 @@ function inBounds(q, r, w, h) {
 /* ---------------------------------------------------------------
    POI flags: now driven by mapInfo.objects (seed -> lore -> POI)
    --------------------------------------------------------------- */
-/**
- * Apply POI flags onto tiles based on deterministic map objects.
- *
- * NOTE:
- *  - mapData is a flat array of tiles ({q,r,...}).
- *  - mapObjects usually come from scene.mapInfo.objects,
- *    which are filled by LoreGeneration (ensureWorldLoreGenerated).
- *
- * Backwards compatible: if mapObjects не переданы, ф-ция просто
- * возвращает mapData как есть.
- */
 export function applyLocationFlags(mapData, mapObjects) {
   if (!Array.isArray(mapData)) return mapData;
 
@@ -126,7 +190,6 @@ export function applyLocationFlags(mapData, mapObjects) {
       tile.hasObject = true;
       if (o.faction) tile.owningFaction = String(o.faction);
     } else if (type === "wreck") {
-      // NEW: track separately from crash site, and allow on water
       tile.hasWreck = true;
       tile.hasObject = true;
       if (o.faction) tile.owningFaction = String(o.faction);
@@ -137,11 +200,9 @@ export function applyLocationFlags(mapData, mapObjects) {
     } else if (type === "settlement") {
       tile.hasSettlement = true;
       tile.hasObject = true;
-      // prefer explicit object name, then legacy cityName
       const n = o.name ? String(o.name) : (tile.cityName ? String(tile.cityName) : "");
       tile.settlementName = n;
       tile.poiName = n || tile.poiName;
-      // keep old fields for compatibility
       if (n) tile.cityName = n;
       if (o.faction) tile.owningFaction = String(o.faction);
     } else if (type === "raider_camp") {
@@ -193,11 +254,9 @@ function deterministicAStar(byKey, width, height, start, goal) {
 
   const closed = new Set();
 
-  const heuristic = (q, r) =>
-    Math.abs(q - goal.q) + Math.abs(r - goal.r);
+  const heuristic = (q, r) => Math.abs(q - goal.q) + Math.abs(r - goal.r);
 
   while (open.size > 0) {
-    // pick smallest f, then lexicographically smallest key
     let cur = null;
     for (const n of open.values()) {
       if (!cur || n.f < cur.f || (n.f === cur.f && n.k < cur.k)) cur = n;
@@ -216,7 +275,6 @@ function deterministicAStar(byKey, width, height, start, goal) {
 
     closed.add(cur.k);
 
-    // IMPORTANT: neighbors depend on current node (cur.q,cur.r)
     for (const [dq, dr] of neighborsOddR(cur.q, cur.r)) {
       const nq = cur.q + dq;
       const nr = cur.r + dr;
@@ -266,19 +324,12 @@ function clearRoads(mapData) {
   }
 }
 
-/**
- * Generate deterministic road network:
- * - Connects significant POIs
- * - Also records connections on scene.roadConnections for lore.
- */
 function generateDeterministicRoads(scene, mapData, width, height, mapObjects) {
   const byKey = new Map(mapData.map((t) => [keyOf(t.q, t.r), t]));
 
-  // Reset roadConnections on rebuild; always deterministic
   scene.roadConnections = [];
   const roadConns = scene.roadConnections;
 
-  // Significant POIs (expanded)
   const pts = mapObjects.filter((o) => {
     const T = String(o.type || "").toLowerCase();
     return (
@@ -291,36 +342,29 @@ function generateDeterministicRoads(scene, mapData, width, height, mapObjects) {
       T === "shrine" ||
       T === "crash_site" ||
       T === "vehicle"
-      // NOTE:
-      //  - WRECK is often on water and roads should not path to it (we forbid water in A*),
-      //    so we do NOT include it as a road endpoint.
     );
   });
 
   pts.sort((a, b) => a.q - b.q || a.r - b.r);
 
-  // If we have too few points, roads won't show; that's fine.
   for (let i = 0; i + 1 < pts.length; i++) {
     const A = pts[i];
     const B = pts[i + 1];
     const tA = byKey.get(keyOf(A.q, A.r));
     const tB = byKey.get(keyOf(B.q, B.r));
-
     if (!tA || !tB) continue;
 
     const path = deterministicAStar(byKey, width, height, tA, tB);
     if (!path || path.length < 2) continue;
 
-    // Apply roads to tiles
     for (let j = 0; j + 1 < path.length; j++) {
       addRoad(mapData, path[j], path[j + 1]);
     }
 
-    // Record connection for lore (from POI A to POI B)
     roadConns.push({
       from: { q: A.q, r: A.r, type: String(A.type || "").toLowerCase() },
-      to:   { q: B.q, r: B.r, type: String(B.type || "").toLowerCase() },
-      path: path.map(t => ({ q: t.q, r: t.r })),
+      to: { q: B.q, r: B.r, type: String(B.type || "").toLowerCase() },
+      path: path.map((t) => ({ q: t.q, r: t.r })),
     });
   }
 }
@@ -328,11 +372,6 @@ function generateDeterministicRoads(scene, mapData, width, height, mapObjects) {
 /* ---------------------------------------------------------------
    Reposition helpers: keep emoji locked to hex elevation
    --------------------------------------------------------------- */
-
-/**
- * Re-snap all emoji icons in scene.locationsLayer to current elevation.
- * Useful if water level changes and you don't fully rebuild the layer.
- */
 export function refreshLocationIcons(scene) {
   if (!scene || !scene.locationsLayer) return;
   const layer = scene.locationsLayer;
@@ -342,11 +381,10 @@ export function refreshLocationIcons(scene) {
   const offsetY = scene.mapOffsetY || 0;
   const LIFT = scene?.LIFT_PER_LVL ?? 4;
 
-  // Build fast lookup tile by q,r
   const map = scene.mapData || [];
-  const byKey = new Map(map.map(t => [keyOf(t.q, t.r), t]));
+  const byKey = new Map(map.map((t) => [keyOf(t.q, t.r), t]));
 
-  layer.iterate(obj => {
+  layer.iterate((obj) => {
     if (!obj || !obj.__hex) return;
 
     const { q, r, ox = 0, oy = 0 } = obj.__hex;
@@ -363,6 +401,123 @@ export function refreshLocationIcons(scene) {
 }
 
 /* ---------------------------------------------------------------
+   Forest visuals (seed-based, old-style look)
+   --------------------------------------------------------------- */
+function safeResolveBiome(scene, tile) {
+  // resolveBiome signature may vary; be defensive.
+  try {
+    const b = resolveBiome?.(scene, tile);
+    if (typeof b === "string" && b) return b.toLowerCase();
+  } catch (_e) {}
+  try {
+    const b = resolveBiome?.(tile);
+    if (typeof b === "string" && b) return b.toLowerCase();
+  } catch (_e) {}
+  const fallback = String(tile?.biome || tile?.biomeName || "").toLowerCase();
+  return fallback || "";
+}
+
+function pickTreeEmoji(scene, tile, rng) {
+  const biome = safeResolveBiome(scene, tile);
+
+  const type = String(tile?.type || "").toLowerCase();
+  const ground = String(tile?.groundType || "").toLowerCase();
+  const elev = Number.isFinite(tile?.elevation) ? tile.elevation : (Number.isFinite(tile?.visualElevation) ? tile.visualElevation : 0);
+
+  // Weighted palettes (emoji only)
+  // You can tweak these anytime; deterministic will stay stable if you keep salt constant.
+  const palettes = {
+    // desert/sand-ish
+    arid: [{ v: "🌴", w: 3 }, { v: "🌵", w: 2 }],
+    // cold
+    cold: [{ v: "🌲", w: 6 }, { v: "🌳", w: 1 }],
+    // swamp / lush
+    lush: [{ v: "🌳", w: 4 }, { v: "🌿", w: 2 }],
+    // forest
+    forest: [{ v: "🌲", w: 4 }, { v: "🌳", w: 3 }],
+    // default
+    normal: [{ v: "🌳", w: 5 }, { v: "🌲", w: 2 }],
+  };
+
+  const isSnow = biome.includes("snow") || biome.includes("tundra") || biome.includes("ice") || ground.includes("snow") || ground.includes("ice");
+  const isArid = biome.includes("desert") || biome.includes("arid") || ground.includes("sand") || ground.includes("dune") || ground.includes("ash");
+  const isSwamp = biome.includes("swamp") || biome.includes("marsh") || ground.includes("swamp") || ground.includes("marsh");
+  const isForestBiome = biome.includes("forest") || biome.includes("wood") || tile?.hasForest;
+
+  // Hills/high elev lean conifer
+  const isHigh = elev >= 5 || biome.includes("mountain") || type === "mountain";
+
+  if (isSnow) return rng.pickWeighted(palettes.cold);
+  if (isArid) return rng.pickWeighted(palettes.arid);
+  if (isSwamp) return rng.pickWeighted(palettes.lush);
+  if (isHigh) return "🌲";
+  if (isForestBiome) return rng.pickWeighted(palettes.forest);
+  return rng.pickWeighted(palettes.normal);
+}
+
+function placeForestTrees(scene, tile, addEmoji, cx, cy, size) {
+  // Deterministic per-hex RNG
+  const rng = rngForHex(scene, tile.q, tile.r, "treesV2");
+
+  // 3–4 trees
+  const nTrees = rng.int(3, 4);
+
+  // Old style: random radial offsets with spacing
+  const placed = [];
+  const minDist = size * 0.32;
+  const triesMax = 40;
+
+  for (let i = 0; i < nTrees; i++) {
+    let placedOne = false;
+
+    for (let tries = 0; tries < triesMax; tries++) {
+      const ang = rng.float(0, Math.PI * 2);
+      const rad = rng.float(size * 0.20, size * 0.60);
+
+      const ox = Math.cos(ang) * rad;
+      const oy = Math.sin(ang) * rad * 0.70; // slightly squashed vertically (nice look)
+
+      let ok = true;
+      for (const p of placed) {
+        const dx = p.ox - ox;
+        const dy = p.oy - oy;
+        if (Math.hypot(dx, dy) < minDist) {
+          ok = false;
+          break;
+        }
+      }
+      if (!ok) continue;
+
+      const emoji = pickTreeEmoji(scene, tile, rng);
+
+      // Font size variation (deterministic)
+      const px = size * rng.float(0.46, 0.62);
+
+      const tree = addEmoji(tile.q, tile.r, ox, oy, emoji, px, 105);
+      tree.x = cx + ox;
+      tree.y = cy + oy;
+
+      placed.push({ ox, oy });
+      placedOne = true;
+      break;
+    }
+
+    // If we couldn't place with spacing, fallback to center-ish
+    if (!placedOne) {
+      const ox = rng.float(-size * 0.18, size * 0.18);
+      const oy = rng.float(-size * 0.18, size * 0.18);
+      const emoji = pickTreeEmoji(scene, tile, rng);
+      const px = size * rng.float(0.46, 0.62);
+
+      const tree = addEmoji(tile.q, tile.r, ox, oy, emoji, px, 105);
+      tree.x = cx + ox;
+      tree.y = cy + oy;
+      placed.push({ ox, oy });
+    }
+  }
+}
+
+/* ---------------------------------------------------------------
    Rendering: Roads + POIs + Geography
    --------------------------------------------------------------- */
 export function drawLocationsAndRoads() {
@@ -372,37 +527,28 @@ export function drawLocationsAndRoads() {
 
   if (!Array.isArray(map) || !map.length) return;
 
-  // Ensure lore (and thus scene.mapInfo.objects) exists BEFORE we:
-  //  - applyLocationFlags
-  //  - generate roads
-  //  - draw POI icons
+  // Ensure lore exists (mapInfo.objects)
   if (!scene.__worldLoreGenerated) {
-    const firstLand = map.find(t => t && t.type !== "water");
+    const firstLand = map.find((t) => t && t.type !== "water");
     if (firstLand) {
       generateRuinLoreForTile(scene, firstLand);
     }
   }
 
-  // Fetch objects AFTER lore ensured
   const mapObjects =
-    scene.mapInfo && Array.isArray(scene.mapInfo.objects)
-      ? scene.mapInfo.objects
-      : [];
+    scene.mapInfo && Array.isArray(scene.mapInfo.objects) ? scene.mapInfo.objects : [];
 
-  // Build an objects hash so we can re-generate roads if POIs changed
   const objectsHash = mapObjects
-    .map(o => `${String(o.type || "").toLowerCase()}:${o.q},${o.r}`)
+    .map((o) => `${String(o.type || "").toLowerCase()}:${o.q},${o.r}`)
     .sort()
     .join("|");
 
   const prevHash = map.__roadsHash || "";
-  const needRebuildRoads = !map.__roadsApplied || (prevHash !== objectsHash);
+  const needRebuildRoads = !map.__roadsApplied || prevHash !== objectsHash;
 
-  // Apply POI flags to tiles
   applyLocationFlags(map, mapObjects);
 
   if (needRebuildRoads) {
-    // clear previous roads if any
     clearRoads(map);
     generateDeterministicRoads(scene, map, scene.mapWidth, scene.mapHeight, mapObjects);
 
@@ -419,7 +565,6 @@ export function drawLocationsAndRoads() {
       configurable: true,
     });
 
-    // IMPORTANT: allow road lore generation after roadConnections changed
     scene.__roadLoreGenerated = false;
   }
 
@@ -496,16 +641,13 @@ export function drawLocationsAndRoads() {
   for (const t of map) {
     if (!t) continue;
 
-    // Skip icons on "no-poi" tiles
     if (noPOISet && noPOISet.has(keyOf(t.q, t.r))) continue;
 
-    // NOTE:
-    // We now allow wreck/crash icons on water as well.
-    // For everything else, we can keep "no water" rule.
-    const isWater = (t.type === "water");
+    const isWater = t.type === "water";
     const allowOnWater = !!t.hasWreck;
 
     if (isWater && !allowOnWater) {
+      // NOTE: trees/POI icons are skipped on water, except wreck
       continue;
     }
 
@@ -521,18 +663,9 @@ export function drawLocationsAndRoads() {
       continue;
     }
 
-    /* ---------------- Forests ---------------- */
+    /* ---------------- Forests (NEW OLD-STYLE LOOK, SEED-BASED) ---------------- */
     if (!isWater && t.hasForest) {
-      const offsets = [
-        [0, -size * 0.25],
-        [-size * 0.22, size * 0.1],
-        [size * 0.22, size * 0.1],
-      ];
-      offsets.forEach(([ox, oy]) => {
-        const tree = addEmoji(t.q, t.r, ox, oy, "🌳", size * 0.5, 105);
-        tree.x = cx + ox;
-        tree.y = cy + oy;
-      });
+      placeForestTrees(scene, t, addEmoji, cx, cy, size);
     }
 
     /* ---------------- Settlement (NEW ICON) ---------------- */
@@ -607,11 +740,9 @@ export function drawLocationsAndRoads() {
     }
   }
 
-  // Safety: make sure everything is snapped to current elevation (water level)
+  // Safety: snap all icons to current elevation
   refreshLocationIcons(scene);
 
-  // Generate road history entries only once per roadConnections state.
-  // Lore generator is already guarded by scene.__roadLoreGenerated.
   if (!scene.__roadLoreGenerated) {
     generateRoadLoreForExistingConnections(scene);
   }
