@@ -1,10 +1,13 @@
 // src/scenes/WorldSceneHistory.js
 //
-// History panel UI:
-// - Large panel near top-right.
+// History panel UI (improved):
+// - Large panel near top-right (logistics-like style).
 // - Scrollable with mouse wheel.
-// - Text clipped to panel via geometry mask.
-// - Entries that can focus a hex are cyan & clickable.
+// - Entries are grouped into "Discovery" + "Era 1..N" blocks:
+//    Discovery (always first) -> then for each MAIN event: Era k header + up to 2 secondary events.
+// - Any entry that has coordinates highlights ALL its referenced hexes on hover.
+// - Clicking an entry focuses the relevant hex/camera.
+// - Removes legacy floating history button (keeps tab-based control).
 //
 // Public helpers:
 //   setupHistoryUI(scene)
@@ -15,11 +18,9 @@
 import { effectiveElevationLocal } from './WorldSceneGeography.js';
 
 /* =========================================================
-   POI ICONS (NEW)
+   POI ICONS (History line icons)
    ========================================================= */
 
-// Icon shown in History line when entry.poiType is present.
-// These can be different from map icons if you prefer.
 const POI_EVENT_ICON = {
   settlement: '🏘️',
   ruin: '🏚️',
@@ -37,9 +38,38 @@ const POI_EVENT_ICON = {
 function getEntryIcon(entry) {
   const pt = String(entry?.poiType || '').toLowerCase();
   if (pt && POI_EVENT_ICON[pt]) return POI_EVENT_ICON[pt];
-
-  // Optional: infer from entry.type if you ever want.
   return '';
+}
+
+/* =========================================================
+   Entry classification (for Era grouping)
+   ========================================================= */
+
+// "Main" events: the backbone of the DF-like narrative.
+// We treat settlement/ruin/crash/war/truce/founding as main.
+// Secondary: roads/camps/watchtowers/mines/shrines/vehicles/wreck/survey/etc.
+function isMainEvent(entry) {
+  if (!entry) return false;
+
+  const t = String(entry.type || '').toLowerCase();
+  const pt = String(entry.poiType || '').toLowerCase();
+
+  if (t === 'founding' || t === 'discovery') return true;
+  if (t === 'war' || t === 'truce' || t === 'peace') return true;
+  if (t === 'cataclysm') return true;
+
+  // POI-driven main types
+  if (pt === 'settlement' || pt === 'ruin' || pt === 'crash_site') return true;
+
+  // Some POI beats should count as main if explicitly marked
+  if (t === 'major' || t === 'main') return true;
+
+  return false;
+}
+
+function isSecondaryEvent(entry) {
+  if (!entry) return false;
+  return !isMainEvent(entry);
 }
 
 /* =========================================================
@@ -49,15 +79,9 @@ function getEntryIcon(entry) {
 export function setupHistoryUI(scene) {
   const margin = 12;
 
-  // v2: make History panel match Logistics panel footprint better
-  // (large, near top-right, similar style).
-  //
-  // If you already have a "logisticsPanel" or similar, we place next to it
-  // in a stable way; otherwise use top-right anchor.
   const PANEL_WIDTH = 520;
   const PANEL_HEIGHT = 520;
 
-  // Position: to the left of resources panel if present, else top-right.
   let panelX;
   let panelY;
 
@@ -65,44 +89,29 @@ export function setupHistoryUI(scene) {
     panelX = scene.resourcesPanel.x - PANEL_WIDTH - 16;
     panelY = scene.resourcesPanel.y;
   } else {
-    // top-right-ish
     panelX = (scene.scale?.width ?? 900) - PANEL_WIDTH - margin;
     panelY = 70;
   }
 
-  const depthBase = 9000; // render above most UI
+  const depthBase = 9000;
 
-  // ---- Main container for the panel ----
   const container = scene.add.container(panelX, panelY);
   container.setScrollFactor(0);
   container.setDepth(depthBase);
 
-  // ---- Background (match Logistics vibe) ----
-  const bg = scene.add.rectangle(
-    0,
-    0,
-    PANEL_WIDTH,
-    PANEL_HEIGHT,
-    0x07121f,
-    0.96
-  ).setOrigin(0, 0);
+  const bg = scene.add
+    .rectangle(0, 0, PANEL_WIDTH, PANEL_HEIGHT, 0x07121f, 0.96)
+    .setOrigin(0, 0);
   bg.setStrokeStyle(2, 0x34d2ff, 0.85);
   container.add(bg);
 
-  // ---- Title ----
-  const title = scene.add.text(
-    14,
-    8,
-    'History',
-    {
-      fontFamily: 'monospace',
-      fontSize: '17px',
-      color: '#d0f2ff',
-    }
-  );
+  const title = scene.add.text(14, 8, 'History', {
+    fontFamily: 'monospace',
+    fontSize: '17px',
+    color: '#d0f2ff',
+  });
   container.add(title);
 
-  // ---- Divider line under title ----
   const divider = scene.add.graphics();
   divider.lineStyle(1, 0x34d2ff, 0.35);
   divider.beginPath();
@@ -111,7 +120,6 @@ export function setupHistoryUI(scene) {
   divider.strokePath();
   container.add(divider);
 
-  // ---- Scrollable entries container (inside panel) ----
   const CONTENT_X = 12;
   const CONTENT_Y = 40;
   const CONTENT_W = PANEL_WIDTH - 24;
@@ -120,22 +128,14 @@ export function setupHistoryUI(scene) {
   const entriesContainer = scene.add.container(CONTENT_X, CONTENT_Y);
   container.add(entriesContainer);
 
-  // ---- Mask to clip entries to panel ----
   const maskGraphics = scene.make.graphics({ x: 0, y: 0, add: false });
   maskGraphics.fillStyle(0xffffff);
-  maskGraphics.fillRect(
-    panelX + CONTENT_X,
-    panelY + CONTENT_Y,
-    CONTENT_W,
-    CONTENT_H
-  );
+  maskGraphics.fillRect(panelX + CONTENT_X, panelY + CONTENT_Y, CONTENT_W, CONTENT_H);
   const entriesMask = maskGraphics.createGeometryMask();
   entriesContainer.setMask(entriesMask);
 
-  // Initial visibility
   container.setVisible(false);
 
-  // ---- Store references on scene ----
   scene.historyPanelContainer = container;
   scene.historyPanelBg = bg;
   scene.historyPanelTitle = title;
@@ -150,19 +150,19 @@ export function setupHistoryUI(scene) {
   scene.historyEntriesMask = entriesMask;
   scene.isHistoryPanelOpen = false;
 
-  // ---- IMPORTANT: remove legacy toggle button (the one you said is лишняя) ----
-  // History should be opened via the main tab bar (next to Energy), not via a floating button.
+  // Remove legacy floating toggle button (лишняя)
   if (scene.historyButton) {
-    try { scene.historyButton.destroy(); } catch (_e) {}
+    try {
+      scene.historyButton.destroy();
+    } catch (_e) {}
     scene.historyButton = null;
   }
 
-  // Public helpers
   scene.openHistoryPanel = () => openHistoryPanel(scene);
   scene.closeHistoryPanel = () => closeHistoryPanel(scene);
   scene.refreshHistoryPanel = () => refreshHistoryPanel(scene);
 
-  // ---- Scroll with mouse wheel when pointer over panel ----
+  // Scroll with mouse wheel when pointer is over panel
   scene.input.on('wheel', (pointer, _gameObjects, _dx, dy) => {
     if (!scene.isHistoryPanelOpen) return;
 
@@ -175,12 +175,11 @@ export function setupHistoryUI(scene) {
 
     if (px < x0 || px > x1 || py < y0 || py > y1) return;
 
-    const step = 34;
+    const step = 44;
     scene.historyScrollPos += Math.sign(dy) * step;
     refreshHistoryPanel(scene);
   });
 
-  // Initial refresh
   refreshHistoryPanel(scene);
 }
 
@@ -199,7 +198,90 @@ export function closeHistoryPanel(scene) {
   if (!scene.historyPanelContainer) return;
   scene.historyPanelContainer.setVisible(false);
   scene.isHistoryPanelOpen = false;
-  highlightHistoryHex(scene, null, null);
+  highlightHistoryHexes(scene, []);
+}
+
+/* =========================================================
+   Era building
+   ========================================================= */
+
+function sortEntriesChronologically(entries) {
+  return entries.slice().sort((a, b) => (a.year || 0) - (b.year || 0));
+}
+
+/**
+ * Build DF-like structure:
+ * Discovery (first entry) +
+ * For each MAIN event: Era #k with header=main, then up to 2 secondary following it.
+ */
+function buildEraBlocks(allEntries) {
+  const entries = sortEntriesChronologically(allEntries);
+
+  if (!entries.length) return [];
+
+  const blocks = [];
+  const first = entries[0];
+
+  blocks.push({
+    kind: 'discovery',
+    title: 'Discovery',
+    main: first,
+    items: [],
+    collapsed: false,
+  });
+
+  let i = 1;
+  let eraIndex = 1;
+
+  // If there is no clear MAIN event later, we still chunk into eras by 3 items.
+  const fallbackChunk = () => {
+    const main = entries[i];
+    const items = [];
+    if (entries[i + 1]) items.push(entries[i + 1]);
+    if (entries[i + 2]) items.push(entries[i + 2]);
+    blocks.push({
+      kind: 'era',
+      title: `Era ${eraIndex}`,
+      main,
+      items,
+      collapsed: true,
+    });
+    eraIndex += 1;
+    i += 3;
+  };
+
+  while (i < entries.length) {
+    const e = entries[i];
+
+    if (!isMainEvent(e)) {
+      // If we encounter a secondary without a preceding main, fallback chunking.
+      fallbackChunk();
+      continue;
+    }
+
+    const main = e;
+    const items = [];
+    let j = i + 1;
+    while (j < entries.length && items.length < 2) {
+      const nxt = entries[j];
+      if (isMainEvent(nxt)) break; // next era begins
+      items.push(nxt);
+      j += 1;
+    }
+
+    blocks.push({
+      kind: 'era',
+      title: `Era ${eraIndex}`,
+      main,
+      items,
+      collapsed: true,
+    });
+
+    eraIndex += 1;
+    i = j;
+  }
+
+  return blocks;
 }
 
 /* =========================================================
@@ -210,255 +292,179 @@ export function refreshHistoryPanel(scene) {
   const entriesContainer = scene.historyEntriesContainer;
   if (!entriesContainer) return;
 
-  // Destroy previous texts
+  // Destroy previous texts / graphics
   const prevTexts = scene.historyEntryTexts || [];
-  prevTexts.forEach(t => t.destroy());
+  prevTexts.forEach(t => {
+    try { t.destroy(); } catch (_e) {}
+  });
   scene.historyEntryTexts = [];
 
-  // v2: show 2x fewer entries (cap)
-  const ALL = Array.isArray(scene.historyEntries)
-    ? scene.historyEntries.slice().sort((a, b) => (a.year || 0) - (b.year || 0))
-    : [];
+  // Get entries
+  const ALL = Array.isArray(scene.historyEntries) ? scene.historyEntries : [];
 
-  // Reduce: keep the newest N by default (most relevant for player),
-  // but preserve chronological ordering inside the shown slice.
-  const CAP = Math.max(8, Math.floor((ALL.length || 0) / 2));
-  const entries =
-    (ALL.length > CAP)
-      ? ALL.slice(ALL.length - CAP)
-      : ALL;
+  // If too many events exist, reduce noise:
+  // Prefer keeping structure: last N eras (not just last N entries).
+  const blocksAll = buildEraBlocks(ALL);
+  const ERA_CAP = 10; // keeps UI readable while still DF-like; tweak if desired
+  const blocks =
+    blocksAll.length > (1 + ERA_CAP)
+      ? [blocksAll[0]].concat(blocksAll.slice(blocksAll.length - ERA_CAP))
+      : blocksAll;
 
   const maxWidth = scene.historyPanelWidth - 24;
 
-  // Precompute city/outpost data for highlighting in text
-  const outposts =
-    scene.loreState && Array.isArray(scene.loreState.outposts)
-      ? scene.loreState.outposts
-      : [];
-  const outpostNames = outposts
-    .map(o => (o && o.name ? String(o.name) : null))
-    .filter(Boolean);
+  let y = 0;
 
-  let yCursor = 0;
-
-  if (!entries.length) {
-    const txt = scene.add.text(
-      0,
-      0,
-      'No events yet.',
-      {
-        fontFamily: 'monospace',
-        fontSize: '14px',
-        color: '#b7d7ff',
-        wordWrap: { width: maxWidth },
-        lineSpacing: 4,
-      }
-    );
+  if (!blocks.length) {
+    const txt = scene.add.text(0, 0, 'No events yet.', {
+      fontFamily: 'monospace',
+      fontSize: '14px',
+      color: '#b7d7ff',
+      wordWrap: { width: maxWidth },
+      lineSpacing: 4,
+    });
     entriesContainer.add(txt);
     scene.historyEntryTexts.push(txt);
     scene.historyScrollPos = 0;
   } else {
-    for (const ev of entries) {
-      const year = typeof ev.year === 'number' ? ev.year : 5000;
-      const body = ev.text || '';
+    for (const block of blocks) {
+      // --- Block header ---
+      const headerText =
+        block.kind === 'discovery'
+          ? `◆ ${block.title}`
+          : `◆ ${block.title}`;
 
-      // NEW: show POI icon if present
-      const icon = getEntryIcon(ev);
-      const iconPrefix = icon ? `${icon} ` : '';
-
-      const label = `${iconPrefix}${year} — ${body}`;
-
-      const hasTargets = entryHasTargets(ev);
-      const baseColor = hasTargets ? '#6bf7ff' : '#b7d7ff';
-
-      // Split into segments: normal and "city" names (legacy behavior)
-      const segments = splitTextByCityNames(label, outposts, outpostNames);
-
-      const normalStyle = {
+      const header = scene.add.text(0, y, headerText, {
         fontFamily: 'monospace',
-        fontSize: '14px',
-        color: baseColor,
-        wordWrap: { width: maxWidth },
-        lineSpacing: 4,
-      };
+        fontSize: '15px',
+        color: '#d0f2ff',
+      }).setOrigin(0, 0);
+      entriesContainer.add(header);
+      scene.historyEntryTexts.push(header);
 
-      const cityStyle = {
-        fontFamily: 'monospace',
-        fontSize: '14px',
-        color: '#ffffff',
-        fontStyle: 'bold',
-        wordWrap: { width: maxWidth },
-        lineSpacing: 4,
-      };
+      // Collapse toggle only for eras (discovery always expanded)
+      if (block.kind === 'era') {
+        header.setInteractive({ useHandCursor: true });
+        header.on('pointerdown', () => {
+          block.collapsed = !block.collapsed;
+          // store collapse state across refreshes (by main.year + main.text key)
+          const key = blockKey(block);
+          if (!scene.__historyCollapse) scene.__historyCollapse = {};
+          scene.__historyCollapse[key] = block.collapsed;
+          refreshHistoryPanel(scene);
+        });
+      }
 
-      let xCursor = 0;
-      let lineBottom = yCursor;
-
-      // v2: allow hover highlight for ANY coordinate-bearing entry (not only city name tokens)
-      const hoverTarget = getPrimaryEntryTarget(ev);
-
-      for (const seg of segments) {
-        const segStyle = seg.city ? cityStyle : normalStyle;
-
-        const tokens = seg.text.split(/(\s+)/); // words + spaces
-
-        for (const token of tokens) {
-          if (!token) continue;
-
-          // Measure token
-          const tmp = scene.add.text(0, 0, token, segStyle).setOrigin(0, 0);
-          const tokenW = tmp.width;
-          const tokenH = tmp.height;
-          tmp.destroy();
-
-          if (
-            token.trim().length > 0 &&
-            xCursor > 0 &&
-            xCursor + tokenW > maxWidth
-          ) {
-            // New line
-            xCursor = 0;
-            yCursor = lineBottom + 4;
-            lineBottom = yCursor;
-          }
-
-          const tObj = scene.add.text(xCursor, yCursor, token, segStyle).setOrigin(0, 0);
-
-          // Click on the whole entry (as before)
-          if (hasTargets) {
-            tObj.setInteractive({ useHandCursor: true });
-            tObj.on('pointerdown', () => {
-              focusEntry(scene, ev);
-            });
-
-            // NEW: hover highlight for any entry with coords
-            if (hoverTarget) {
-              tObj.on('pointerover', () => {
-                highlightHistoryHex(scene, hoverTarget.q, hoverTarget.r);
-              });
-              tObj.on('pointerout', () => {
-                highlightHistoryHex(scene, null, null);
-              });
-            }
-          }
-
-          // City-name segment interactions (kept)
-          if (seg.city && token.trim().length > 0) {
-            const city = seg.city;
-            tObj.setInteractive({ useHandCursor: true });
-            tObj.on('pointerover', () => {
-              highlightHistoryHex(scene, city.q, city.r);
-            });
-            tObj.on('pointerout', () => {
-              highlightHistoryHex(scene, null, null);
-            });
-            tObj.on('pointerdown', () => {
-              selectHex(scene, city.q, city.r);
-            });
-          }
-
-          entriesContainer.add(tObj);
-          scene.historyEntryTexts.push(tObj);
-
-          xCursor += tObj.width;
-          lineBottom = Math.max(lineBottom, yCursor + tObj.height);
+      // Restore collapse state
+      if (block.kind === 'era') {
+        const key = blockKey(block);
+        if (scene.__historyCollapse && key in scene.__historyCollapse) {
+          block.collapsed = !!scene.__historyCollapse[key];
         }
       }
 
-      yCursor = lineBottom + 10; // spacing between entries
+      y += header.height + 6;
+
+      // --- Main line ---
+      const mainLine = renderEntryLine(scene, entriesContainer, block.main, y, maxWidth, {
+        isMain: true,
+      });
+      y += mainLine.height + 6;
+
+      // --- Secondary lines ---
+      if (block.kind === 'era' && block.collapsed) {
+        // show a small hint
+        if (block.items.length) {
+          const hint = scene.add.text(0, y, `… ${block.items.length} secondary event(s)`, {
+            fontFamily: 'monospace',
+            fontSize: '13px',
+            color: '#7bbbd0',
+          }).setOrigin(0, 0);
+          entriesContainer.add(hint);
+          scene.historyEntryTexts.push(hint);
+          y += hint.height + 10;
+        } else {
+          y += 8;
+        }
+      } else {
+        for (const it of block.items) {
+          const line = renderEntryLine(scene, entriesContainer, it, y, maxWidth, {
+            indent: 16,
+            isMain: false,
+          });
+          y += line.height + 6;
+        }
+        y += 6;
+      }
     }
   }
 
-  const contentHeight = yCursor;
+  const contentHeight = y;
   const visibleHeight = scene.historyVisibleHeight || (scene.historyPanelHeight - 44);
 
   const maxScroll = Math.max(0, contentHeight - visibleHeight);
-
   if (scene.historyScrollPos < 0) scene.historyScrollPos = 0;
   if (scene.historyScrollPos > maxScroll) scene.historyScrollPos = maxScroll;
 
-  // entriesContainer.y is relative to panel container
   entriesContainer.y = scene.historyEntriesBaseY - scene.historyScrollPos;
 }
 
-// Split a text label into segments so that outpost/city names
-// can be rendered with a different style and interactions.
-function splitTextByCityNames(text, outposts, outpostNames) {
-  if (!outposts || !outposts.length || !outpostNames || !outpostNames.length) {
-    return [{ text, city: null }];
-  }
-
-  const matches = [];
-
-  for (const name of outpostNames) {
-    const n = String(name);
-    let idx = text.indexOf(n);
-    while (idx !== -1) {
-      matches.push({ start: idx, end: idx + n.length, name: n });
-      idx = text.indexOf(n, idx + n.length);
-    }
-  }
-
-  if (!matches.length) {
-    return [{ text, city: null }];
-  }
-
-  // Keep non-overlapping matches, preferring earlier and longer ones
-  matches.sort((a, b) => {
-    if (a.start !== b.start) return a.start - b.start;
-    return b.end - a.end;
-  });
-
-  const filtered = [];
-  let lastEnd = -1;
-  for (const m of matches) {
-    if (m.start >= lastEnd) {
-      filtered.push(m);
-      lastEnd = m.end;
-    }
-  }
-
-  const segments = [];
-  let pos = 0;
-  for (const m of filtered) {
-    if (m.start > pos) {
-      segments.push({ text: text.slice(pos, m.start), city: null });
-    }
-    const city = outposts.find(o => o && o.name === m.name) || null;
-    segments.push({ text: text.slice(m.start, m.end), city });
-    pos = m.end;
-  }
-  if (pos < text.length) {
-    segments.push({ text: text.slice(pos), city: null });
-  }
-  return segments;
+function blockKey(block) {
+  const m = block?.main || {};
+  const y = typeof m.year === 'number' ? m.year : 0;
+  const t = String(m.text || '').slice(0, 48);
+  return `${block.title}|${y}|${t}`;
 }
 
-/**
- * NEW:
- * Pick a single coordinate to highlight for an entry on hover.
- * - prefer entry.q/r
- * - else from
- * - else to
- * - else first target
- */
-function getPrimaryEntryTarget(entry) {
-  if (!entry) return null;
-  if (typeof entry.q === 'number' && typeof entry.r === 'number') return { q: entry.q, r: entry.r };
-  if (entry.from && hasCoord(entry.from)) return { q: entry.from.q, r: entry.from.r };
-  if (entry.to && hasCoord(entry.to)) return { q: entry.to.q, r: entry.to.r };
-  if (Array.isArray(entry.targets)) {
-    const t = entry.targets.find(hasCoord);
-    if (t) return { q: t.q, r: t.r };
+function renderEntryLine(scene, parent, entry, y, maxWidth, opts = {}) {
+  const year = typeof entry?.year === 'number' ? entry.year : 5000;
+  const body = String(entry?.text || '');
+
+  const icon = getEntryIcon(entry);
+  const iconPrefix = icon ? `${icon} ` : '';
+
+  const indent = opts.indent || 0;
+  const isMain = !!opts.isMain;
+
+  const lineText = `${iconPrefix}${year} — ${body}`;
+
+  const hasTargets = entryHasTargets(entry);
+  const color = isMain ? '#ffffff' : (hasTargets ? '#6bf7ff' : '#b7d7ff');
+
+  const tObj = scene.add.text(indent, y, lineText, {
+    fontFamily: 'monospace',
+    fontSize: isMain ? '14px' : '13.5px',
+    color,
+    wordWrap: { width: maxWidth - indent },
+    lineSpacing: 4,
+  }).setOrigin(0, 0);
+
+  parent.add(tObj);
+  scene.historyEntryTexts.push(tObj);
+
+  if (hasTargets) {
+    tObj.setInteractive({ useHandCursor: true });
+
+    tObj.on('pointerover', () => {
+      const coords = collectEntryTargets(entry);
+      highlightHistoryHexes(scene, coords);
+    });
+    tObj.on('pointerout', () => {
+      highlightHistoryHexes(scene, []);
+    });
+    tObj.on('pointerdown', () => {
+      focusEntry(scene, entry);
+    });
   }
-  return null;
+
+  return tObj;
 }
 
-/**
- * Draw a white outline over a hex (similar to hover highlight).
- * If q/r are null, clears history-driven highlight.
- */
-function highlightHistoryHex(scene, q, r) {
+/* =========================================================
+   HOVER HIGHLIGHT (ALL coords)
+   ========================================================= */
+
+function highlightHistoryHexes(scene, coords) {
   if (!scene || !scene.mapData) return;
 
   if (!scene.historyHoverGraphics) {
@@ -468,14 +474,8 @@ function highlightHistoryHex(scene, q, r) {
   }
   const g = scene.historyHoverGraphics;
 
-  if (typeof q !== 'number' || typeof r !== 'number') {
-    g.clear();
-    g.visible = false;
-    return;
-  }
-
-  const tile = scene.mapData.find(t => t.q === q && t.r === r);
-  if (!tile) {
+  const list = Array.isArray(coords) ? coords.filter(c => c && Number.isFinite(c.q) && Number.isFinite(c.r)) : [];
+  if (!list.length) {
     g.clear();
     g.visible = false;
     return;
@@ -483,50 +483,56 @@ function highlightHistoryHex(scene, q, r) {
 
   const size = scene.hexSize || 24;
   const LIFT = scene?.LIFT_PER_LVL ?? 4;
-  const eff = effectiveElevationLocal(tile);
-
-  const coord = scene.hexToPixel(q, r, size);
   const offsetX = scene.mapOffsetX || 0;
   const offsetY = scene.mapOffsetY || 0;
-  const x = coord.x + offsetX;
-  const y = coord.y + offsetY - LIFT * eff;
 
-  const radius = size * 0.95;
+  // Build tile lookup for speed
+  const byKey = new Map((scene.mapData || []).map(t => [keyOf(t.q, t.r), t]));
 
   g.clear();
   g.lineStyle(3, 0xffffff, 1);
 
-  g.beginPath();
-  for (let i = 0; i < 6; i++) {
-    const angle = (Math.PI / 3) * i + Math.PI / 6;
-    const px = x + radius * Math.cos(angle);
-    const py = y + radius * Math.sin(angle);
-    if (i === 0) g.moveTo(px, py);
-    else g.lineTo(px, py);
+  const radius = size * 0.95;
+
+  for (const c of list) {
+    const tile = byKey.get(keyOf(c.q, c.r));
+    if (!tile) continue;
+
+    const eff = effectiveElevationLocal(tile);
+    const coord = scene.hexToPixel(c.q, c.r, size);
+    const x = coord.x + offsetX;
+    const y = coord.y + offsetY - LIFT * eff;
+
+    g.beginPath();
+    for (let i = 0; i < 6; i++) {
+      const angle = (Math.PI / 3) * i + Math.PI / 6;
+      const px = x + radius * Math.cos(angle);
+      const py = y + radius * Math.sin(angle);
+      if (i === 0) g.moveTo(px, py);
+      else g.lineTo(px, py);
+    }
+    g.closePath();
+    g.strokePath();
   }
-  g.closePath();
-  g.strokePath();
 
   g.visible = true;
 }
 
 /* =========================================================
-   CLICKABLE ENTRY HELPERS
+   CLICK / FOCUS HELPERS
    ========================================================= */
 
 function entryHasTargets(entry) {
-  if (typeof entry.q === 'number' && typeof entry.r === 'number') return true;
-  if (entry.from && hasCoord(entry.from)) return true;
-  if (entry.to && hasCoord(entry.to)) return true;
-  if (Array.isArray(entry.targets) && entry.targets.some(hasCoord)) return true;
-  return false;
+  if (!entry) return false;
+  const coords = collectEntryTargets(entry);
+  return coords.length > 0;
 }
 
 function hasCoord(t) {
   return t && typeof t.q === 'number' && typeof t.r === 'number';
 }
 
-function focusEntry(scene, entry) {
+function collectEntryTargets(entry) {
   const targets = [];
 
   if (typeof entry.q === 'number' && typeof entry.r === 'number') {
@@ -540,35 +546,42 @@ function focusEntry(scene, entry) {
   }
   if (Array.isArray(entry.targets)) {
     for (const t of entry.targets) {
-      if (hasCoord(t)) {
-        targets.push({ q: t.q, r: t.r });
-      }
+      if (hasCoord(t)) targets.push({ q: t.q, r: t.r });
     }
   }
 
+  // Deduplicate
+  const seen = new Set();
+  const out = [];
+  for (const t of targets) {
+    const k = `${t.q},${t.r}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(t);
+  }
+  return out;
+}
+
+function focusEntry(scene, entry) {
+  const targets = collectEntryTargets(entry);
   if (!targets.length) return;
 
-  let focusQ = targets[0].q;
-  let focusR = targets[0].r;
-
-  if (
-    entry.from && hasCoord(entry.from) &&
-    entry.to && hasCoord(entry.to)
-  ) {
-    // Road-style: pan to midpoint, highlight "from"
+  // If road-style entry: pan to midpoint but select "from"
+  if (entry.from && hasCoord(entry.from) && entry.to && hasCoord(entry.to)) {
     const a = scene.axialToWorld(entry.from.q, entry.from.r);
     const b = scene.axialToWorld(entry.to.q, entry.to.r);
     const midX = (a.x + b.x) / 2;
     const midY = (a.y + b.y) / 2;
     panCameraTo(scene, midX, midY);
-    focusQ = entry.from.q;
-    focusR = entry.from.r;
-  } else {
-    const p = scene.axialToWorld(focusQ, focusR);
-    panCameraTo(scene, p.x, p.y);
+    selectHex(scene, entry.from.q, entry.from.r);
+    return;
   }
 
-  selectHex(scene, focusQ, focusR);
+  // Otherwise focus first target
+  const t = targets[0];
+  const p = scene.axialToWorld(t.q, t.r);
+  panCameraTo(scene, p.x, p.y);
+  selectHex(scene, t.q, t.r);
 }
 
 function panCameraTo(scene, x, y) {
@@ -585,7 +598,7 @@ function selectHex(scene, q, r) {
   scene.selectedHex = { q, r };
   scene.clearPathPreview?.();
 
-  // Update hex selection visuals
+  // Update selection visuals
   scene.updateSelectionHighlight?.();
 
   // Optional debug
