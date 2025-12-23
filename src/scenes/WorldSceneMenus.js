@@ -519,17 +519,26 @@ export function attachSelectionHighlight(scene) {
   scene.selectionHighlight = g;
 
   scene.updateSelectionHighlight = function () {
-    // highlight unit OR building
+    // highlight unit OR building OR selected hex (hex inspect)
     const unit = scene.selectedUnit;
     const building = scene.selectedBuilding;
     const target = unit || building;
-    if (!target) {
+
+    // Hex selection is allowed only when no unit/building is selected
+    const hex = (!target && scene.selectedHex)
+      ? scene.selectedHex
+      : null;
+
+    if (!target && !hex) {
       g.clear();
       g.visible = false;
       return;
     }
 
-    const pos = scene.axialToWorld(target.q, target.r);
+    const pos = target
+      ? scene.axialToWorld(target.q, target.r)
+      : scene.axialToWorld(hex.q, hex.r);
+
     const x = pos.x;
     const y = pos.y;
 
