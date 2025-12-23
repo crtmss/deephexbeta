@@ -1,5 +1,4 @@
 // deephexbeta/src/scenes/WorldSceneUI.js
-// :contentReference[oaicite:1]{index=1}
 
 import { refreshUnits } from './WorldSceneActions.js';
 import { findPath as aStarFindPath } from '../engine/AStar.js';
