@@ -178,8 +178,8 @@ function ensureWorldLoreGenerated(scene) {
   if (!scene || scene.__worldLoreGenerated) return;
 
   const seedStr = String(scene.seed || "000000");
-  // v6: fewer events, phase-based causality, faction ownership, reliable wreck spawn.
-  const rng = xorshift32(hashStr32(`${seedStr}|worldLoreV6`));
+  // v7: enforce max 2 AI factions; first settlement is created at Discovery.
+  const rng = xorshift32(hashStr32(`${seedStr}|worldLoreV7`));
 
   const addEntry = scene.addHistoryEntry
     ? (entry) => scene.addHistoryEntry(entry)
@@ -238,7 +238,10 @@ function ensureWorldLoreGenerated(scene) {
 
   // --- Island name & factions ---
   const islandName = `${pick(rng, ISLAND_PREFIX)} ${pick(rng, ISLAND_ROOT)}`;
-  const factionCount = 1 + Math.floor(rng() * 3); // 1–3
+
+  // IMPORTANT: In-game max AI factions = 2.
+  // We interpret this as: 1 or 2 world factions (A always exists, B optional).
+  const factionCount = 1 + Math.floor(rng() * 2); // 1–2 (was 1–3)
   const factions = pickMany(rng, FACTIONS, factionCount);
   const factionA = factions[0];
   const factionB = factions[1];
@@ -251,11 +254,9 @@ function ensureWorldLoreGenerated(scene) {
   // ============================================================
   // POI generation: seed -> lore -> POI
   //
-  // v6 changes:
-  // - fewer POIs (and thus fewer events)
-  // - each POI gets faction ownership where it makes sense
-  // - "wreck" is placed on *water adjacent to land* (coastal water),
-  //   which fixes cases where ship wreck never appears.
+  // v7 changes:
+  // - enforce max 2 AI factions
+  // - first settlement is guaranteed to be created as part of Discovery
   // ============================================================
 
   // Reserve already-present POIs to avoid collisions
@@ -327,7 +328,6 @@ function ensureWorldLoreGenerated(scene) {
       }
       if (type === "ruin") {
         tile.cityName = name || tile.cityName;
-        // ruins can still be "claimed" later; store claimant separately if needed
         if (faction) tile.ruinClaimFaction = faction;
       }
     }
@@ -351,13 +351,26 @@ function ensureWorldLoreGenerated(scene) {
   const mines = [];
   const shrines = [];
 
-  // --- Settlements (1–2) ---
-  const settlementCount = 1 + Math.floor(rng() * 2);
-  for (let i = 0; i < settlementCount; i++) {
+  // --- DISCOVERY: FIRST SETTLEMENT MUST BE CREATED HERE ---
+  // Try: coast -> any land. If no land exists, we can't place it.
+  if (anyLand.length) {
+    const pool = coastLand.length ? coastLand : anyLand;
+    const t = pickTileFromPool(pool, { minDist: 6 });
+    if (t) {
+      const name = makePlaceName(rng, 0, "Settlement");
+      addPOI({ type: "settlement", q: t.q, r: t.r, name, faction: factionA });
+      settlements.push({ name, q: t.q, r: t.r, type: "settlement", faction: factionA });
+    }
+  }
+
+  // --- Additional settlements (0–1) ---
+  // (kept small; discovery already created the first one)
+  const extraSettlementCount = (settlements.length && rng() < 0.55) ? 1 : 0;
+  for (let i = 0; i < extraSettlementCount; i++) {
     const pool = coastLand.length ? coastLand : anyLand;
     const t = pickTileFromPool(pool, { minDist: 6 });
     if (!t) break;
-    const name = makePlaceName(rng, i, "Settlement");
+    const name = makePlaceName(rng, i + 1, "Settlement");
     addPOI({ type: "settlement", q: t.q, r: t.r, name, faction: factionA });
     settlements.push({ name, q: t.q, r: t.r, type: "settlement", faction: factionA });
   }
@@ -369,7 +382,6 @@ function ensureWorldLoreGenerated(scene) {
     const t = pickTileFromPool(pool, { minDist: 5 });
     if (!t) break;
     const name = `Ruins of ${pick(rng, PLACE_ROOT)}${i ? "-" + (i + 1) : ""}`;
-    // "claimed" by a current faction (makes UI + hover + ownership meaningful)
     const claimant = pickFactionOwner();
     addPOI({ type: "ruin", q: t.q, r: t.r, name, faction: claimant });
     ruins.push({ name, q: t.q, r: t.r, type: "ruin", faction: claimant });
@@ -419,16 +431,12 @@ function ensureWorldLoreGenerated(scene) {
     roadsideCamps.push({ q: t.q, r: t.r, type: "roadside_camp", faction: owner });
   }
 
-  // --- Raider camps (0–2), tend to appear only if trade/routes/tension exists ---
-  // Keep them possible, but not guaranteed.
+  // --- Raider camps (0–2) ---
   const raiderCampCount = (rng() < 0.65) ? Math.floor(rng() * 3) : 0; // 0..2 with 65% chance
   for (let i = 0; i < raiderCampCount; i++) {
     const pool = inlandLand.length ? inlandLand : anyLand;
     const t = pickTileFromPool(pool, { minDist: 5 });
     if (!t) break;
-    // In v6, camps are "affiliated" with an island faction for ownership purposes
-    // (the player asked all objects belong to island factions).
-    // If a second faction exists, prefer them; otherwise assign randomly.
     const owner = factionB && rng() < 0.7 ? factionB : pickFactionOwner();
     addPOI({ type: "raider_camp", q: t.q, r: t.r, faction: owner });
     raiderCamps.push({ q: t.q, r: t.r, type: "raider_camp", faction: owner });
@@ -442,7 +450,13 @@ function ensureWorldLoreGenerated(scene) {
       const t = pickTileFromPool(pool, opts);
       if (!t) break;
       const owner = pickFactionOwner();
-      addPOI({ type, q: t.q, r: t.r, faction: owner, meta: (typeof factoryMeta === "function" ? factoryMeta(t, owner) : factoryMeta) });
+      addPOI({
+        type,
+        q: t.q,
+        r: t.r,
+        faction: owner,
+        meta: (typeof factoryMeta === "function" ? factoryMeta(t, owner) : factoryMeta)
+      });
     }
   };
 
@@ -491,8 +505,6 @@ function ensureWorldLoreGenerated(scene) {
 
   // ============================================================
   // Phase-based Events (History) — FEWER, organic, causal.
-  //
-  // v6 target: ~10–16 events total, not spam-per-POI.
   // ============================================================
   const baseYear = 5000;
   const events = [];
@@ -526,7 +538,7 @@ function ensureWorldLoreGenerated(scene) {
     });
   }
 
-  // Phase 1: Discovery / landing
+  // Phase 1: Discovery / landing (always references the first settlement we created above)
   const firstSettlement = settlements[0] || null;
   if (firstSettlement) {
     pushEvent({
@@ -547,6 +559,13 @@ function ensureWorldLoreGenerated(scene) {
       r: t.r,
       faction: factionA,
       text: `${factionA} make landfall on ${islandName}, camping at ${humanCoord(t.q, t.r)} before scouts fan out.`,
+    });
+  } else {
+    pushEvent({
+      year: baseYear,
+      type: "founding",
+      faction: factionA,
+      text: `${factionA} chart ${islandName} from afar, but find no safe landfall in the surveyed waters.`,
     });
   }
 
@@ -627,7 +646,7 @@ function ensureWorldLoreGenerated(scene) {
     );
   }
 
-  // Ruins: 1–2 with real hooks (NO "no one agrees..." filler)
+  // Ruins: 1–2 with real hooks
   const ruinHooks = [
     (rr) => `At ${rr.name} ${humanCoord(rr.q, rr.r)}, stonework shows scorch marks and collapsed roofs—signs of a sudden end.`,
     (rr) => `At ${rr.name} ${humanCoord(rr.q, rr.r)}, cisterns and carved channels hint at a community that fought scarcity before it fell.`,
@@ -726,7 +745,7 @@ function ensureWorldLoreGenerated(scene) {
   }
 
   // Phase 4: Tension (optional, 0–2 beats)
-  const multiFaction = factionB && rng() < 0.55;
+  const multiFaction = !!factionB && rng() < 0.55;
   if (multiFaction) {
     pushEvent({
       year: bumpYear(1, 3),
@@ -764,7 +783,6 @@ function ensureWorldLoreGenerated(scene) {
     };
     pushEvent(finalCataclysmEvent);
 
-    // In no-settlement worlds we can degrade some roadside camps into ruins
     for (const obj of worldObjects) {
       const t = String(obj.type || "").toLowerCase();
       if (t === "roadside_camp" && rng() < 0.35) {
@@ -801,9 +819,6 @@ function ensureWorldLoreGenerated(scene) {
     addEntry(entry);
   }
 
-  // Backward compatibility: some UI expects loreState.outposts (names for highlighting).
-  // We treat it as "named places".
-  // v6: include only named places (settlements + named ruins).
   const namedPlaces = []
     .concat(settlements)
     .concat(ruins);
@@ -822,7 +837,7 @@ function ensureWorldLoreGenerated(scene) {
     resources: resInfo,
     disaster: finalCataclysmEvent?.disaster || null,
 
-    // v6: reserve road insertion window
+    // reserve road insertion window
     roadStartYear,
     __roadYearCursor: roadStartYear,
   };
@@ -846,7 +861,7 @@ export function generateRuinLoreForTile(scene, tile) {
 }
 
 // Same API as before: we add "road built" events based on recorded connections.
-// v6: insert roads into reserved timeline window so they don't always appear "last".
+// v7: insert roads into reserved timeline window so they don't always appear "last".
 export function generateRoadLoreForExistingConnections(scene) {
   if (!scene) return;
 
@@ -878,7 +893,6 @@ export function generateRoadLoreForExistingConnections(scene) {
   const factions = scene.loreState?.factions || [];
   const defaultFaction = factions[0] || "an unknown faction";
 
-  // v6: insert roads starting from reserved cursor
   let year = Number.isFinite(scene.loreState?.__roadYearCursor)
     ? scene.loreState.__roadYearCursor
     : (scene.getNextHistoryYear ? scene.getNextHistoryYear() : 5030);
@@ -943,11 +957,9 @@ function buildLocationLabel(endpoint, tile, isFrom) {
   const type = String(endpoint.type || "").toLowerCase();
 
   if (tile && tile.cityName) {
-    // If a tile has cityName, prefer settlement vs ruin wording when possible
     if (type === "settlement") return `the settlement ${tile.cityName} (${q},${r})`;
     if (type === "ruin") return `the ruins of ${tile.cityName} (${q},${r})`;
 
-    // Legacy fallback
     if (isFrom) return `the outpost ${tile.cityName} (${q},${r})`;
     return `the ruins of ${tile.cityName} (${q},${r})`;
   }
