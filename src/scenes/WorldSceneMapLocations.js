@@ -26,6 +26,10 @@
 //   * Endpoints (pts) skip any mountain tile too.
 //   * Mountain detection is robust (type/groundType/elevation==7).
 // - Mountain icons still render for mountains.
+//
+// NOTE (NEW):
+// - Road history generation is moved OUT of MapLocations into LoreGeneration.
+//   This file must NOT add history entries about roads anymore.
 
 import {
   effectiveElevationLocal,
@@ -36,7 +40,7 @@ import {
 } from "./WorldSceneGeography.js";
 import {
   generateRuinLoreForTile,
-  generateRoadLoreForExistingConnections,
+  // generateRoadLoreForExistingConnections, // MOVED OUT (do not generate history here)
 } from "./LoreGeneration.js";
 
 const keyOf = (q, r) => `${q},${r}`;
@@ -802,7 +806,10 @@ export function drawLocationsAndRoads() {
       configurable: true,
     });
 
-    scene.__roadLoreGenerated = false;
+    // IMPORTANT:
+    // Road history is generated in LoreGeneration now.
+    // This flag can remain for other logic, but MapLocations must NOT create road entries.
+    scene.__roadLoreGenerated = true;
   }
 
   initOrUpdateGeography(scene, map);
@@ -983,9 +990,10 @@ export function drawLocationsAndRoads() {
 
   refreshLocationIcons(scene);
 
-  if (!scene.__roadLoreGenerated) {
-    generateRoadLoreForExistingConnections(scene);
-  }
+  // IMPORTANT:
+  // Road lore generation has been removed from MapLocations.
+  // It will be produced in LoreGeneration during world history creation,
+  // in the correct DF-like sequence.
 }
 
 export default {
