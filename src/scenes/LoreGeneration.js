@@ -7,6 +7,12 @@
 // Public API (unchanged):
 //   generateRuinLoreForTile(scene, tile)
 //   generateRoadLoreForExistingConnections(scene)
+//
+// IMPORTANT CHANGE (for roads):
+// - MapLocations must NOT add history about roads anymore.
+// - Roads lore is now generated as a deterministic list (scene.loreState.roadEvents)
+//   and then inserted into the main history timeline during ensureWorldLoreGenerated,
+//   inside the reserved "roadStartYear" window, so the order becomes organic.
 
 function hashStr32(s) {
   let h = 2166136261 >>> 0;
@@ -273,11 +279,6 @@ function ensureWorldLoreGenerated(scene) {
 
   // ============================================================
   // POI generation: seed -> lore -> POI
-  //
-  // v8 changes:
-  // - enforce max 2 AI factions
-  // - first settlement is guaranteed to be created as part of Discovery
-  // - forbid POI placement on mountain tiles
   // ============================================================
 
   // Reserve already-present POIs to avoid collisions
@@ -791,6 +792,33 @@ function ensureWorldLoreGenerated(scene) {
     text: `As trade stabilizes, the most-used trails are widened into proper routes—stones cleared, markers raised, and crossings mapped.`,
   });
 
+  // NEW: Build roadEvents deterministically (but DO NOT add to history here)
+  // Then insert a LIMITED amount of road entries right after routes_formalized.
+  // This prevents "2–4 roads always at the end" and keeps DF-like cadence.
+  generateRoadLoreForExistingConnections(scene); // builds scene.loreState.roadEvents
+  const roadEvents = Array.isArray(scene.loreState?.roadEvents) ? scene.loreState.roadEvents : [];
+
+  // Limit road entries so they don't flood the history.
+  // You wanted 2 secondary per main in UI; we keep road entries modest here as well.
+  const MAX_ROAD_EVENTS_TO_INSERT = 2;
+  let insertedRoad = 0;
+
+  for (const re of roadEvents) {
+    if (insertedRoad >= MAX_ROAD_EVENTS_TO_INSERT) break;
+    // Give them compact years after roadStartYear.
+    insertedRoad += 1;
+    pushEvent({
+      year: roadStartYear + insertedRoad,
+      type: "road_built",
+      poiType: "road",
+      from: re.from,
+      to: re.to,
+      faction: re.faction,
+      targets: re.targets,
+      text: re.text,
+    });
+  }
+
   // Optional cataclysm:
   // - NOT required
   // - If settlements exist: cataclysm MUST NOT happen (rule).
@@ -863,6 +891,9 @@ function ensureWorldLoreGenerated(scene) {
     // reserve road insertion window
     roadStartYear,
     __roadYearCursor: roadStartYear,
+
+    // NEW: stash built road events so UI/other systems can inspect them
+    roadEvents: Array.isArray(scene.loreState?.roadEvents) ? scene.loreState.roadEvents : roadEvents,
   };
 
   // Seed -> lore -> POI: commit worldObjects back into mapInfo / hexMap
@@ -883,28 +914,37 @@ export function generateRuinLoreForTile(scene, tile) {
   tile.__loreGenerated = true;
 }
 
-// Same API as before: we add "road built" events based on recorded connections.
-// v8: insert roads into reserved timeline window so they don't always appear "last".
+/**
+ * NEW BEHAVIOR:
+ * This function no longer writes directly into scene.historyEntries.
+ * It builds deterministic road event objects and stores them in scene.loreState.roadEvents.
+ *
+ * This lets the main lore generator insert roads into the narrative where it wants,
+ * instead of roads always appearing at the end because they were appended late.
+ */
 export function generateRoadLoreForExistingConnections(scene) {
   if (!scene) return;
 
-  ensureWorldLoreGenerated(scene);
-  if (scene.__roadLoreGenerated) return;
+  // If world lore is not yet generated, we can still build road events later.
+  // But we DO want faction/island context; ensure world lore if possible.
+  if (scene.__worldLoreGenerated !== true) {
+    // do not force if addHistoryEntry doesn't exist yet
+    // (still safe to call; ensure will early return if needed)
+    ensureWorldLoreGenerated(scene);
+  }
+
+  if (scene.__roadLoreGenerated && Array.isArray(scene?.loreState?.roadEvents)) return;
 
   const conns = Array.isArray(scene.roadConnections)
     ? scene.roadConnections
     : [];
 
+  // Prepare loreState container
+  scene.loreState = scene.loreState || {};
+  scene.loreState.roadEvents = scene.loreState.roadEvents || [];
+
+  // Nothing to do
   if (!conns.length) {
-    scene.__roadLoreGenerated = true;
-    return;
-  }
-
-  const addEntry = scene.addHistoryEntry
-    ? (entry) => scene.addHistoryEntry(entry)
-    : null;
-
-  if (!addEntry) {
     scene.__roadLoreGenerated = true;
     return;
   }
@@ -915,15 +955,6 @@ export function generateRoadLoreForExistingConnections(scene) {
   const islandName = scene.loreState?.islandName || "the island";
   const factions = scene.loreState?.factions || [];
   const defaultFaction = factions[0] || "an unknown faction";
-
-  let year = Number.isFinite(scene.loreState?.__roadYearCursor)
-    ? scene.loreState.__roadYearCursor
-    : (scene.getNextHistoryYear ? scene.getNextHistoryYear() : 5030);
-
-  const bumpRoadYear = () => {
-    year += 1; // compact sequence
-    return year;
-  };
 
   // Keep deterministic ordering (stable by coords)
   const sorted = [...conns].sort((a, b) => {
@@ -941,11 +972,14 @@ export function generateRoadLoreForExistingConnections(scene) {
     return ar2 - br2;
   });
 
+  const out = [];
+
   for (const conn of sorted) {
     const fq = conn.from?.q;
     const fr = conn.from?.r;
     const tq = conn.to?.q;
     const tr = conn.to?.r;
+    if (!Number.isFinite(fq) || !Number.isFinite(fr) || !Number.isFinite(tq) || !Number.isFinite(tr)) continue;
 
     const fromTile = getTile(fq, fr);
     const toTile = getTile(tq, tr);
@@ -953,27 +987,28 @@ export function generateRoadLoreForExistingConnections(scene) {
     const faction =
       fromTile?.owningFaction ||
       toTile?.owningFaction ||
+      conn.from?.faction ||
+      conn.to?.faction ||
       defaultFaction;
 
     const fromLabel = buildLocationLabel(conn.from, fromTile, true);
     const toLabel = buildLocationLabel(conn.to, toTile, false);
 
-    addEntry({
-      year: bumpRoadYear(),
-      text: `${faction} formalize a route across ${islandName}, linking ${fromLabel} with ${toLabel}.`,
+    out.push({
       type: "road_built",
+      poiType: "road",
+      faction,
       from: { q: fq, r: fr },
       to: { q: tq, r: tr },
-      faction,
       targets: [
         { q: fq, r: fr },
         { q: tq, r: tr },
       ],
+      text: `${faction} formalize a route across ${islandName}, linking ${fromLabel} with ${toLabel}.`,
     });
   }
 
-  if (scene.loreState) scene.loreState.__roadYearCursor = year;
-
+  scene.loreState.roadEvents = out;
   scene.__roadLoreGenerated = true;
 }
 
