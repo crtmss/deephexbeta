@@ -109,6 +109,21 @@ function pickMany(rng, arr, count) {
 }
 
 /**
+ * Terrain placement rule:
+ * Nothing (POI, roads endpoints, resources, etc.) should be spawned on mountain hexes.
+ * We treat both explicit mountains and "elevation==7" as mountain-ish.
+ */
+function isMountainTile(t) {
+  if (!t) return false;
+  const gt = String(t.groundType || "").toLowerCase();
+  if (gt === "mountain") return true;
+  if (String(t.type || "").toLowerCase() === "mountain") return true;
+  // legacy marker used in older map gen
+  if (t.elevation === 7 && String(t.type || "").toLowerCase() !== "water") return true;
+  return false;
+}
+
+/**
  * Lightweight scan of terrain & resources to drive resource-aware lore.
  * Tries to be robust to unknown structures by checking several patterns.
  */
@@ -128,7 +143,7 @@ function analyzeResources(tiles, mapObjects) {
       if (depth <= 2) shallowWaterTiles++;
     }
     if (t.hasForest) forestTiles++;
-    if (t.type === "mountain" || t.elevation === 7) mountainTiles++;
+    if (isMountainTile(t)) mountainTiles++;
 
     // Try to guess resource markers on tiles
     const resType = String(t.resourceType || "").toLowerCase();
@@ -178,8 +193,9 @@ function ensureWorldLoreGenerated(scene) {
   if (!scene || scene.__worldLoreGenerated) return;
 
   const seedStr = String(scene.seed || "000000");
-  // v7: enforce max 2 AI factions; first settlement is created at Discovery.
-  const rng = xorshift32(hashStr32(`${seedStr}|worldLoreV7`));
+  // v8: enforce max 2 AI factions; first settlement is created at Discovery.
+  // also: forbid POI placement on mountain tiles.
+  const rng = xorshift32(hashStr32(`${seedStr}|worldLoreV8`));
 
   const addEntry = scene.addHistoryEntry
     ? (entry) => scene.addHistoryEntry(entry)
@@ -202,19 +218,23 @@ function ensureWorldLoreGenerated(scene) {
 
   const resInfo = analyzeResources(tiles, worldObjects);
 
-  const anyLand = tiles.filter((t) => t && t.type !== "water");
+  const anyLandRaw = tiles.filter((t) => t && t.type !== "water");
+  const anyLand = anyLandRaw.filter((t) => t && !isMountainTile(t)); // ✅ no mountain land
   const anyWater = tiles.filter((t) => t && t.type === "water");
 
   const getTile = (q, r) => tiles.find((t) => t.q === q && t.r === r);
 
-  const isMountainish = (t) => t && (t.type === "mountain" || t.elevation === 7);
-  const isHigh = (t) => t && (typeof t.elevation === "number") && t.elevation >= 5 && t.type !== "water";
-  const isForesty = (t) => t && (t.hasForest || String(t.type || "").toLowerCase() === "forest");
+  const isHigh = (t) =>
+    t && !isMountainTile(t) && (typeof t.elevation === "number") && t.elevation >= 5 && t.type !== "water";
+
+  const isForesty = (t) =>
+    t && !isMountainTile(t) && (t.hasForest || String(t.type || "").toLowerCase() === "forest");
 
   const dirs = [[1,0],[-1,0],[0,1],[0,-1],[1,-1],[-1,1]];
 
   const isCoast = (t) => {
     if (!t || t.type === "water") return false;
+    if (isMountainTile(t)) return false; // ✅ forbid
     for (const [dq, dr] of dirs) {
       const nb = getTile(t.q + dq, t.r + dr);
       if (nb && nb.type === "water") return true;
@@ -241,7 +261,7 @@ function ensureWorldLoreGenerated(scene) {
 
   // IMPORTANT: In-game max AI factions = 2.
   // We interpret this as: 1 or 2 world factions (A always exists, B optional).
-  const factionCount = 1 + Math.floor(rng() * 2); // 1–2 (was 1–3)
+  const factionCount = 1 + Math.floor(rng() * 2); // 1–2
   const factions = pickMany(rng, FACTIONS, factionCount);
   const factionA = factions[0];
   const factionB = factions[1];
@@ -254,9 +274,10 @@ function ensureWorldLoreGenerated(scene) {
   // ============================================================
   // POI generation: seed -> lore -> POI
   //
-  // v7 changes:
+  // v8 changes:
   // - enforce max 2 AI factions
   // - first settlement is guaranteed to be created as part of Discovery
+  // - forbid POI placement on mountain tiles
   // ============================================================
 
   // Reserve already-present POIs to avoid collisions
@@ -285,13 +306,14 @@ function ensureWorldLoreGenerated(scene) {
     for (let i = 0; i < tries; i++) {
       const t = pool[Math.floor(rng() * pool.length)];
       if (!t) continue;
+      if (isMountainTile(t)) continue; // ✅ hard block
       if (!isFree(t.q, t.r)) continue;
       if (!farEnough(t.q, t.r, minDist)) continue;
       return t;
     }
     for (let i = 0; i < tries; i++) {
       const t = pool[Math.floor(rng() * pool.length)];
-      if (t && isFree(t.q, t.r)) return t;
+      if (t && !isMountainTile(t) && isFree(t.q, t.r)) return t;
     }
     return null;
   }
@@ -333,11 +355,11 @@ function ensureWorldLoreGenerated(scene) {
     }
   }
 
+  // Build pools (all land pools exclude mountains)
   const coastLand = anyLand.filter(isCoast);
   const forestLand = anyLand.filter(isForesty);
-  const mountainLand = anyLand.filter(isMountainish);
   const highLand = anyLand.filter(isHigh);
-  const inlandLand = anyLand.filter((t) => t && !isCoast(t) && t.type !== "water");
+  const inlandLand = anyLand.filter((t) => t && !isCoast(t) && t.type !== "water" && !isMountainTile(t));
 
   const coastalWater = anyWater.filter(isCoastalWater);
   const shallowCoastalWater = coastalWater.filter(isShallow);
@@ -352,7 +374,7 @@ function ensureWorldLoreGenerated(scene) {
   const shrines = [];
 
   // --- DISCOVERY: FIRST SETTLEMENT MUST BE CREATED HERE ---
-  // Try: coast -> any land. If no land exists, we can't place it.
+  // Try: coast -> any non-mountain land.
   if (anyLand.length) {
     const pool = coastLand.length ? coastLand : anyLand;
     const t = pickTileFromPool(pool, { minDist: 6 });
@@ -364,7 +386,6 @@ function ensureWorldLoreGenerated(scene) {
   }
 
   // --- Additional settlements (0–1) ---
-  // (kept small; discovery already created the first one)
   const extraSettlementCount = (settlements.length && rng() < 0.55) ? 1 : 0;
   for (let i = 0; i < extraSettlementCount; i++) {
     const pool = coastLand.length ? coastLand : anyLand;
@@ -387,10 +408,10 @@ function ensureWorldLoreGenerated(scene) {
     ruins.push({ name, q: t.q, r: t.r, type: "ruin", faction: claimant });
   }
 
-  // --- Mines (0–2), only if mountains/high exist ---
-  const mineCount = (mountainLand.length || highLand.length) ? Math.floor(rng() * 3) : 0; // 0..2
+  // --- Mines (0–2): on HIGH land but not mountains ---
+  const mineCount = highLand.length ? Math.floor(rng() * 3) : 0; // 0..2
   for (let i = 0; i < mineCount; i++) {
-    const pool = mountainLand.length ? mountainLand : (highLand.length ? highLand : anyLand);
+    const pool = highLand.length ? highLand : anyLand;
     const t = pickTileFromPool(pool, { minDist: 5 });
     if (!t) break;
     const owner = pickFactionOwner();
@@ -398,10 +419,10 @@ function ensureWorldLoreGenerated(scene) {
     mines.push({ q: t.q, r: t.r, type: "mine", faction: owner });
   }
 
-  // --- Watchtowers (0–2) prefer high ground ---
-  const towerCount = (highLand.length || mountainLand.length) ? Math.floor(rng() * 3) : 0; // 0..2
+  // --- Watchtowers (0–2) prefer high ground but not mountains ---
+  const towerCount = highLand.length ? Math.floor(rng() * 3) : 0; // 0..2
   for (let i = 0; i < towerCount; i++) {
-    const pool = highLand.length ? highLand : (mountainLand.length ? mountainLand : anyLand);
+    const pool = highLand.length ? highLand : anyLand;
     const t = pickTileFromPool(pool, { minDist: 5 });
     if (!t) break;
     const owner = pickFactionOwner();
@@ -460,44 +481,38 @@ function ensureWorldLoreGenerated(scene) {
     }
   };
 
-  // Crash sites: land near coast
+  // Crash sites: land near coast (non-mountain land only)
   ensureTypeAtLeast(
     "crash_site",
     1,
     (coastLand.length ? coastLand : anyLand),
     { minDist: 5 },
-    (t, owner) => ({ salvageClaim: owner })
+    (_t, owner) => ({ salvageClaim: owner })
   );
 
-  // Wreck: MUST be in water near coast (fixes "ship wreck doesn't spawn")
-  const wreckPool = (shallowCoastalWater.length ? shallowCoastalWater : (coastalWater.length ? coastalWater : anyWater));
-  ensureTypeAtLeast(
-    "wreck",
-    1,
-    (wreckPool.length ? wreckPool : (coastLand.length ? coastLand : anyLand)),
-    { minDist: 5 },
-    (t, owner) => ({ wreckKind: "ship", salvageClaim: owner })
-  );
+  // Wreck: MUST be in water near coast (no land fallback)
+  const wreckPool = (shallowCoastalWater.length ? shallowCoastalWater : coastalWater);
+  if (wreckPool.length) {
+    ensureTypeAtLeast(
+      "wreck",
+      1,
+      wreckPool,
+      { minDist: 5 },
+      (_t, owner) => ({ wreckKind: "ship", salvageClaim: owner })
+    );
+  }
 
-  // Vehicle: inland land
+  // Vehicle: inland non-mountain land
   ensureTypeAtLeast(
     "vehicle",
     1,
     (inlandLand.length ? inlandLand : anyLand),
     { minDist: 5 },
-    (t, owner) => ({ salvageClaim: owner })
+    (_t, owner) => ({ salvageClaim: owner })
   );
 
-  const crashSites = worldObjects.filter((o) => {
-    const t = String(o.type || "").toLowerCase();
-    return t === "crash_site";
-  });
-
-  const wrecks = worldObjects.filter((o) => {
-    const t = String(o.type || "").toLowerCase();
-    return t === "wreck";
-  });
-
+  const crashSites = worldObjects.filter((o) => String(o.type || "").toLowerCase() === "crash_site");
+  const wrecks = worldObjects.filter((o) => String(o.type || "").toLowerCase() === "wreck");
   const vehicles = worldObjects.filter((o) => {
     const t = String(o.type || "").toLowerCase();
     return t === "vehicle" || t === "abandoned_vehicle";
@@ -538,7 +553,7 @@ function ensureWorldLoreGenerated(scene) {
     });
   }
 
-  // Phase 1: Discovery / landing (always references the first settlement we created above)
+  // Phase 1: Discovery / founding (main)
   const firstSettlement = settlements[0] || null;
   if (firstSettlement) {
     pushEvent({
@@ -555,6 +570,7 @@ function ensureWorldLoreGenerated(scene) {
     pushEvent({
       year: baseYear,
       type: "founding",
+      poiType: "settlement",
       q: t.q,
       r: t.r,
       faction: factionA,
@@ -569,7 +585,7 @@ function ensureWorldLoreGenerated(scene) {
     });
   }
 
-  // Phase 2: Survey (resource/geography-driven) — 2–3 beats
+  // Phase 2: Survey (secondary-ish but still grounded) — 2–3 beats
   const surveyBeats = [];
 
   surveyBeats.push(() => ({
@@ -595,7 +611,7 @@ function ensureWorldLoreGenerated(scene) {
   if (resInfo.mountainRatio > 0.08 || resInfo.mountainTiles > 18) {
     surveyBeats.push(() => ({
       year: bumpYear(1, 2),
-      type: "survey_mountains",
+      type: "survey_ridges",
       text: `Ridges and cliffs promise ore; prospectors leave cairns and paint marks where rock shows promise.`,
     }));
   }
@@ -616,7 +632,7 @@ function ensureWorldLoreGenerated(scene) {
     pushEvent(fn());
   }
 
-  // Phase 3: Foundations / key sites (1–4 beats, not spam)
+  // Phase 3: Key sites (mix of main/secondary, but always POI-grounded)
   if (settlements.length) {
     pushPOIBeat(
       settlements[0],
@@ -625,11 +641,18 @@ function ensureWorldLoreGenerated(scene) {
     );
   }
   if (settlements.length > 1) {
-    pushPOIBeat(
-      settlements[1],
-      `${factionA} open a second foothold at ${settlements[1].name} ${humanCoord(settlements[1].q, settlements[1].r)} to reach the interior more safely.`,
-      { settlementName: settlements[1].name }
-    );
+    // Make the 2nd settlement a clear "main" anchor for the UI eras.
+    const s2 = settlements[1];
+    pushEvent({
+      year: bumpYear(1, 3),
+      type: "founding",
+      poiType: "settlement",
+      q: s2.q,
+      r: s2.r,
+      faction: s2.faction,
+      settlementName: s2.name,
+      text: `${factionA} open a second foothold at ${s2.name} ${humanCoord(s2.q, s2.r)} to reach the interior more safely.`,
+    });
   }
   if (mines.length) {
     const m = mines[0];
@@ -646,7 +669,7 @@ function ensureWorldLoreGenerated(scene) {
     );
   }
 
-  // Ruins: 1–2 with real hooks
+  // Ruins: 1–2 with real hooks (poiType=ruin => treated as MAIN by History)
   const ruinHooks = [
     (rr) => `At ${rr.name} ${humanCoord(rr.q, rr.r)}, stonework shows scorch marks and collapsed roofs—signs of a sudden end.`,
     (rr) => `At ${rr.name} ${humanCoord(rr.q, rr.r)}, cisterns and carved channels hint at a community that fought scarcity before it fell.`,
@@ -662,7 +685,7 @@ function ensureWorldLoreGenerated(scene) {
     );
   }
 
-  // Camps: summary beats (1–2)
+  // Camps: summary beats (targets => hover highlight for ALL camps)
   if (roadsideCamps.length) {
     const c0 = roadsideCamps[0];
     const extra = roadsideCamps.length - 1;
@@ -706,7 +729,7 @@ function ensureWorldLoreGenerated(scene) {
     }
   }
 
-  // Salvage (wreck / crash / vehicle): 1–2 beats total
+  // Salvage (wreck / crash / vehicle): 1–2 beats total (poiType included => clickable/highlight)
   if (wrecks.length) {
     const w = wrecks[Math.floor(rng() * wrecks.length)];
     pushEvent({
@@ -744,7 +767,7 @@ function ensureWorldLoreGenerated(scene) {
     });
   }
 
-  // Phase 4: Tension (optional, 0–2 beats)
+  // Optional: 2nd faction arrives (if exists)
   const multiFaction = !!factionB && rng() < 0.55;
   if (multiFaction) {
     pushEvent({
@@ -760,7 +783,7 @@ function ensureWorldLoreGenerated(scene) {
     });
   }
 
-  // Phase 5: Infrastructure (roads) — reserve a window so road entries don't always come last
+  // Infrastructure (roads) — reserve a window so road entries don't always appear "last"
   const roadStartYear = bumpYear(1, 3);
   pushEvent({
     year: roadStartYear,
@@ -770,7 +793,7 @@ function ensureWorldLoreGenerated(scene) {
 
   // Optional cataclysm:
   // - NOT required
-  // - If settlements exist: cataclysm MUST NOT happen (your rule).
+  // - If settlements exist: cataclysm MUST NOT happen (rule).
   let finalCataclysmEvent = null;
   const allowCataclysm = settlements.length === 0;
   if (allowCataclysm && rng() < 0.5) {
@@ -861,7 +884,7 @@ export function generateRuinLoreForTile(scene, tile) {
 }
 
 // Same API as before: we add "road built" events based on recorded connections.
-// v7: insert roads into reserved timeline window so they don't always appear "last".
+// v8: insert roads into reserved timeline window so they don't always appear "last".
 export function generateRoadLoreForExistingConnections(scene) {
   if (!scene) return;
 
@@ -942,6 +965,10 @@ export function generateRoadLoreForExistingConnections(scene) {
       from: { q: fq, r: fr },
       to: { q: tq, r: tr },
       faction,
+      targets: [
+        { q: fq, r: fr },
+        { q: tq, r: tr },
+      ],
     });
   }
 
