@@ -720,3 +720,35 @@ WorldScene.prototype.getNextHistoryYear = function () {
   const last = this.historyEntries[this.historyEntries.length - 1];
   return (typeof last.year === 'number' ? last.year : baseYear) + 3;
 };
+
+/* =========================================================
+   ✅ NEW: Select hex from History (no camera pan)
+   Used by WorldSceneHistory.js (and any future UI).
+   ========================================================= */
+
+WorldScene.prototype.selectHexFromHistory = function (q, r) {
+  // 1) clear hover highlight (if exists)
+  try {
+    if (this.historyHoverGraphics) {
+      this.historyHoverGraphics.clear();
+      this.historyHoverGraphics.visible = false;
+    }
+  } catch (_e) {}
+
+  // 2) deselect unit so the hex-inspect is allowed
+  this.setSelectedUnit?.(null);
+
+  // 3) set selected hex & open the same panel used for units (read-only)
+  this.selectedHex = { q, r };
+  this.selectedBuilding = null;
+
+  this.clearPathPreview?.();
+  this.openHexInspectPanel?.(q, r);
+
+  // 4) refresh highlight visuals
+  this.updateSelectionHighlight?.();
+  this.debugHex?.(q, r);
+
+  // 5) close history panel
+  this.closeHistoryPanel?.();
+};
