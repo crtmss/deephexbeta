@@ -19,6 +19,13 @@
 // - 🍄 and 🌷 on any biome except desert and snow
 // - ⛄ on snow biome
 // - 🐚 on desert biome
+//
+// FIXES (requested):
+// - Roads / POIs must NOT appear on mountain hexes.
+//   * A* pathfinder now rejects mountain tiles as passable.
+//   * Endpoints (pts) skip any mountain tile too.
+//   * Mountain detection is robust (type/groundType/elevation==7).
+// - Mountain icons still render for mountains.
 
 import {
   effectiveElevationLocal,
@@ -33,6 +40,20 @@ import {
 } from "./LoreGeneration.js";
 
 const keyOf = (q, r) => `${q},${r}`;
+
+/* ---------------------------------------------------------------
+   Mountain detection (robust, used for "no spawn on mountains")
+   --------------------------------------------------------------- */
+function isMountainTile(t) {
+  if (!t) return false;
+  const type = String(t.type || "").toLowerCase();
+  const ground = String(t.groundType || "").toLowerCase();
+  if (type === "mountain") return true;
+  if (ground === "mountain") return true;
+  // Legacy: some gens mark mountains with elevation==7
+  if (t.elevation === 7 && type !== "water") return true;
+  return false;
+}
 
 /* ---------------------------------------------------------------
    Deterministic RNG helpers (seed + q,r + salt -> stable rand())
@@ -296,7 +317,11 @@ function deterministicAStar(byKey, width, height, start, goal) {
       if (!byKey.has(nk) || closed.has(nk)) continue;
 
       const nTile = byKey.get(nk);
-      if (!nTile || nTile.type === "water") continue;
+      if (!nTile) continue;
+
+      // ✅ Roads should never go through water OR mountains
+      if (nTile.type === "water") continue;
+      if (isMountainTile(nTile)) continue;
 
       const g = cur.g + 1;
       const f = g + heuristic(nq, nr);
@@ -357,26 +382,46 @@ function generateDeterministicRoads(scene, mapData, width, height, mapObjects) {
     );
   });
 
-  pts.sort((a, b) => a.q - b.q || a.r - b.r);
+  // ✅ Do not use mountain endpoints for road network
+  const filteredPts = [];
+  for (const p of pts) {
+    if (!p || typeof p.q !== "number" || typeof p.r !== "number") continue;
+    const t = byKey.get(keyOf(p.q, p.r));
+    if (!t) continue;
+    if (t.type === "water") continue;
+    if (isMountainTile(t)) continue;
+    filteredPts.push(p);
+  }
 
-  for (let i = 0; i + 1 < pts.length; i++) {
-    const A = pts[i];
-    const B = pts[i + 1];
+  filteredPts.sort((a, b) => a.q - b.q || a.r - b.r);
+
+  for (let i = 0; i + 1 < filteredPts.length; i++) {
+    const A = filteredPts[i];
+    const B = filteredPts[i + 1];
     const tA = byKey.get(keyOf(A.q, A.r));
     const tB = byKey.get(keyOf(B.q, B.r));
     if (!tA || !tB) continue;
+
+    // ✅ extra safety
+    if (isMountainTile(tA) || isMountainTile(tB)) continue;
 
     const path = deterministicAStar(byKey, width, height, tA, tB);
     if (!path || path.length < 2) continue;
 
     for (let j = 0; j + 1 < path.length; j++) {
-      addRoad(mapData, path[j], path[j + 1]);
+      const p0 = path[j];
+      const p1 = path[j + 1];
+      // ✅ never add road links on mountain tiles
+      if (isMountainTile(p0) || isMountainTile(p1)) continue;
+      addRoad(mapData, p0, p1);
     }
 
     roadConns.push({
       from: { q: A.q, r: A.r, type: String(A.type || "").toLowerCase() },
       to: { q: B.q, r: B.r, type: String(B.type || "").toLowerCase() },
-      path: path.map((t) => ({ q: t.q, r: t.r })),
+      path: path
+        .filter((t) => t && !isMountainTile(t) && t.type !== "water")
+        .map((t) => ({ q: t.q, r: t.r })),
     });
   }
 }
@@ -580,7 +625,7 @@ function buildDecorationPlan(scene, mapData) {
 
   const rngGlobal = mulberry32(hashStr32(cacheKey));
 
-  // Candidate hexes by biome (only land, and not blocked by noPOISet)
+  // Candidate hexes by biome (only land)
   const candidates = {
     desert: [],
     snow: [],
@@ -589,14 +634,14 @@ function buildDecorationPlan(scene, mapData) {
 
   for (const t of mapData) {
     if (!t) continue;
-    if (t.type === "water") continue; // decorations only on land
+    if (t.type === "water") continue;
+    if (isMountainTile(t)) continue; // ✅ also keep decorations off mountains
     const cls = biomeClass(scene, t);
     if (cls === "desert") candidates.desert.push(t);
     else if (cls === "snow") candidates.snow.push(t);
     else candidates.other.push(t);
   }
 
-  // If no candidates, no plan.
   if (
     candidates.desert.length + candidates.snow.length + candidates.other.length === 0
   ) {
@@ -605,31 +650,23 @@ function buildDecorationPlan(scene, mapData) {
     return plan;
   }
 
-  // Choose a cluster center deterministically from any land candidates
   const allLand = candidates.desert.concat(candidates.snow, candidates.other);
   allLand.sort((a, b) => a.q - b.q || a.r - b.r);
   const centerIdx = Math.floor(rngGlobal() * allLand.length);
   const center = allLand[Math.max(0, Math.min(allLand.length - 1, centerIdx))];
 
-  // Total decorations (2–5)
   const total = 2 + Math.floor(rngGlobal() * 4); // 2..5
-
-  // We enforce: any two decorations must be within radius 5 of each other
-  // We'll implement as: all decorations must be within radius 5 of the cluster center.
   const R = 5;
 
   const withinRadius = (t) => hexDistance(center.q, center.r, t.q, t.r) <= R;
 
-  // Collect within-radius candidates by biome
   const local = {
     desert: candidates.desert.filter(withinRadius),
     snow: candidates.snow.filter(withinRadius),
     other: candidates.other.filter(withinRadius),
   };
 
-  // If cluster too sparse, relax by selecting from global, but still keep radius logic by moving center
   if (local.desert.length + local.snow.length + local.other.length < total) {
-    // pick a new center from "other" if possible
     const fallbackPool = candidates.other.length ? candidates.other : allLand;
     fallbackPool.sort((a, b) => a.q - b.q || a.r - b.r);
     const c2 = fallbackPool[Math.floor(rngGlobal() * fallbackPool.length)];
@@ -640,29 +677,22 @@ function buildDecorationPlan(scene, mapData) {
     local.other = candidates.other.filter(within2);
   }
 
-  // Plan entries: {q,r, emoji}
   const plan = [];
   const used = new Set();
 
   function pickFrom(arr) {
     if (!arr.length) return null;
-    // deterministic choice: shuffle-like by picking an index from rngGlobal
     const idx = Math.floor(rngGlobal() * arr.length);
     const t = arr.splice(idx, 1)[0];
     return t;
   }
 
   for (let i = 0; i < total; i++) {
-    // Pick a tile from whichever bucket has something (biased toward "other")
     let tile = null;
 
-    // Try to place at least 1 snowman if we have snow locally and rng says so
     if (!tile && local.snow.length && rngGlobal() < 0.25) tile = pickFrom(local.snow);
-
-    // Try to place at least 1 shell if desert exists and rng says so
     if (!tile && local.desert.length && rngGlobal() < 0.25) tile = pickFrom(local.desert);
 
-    // Default
     if (!tile && local.other.length) tile = pickFrom(local.other);
     if (!tile && local.desert.length) tile = pickFrom(local.desert);
     if (!tile && local.snow.length) tile = pickFrom(local.snow);
@@ -679,14 +709,9 @@ function buildDecorationPlan(scene, mapData) {
     const cls = biomeClass(scene, tile);
 
     let emoji = "🍄";
-    if (cls === "desert") {
-      emoji = "🐚"; // shell on desert biome
-    } else if (cls === "snow") {
-      emoji = "⛄"; // snowman on snow biome
-    } else {
-      // other biomes: 🍄 or 🌷
-      emoji = rngGlobal() < 0.5 ? "🍄" : "🌷";
-    }
+    if (cls === "desert") emoji = "🐚";
+    else if (cls === "snow") emoji = "⛄";
+    else emoji = rngGlobal() < 0.5 ? "🍄" : "🌷";
 
     plan.push({ q: tile.q, r: tile.r, emoji });
   }
@@ -696,13 +721,11 @@ function buildDecorationPlan(scene, mapData) {
 }
 
 function drawDecorations(scene, addEmoji, mapData, size, offsetX, offsetY, LIFT, noPOISet, treePxRef) {
-  // treePxRef is ~ tree px; decorations are 50% of it
   const px = Math.max(8, (treePxRef || size * 0.54) * 0.5);
 
   const plan = buildDecorationPlan(scene, mapData);
   if (!plan || !plan.length) return;
 
-  // quick lookup tile by q,r
   const byKey = new Map(mapData.map(t => [keyOf(t.q, t.r), t]));
 
   for (const d of plan) {
@@ -713,19 +736,19 @@ function drawDecorations(scene, addEmoji, mapData, size, offsetX, offsetY, LIFT,
     const tile = byKey.get(k);
     if (!tile) continue;
     if (tile.type === "water") continue;
+    if (isMountainTile(tile)) continue; // ✅ keep off mountains
 
     const c = scene.hexToPixel(tile.q, tile.r, size);
     const cx = c.x + offsetX;
     const cy = c.y + offsetY - LIFT * effectiveElevationLocal(tile);
 
-    // small random-ish local offset inside hex (deterministic per hex)
     const rng = rngForHex(scene, tile.q, tile.r, "decorV1");
     const ang = rng.float(0, Math.PI * 2);
     const rad = rng.float(size * 0.10, size * 0.35);
     const ox = Math.cos(ang) * rad;
     const oy = Math.sin(ang) * rad * 0.65;
 
-    const deco = addEmoji(tile.q, tile.r, ox, oy, d.emoji, px, 104); // slightly below trees
+    const deco = addEmoji(tile.q, tile.r, ox, oy, d.emoji, px, 104);
     deco.x = cx + ox;
     deco.y = cy + oy;
   }
@@ -805,6 +828,7 @@ export function drawLocationsAndRoads() {
   /* ------------------- Roads ------------------- */
   for (const t of map) {
     if (!t.roadLinks) continue;
+    if (isMountainTile(t)) continue; // ✅ never draw road segments from mountain tiles
 
     const c1 = scene.hexToPixel(t.q, t.r, size);
     const y1 = c1.y - LIFT * effectiveElevationLocal(t);
@@ -813,6 +837,7 @@ export function drawLocationsAndRoads() {
       if (target <= keyOf(t.q, t.r)) continue;
       const n = byKey.get(target);
       if (!n) continue;
+      if (isMountainTile(n)) continue; // ✅ never draw road segment to mountains
 
       const c2 = scene.hexToPixel(n.q, n.r, size);
       const y2 = c2.y - LIFT * effectiveElevationLocal(n);
@@ -867,17 +892,20 @@ export function drawLocationsAndRoads() {
     const cy = c.y + offsetY - LIFT * effectiveElevationLocal(t);
 
     /* ---------------- Mountain icons ---------------- */
-    if (!isWater && (t.type === "mountain" || t.elevation === 7)) {
+    if (!isWater && isMountainTile(t)) {
       const icon = addEmoji(t.q, t.r, 0, 0, "⛰️", size * 0.9, 110);
       icon.x = cx;
       icon.y = cy;
       continue;
     }
 
-    /* ---------------- Forests (IMPROVED, SEED-BASED, ONE TYPE PER HEX) ---------------- */
+    /* ---------------- Forests ---------------- */
     if (!isWater && t.hasForest) {
       treePxRef = placeForestTrees(scene, t, addEmoji, cx, cy, size) || treePxRef;
     }
+
+    // ✅ HARD RULE: no POI icons on mountain tiles
+    if (!isWater && isMountainTile(t)) continue;
 
     /* ---------------- Settlement ---------------- */
     if (!isWater && t.hasSettlement) {
@@ -951,10 +979,8 @@ export function drawLocationsAndRoads() {
     }
   }
 
-  // Decorations are drawn after forests so they can sit under POIs but near trees.
   drawDecorations(scene, addEmoji, map, size, offsetX, offsetY, LIFT, noPOISet, treePxRef);
 
-  // Safety: snap all icons to current elevation
   refreshLocationIcons(scene);
 
   if (!scene.__roadLoreGenerated) {
