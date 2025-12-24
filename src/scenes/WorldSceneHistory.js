@@ -6,7 +6,7 @@
 // - Entries are grouped into "Discovery" + "Era 1..N" blocks:
 //    Discovery (always first) -> then for each MAIN event: Era k header + up to 2 secondary events.
 // - Any entry that has coordinates highlights ALL its referenced hexes on hover.
-// - Clicking an entry focuses the relevant hex/camera.
+// - Clicking an entry selects the relevant hex (opens Hex Inspect panel) and closes History.
 // - Removes legacy floating history button (keeps tab-based control).
 //
 // Public helpers:
@@ -452,8 +452,10 @@ function renderEntryLine(scene, parent, entry, y, maxWidth, opts = {}) {
     tObj.on('pointerout', () => {
       highlightHistoryHexes(scene, []);
     });
+
+    // ✅ FIX: clicking selects hex (opens hex-inspect) and closes history (no camera pan).
     tObj.on('pointerdown', () => {
-      focusEntry(scene, entry);
+      selectFromEntryAndClose(scene, entry);
     });
   }
 
@@ -463,6 +465,10 @@ function renderEntryLine(scene, parent, entry, y, maxWidth, opts = {}) {
 /* =========================================================
    HOVER HIGHLIGHT (ALL coords)
    ========================================================= */
+
+function keyOf(q, r) {
+  return q + ',' + r;
+}
 
 function highlightHistoryHexes(scene, coords) {
   if (!scene || !scene.mapData) return;
@@ -562,45 +568,58 @@ function collectEntryTargets(entry) {
   return out;
 }
 
-function focusEntry(scene, entry) {
-  const targets = collectEntryTargets(entry);
-  if (!targets.length) return;
+/**
+ * Choose "best" focus coord for an entry.
+ * Priority:
+ *   1) entry.q/r
+ *   2) entry.to
+ *   3) entry.from
+ *   4) first entry.targets[0]
+ */
+function pickPrimaryCoord(entry) {
+  if (!entry) return null;
 
-  // If road-style entry: pan to midpoint but select "from"
-  if (entry.from && hasCoord(entry.from) && entry.to && hasCoord(entry.to)) {
-    const a = scene.axialToWorld(entry.from.q, entry.from.r);
-    const b = scene.axialToWorld(entry.to.q, entry.to.r);
-    const midX = (a.x + b.x) / 2;
-    const midY = (a.y + b.y) / 2;
-    panCameraTo(scene, midX, midY);
-    selectHex(scene, entry.from.q, entry.from.r);
-    return;
+  if (typeof entry.q === 'number' && typeof entry.r === 'number') {
+    return { q: entry.q, r: entry.r };
   }
+  if (entry.to && hasCoord(entry.to)) return { q: entry.to.q, r: entry.to.r };
+  if (entry.from && hasCoord(entry.from)) return { q: entry.from.q, r: entry.from.r };
 
-  // Otherwise focus first target
-  const t = targets[0];
-  const p = scene.axialToWorld(t.q, t.r);
-  panCameraTo(scene, p.x, p.y);
-  selectHex(scene, t.q, t.r);
+  if (Array.isArray(entry.targets)) {
+    const t0 = entry.targets.find(hasCoord);
+    if (t0) return { q: t0.q, r: t0.r };
+  }
+  return null;
 }
 
-function panCameraTo(scene, x, y) {
-  const cam = scene.cameras.main;
-  if (!cam) return;
-  cam.pan(x, y, 350, 'Sine.easeInOut', true);
-}
+/**
+ * ✅ NEW behavior:
+ * - Select hex (same logic as clicking empty hex on map):
+ *   clear unit selection, set selectedHex, open hex inspect panel.
+ * - Close history panel.
+ * - Clear hover highlight.
+ * - No camera pan.
+ */
+function selectFromEntryAndClose(scene, entry) {
+  const coord = pickPrimaryCoord(entry);
+  if (!coord) return;
 
-function selectHex(scene, q, r) {
-  if (typeof q !== 'number' || typeof r !== 'number') return;
+  // Clear hover highlight immediately
+  highlightHistoryHexes(scene, []);
 
-  // Clear unit selection & path preview
+  // Deselect any unit; select hex
   scene.setSelectedUnit?.(null);
-  scene.selectedHex = { q, r };
+  scene.selectedHex = { q: coord.q, r: coord.r };
+  scene.selectedBuilding = null;
   scene.clearPathPreview?.();
+
+  // Open hex inspector in the same panel used for units
+  scene.openHexInspectPanel?.(coord.q, coord.r);
 
   // Update selection visuals
   scene.updateSelectionHighlight?.();
+  scene.debugHex?.(coord.q, coord.r);
 
-  // Optional debug
-  scene.debugHex?.(q, r);
+  // Close history (tab stays)
+  scene.closeHistoryPanel?.();
 }
