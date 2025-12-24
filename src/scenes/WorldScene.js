@@ -1,5 +1,4 @@
 // src/scenes/WorldScene.js
-// :contentReference[oaicite:1]{index=1}
 
 import HexMap from '../engine/HexMap.js';
 import { findPath as aStarFindPath } from '../engine/AStar.js';
@@ -129,6 +128,9 @@ function stepMoveCost(fromTile, toTile) {
   let cost = 1;
   if (toTile.hasForest) cost += 1;
   if (e1 > e0) cost += 1;
+
+  // NOTE: road movement advantage will be added later in Unit movement cost,
+  // but road building itself is handled via lore + A* here.
   return cost;
 }
 
@@ -194,6 +196,125 @@ function buildMoveSegmentForThisTurn(scene, unit, fullPath, blockedPred) {
 
   if (usable.length < 2) return { segment: [], costSum: 0 };
   return { segment: usable, costSum: sum };
+}
+
+/* ---------------------------
+   ✅ Road application (Lore -> Tiles)
+   --------------------------- */
+
+function ensureRoadLinks(tile) {
+  if (!tile) return;
+  if (!(tile.roadLinks instanceof Set)) tile.roadLinks = new Set();
+}
+
+function roadKey(q, r) {
+  return `${q},${r}`;
+}
+
+function applyRoadLinkBetween(a, b) {
+  if (!a || !b) return;
+  ensureRoadLinks(a);
+  ensureRoadLinks(b);
+
+  a.roadLinks.add(roadKey(b.q, b.r));
+  b.roadLinks.add(roadKey(a.q, a.r));
+  a.hasRoad = true;
+  b.hasRoad = true;
+}
+
+function isMountainTile(tile) {
+  if (!tile) return false;
+  const type = String(tile.type || '').toLowerCase();
+  const gt = String(tile.groundType || '').toLowerCase();
+  if (type === 'mountain') return true;
+  if (gt === 'mountain') return true;
+  // legacy
+  if (tile.elevation === 7 && type !== 'water') return true;
+  return false;
+}
+
+function isRoadBlocked(tile) {
+  if (!tile) return true;
+  const type = String(tile.type || '').toLowerCase();
+  if (type === 'water') return true;
+  if (isMountainTile(tile)) return true;
+  return false;
+}
+
+/**
+ * Applies loreState.roadPlans onto mapData as:
+ *  - tile.hasRoad = true
+ *  - tile.roadLinks = Set("q,r")
+ *
+ * Safe to call multiple times (rebuilds from scratch).
+ */
+function applyRoadPlansToMap(scene) {
+  const plans = scene?.loreState?.roadPlans;
+  if (!Array.isArray(plans) || plans.length === 0) {
+    // clear any stale roads if present
+    if (Array.isArray(scene.mapData)) {
+      for (const t of scene.mapData) {
+        if (!t) continue;
+        t.hasRoad = false;
+        if (t.roadLinks instanceof Set) t.roadLinks.clear();
+        else t.roadLinks = new Set();
+      }
+    }
+    scene.__roadsAppliedFromLore = true;
+    return;
+  }
+
+  if (!Array.isArray(scene.mapData) || scene.mapData.length === 0) return;
+
+  // Clear current roads (authoritative rebuild from lore)
+  for (const t of scene.mapData) {
+    if (!t) continue;
+    t.hasRoad = false;
+    if (t.roadLinks instanceof Set) t.roadLinks.clear();
+    else t.roadLinks = new Set();
+  }
+
+  const getT = (q, r) => (scene.mapData || []).find(h => h && h.q === q && h.r === r);
+
+  // For each plan, carve a path using A*
+  for (const rp of plans) {
+    if (!rp || !rp.from || !rp.to) continue;
+    const from = { q: rp.from.q, r: rp.from.r };
+    const to = { q: rp.to.q, r: rp.to.r };
+
+    if (!Number.isFinite(from.q) || !Number.isFinite(from.r)) continue;
+    if (!Number.isFinite(to.q) || !Number.isFinite(to.r)) continue;
+
+    const tA = getT(from.q, from.r);
+    const tB = getT(to.q, to.r);
+    if (!tA || !tB) continue;
+    if (isRoadBlocked(tA) || isRoadBlocked(tB)) continue;
+
+    const blockedPred = (tile) => isRoadBlocked(tile);
+
+    let path = null;
+    try {
+      path = aStarFindPath(from, to, scene.mapData, blockedPred, { getMoveCost: stepMoveCost });
+    } catch (e) {
+      console.warn('[ROADS] A* failed for roadPlan:', rp, e);
+      path = null;
+    }
+
+    if (!Array.isArray(path) || path.length < 2) continue;
+
+    // Apply links along the path
+    for (let i = 1; i < path.length; i++) {
+      const p0 = path[i - 1];
+      const p1 = path[i];
+      const a = getT(p0.q, p0.r);
+      const b = getT(p1.q, p1.r);
+      if (!a || !b) break;
+      if (isRoadBlocked(a) || isRoadBlocked(b)) break;
+      applyRoadLinkBetween(a, b);
+    }
+  }
+
+  scene.__roadsAppliedFromLore = true;
 }
 
 export default class WorldScene extends Phaser.Scene {
@@ -329,11 +450,20 @@ export default class WorldScene extends Phaser.Scene {
 
     this.getNextPlayer = (players, currentName) => getNextPlayerImpl(players, currentName);
 
-    // ✅ NEW: Ensure lore exists before any draw (including recomputeWaterFromLevel->redrawWorld)
+    // ✅ IMPORTANT CHANGE:
+    // We need water-level recompute BEFORE lore (so "water"/land is final),
+    // but we must NOT redraw until AFTER we apply lore road plans.
+    this.recomputeWaterFromLevel({ skipRedraw: true });
+
+    // ✅ Generate lore/POI now that water is correct
     this.ensureLoreReadyBeforeFirstDraw();
 
-    // Apply water level & draw world once
-    this.recomputeWaterFromLevel();
+    // ✅ Apply road plans from lore (roads now exist ONLY if there were secondary road events)
+    applyRoadPlansToMap(this);
+
+    // ✅ Now draw world once (hexmap + locations/roads + resources)
+    this.redrawWorld();
+    this.refreshAllIconWorldPositions();
 
     // Spawn
     await spawnUnitsAndEnemies.call(this);
@@ -604,7 +734,7 @@ Biomes: ${biome}`;
     runNext();
   }
 
-  recomputeWaterFromLevel() {
+  recomputeWaterFromLevel(opts = null) {
     if (!Array.isArray(this.mapData)) return;
 
     const lvlRaw = (typeof this.worldWaterLevel === 'number') ? this.worldWaterLevel : 3;
@@ -653,6 +783,11 @@ Biomes: ${biome}`;
       }
     }
 
+    // IMPORTANT:
+    // During initial create() we call this with {skipRedraw:true}
+    // so lore + road plans can be applied before first draw.
+    if (opts && opts.skipRedraw) return;
+
     this.redrawWorld();
     this.refreshAllIconWorldPositions();
   }
@@ -661,6 +796,11 @@ Biomes: ${biome}`;
     // ✅ Safety: any external redraw (water-level changes etc.)
     // must not happen before lore exists, otherwise POIs/history can desync.
     this.ensureLoreReadyBeforeFirstDraw();
+
+    // Ensure roads are applied (safe if already applied)
+    if (!this.__roadsAppliedFromLore) {
+      applyRoadPlansToMap(this);
+    }
 
     drawHexMap.call(this);
     drawLocationsAndRoads.call(this);
