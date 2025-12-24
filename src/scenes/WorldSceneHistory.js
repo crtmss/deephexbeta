@@ -589,11 +589,11 @@ function collectEntryTargets(entry) {
   if (entry.to && hasCoord(entry.to)) {
     targets.push({ q: entry.to.q, r: entry.to.r });
   }
-  if (Array.isArray(entry.targets)) {
-    for (const t of entry.targets) {
-      if (hasCoord(t)) targets.push({ q: t.q, r: t.r };
-    }
+if (Array.isArray(entry.targets)) {
+  for (const t of entry.targets) {
+    if (hasCoord(t)) targets.push({ q: t.q, r: t.r });
   }
+}
 
   // Deduplicate
   const seen = new Set();
