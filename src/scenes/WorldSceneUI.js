@@ -518,6 +518,12 @@ export function setupWorldInputUI(scene) {
     scene.hexDistance = hexDistance;
   }
 
+  // ✅ If UI (History) set a short click-block flag, respect it here.
+  const isUiPointerBlocked = () => {
+    const now = scene.time?.now ?? (typeof performance !== 'undefined' ? performance.now() : Date.now());
+    return !!(scene.__uiPointerBlockUntil && now < scene.__uiPointerBlockUntil);
+  };
+
   // Prevent world input while hovering over history panel
   // (panel is on screen space, pointer world coords still update).
   const isPointerOverHistoryPanel = (pointer) => {
@@ -601,6 +607,7 @@ export function setupWorldInputUI(scene) {
     if (scene.logisticsInputLocked) return;
     if (scene.isDragging) return;
     if (pointer.rightButtonDown && pointer.rightButtonDown()) return;
+    if (isUiPointerBlocked()) return;              // ✅ NEW: prevent click-through from History
     if (isPointerOverHistoryPanel(pointer)) return;
 
     const rounded = scene.worldToAxial(pointer.worldX, pointer.worldY);
@@ -781,6 +788,7 @@ export function setupWorldInputUI(scene) {
   scene.input.on('pointermove', pointer => {
     if (scene.logisticsInputLocked) return;
     if (scene.isDragging) return;
+    if (isUiPointerBlocked()) return;              // ✅ NEW: prevent preview churn right after History click
     if (isPointerOverHistoryPanel(pointer)) return;
     if (!scene.selectedUnit || scene.isUnitMoving) return;
 
