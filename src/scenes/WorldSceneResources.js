@@ -3,10 +3,11 @@
 /* =========================================================================
    Resource spawner & helpers
    - Places 5 🐟 fish resources on random water hexes
-   - Places 5 🛢️ crude oil resources on *shallow* water hexes
+   - Places 2 🛢️ crude oil resources on *shallow* water hexes   ✅ (was 5)
    - Enforces minimum hex distance of 8 between same-type resources
    - Safe to call multiple times (won’t duplicate on same hex)
    - Fully deterministic per seed (separate RNG stream per resource type)
+   - Hard rule: never spawn resources on mountain tiles (extra safety)
    ======================================================================= */
 
 import { cyrb128, sfc32 } from '../engine/PRNG.js';
@@ -30,8 +31,8 @@ export function spawnFishResources() {
   const existingFish = scene.resources.filter(r => r.type === 'fish');
   if (existingFish.length >= 5) return;
 
-  // Build list of candidate *water* tiles
-  const waterTiles = (scene.mapData || []).filter(isWaterTile);
+  // Build list of candidate *water* tiles (and not mountain just in case)
+  const waterTiles = (scene.mapData || []).filter(t => isWaterTile(t) && !isMountainTile(t));
   if (!waterTiles.length) {
     console.warn('[Resources] spawnFishResources(): no water tiles found.');
     return;
@@ -93,7 +94,7 @@ export function spawnFishResources() {
 }
 
 /**
- * Spawn up to 5 crude oil resources on *shallow* water tiles.
+ * Spawn up to 2 crude oil resources on *shallow* water tiles.
  * Uses a separate deterministic RNG stream from fish.
  */
 export function spawnCrudeOilResources() {
@@ -106,19 +107,22 @@ export function spawnCrudeOilResources() {
 
   scene.resources = scene.resources || [];
 
-  // Already have 5+ oil? do nothing.
-  const existingOil = scene.resources.filter(r => r.type === 'crudeOil');
-  if (existingOil.length >= 5) return;
+  // ✅ Oil cap: 2 total
+  const OIL_CAP = 2;
 
-  // Shallow water candidates only
-  const shallowTiles = (scene.mapData || []).filter(isShallowWaterTile);
+  // Already have 2+ oil? do nothing.
+  const existingOil = scene.resources.filter(r => r.type === 'crudeOil');
+  if (existingOil.length >= OIL_CAP) return;
+
+  // Shallow water candidates only (and not mountain just in case)
+  const shallowTiles = (scene.mapData || []).filter(t => isShallowWaterTile(t) && !isMountainTile(t));
   if (!shallowTiles.length) {
     console.warn('[Resources] spawnCrudeOilResources(): no shallow water tiles found.');
     return;
   }
 
   const placed = existingOil.map(o => ({ q: o.q, r: o.r }));
-  const need   = 5 - existingOil.length;
+  const need   = OIL_CAP - existingOil.length;
   const rnd    = getOilRng(scene);
 
   const shuffled = shallowTiles.slice();
@@ -171,6 +175,20 @@ export function spawnCrudeOilResources() {
 /* =========================
    Helpers
    ========================= */
+
+/**
+ * Hard rule helper: treat explicit mountains (or elevation==7 legacy) as mountain.
+ * Resources should not spawn there even if other predicates misfire.
+ */
+function isMountainTile(tile) {
+  if (!tile) return false;
+  const type = (tile.type || '').toString().toLowerCase();
+  const g = (tile.groundType || '').toString().toLowerCase();
+  if (type === 'mountain') return true;
+  if (g === 'mountain') return true;
+  if (tile.elevation === 7 && type !== 'water') return true;
+  return false;
+}
 
 // unified “is water” predicate, tolerant to old fields.
 function isWaterTile(tile) {
