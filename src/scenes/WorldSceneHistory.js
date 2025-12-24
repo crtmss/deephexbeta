@@ -301,9 +301,9 @@ export function refreshHistoryPanel(scene) {
       let xCursor = 0;
       let lineBottom = yCursor;
 
-      // Hover highlight for ANY coordinate-bearing entry.
-      // (Not just a single hex: highlight ALL referenced targets.)
-      const hoverTargets = collectEntryTargets(ev);
+  // Hover highlight for ANY coordinate-bearing entry.
+  // (Not just a single hex: highlight ALL referenced targets.)
+  const hoverTargets = collectEntryTargets(ev);
 
       for (const seg of segments) {
         const segStyle = seg.city ? cityStyle : normalStyle;
@@ -316,6 +316,7 @@ export function refreshHistoryPanel(scene) {
           // Measure token
           const tmp = scene.add.text(0, 0, token, segStyle).setOrigin(0, 0);
           const tokenW = tmp.width;
+          const tokenH = tmp.height;
           tmp.destroy();
 
           if (
@@ -331,13 +332,14 @@ export function refreshHistoryPanel(scene) {
 
           const tObj = scene.add.text(xCursor, yCursor, token, segStyle).setOrigin(0, 0);
 
-          // Click on the whole entry
+          // Click on the whole entry (as before)
           if (hasTargets) {
             tObj.setInteractive({ useHandCursor: true });
             tObj.on('pointerdown', () => {
               focusEntry(scene, ev);
             });
 
+            // Hover highlight for any entry with coords
             if (hoverTargets && hoverTargets.length) {
               tObj.on('pointerover', () => {
                 highlightHistoryTargets(scene, hoverTargets);
@@ -512,6 +514,7 @@ function buildHistoryView(allSortedByYear) {
     if (e === discovery) return false;
     if (e === players) return false;
     if (mainSet.has(e)) return false;
+    // Don't treat discovery/player as secondary even if heuristics fail.
     if (isDiscoveryEntry(e) || isPlayersArriveEntry(e)) return false;
     return true;
   });
@@ -540,7 +543,7 @@ function buildHistoryView(allSortedByYear) {
 
   if (players) out.push(players);
 
-  // De-dup
+  // De-dup (same object referenced twice by weird inputs)
   const seen = new Set();
   return out.filter(e => {
     if (!e) return false;
@@ -552,7 +555,12 @@ function buildHistoryView(allSortedByYear) {
 }
 
 /**
- * Collect ALL coordinate targets for an entry (q/r, from, to, targets[]), de-duped.
+ * NEW:
+ * Pick a single coordinate to highlight for an entry on hover.
+ * - prefer entry.q/r
+ * - else from
+ * - else to
+ * - else first target
  */
 function collectEntryTargets(entry) {
   const targets = [];
@@ -573,6 +581,7 @@ function collectEntryTargets(entry) {
     }
   }
 
+  // De-dupe
   const seen = new Set();
   const out = [];
   for (const t of targets) {
@@ -584,6 +593,10 @@ function collectEntryTargets(entry) {
   return out;
 }
 
+/**
+ * Draw a white outline over a hex (similar to hover highlight).
+ * If q/r are null, clears history-driven highlight.
+ */
 function highlightHistoryTargets(scene, targets) {
   if (!scene || !scene.mapData) return;
 
@@ -637,7 +650,7 @@ function highlightHistoryTargets(scene, targets) {
   g.visible = true;
 }
 
-// Back-compat
+// Back-compat helper (some older callers may still use q/r)
 function highlightHistoryHex(scene, q, r) {
   if (typeof q !== 'number' || typeof r !== 'number') {
     return highlightHistoryTargets(scene, null);
@@ -662,7 +675,25 @@ function hasCoord(t) {
 }
 
 function focusEntry(scene, entry) {
-  const targets = collectEntryTargets(entry);
+  const targets = [];
+
+  if (typeof entry.q === 'number' && typeof entry.r === 'number') {
+    targets.push({ q: entry.q, r: entry.r });
+  }
+  if (entry.from && hasCoord(entry.from)) {
+    targets.push({ q: entry.from.q, r: entry.from.r });
+  }
+  if (entry.to && hasCoord(entry.to)) {
+    targets.push({ q: entry.to.q, r: entry.to.r });
+  }
+  if (Array.isArray(entry.targets)) {
+    for (const t of entry.targets) {
+      if (hasCoord(t)) {
+        targets.push({ q: t.q, r: t.r });
+      }
+    }
+  }
+
   if (!targets.length) return;
 
   // IMPORTANT CHANGE:
