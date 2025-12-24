@@ -23,6 +23,7 @@ import { effectiveElevationLocal } from './WorldSceneGeography.js';
 
 const POI_EVENT_ICON = {
   settlement: '🏘️',
+  outpost: '🏘️',
   ruin: '🏚️',
   raider_camp: '☠️',
   roadside_camp: '🏕️',
@@ -33,11 +34,16 @@ const POI_EVENT_ICON = {
   wreck: '⚓',
   vehicle: '🚗',
   abandoned_vehicle: '🚗',
+  road: '🛣️',
 };
 
 function getEntryIcon(entry) {
   const pt = String(entry?.poiType || '').toLowerCase();
   if (pt && POI_EVENT_ICON[pt]) return POI_EVENT_ICON[pt];
+
+  const t = String(entry?.type || '').toLowerCase();
+  if (t && POI_EVENT_ICON[t]) return POI_EVENT_ICON[t];
+
   return '';
 }
 
@@ -45,24 +51,43 @@ function getEntryIcon(entry) {
    Entry classification (for Era grouping)
    ========================================================= */
 
+// Normalize type names coming from LoreGeneration (and other systems).
+function normType(x) {
+  return String(x || '').trim().toLowerCase().replace(/\s+/g, '_');
+}
+
 // "Main" events: the backbone of the DF-like narrative.
-// We treat settlement/ruin/crash/war/truce/founding as main.
+// We treat settlement/ruin/crash/war/truce/founding/discovery as main.
 // Secondary: roads/camps/watchtowers/mines/shrines/vehicles/wreck/survey/etc.
 function isMainEvent(entry) {
   if (!entry) return false;
 
-  const t = String(entry.type || '').toLowerCase();
-  const pt = String(entry.poiType || '').toLowerCase();
+  const t = normType(entry.type);
+  const pt = normType(entry.poiType);
 
-  if (t === 'founding' || t === 'discovery') return true;
-  if (t === 'war' || t === 'truce' || t === 'peace') return true;
-  if (t === 'cataclysm') return true;
+  // Explicit tags
+  if (t === 'major' || t === 'main') return true;
+
+  // Discovery / start
+  if (t === 'discovery' || t === 'founding' || t === 'opening') return true;
+
+  // Wars / diplomacy
+  if (t === 'war' || t === 'truce' || t === 'peace' || t === 'ceasefire' || t === 'armistice') return true;
+
+  // Cataclysm / destruction
+  if (t === 'cataclysm' || t === 'disaster' || t === 'plague' || t === 'collapse') return true;
+
+  // Crash of spaceship
+  if (t === 'crash' || t === 'crash_site') return true;
 
   // POI-driven main types
-  if (pt === 'settlement' || pt === 'ruin' || pt === 'crash_site') return true;
+  if (pt === 'settlement' || pt === 'outpost' || pt === 'ruin' || pt === 'crash_site') return true;
 
-  // Some POI beats should count as main if explicitly marked
-  if (t === 'major' || t === 'main') return true;
+  // Some pipelines use different type naming for settlement creation/destruction
+  if (t.includes('settlement') && (t.includes('found') || t.includes('establish') || t.includes('create') || t.includes('build')))
+    return true;
+  if (t.includes('ruin') || t.includes('destroy') || t.includes('destroyed'))
+    return true;
 
   return false;
 }
@@ -216,7 +241,6 @@ function sortEntriesChronologically(entries) {
  */
 function buildEraBlocks(allEntries) {
   const entries = sortEntriesChronologically(allEntries);
-
   if (!entries.length) return [];
 
   const blocks = [];
@@ -262,6 +286,7 @@ function buildEraBlocks(allEntries) {
     const main = e;
     const items = [];
     let j = i + 1;
+
     while (j < entries.length && items.length < 2) {
       const nxt = entries[j];
       if (isMainEvent(nxt)) break; // next era begins
@@ -312,7 +337,6 @@ export function refreshHistoryPanel(scene) {
       : blocksAll;
 
   const maxWidth = scene.historyPanelWidth - 24;
-
   let y = 0;
 
   if (!blocks.length) {
@@ -329,10 +353,7 @@ export function refreshHistoryPanel(scene) {
   } else {
     for (const block of blocks) {
       // --- Block header ---
-      const headerText =
-        block.kind === 'discovery'
-          ? `◆ ${block.title}`
-          : `◆ ${block.title}`;
+      const headerText = `◆ ${block.title}`;
 
       const header = scene.add.text(0, y, headerText, {
         fontFamily: 'monospace',
@@ -345,9 +366,15 @@ export function refreshHistoryPanel(scene) {
       // Collapse toggle only for eras (discovery always expanded)
       if (block.kind === 'era') {
         header.setInteractive({ useHandCursor: true });
-        header.on('pointerdown', () => {
+        header.on('pointerdown', (pointer) => {
+          // ✅ prevent click-through into world
+          try {
+            pointer?.event?.stopPropagation?.();
+            pointer?.event?.preventDefault?.();
+          } catch (_e) {}
+          scene.__uiPointerBlockUntil = (scene.time?.now ?? performance.now()) + 120;
+
           block.collapsed = !block.collapsed;
-          // store collapse state across refreshes (by main.year + main.text key)
           const key = blockKey(block);
           if (!scene.__historyCollapse) scene.__historyCollapse = {};
           scene.__historyCollapse[key] = block.collapsed;
@@ -373,7 +400,6 @@ export function refreshHistoryPanel(scene) {
 
       // --- Secondary lines ---
       if (block.kind === 'era' && block.collapsed) {
-        // show a small hint
         if (block.items.length) {
           const hint = scene.add.text(0, y, `… ${block.items.length} secondary event(s)`, {
             fontFamily: 'monospace',
@@ -445,16 +471,29 @@ function renderEntryLine(scene, parent, entry, y, maxWidth, opts = {}) {
   if (hasTargets) {
     tObj.setInteractive({ useHandCursor: true });
 
-    tObj.on('pointerover', () => {
+    tObj.on('pointerover', (pointer) => {
+      // prevent hover from interacting with world input when moving mouse
+      try {
+        pointer?.event?.stopPropagation?.();
+      } catch (_e) {}
       const coords = collectEntryTargets(entry);
       highlightHistoryHexes(scene, coords);
     });
-    tObj.on('pointerout', () => {
+
+    tObj.on('pointerout', (pointer) => {
+      try {
+        pointer?.event?.stopPropagation?.();
+      } catch (_e) {}
       highlightHistoryHexes(scene, []);
     });
 
-    // ✅ FIX: clicking selects hex (opens hex-inspect) and closes history (no camera pan).
-    tObj.on('pointerdown', () => {
+    // ✅ FIX: clicking selects hex and closes history; prevent world click-through.
+    tObj.on('pointerdown', (pointer) => {
+      try {
+        pointer?.event?.stopPropagation?.();
+        pointer?.event?.preventDefault?.();
+      } catch (_e) {}
+      scene.__uiPointerBlockUntil = (scene.time?.now ?? performance.now()) + 160;
       selectFromEntryAndClose(scene, entry);
     });
   }
@@ -552,7 +591,7 @@ function collectEntryTargets(entry) {
   }
   if (Array.isArray(entry.targets)) {
     for (const t of entry.targets) {
-      if (hasCoord(t)) targets.push({ q: t.q, r: t.r });
+      if (hasCoord(t)) targets.push({ q: t.q, r: t.r };
     }
   }
 
@@ -593,12 +632,14 @@ function pickPrimaryCoord(entry) {
 }
 
 /**
- * ✅ NEW behavior:
+ * ✅ Behavior:
  * - Select hex (same logic as clicking empty hex on map):
  *   clear unit selection, set selectedHex, open hex inspect panel.
  * - Close history panel.
  * - Clear hover highlight.
  * - No camera pan.
+ *
+ * Also sets a short world-click block flag to prevent click-through selection.
  */
 function selectFromEntryAndClose(scene, entry) {
   const coord = pickPrimaryCoord(entry);
@@ -619,6 +660,9 @@ function selectFromEntryAndClose(scene, entry) {
   // Update selection visuals
   scene.updateSelectionHighlight?.();
   scene.debugHex?.(coord.q, coord.r);
+
+  // Block any same-frame world click handlers
+  scene.__uiPointerBlockUntil = (scene.time?.now ?? performance.now()) + 180;
 
   // Close history (tab stays)
   scene.closeHistoryPanel?.();
