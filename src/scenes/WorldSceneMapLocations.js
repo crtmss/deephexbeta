@@ -7,25 +7,26 @@
 // Forest rendering (improved):
 // - Seed-based per-hex RNG (stable across redraw/order)
 // - 3–4 tree emoji per forest hex
-// - On a single hex, ONLY ONE vegetation type is used (e.g. either 🌴 OR 🌵, never both)
+// - On a single hex, ONLY ONE vegetation type is used (e.g. either 🌴 OR 🌵)
 // - Biome palettes updated per your spec
 // - No sway animation
 //
 // Added small biome decorations (deterministic):
 // - 2–5 total decorations across the whole map, seeded
 // - Each decoration is 1 per hex, size = 50% of tree size
-// - Decorations are spaced: any two decorations must be within radius 5 hexes of each other
-//   (clustered, not scattered)
+// - Decorations are clustered within radius 5 of an anchor (not scattered)
 // - 🍄 and 🌷 on any biome except desert and snow
 // - ⛄ on snow biome
 // - 🐚 on desert biome
 //
 // FIXES (requested):
 // - Roads / POIs must NOT appear on mountain hexes.
-//   * A* pathfinder now rejects mountain tiles as passable.
-//   * Endpoints (pts) skip any mountain tile too.
-//   * Mountain detection is robust (type/groundType/elevation==7).
 // - Mountain icons still render for mountains.
+//
+// NEW (UI FIX):
+// - POI/Geo icons now render with a "badge" background and border,
+//   similar to buildings UI: diamond badge for POI/Geo.
+// - Badge fill color depends on `ownedByPlayer` (neutral = gray).
 //
 // NOTE (NEW):
 // - Road history generation is moved OUT of MapLocations into LoreGeneration.
@@ -57,6 +58,79 @@ function isMountainTile(t) {
   // Legacy: some gens mark mountains with elevation==7
   if (t.elevation === 7 && type !== "water") return true;
   return false;
+}
+
+/* ---------------------------------------------------------------
+   Owner color helpers (6 colors: 4 players + 2 AI), neutral gray
+   --------------------------------------------------------------- */
+const DEFAULT_OWNER_COLORS = {
+  0: 0xff3b30, // P0 red
+  1: 0x34c759, // P1 green
+  2: 0x0a84ff, // P2 blue
+  3: 0xffcc00, // P3 yellow
+  ai0: 0xaf52de, // AI0 purple
+  ai1: 0x5e5ce6, // AI1 indigo
+};
+const NEUTRAL_GRAY = 0x9aa0a6;
+const BADGE_BORDER = 0x0b1d2a;
+
+function getOwnedByPlayerFromTile(tile) {
+  // tolerate different representations:
+  // - number 0..3 for players
+  // - "ai0"/"ai1"
+  // - string "0"/"1"
+  if (!tile) return null;
+  const v =
+    tile.ownedByPlayer ??
+    tile.ownedBy ??
+    tile.ownerId ??
+    tile.owner ??
+    null;
+
+  if (v === null || v === undefined) return null;
+
+  if (typeof v === "number") return v;
+  if (typeof v === "string") {
+    const s = v.trim();
+    if (s === "") return null;
+    if (s === "ai0" || s === "ai1") return s;
+    const n = Number(s);
+    if (Number.isFinite(n)) return n;
+    return s;
+  }
+  return null;
+}
+
+function getOwnerColor(scene, ownerId) {
+  // if scene provides a color helper, use it
+  try {
+    if (scene && typeof scene.getOwnerColor === "function") {
+      const c = scene.getOwnerColor(ownerId);
+      if (Number.isFinite(c)) return c;
+    }
+  } catch (_) {}
+
+  // if scene has a palette
+  const pal =
+    scene?.ownerColors ||
+    scene?.playerColors ||
+    scene?.colorsByOwner ||
+    null;
+
+  if (pal) {
+    if (Array.isArray(pal) && typeof ownerId === "number" && pal[ownerId] != null) {
+      return pal[ownerId];
+    }
+    if (typeof pal === "object" && pal[ownerId] != null) {
+      return pal[ownerId];
+    }
+  }
+
+  // fallback
+  if (ownerId == null) return NEUTRAL_GRAY;
+  if (DEFAULT_OWNER_COLORS[ownerId] != null) return DEFAULT_OWNER_COLORS[ownerId];
+  if (typeof ownerId === "number" && DEFAULT_OWNER_COLORS[ownerId] != null) return DEFAULT_OWNER_COLORS[ownerId];
+  return NEUTRAL_GRAY;
 }
 
 /* ---------------------------------------------------------------
@@ -98,39 +172,14 @@ function randForHex(scene, q, r, salt = "") {
 }
 
 /* ---------------------------------------------------------------
-   Deterministic neighbor helpers
-   --------------------------------------------------------------- */
-function neighborsOddR(q, r) {
-  const even = r % 2 === 0;
-  return even
-    ? [[+1, 0], [0, -1], [-1, -1], [-1, 0], [-1, +1], [0, +1]]
-    : [[+1, 0], [+1, -1], [0, -1], [-1, 0], [0, +1], [+1, +1]];
-}
-
-function inBounds(q, r, w, h) {
-  return q >= 0 && r >= 0 && q < w && r < h;
-}
-
-/* ---------------------------------------------------------------
    POI flags: now driven by mapInfo.objects (seed -> lore -> POI)
    --------------------------------------------------------------- */
-/**
- * Apply POI flags onto tiles based on deterministic map objects.
- *
- * NOTE:
- *  - mapData is a flat array of tiles ({q,r,...}).
- *  - mapObjects usually come from scene.mapInfo.objects,
- *    which are filled by LoreGeneration (ensureWorldLoreGenerated).
- *
- * Backwards compatible: if mapObjects не переданы, ф-ция просто
- * возвращает mapData как есть.
- */
 export function applyLocationFlags(mapData, mapObjects) {
   if (!Array.isArray(mapData)) return mapData;
 
   const objs = Array.isArray(mapObjects) ? mapObjects : [];
   if (!objs.length) {
-    // Nothing to apply – просто убедимся, что флаги существуют
+    // Nothing to apply – ensure flags exist
     for (const t of mapData) {
       if (!t) continue;
       t.hasRuin = !!t.hasRuin;
@@ -146,7 +195,6 @@ export function applyLocationFlags(mapData, mapObjects) {
       t.hasMinePOI = !!t.hasMinePOI;
       t.hasShrine = !!t.hasShrine;
 
-      // optional label fields
       if (typeof t.settlementName !== "string") t.settlementName = t.settlementName || "";
       if (typeof t.poiName !== "string") t.poiName = t.poiName || "";
       if (typeof t.owningFaction !== "string") t.owningFaction = t.owningFaction || "";
@@ -154,10 +202,9 @@ export function applyLocationFlags(mapData, mapObjects) {
     return mapData;
   }
 
-  // Index tiles by q,r
   const byKey = new Map(mapData.map((t) => [keyOf(t.q, t.r), t]));
 
-  // Сначала сбросить все флаги POI (мы хотим, чтобы ИСТОРИЯ была источником правды)
+  // Reset all POI flags
   for (const t of mapData) {
     if (!t) continue;
     t.hasRuin = false;
@@ -179,7 +226,7 @@ export function applyLocationFlags(mapData, mapObjects) {
     if (typeof t.owningFaction !== "string") t.owningFaction = "";
   }
 
-  // Затем проставить флаги по объектам карты
+  // Apply from objects
   for (const o of objs) {
     if (!o) continue;
     const q = o.q;
@@ -189,8 +236,7 @@ export function applyLocationFlags(mapData, mapObjects) {
     const t = byKey.get(keyOf(q, r));
     if (!t) continue;
 
-    // ✅ Roads/POIs/resources/etc must NOT spawn on mountains
-    // BUT mountain icon itself is drawn later in render, not through objects
+    // POIs must NOT spawn on mountains
     if (isMountainTile(t)) continue;
 
     const type = String(o.type || "").toLowerCase();
@@ -200,73 +246,65 @@ export function applyLocationFlags(mapData, mapObjects) {
       t.hasObject = true;
       if (o.name && typeof o.name === "string") t.poiName = o.name;
       if (o.faction && typeof o.faction === "string") t.owningFaction = o.faction;
+      if (o.ownedByPlayer != null) t.ownedByPlayer = o.ownedByPlayer;
     } else if (type === "crash_site") {
       t.hasCrashSite = true;
       t.hasObject = true;
       if (o.name && typeof o.name === "string") t.poiName = o.name;
       if (o.faction && typeof o.faction === "string") t.owningFaction = o.faction;
+      if (o.ownedByPlayer != null) t.ownedByPlayer = o.ownedByPlayer;
     } else if (type === "vehicle") {
       t.hasVehicle = true;
       t.hasObject = true;
       if (o.name && typeof o.name === "string") t.poiName = o.name;
       if (o.faction && typeof o.faction === "string") t.owningFaction = o.faction;
+      if (o.ownedByPlayer != null) t.ownedByPlayer = o.ownedByPlayer;
     } else if (type === "wreck") {
       t.hasWreck = true;
       t.hasObject = true;
       if (o.name && typeof o.name === "string") t.poiName = o.name;
       if (o.faction && typeof o.faction === "string") t.owningFaction = o.faction;
+      if (o.ownedByPlayer != null) t.ownedByPlayer = o.ownedByPlayer;
     } else if (type === "settlement") {
       t.hasSettlement = true;
       t.hasObject = true;
       if (o.name && typeof o.name === "string") t.settlementName = o.name;
       if (o.faction && typeof o.faction === "string") t.owningFaction = o.faction;
+      if (o.ownedByPlayer != null) t.ownedByPlayer = o.ownedByPlayer;
     } else if (type === "raider_camp") {
       t.hasRaiderCamp = true;
       t.hasObject = true;
       if (o.name && typeof o.name === "string") t.poiName = o.name;
       if (o.faction && typeof o.faction === "string") t.owningFaction = o.faction;
+      if (o.ownedByPlayer != null) t.ownedByPlayer = o.ownedByPlayer;
     } else if (type === "roadside_camp") {
       t.hasRoadsideCamp = true;
       t.hasObject = true;
       if (o.name && typeof o.name === "string") t.poiName = o.name;
       if (o.faction && typeof o.faction === "string") t.owningFaction = o.faction;
+      if (o.ownedByPlayer != null) t.ownedByPlayer = o.ownedByPlayer;
     } else if (type === "watchtower") {
       t.hasWatchtower = true;
       t.hasObject = true;
       if (o.name && typeof o.name === "string") t.poiName = o.name;
       if (o.faction && typeof o.faction === "string") t.owningFaction = o.faction;
+      if (o.ownedByPlayer != null) t.ownedByPlayer = o.ownedByPlayer;
     } else if (type === "mine") {
       t.hasMinePOI = true;
       t.hasObject = true;
       if (o.name && typeof o.name === "string") t.poiName = o.name;
       if (o.faction && typeof o.faction === "string") t.owningFaction = o.faction;
+      if (o.ownedByPlayer != null) t.ownedByPlayer = o.ownedByPlayer;
     } else if (type === "shrine") {
       t.hasShrine = true;
       t.hasObject = true;
       if (o.name && typeof o.name === "string") t.poiName = o.name;
       if (o.faction && typeof o.faction === "string") t.owningFaction = o.faction;
+      if (o.ownedByPlayer != null) t.ownedByPlayer = o.ownedByPlayer;
     }
   }
 
   return mapData;
-}
-
-/* ---------------------------------------------------------------
-   Roads data helpers (apply existing road flags/links only)
-   --------------------------------------------------------------- */
-function ensureRoadLinksTile(tile) {
-  if (!tile) return;
-  if (!(tile.roadLinks instanceof Set)) tile.roadLinks = new Set();
-}
-
-function applyRoadLink(a, b) {
-  if (!a || !b) return;
-  ensureRoadLinksTile(a);
-  ensureRoadLinksTile(b);
-  a.roadLinks.add(keyOf(b.q, b.r));
-  b.roadLinks.add(keyOf(a.q, a.r));
-  a.hasRoad = true;
-  b.hasRoad = true;
 }
 
 /* ---------------------------------------------------------------
@@ -290,13 +328,8 @@ export function drawLocationsAndRoads() {
   const mapObjects =
     scene.mapInfo && Array.isArray(scene.mapInfo.objects) ? scene.mapInfo.objects : [];
 
-  // Apply POI flags from lore-generated map objects.
   applyLocationFlags(map, mapObjects);
 
-  // NOTE:
-  // Road generation has been removed from MapLocations.
-  // LoreGeneration is responsible for creating roads (tile.hasRoad / tile.roadLinks)
-  // and for emitting the corresponding history events in the intended order.
   initOrUpdateGeography(scene, map);
 
   if (scene.roadsGraphics) scene.roadsGraphics.destroy();
@@ -317,13 +350,13 @@ export function drawLocationsAndRoads() {
   const offsetY = scene.mapOffsetY || 0;
   const LIFT = scene?.LIFT_PER_LVL ?? 4;
 
-  /* ------------------- Roads ------------------- */
+  /* ------------------- Roads (render only) ------------------- */
   for (const t of map) {
     if (!t) continue;
     if (!t.hasRoad) continue;
     if (!(t.roadLinks instanceof Set)) continue;
 
-    // ✅ never draw road on mountains
+    // never draw road on mountains
     if (isMountainTile(t)) continue;
 
     const c1 = scene.hexToPixel(t.q, t.r, size);
@@ -333,7 +366,7 @@ export function drawLocationsAndRoads() {
       if (target <= keyOf(t.q, t.r)) continue;
       const n = byKey.get(target);
       if (!n) continue;
-      if (isMountainTile(n)) continue; // ✅ never draw road segment to mountains
+      if (isMountainTile(n)) continue;
 
       const c2 = scene.hexToPixel(n.q, n.r, size);
       const y2 = c2.y - LIFT * effectiveElevationLocal(n);
@@ -356,11 +389,43 @@ export function drawLocationsAndRoads() {
     scene.electricity.drawOverlay();
   }
 
-  /* ------------------- POI Icons + Forests + Decorations ------------------- */
+  /* ------------------- Badge helpers ------------------- */
   const noPOISet = getNoPOISet(map);
 
-  // ✅ FIX: allow mountain icon to render, while still blocking POIs on mountains
-  const addEmoji = (q, r, ox, oy, char, px, depth = 42, opts = null) => {
+  const makeDiamondBadge = (x, y, fillColor, px, depth) => {
+    const badge = scene.add.container(x, y).setDepth(depth);
+
+    // size: px is icon font-size; diamond should surround it
+    const half = Math.max(14, Math.round(px * 0.95));
+    const borderW = Math.max(2, Math.round(px * 0.12));
+
+    const g = scene.add.graphics();
+    // border
+    g.fillStyle(BADGE_BORDER, 1);
+    g.beginPath();
+    g.moveTo(0, -half);
+    g.lineTo(half, 0);
+    g.lineTo(0, half);
+    g.lineTo(-half, 0);
+    g.closePath();
+    g.fillPath();
+
+    // inner fill
+    const inner = Math.max(4, half - borderW);
+    g.fillStyle(fillColor, 1);
+    g.beginPath();
+    g.moveTo(0, -inner);
+    g.lineTo(inner, 0);
+    g.lineTo(0, inner);
+    g.lineTo(-inner, 0);
+    g.closePath();
+    g.fillPath();
+
+    badge.add(g);
+    return badge;
+  };
+
+  const addBadgeEmoji = (q, r, ox, oy, char, px, depth = 106, opts = null) => {
     const t = scene.mapData.find((h) => h.q === q && h.r === r);
     if (!t) return null;
     if (noPOISet && noPOISet.has(keyOf(q, r))) return null;
@@ -371,19 +436,31 @@ export function drawLocationsAndRoads() {
     const c = scene.hexToPixel(q, r, size);
     const x = c.x + offsetX + ox;
     const y = c.y + offsetY + oy - LIFT * effectiveElevationLocal(t);
-    const obj = scene.add
-      .text(x, y, char, {
+
+    const ownerId = getOwnedByPlayerFromTile(t);
+    const fill = getOwnerColor(scene, ownerId);
+
+    const badge = makeDiamondBadge(x, y, fill, px, depth);
+
+    const icon = scene.add
+      .text(0, 0, char, {
         fontFamily: "Arial",
-        fontSize: `${px}px`,
+        fontSize: `${Math.max(12, Math.round(px * 0.72))}px`,
         color: "#ffffff",
       })
-      .setOrigin(0.5)
-      .setDepth(depth);
+      .setOrigin(0.5);
 
-    layer.add(obj);
-    return obj;
+    badge.add(icon);
+    layer.add(badge);
+
+    // store for future updates (claiming tiles etc)
+    scene.mapBadges = scene.mapBadges || [];
+    scene.mapBadges.push({ kind: "poi", q, r, badge, icon, char });
+
+    return badge;
   };
 
+  /* ------------------- POI/Geo icons + Mountains ------------------- */
   // Keep ref for tree spacing (for decor scaling)
   const treePxRef = { value: Math.max(14, Math.round(size * 0.55)) };
 
@@ -391,92 +468,70 @@ export function drawLocationsAndRoads() {
     if (!t) continue;
 
     const isWater = String(t.type || "").toLowerCase() === "water";
-    const cx = scene.hexToPixel(t.q, t.r, size).x + offsetX;
-    const cy = scene.hexToPixel(t.q, t.r, size).y + offsetY - LIFT * effectiveElevationLocal(t);
 
-    // Mountains: render icon but no POIs/roads/resources etc
+    // Mountains: show as Geo badge (allowed on mountains)
     if (!isWater && isMountainTile(t)) {
-      const m = addEmoji(t.q, t.r, 0, 0, "⛰️", size * 0.86, 106, { allowOnMountains: true });
-      if (m) {
-        m.x = cx;
-        m.y = cy;
-      }
+      addBadgeEmoji(t.q, t.r, 0, 0, "⛰️", size * 0.92, 110, { allowOnMountains: true });
       continue;
     }
 
-    /* ---------------- Settlement ---------------- */
+    // Settlement
     if (!isWater && t.hasSettlement) {
-      const s = addEmoji(t.q, t.r, 0, 0, "🏠", size * 0.82, 106);
-      if (s) { s.x = cx; s.y = cy; }
+      addBadgeEmoji(t.q, t.r, 0, 0, "🏠", size * 0.92, 110);
     }
 
-    /* ---------------- Ruin ---------------- */
+    // Ruin
     if (!isWater && t.hasRuin) {
-      const r = addEmoji(t.q, t.r, 0, 0, "🏛️", size * 0.78, 106);
-      if (r) { r.x = cx; r.y = cy; }
+      addBadgeEmoji(t.q, t.r, 0, 0, "🏛️", size * 0.92, 110);
     }
 
-    /* ---------------- Crash Site ---------------- */
+    // Crash Site
     if (!isWater && t.hasCrashSite) {
-      const cs = addEmoji(t.q, t.r, 0, 0, "💥", size * 0.78, 106);
-      if (cs) { cs.x = cx; cs.y = cy; }
+      addBadgeEmoji(t.q, t.r, 0, 0, "💥", size * 0.92, 110);
     }
 
-    /* ---------------- Vehicle ---------------- */
+    // Vehicle
     if (!isWater && t.hasVehicle) {
-      const veh = addEmoji(t.q, t.r, 0, 0, "🚗", size * 0.78, 106);
-      if (veh) { veh.x = cx; veh.y = cy; }
+      addBadgeEmoji(t.q, t.r, 0, 0, "🚗", size * 0.92, 110);
     }
 
-    /* ---------------- Ship Wreck ---------------- */
-    // ✅ FIX: wreck can be on water too (Lore places it in coastal/shallow water)
+    // Ship Wreck (can be on water too)
     if (t.hasWreck) {
-      const wr = addEmoji(t.q, t.r, 0, 0, "⚓", size * 0.78, 106);
-      if (wr) { wr.x = cx; wr.y = cy; }
+      addBadgeEmoji(t.q, t.r, 0, 0, "⚓", size * 0.92, 110);
     }
 
-    /* ---------------- Raider camp ---------------- */
+    // Raider camp
     if (!isWater && t.hasRaiderCamp) {
-      const rc = addEmoji(t.q, t.r, 0, 0, "☠️", size * 0.8, 106);
-      if (rc) { rc.x = cx; rc.y = cy; }
+      addBadgeEmoji(t.q, t.r, 0, 0, "☠️", size * 0.92, 110);
     }
 
-    /* ---------------- Roadside camp ---------------- */
+    // Roadside camp
     if (!isWater && t.hasRoadsideCamp) {
-      const camp = addEmoji(t.q, t.r, 0, 0, "🏕️", size * 0.78, 106);
-      if (camp) { camp.x = cx; camp.y = cy; }
+      addBadgeEmoji(t.q, t.r, 0, 0, "🏕️", size * 0.92, 110);
     }
 
-    /* ---------------- Watchtower ---------------- */
+    // Watchtower
     if (!isWater && t.hasWatchtower) {
-      const wt = addEmoji(t.q, t.r, 0, 0, "🏰", size * 0.78, 106);
-      if (wt) { wt.x = cx; wt.y = cy; }
+      addBadgeEmoji(t.q, t.r, 0, 0, "🏰", size * 0.92, 110);
     }
 
-    /* ---------------- Mine POI ---------------- */
+    // Mine POI
     if (!isWater && t.hasMinePOI) {
-      const m = addEmoji(t.q, t.r, 0, 0, "⚒️", size * 0.78, 106);
-      if (m) { m.x = cx; m.y = cy; }
+      addBadgeEmoji(t.q, t.r, 0, 0, "⚒️", size * 0.92, 110);
     }
 
-    /* ---------------- Shrine ---------------- */
+    // Shrine
     if (!isWater && t.hasShrine) {
-      const sh = addEmoji(t.q, t.r, 0, 0, "⛩️", size * 0.78, 106);
-      if (sh) { sh.x = cx; sh.y = cy; }
+      addBadgeEmoji(t.q, t.r, 0, 0, "⛩️", size * 0.92, 110);
     }
   }
 
-  // Forests + biome decorations are deterministic, but skip mountains via noPOISet/isMountainTile guard above.
+  // Forests + decorations (keep emoji-only)
   const noPOISet2 = getNoPOISet(map);
-  drawForests(scene, map, size, offsetX, offsetY, LIFT, noPOISet2, treePxRef, addEmoji);
-  drawDecorations(scene, addEmoji, map, size, offsetX, offsetY, LIFT, noPOISet2, treePxRef);
+  drawForests(scene, map, size, offsetX, offsetY, LIFT, noPOISet2, treePxRef, addBadgeEmoji /* not used for trees */);
+  drawDecorations(scene, addBadgeEmoji, map, size, offsetX, offsetY, LIFT, noPOISet2, treePxRef);
 
   refreshLocationIcons(scene);
-
-  // IMPORTANT:
-  // Road lore generation has been removed from MapLocations.
-  // It will be produced in LoreGeneration during world history creation,
-  // in the correct DF-like sequence.
 }
 
 /* ---------------------------------------------------------------
@@ -519,7 +574,7 @@ function pickVegetationForHex(scene, q, r, biomeName, tileType) {
   return palette[Math.max(0, Math.min(palette.length - 1, idx))];
 }
 
-function drawForests(scene, map, size, offsetX, offsetY, LIFT, noPOISet, treePxRef, addEmoji) {
+function drawForests(scene, map, size, offsetX, offsetY, LIFT, noPOISet, treePxRef, _addBadgeEmoji) {
   const treePx = Math.max(14, Math.round(size * 0.55));
   treePxRef.value = treePx;
 
@@ -533,8 +588,6 @@ function drawForests(scene, map, size, offsetX, offsetY, LIFT, noPOISet, treePxR
     const biomeName = resolveBiome(scene, t) || "";
     const tileType = t.type || "";
 
-    // Forest presence is encoded on the tile (seed-based elsewhere).
-    // Support multiple legacy fields:
     const isForest =
       t.hasForest === true ||
       t.isForest === true ||
@@ -546,8 +599,6 @@ function drawForests(scene, map, size, offsetX, offsetY, LIFT, noPOISet, treePxR
     if (noPOISet && noPOISet.has(keyOf(t.q, t.r))) continue;
 
     const veg = pickVegetationForHex(scene, t.q, t.r, biomeName, tileType);
-
-    // 3–4 trees per hex, deterministic
     const rnd = randForHex(scene, t.q, t.r, "trees");
     const n = 3 + (rnd() < 0.5 ? 0 : 1);
 
@@ -557,8 +608,20 @@ function drawForests(scene, map, size, offsetX, offsetY, LIFT, noPOISet, treePxR
       const ox = Math.cos(ang) * rad;
       const oy = Math.sin(ang) * rad;
 
-      const tr = addEmoji(t.q, t.r, ox, oy, veg, treePx, 105);
-      if (!tr) continue;
+      const c = scene.hexToPixel(t.q, t.r, size);
+      const x = c.x + offsetX + ox;
+      const y = c.y + offsetY + oy - LIFT * effectiveElevationLocal(t);
+
+      const obj = scene.add
+        .text(x, y, veg, {
+          fontFamily: "Arial",
+          fontSize: `${treePx}px`,
+          color: "#ffffff",
+        })
+        .setOrigin(0.5)
+        .setDepth(105);
+
+      scene.locationsLayer.add(obj);
     }
   }
 }
@@ -588,12 +651,10 @@ function decorationEmojiForTile(tile, biomeName) {
 
   if (isDesert) return "🐚";
   if (isSnow) return "⛄";
-
-  // any non-desert non-snow: 🍄 or 🌷
-  return null;
+  return null; // non-desert non-snow: 🍄 or 🌷
 }
 
-function drawDecorations(scene, addEmoji, map, size, offsetX, offsetY, LIFT, noPOISet, treePxRef) {
+function drawDecorations(scene, addBadgeEmoji, map, size, offsetX, offsetY, LIFT, noPOISet, treePxRef) {
   const baseSeed = getSceneSeedString(scene);
   const rnd = mulberry32(hashStr32(`${baseSeed}|decorations`));
 
@@ -609,7 +670,7 @@ function drawDecorations(scene, addEmoji, map, size, offsetX, offsetY, LIFT, noP
     const biomeName = resolveBiome(scene, t) || "";
     const dec = decorationEmojiForTile(t, biomeName);
     if (!dec) {
-      // non-desert/non-snow: allow 🍄/🌷
+      // allow 🍄/🌷 (exclude desert/snow)
       const tt = String(t.type || "").toLowerCase();
       const bb = String(biomeName || "").toLowerCase();
       const isDesert = tt.includes("desert") || tt.includes("sand") || tt.includes("volcan") || tt.includes("ash");
@@ -623,18 +684,15 @@ function drawDecorations(scene, addEmoji, map, size, offsetX, offsetY, LIFT, noP
 
   if (!candidates.length) return;
 
-  // pick a cluster anchor
   const anchor = candidates[Math.floor(rnd() * candidates.length)]?.t;
   if (!anchor) return;
 
-  // choose decorations clustered within radius 5 of anchor
   const cluster = candidates
     .filter((c) => axialDist(c.t.q, c.t.r, anchor.q, anchor.r) <= 5)
     .slice();
 
   if (!cluster.length) return;
 
-  // deterministic shuffle
   for (let i = cluster.length - 1; i > 0; i--) {
     const j = Math.floor(rnd() * (i + 1));
     [cluster[i], cluster[j]] = [cluster[j], cluster[i]];
@@ -647,37 +705,44 @@ function drawDecorations(scene, addEmoji, map, size, offsetX, offsetY, LIFT, noP
     if (placed >= total) break;
 
     const t = c.t;
-    const biomeName = c.biomeName;
 
     let emoji = c.forced;
     if (!emoji) {
-      // 🍄 / 🌷 for non-desert/non-snow
       const rr = randForHex(scene, t.q, t.r, "decorChoice");
       emoji = rr() < 0.5 ? "🍄" : "🌷";
     }
 
-    // slight random offset
     const rr2 = randForHex(scene, t.q, t.r, "decorOffset");
     const ang = rr2() * Math.PI * 2;
     const rad = (0.10 + rr2() * 0.18) * size;
     const ox = Math.cos(ang) * rad;
     const oy = Math.sin(ang) * rad;
 
-    const obj = addEmoji(t.q, t.r, ox, oy, emoji, px, 104);
-    if (!obj) continue;
+    // decorations are just small emoji (no badge)
+    const cxy = scene.hexToPixel(t.q, t.r, size);
+    const x = cxy.x + offsetX + ox;
+    const y = cxy.y + offsetY + oy - LIFT * effectiveElevationLocal(t);
 
+    const obj = scene.add
+      .text(x, y, emoji, {
+        fontFamily: "Arial",
+        fontSize: `${px}px`,
+        color: "#ffffff",
+      })
+      .setOrigin(0.5)
+      .setDepth(104);
+
+    scene.locationsLayer.add(obj);
     placed += 1;
   }
 }
 
 /* ---------------------------------------------------------------
-   Refresh icons (used after redraw)
+   Refresh icons (kept for compatibility)
    --------------------------------------------------------------- */
 export function refreshLocationIcons(scene) {
   if (!scene) return;
-
-  // no-op placeholder for now; kept for compatibility
-  // (previous versions updated interactive bounds, etc)
+  // placeholder; kept for older code paths
 }
 
 export default {
