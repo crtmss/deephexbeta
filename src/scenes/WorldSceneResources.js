@@ -3,105 +3,55 @@
 /* =========================================================================
    Resource spawner & helpers
    - Places 5 🐟 fish resources on random water hexes
-   - Places 2 🛢️ crude oil resources on *shallow* water hexes
+   - Places 2 🛢️ crude oil resources on *shallow* water hexes   ✅ (was 5)
    - Enforces minimum hex distance of 8 between same-type resources
    - Safe to call multiple times (won’t duplicate on same hex)
    - Fully deterministic per seed (separate RNG stream per resource type)
-   - Hard rule: never spawn resources on mountain tiles
-   - NEW: resources render as diamond badges with owner-colored background
+   - Hard rule: never spawn resources on mountain tiles (extra safety)
+   - NEW: resources render as "badge" icons with background + border
+          (neutral gray until ownedByPlayer is set)
    ======================================================================= */
 
 import { cyrb128, sfc32 } from '../engine/PRNG.js';
 
-/* ---------------------------------------------------------------
-   Owner color helpers (same logic as MapLocations)
-   --------------------------------------------------------------- */
-const OWNER_COLORS = {
-  0: 0xff3b30,
-  1: 0x34c759,
-  2: 0x0a84ff,
-  3: 0xffcc00,
-  ai0: 0xaf52de,
-  ai1: 0x5e5ce6,
-};
-const NEUTRAL_GRAY = 0x9aa0a6;
-const BADGE_BORDER = 0x0b1d2a;
-
-function getOwnerColor(ownerId) {
-  if (ownerId == null) return NEUTRAL_GRAY;
-  return OWNER_COLORS[ownerId] ?? NEUTRAL_GRAY;
-}
-
-/* ---------------------------------------------------------------
-   Badge rendering (diamond)
-   --------------------------------------------------------------- */
-function createDiamondBadge(scene, x, y, iconChar, ownerId, px, depth = 2050) {
-  const badge = scene.add.container(x, y).setDepth(depth);
-
-  const half = Math.max(14, Math.round(px * 0.95));
-  const borderW = Math.max(2, Math.round(px * 0.12));
-  const fillColor = getOwnerColor(ownerId);
-
-  const g = scene.add.graphics();
-
-  // border
-  g.fillStyle(BADGE_BORDER, 1);
-  g.beginPath();
-  g.moveTo(0, -half);
-  g.lineTo(half, 0);
-  g.lineTo(0, half);
-  g.lineTo(-half, 0);
-  g.closePath();
-  g.fillPath();
-
-  // inner fill
-  const inner = Math.max(4, half - borderW);
-  g.fillStyle(fillColor, 1);
-  g.beginPath();
-  g.moveTo(0, -inner);
-  g.lineTo(inner, 0);
-  g.lineTo(0, inner);
-  g.lineTo(-inner, 0);
-  g.closePath();
-  g.fillPath();
-
-  const icon = scene.add.text(0, 0, iconChar, {
-    fontFamily: 'Arial',
-    fontSize: `${Math.max(12, Math.round(px * 0.72))}px`,
-    color: '#ffffff',
-  }).setOrigin(0.5);
-
-  badge.add(g);
-  badge.add(icon);
-
-  return { badge, icon, bg: g };
-}
-
-/* ---------------------------------------------------------------
-   Fish
-   --------------------------------------------------------------- */
+/**
+ * Spawn up to 5 fish on water tiles.
+ * Deterministic per world seed; uses its own PRNG stream.
+ */
 export function spawnFishResources() {
   const scene = /** @type {Phaser.Scene & any} */ (this);
 
-  if (!scene || !Array.isArray(scene.mapData) || !scene.mapData.length) return;
+  if (!scene || !Array.isArray(scene.mapData) || !scene.mapData.length) {
+    console.warn('[Resources] spawnFishResources(): no mapData on scene.');
+    return;
+  }
 
+  // init holder
   scene.resources = scene.resources || [];
 
-  const existing = scene.resources.filter(r => r.type === 'fish');
-  if (existing.length >= 5) return;
+  // Already have 5+ fish? do nothing.
+  const existingFish = scene.resources.filter(r => r.type === 'fish');
+  if (existingFish.length >= 5) return;
 
-  const waterTiles = scene.mapData.filter(t => isWaterTile(t) && !isMountainTile(t));
-  if (!waterTiles.length) return;
+  // Build list of candidate *water* tiles (and not mountain just in case)
+  const waterTiles = (scene.mapData || []).filter(t => isWaterTile(t) && !isMountainTile(t));
+  if (!waterTiles.length) {
+    console.warn('[Resources] spawnFishResources(): no water tiles found.');
+    return;
+  }
 
-  const placed = existing.map(r => ({ q: r.q, r: r.r }));
-  const need = 5 - existing.length;
-  const rnd = getFishRng(scene);
+  // Gather already-placed fish coordinates to respect min distance
+  const placed = existingFish.map(f => ({ q: f.q, r: f.r }));
 
+  const need = 5 - existingFish.length;
+  const rnd  = getFishRng(scene);
+
+  // Shuffle for variety, but deterministically
   const shuffled = waterTiles.slice();
   shuffleInPlace(shuffled, rnd);
 
-  let created = 0;
   const MIN_DIST = 8;
+  let created = 0;
 
   for (const tile of shuffled) {
     if (created >= need) break;
@@ -109,54 +59,95 @@ export function spawnFishResources() {
     const { q, r } = tile;
     if (!inBounds(scene, q, r)) continue;
 
-    if (placed.some(p => hexDistanceAxial(p.q, p.r, q, r) < MIN_DIST)) continue;
-    if (scene.resources.some(o => o.type === 'fish' && o.q === q && o.r === r)) continue;
+    // Enforce minimum hex distance to all already placed fish
+    let tooClose = false;
+    for (const p of placed) {
+      if (hexDistanceAxial(p.q, p.r, q, r) < MIN_DIST) {
+        tooClose = true;
+        break;
+      }
+    }
+    if (tooClose) continue;
 
-    const pos = scene.axialToWorld(q, r);
+    // Avoid duplicates on same hex if something already placed there
+    const already = scene.resources.find(
+      o => o.type === 'fish' && o.q === q && o.r === r
+    );
+    if (already) continue;
+
+    // Create visible emoji (NOW as badge)
+    const pos = scene.axialToWorld
+      ? scene.axialToWorld(q, r)
+      : fallbackAxialToWorld(scene, q, r); // fallback includes offset
+
+    // Keep original visual scale intent (was 18px)
     const px = 18;
+    const { badge, icon, bg } = createDiamondBadge(scene, pos.x, pos.y, '🐟', {
+      fontSizePx: px,
+      ownedByPlayer: null,
+      depth: 2050,
+    });
 
-    const badgeObj = createDiamondBadge(scene, pos.x, pos.y, '🐟', null, px);
-
+    // Backwards compatibility:
+    // - 'obj' used to be a Text; now we store the badge container in 'obj'
+    // - also store refs for later recolor when claimed
     scene.resources.push({
       type: 'fish',
-      q, r,
+      q,
+      r,
+      obj: badge,
+      badge,
+      icon,
+      bg,
       ownedByPlayer: null,
-      badge: badgeObj.badge,
     });
 
     placed.push({ q, r });
-    created++;
+    created += 1;
   }
+
+  console.log(
+    `[Resources] spawnFishResources(): waterTiles=${waterTiles.length}, existing=${existingFish.length}, createdNow=${created}`
+  );
 }
 
-/* ---------------------------------------------------------------
-   Crude oil (cap = 2)
-   --------------------------------------------------------------- */
+/**
+ * Spawn up to 2 crude oil resources on *shallow* water tiles.
+ * Uses a separate deterministic RNG stream from fish.
+ */
 export function spawnCrudeOilResources() {
   const scene = /** @type {Phaser.Scene & any} */ (this);
 
-  if (!scene || !Array.isArray(scene.mapData) || !scene.mapData.length) return;
+  if (!scene || !Array.isArray(scene.mapData) || !scene.mapData.length) {
+    console.warn('[Resources] spawnCrudeOilResources(): no mapData on scene.');
+    return;
+  }
 
   scene.resources = scene.resources || [];
 
+  // ✅ Oil cap: 2 total
   const OIL_CAP = 2;
-  const existing = scene.resources.filter(r => r.type === 'crudeOil');
-  if (existing.length >= OIL_CAP) return;
 
-  const shallowTiles = scene.mapData.filter(
-    t => isShallowWaterTile(t) && !isMountainTile(t)
-  );
-  if (!shallowTiles.length) return;
+  // Already have 2+ oil? do nothing.
+  const existingOil = scene.resources.filter(r => r.type === 'crudeOil');
+  if (existingOil.length >= OIL_CAP) return;
 
-  const placed = existing.map(r => ({ q: r.q, r: r.r }));
-  const need = OIL_CAP - existing.length;
-  const rnd = getOilRng(scene);
+  // Shallow water candidates only (and not mountain just in case)
+  const shallowTiles = (scene.mapData || []).filter(t => isShallowWaterTile(t) && !isMountainTile(t));
+  if (!shallowTiles.length) {
+    console.warn('[Resources] spawnCrudeOilResources(): no shallow water tiles found.');
+    return;
+  }
+
+  const placed = existingOil.map(o => ({ q: o.q, r: o.r }));
+  const need   = OIL_CAP - existingOil.length;
+  const rnd    = getOilRng(scene);
 
   const shuffled = shallowTiles.slice();
   shuffleInPlace(shuffled, rnd);
 
-  let created = 0;
   const MIN_DIST = 8;
+  let created = 0;
 
   for (const tile of shuffled) {
     if (created >= need) break;
@@ -164,74 +155,144 @@ export function spawnCrudeOilResources() {
     const { q, r } = tile;
     if (!inBounds(scene, q, r)) continue;
 
-    if (placed.some(p => hexDistanceAxial(p.q, p.r, q, r) < MIN_DIST)) continue;
-    if (scene.resources.some(o => o.type === 'crudeOil' && o.q === q && o.r === r)) continue;
+    // Minimum distance to other oil nodes
+    let tooClose = false;
+    for (const p of placed) {
+      if (hexDistanceAxial(p.q, p.r, q, r) < MIN_DIST) {
+        tooClose = true;
+        break;
+      }
+    }
+    if (tooClose) continue;
 
-    const pos = scene.axialToWorld(q, r);
+    // Avoid duplicates on same hex
+    const already = scene.resources.find(
+      o => o.type === 'crudeOil' && o.q === q && o.r === r
+    );
+    if (already) continue;
+
+    const pos = scene.axialToWorld
+      ? scene.axialToWorld(q, r)
+      : fallbackAxialToWorld(scene, q, r);
+
+    // Create visible emoji (NOW as badge)
     const px = 18;
-
-    const badgeObj = createDiamondBadge(scene, pos.x, pos.y, '🛢️', null, px);
+    const { badge, icon, bg } = createDiamondBadge(scene, pos.x, pos.y, '🛢️', {
+      fontSizePx: px,
+      ownedByPlayer: null,
+      depth: 2050,
+    });
 
     scene.resources.push({
       type: 'crudeOil',
-      q, r,
+      q,
+      r,
+      obj: badge,
+      badge,
+      icon,
+      bg,
       ownedByPlayer: null,
-      badge: badgeObj.badge,
     });
 
     placed.push({ q, r });
-    created++;
+    created += 1;
   }
+
+  console.log(
+    `[Resources] spawnCrudeOilResources(): shallowTiles=${shallowTiles.length}, existing=${existingOil.length}, createdNow=${created}`
+  );
 }
 
-/* ---------------------------------------------------------------
+/* =========================
    Helpers
-   --------------------------------------------------------------- */
+   ========================= */
+
+/**
+ * Hard rule helper: treat explicit mountains (or elevation==7 legacy) as mountain.
+ * Resources should not spawn there even if other predicates misfire.
+ */
 function isMountainTile(tile) {
   if (!tile) return false;
-  const type = (tile.type || '').toLowerCase();
-  const g = (tile.groundType || '').toLowerCase();
+  const type = (tile.type || '').toString().toLowerCase();
+  const g = (tile.groundType || '').toString().toLowerCase();
   if (type === 'mountain') return true;
   if (g === 'mountain') return true;
   if (tile.elevation === 7 && type !== 'water') return true;
   return false;
 }
 
+// unified “is water” predicate, tolerant to old fields.
 function isWaterTile(tile) {
   if (!tile) return false;
   if (tile.isWater === true) return true;
   if (typeof tile.waterDepth === 'number' && tile.waterDepth > 0) return true;
-  const type = (tile.type || '').toLowerCase();
-  return type === 'water' || type === 'ocean' || type === 'sea';
+
+  const type = (tile.type || '').toString().toLowerCase();
+  if (type === 'water' || type === 'ocean' || type === 'sea') return true;
+
+  // Future-proof: treat any explicit groundType of water as water
+  const g = (tile.groundType || '').toString().toLowerCase();
+  if (g === 'water') return true;
+
+  return false;
 }
 
+/**
+ * Shallow water = waterDepth 3 (or equivalent elevation fallback).
+ * Uses same semantics as WorldSceneMap water coloring.
+ */
 function isShallowWaterTile(tile) {
   if (!isWaterTile(tile)) return false;
-  const d =
-    typeof tile.waterDepth === 'number'
-      ? tile.waterDepth
-      : typeof tile.baseElevation === 'number'
-        ? tile.baseElevation
-        : tile.elevation ?? 2;
-  return Math.max(1, Math.min(3, d)) === 3;
+
+  let depth = 0;
+  if (typeof tile.waterDepth === 'number') {
+    depth = tile.waterDepth;
+  } else if (typeof tile.baseElevation === 'number') {
+    depth = tile.baseElevation;
+  } else if (typeof tile.elevation === 'number') {
+    depth = tile.elevation;
+  }
+
+  if (!depth) depth = 2;
+  const d = Math.max(1, Math.min(3, depth));
+  return d === 3; // 1=deep, 2=medium, 3=shallow
 }
 
+/**
+ * Separate deterministic RNG stream for fish.
+ * Uses world seed + "|fish".
+ */
 function getFishRng(scene) {
-  const base = scene.seed || 'defaultseed';
-  const s = cyrb128(`${base}|fish`);
-  return sfc32(s[0], s[1], s[2], s[3]);
+  const baseSeed =
+    (scene && scene.seed) ||
+    (scene && scene.hexMap && scene.hexMap.seed) ||
+    'defaultseed';
+
+  const state = cyrb128(String(baseSeed) + '|fish');
+  return sfc32(state[0], state[1], state[2], state[3]);
 }
 
+/**
+ * Separate deterministic RNG stream for crude oil.
+ * Uses world seed + "|crudeOil".
+ */
 function getOilRng(scene) {
-  const base = scene.seed || 'defaultseed';
-  const s = cyrb128(`${base}|crudeOil`);
-  return sfc32(s[0], s[1], s[2], s[3]);
+  const baseSeed =
+    (scene && scene.seed) ||
+    (scene && scene.hexMap && scene.hexMap.seed) ||
+    'defaultseed';
+
+  const state = cyrb128(String(baseSeed) + '|crudeOil');
+  return sfc32(state[0], state[1], state[2], state[3]);
 }
 
 function inBounds(scene, q, r) {
-  return q >= 0 && r >= 0 && q < scene.mapWidth && r < scene.mapHeight;
+  const W = scene.mapWidth ?? 25;
+  const H = scene.mapHeight ?? 25;
+  return q >= 0 && r >= 0 && q < W && r < H;
 }
 
+// Fisher–Yates, but with injectable RNG for determinism
 function shuffleInPlace(arr, rnd) {
   for (let i = arr.length - 1; i > 0; i--) {
     const j = Math.floor(rnd() * (i + 1));
@@ -239,12 +300,159 @@ function shuffleInPlace(arr, rnd) {
   }
 }
 
+// Axial distance using cube conversion
 function hexDistanceAxial(q1, r1, q2, r2) {
   const x1 = q1, z1 = r1, y1 = -x1 - z1;
   const x2 = q2, z2 = r2, y2 = -x2 - z2;
-  return Math.max(
-    Math.abs(x1 - x2),
-    Math.abs(y1 - y2),
-    Math.abs(z1 - z2)
-  );
+  const dx = Math.abs(x1 - x2);
+  const dy = Math.abs(y1 - y2);
+  const dz = Math.abs(z1 - z2);
+  return Math.max(dx, dy, dz);
+}
+
+// Only used if scene.axialToWorld isn’t bound yet
+function fallbackAxialToWorld(scene, q, r) {
+  const size = scene.hexSize || 24;
+  const p = scene.hexToPixel
+    ? scene.hexToPixel(q, r, size)
+    : { x: q * size, y: r * size };
+
+  // include map offset here so behaviour matches axialToWorld
+  return {
+    x: p.x + (scene.mapOffsetX || 0),
+    y: p.y + (scene.mapOffsetY || 0),
+  };
+}
+
+/* =========================================================================
+   NEW: Badge rendering helpers (diamond background + border)
+   - Neutral gray if ownedByPlayer is null/undefined
+   - If scene provides getOwnerColor(ownerId), we respect it
+   - Otherwise fallback palette (6 colors: 4 players + 2 AI)
+   ========================================================================= */
+
+const RES_NEUTRAL_GRAY = 0x9aa0a6;
+const RES_BADGE_BORDER = 0x0b1d2a;
+
+const RES_DEFAULT_OWNER_COLORS = {
+  0: 0xff3b30, // P0 red
+  1: 0x34c759, // P1 green
+  2: 0x0a84ff, // P2 blue
+  3: 0xffcc00, // P3 yellow
+  ai0: 0xaf52de, // AI0 purple
+  ai1: 0x5e5ce6, // AI1 indigo
+};
+
+function resolveOwnerColor(scene, ownerId) {
+  if (ownerId === null || ownerId === undefined) return RES_NEUTRAL_GRAY;
+
+  // Prefer scene helper if present
+  try {
+    if (scene && typeof scene.getOwnerColor === 'function') {
+      const c = scene.getOwnerColor(ownerId);
+      if (Number.isFinite(c)) return c;
+    }
+  } catch (_) {}
+
+  // Prefer scene palette if present
+  const pal =
+    scene?.ownerColors ||
+    scene?.playerColors ||
+    scene?.colorsByOwner ||
+    null;
+
+  if (pal) {
+    if (Array.isArray(pal) && typeof ownerId === 'number' && pal[ownerId] != null) {
+      return pal[ownerId];
+    }
+    if (typeof pal === 'object' && pal[ownerId] != null) {
+      return pal[ownerId];
+    }
+  }
+
+  if (RES_DEFAULT_OWNER_COLORS[ownerId] != null) return RES_DEFAULT_OWNER_COLORS[ownerId];
+  if (typeof ownerId === 'number' && RES_DEFAULT_OWNER_COLORS[ownerId] != null) return RES_DEFAULT_OWNER_COLORS[ownerId];
+  return RES_NEUTRAL_GRAY;
+}
+
+/**
+ * Create a diamond badge at x,y with an emoji icon centered.
+ * Returns { badge, icon, bg } where:
+ * - badge: Phaser.Container
+ * - icon: Phaser.Text
+ * - bg: Phaser.Graphics (background + border)
+ *
+ * Note: we store bg so other systems can recolor it later on claim.
+ */
+function createDiamondBadge(scene, x, y, emoji, opts) {
+  const fontSizePx = Math.max(10, Math.floor(opts?.fontSizePx ?? 18));
+  const ownedByPlayer = opts?.ownedByPlayer ?? null;
+  const depth = opts?.depth ?? 2050;
+
+  const badge = scene.add.container(x, y).setDepth(depth);
+
+  const half = Math.max(14, Math.round(fontSizePx * 0.95));
+  const borderW = Math.max(2, Math.round(fontSizePx * 0.12));
+  const fillColor = resolveOwnerColor(scene, ownedByPlayer);
+
+  const bg = scene.add.graphics();
+
+  // border
+  bg.fillStyle(RES_BADGE_BORDER, 1);
+  bg.beginPath();
+  bg.moveTo(0, -half);
+  bg.lineTo(half, 0);
+  bg.lineTo(0, half);
+  bg.lineTo(-half, 0);
+  bg.closePath();
+  bg.fillPath();
+
+  // inner fill
+  const inner = Math.max(4, half - borderW);
+  bg.fillStyle(fillColor, 1);
+  bg.beginPath();
+  bg.moveTo(0, -inner);
+  bg.lineTo(inner, 0);
+  bg.lineTo(0, inner);
+  bg.lineTo(-inner, 0);
+  bg.closePath();
+  bg.fillPath();
+
+  const icon = scene.add.text(0, 0, emoji, {
+    fontFamily: 'Arial',
+    fontSize: `${Math.max(12, Math.round(fontSizePx * 0.72))}px`,
+    color: '#ffffff',
+  }).setOrigin(0.5);
+
+  badge.add(bg);
+  badge.add(icon);
+
+  // Optional helper for later: recolor without needing to know internals.
+  // (Other files can call resource.badge?.setOwnerColor(...))
+  badge.setOwnerColor = (newOwnerId) => {
+    const c = resolveOwnerColor(scene, newOwnerId);
+    bg.clear();
+
+    // border
+    bg.fillStyle(RES_BADGE_BORDER, 1);
+    bg.beginPath();
+    bg.moveTo(0, -half);
+    bg.lineTo(half, 0);
+    bg.lineTo(0, half);
+    bg.lineTo(-half, 0);
+    bg.closePath();
+    bg.fillPath();
+
+    // inner fill
+    bg.fillStyle(c, 1);
+    bg.beginPath();
+    bg.moveTo(0, -inner);
+    bg.lineTo(inner, 0);
+    bg.lineTo(0, inner);
+    bg.lineTo(-inner, 0);
+    bg.closePath();
+    bg.fillPath();
+  };
+
+  return { badge, icon, bg };
 }
