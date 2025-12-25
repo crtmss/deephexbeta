@@ -190,6 +190,7 @@ export function applyLocationFlags(mapData, mapObjects) {
     if (!t) continue;
 
     // ✅ Roads/POIs/resources/etc must NOT spawn on mountains
+    // BUT mountain icon itself is drawn later in render, not through objects
     if (isMountainTile(t)) continue;
 
     const type = String(o.type || "").toLowerCase();
@@ -358,13 +359,14 @@ export function drawLocationsAndRoads() {
   /* ------------------- POI Icons + Forests + Decorations ------------------- */
   const noPOISet = getNoPOISet(map);
 
-  const addEmoji = (q, r, ox, oy, char, px, depth = 42) => {
+  // ✅ FIX: allow mountain icon to render, while still blocking POIs on mountains
+  const addEmoji = (q, r, ox, oy, char, px, depth = 42, opts = null) => {
     const t = scene.mapData.find((h) => h.q === q && h.r === r);
     if (!t) return null;
     if (noPOISet && noPOISet.has(keyOf(q, r))) return null;
 
-    // never spawn icons on mountains
-    if (isMountainTile(t)) return null;
+    const allowOnMountains = !!(opts && opts.allowOnMountains);
+    if (!allowOnMountains && isMountainTile(t)) return null;
 
     const c = scene.hexToPixel(q, r, size);
     const x = c.x + offsetX + ox;
@@ -394,7 +396,7 @@ export function drawLocationsAndRoads() {
 
     // Mountains: render icon but no POIs/roads/resources etc
     if (!isWater && isMountainTile(t)) {
-      const m = addEmoji(t.q, t.r, 0, 0, "⛰️", size * 0.86, 106);
+      const m = addEmoji(t.q, t.r, 0, 0, "⛰️", size * 0.86, 106, { allowOnMountains: true });
       if (m) {
         m.x = cx;
         m.y = cy;
@@ -405,91 +407,62 @@ export function drawLocationsAndRoads() {
     /* ---------------- Settlement ---------------- */
     if (!isWater && t.hasSettlement) {
       const s = addEmoji(t.q, t.r, 0, 0, "🏠", size * 0.82, 106);
-      if (s) {
-        s.x = cx;
-        s.y = cy;
-      }
+      if (s) { s.x = cx; s.y = cy; }
     }
 
     /* ---------------- Ruin ---------------- */
     if (!isWater && t.hasRuin) {
       const r = addEmoji(t.q, t.r, 0, 0, "🏛️", size * 0.78, 106);
-      if (r) {
-        r.x = cx;
-        r.y = cy;
-      }
+      if (r) { r.x = cx; r.y = cy; }
     }
 
     /* ---------------- Crash Site ---------------- */
     if (!isWater && t.hasCrashSite) {
       const cs = addEmoji(t.q, t.r, 0, 0, "💥", size * 0.78, 106);
-      if (cs) {
-        cs.x = cx;
-        cs.y = cy;
-      }
+      if (cs) { cs.x = cx; cs.y = cy; }
     }
 
     /* ---------------- Vehicle ---------------- */
     if (!isWater && t.hasVehicle) {
       const veh = addEmoji(t.q, t.r, 0, 0, "🚗", size * 0.78, 106);
-      if (veh) {
-        veh.x = cx;
-        veh.y = cy;
-      }
+      if (veh) { veh.x = cx; veh.y = cy; }
     }
 
     /* ---------------- Ship Wreck ---------------- */
-    if (!isWater && t.hasWreck) {
+    // ✅ FIX: wreck can be on water too (Lore places it in coastal/shallow water)
+    if (t.hasWreck) {
       const wr = addEmoji(t.q, t.r, 0, 0, "⚓", size * 0.78, 106);
-      if (wr) {
-        wr.x = cx;
-        wr.y = cy;
-      }
+      if (wr) { wr.x = cx; wr.y = cy; }
     }
 
     /* ---------------- Raider camp ---------------- */
     if (!isWater && t.hasRaiderCamp) {
       const rc = addEmoji(t.q, t.r, 0, 0, "☠️", size * 0.8, 106);
-      if (rc) {
-        rc.x = cx;
-        rc.y = cy;
-      }
+      if (rc) { rc.x = cx; rc.y = cy; }
     }
 
     /* ---------------- Roadside camp ---------------- */
     if (!isWater && t.hasRoadsideCamp) {
       const camp = addEmoji(t.q, t.r, 0, 0, "🏕️", size * 0.78, 106);
-      if (camp) {
-        camp.x = cx;
-        camp.y = cy;
-      }
+      if (camp) { camp.x = cx; camp.y = cy; }
     }
 
     /* ---------------- Watchtower ---------------- */
     if (!isWater && t.hasWatchtower) {
       const wt = addEmoji(t.q, t.r, 0, 0, "🏰", size * 0.78, 106);
-      if (wt) {
-        wt.x = cx;
-        wt.y = cy;
-      }
+      if (wt) { wt.x = cx; wt.y = cy; }
     }
 
     /* ---------------- Mine POI ---------------- */
     if (!isWater && t.hasMinePOI) {
       const m = addEmoji(t.q, t.r, 0, 0, "⚒️", size * 0.78, 106);
-      if (m) {
-        m.x = cx;
-        m.y = cy;
-      }
+      if (m) { m.x = cx; m.y = cy; }
     }
 
     /* ---------------- Shrine ---------------- */
     if (!isWater && t.hasShrine) {
       const sh = addEmoji(t.q, t.r, 0, 0, "⛩️", size * 0.78, 106);
-      if (sh) {
-        sh.x = cx;
-        sh.y = cy;
-      }
+      if (sh) { sh.x = cx; sh.y = cy; }
     }
   }
 
