@@ -28,7 +28,7 @@ const POI_EVENT_ICON = {
   watchtower: '🏰',
   mine: '⚒️',
   shrine: '⛩️',
-  crash_site: '💥',
+  crash_site: '🚀',
   wreck: '⚓',
   vehicle: '🚗',
   abandoned_vehicle: '🚗',
