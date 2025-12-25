@@ -16,6 +16,7 @@ const UNIT_Z = {
   building: 1500, // Raider Camp marker
 };
 
+// 4 player colors (slots 0..3)
 const PLAYER_COLORS = [
   0xff4b4b, // P1 - red
   0x4bc0ff, // P2 - blue
@@ -23,13 +24,51 @@ const PLAYER_COLORS = [
   0xffe14b, // P4 - yellow
 ];
 
-// Enemy color still used as fallback tint
-const ENEMY_COLOR = 0xaa66ff;
+// 2 AI colors (max 2 factions AI)
+const AI_COLORS = [
+  0xaa66ff, // AI0 - purple
+  0x5e5ce6, // AI1 - indigo
+];
+
+// Border + neutral
+const UNIT_BORDER_COLOR = 0x0b1d2a;
+const UNIT_NEUTRAL_BG   = 0x9aa0a6;
+
+/**
+ * Owner key normalization:
+ * - players are numeric slots 0..3
+ * - AI are 'ai0' or 'ai1'
+ */
+function normalizeOwnerKey(ownerKey, fallback) {
+  if (ownerKey === null || ownerKey === undefined) return fallback;
+  if (typeof ownerKey === 'number') return ownerKey;
+  const s = String(ownerKey).toLowerCase();
+  if (s === 'ai0' || s === 'ai1') return s;
+  // if someone passes 'ai' -> default ai0
+  if (s === 'ai') return 'ai0';
+  // fallback to numeric parse if possible
+  const n = Number(ownerKey);
+  if (Number.isFinite(n)) return n;
+  return fallback;
+}
+
+/**
+ * Resolve badge fill color for units (6 total):
+ * - 4 players (0..3)
+ * - 2 AI ('ai0','ai1')
+ */
+function colorForOwner(ownerKey) {
+  const k = normalizeOwnerKey(ownerKey, null);
+  if (k === null) return UNIT_NEUTRAL_BG;
+  if (k === 'ai0') return AI_COLORS[0];
+  if (k === 'ai1') return AI_COLORS[1];
+  if (typeof k === 'number') return PLAYER_COLORS[((k % PLAYER_COLORS.length) + PLAYER_COLORS.length) % PLAYER_COLORS.length];
+  return UNIT_NEUTRAL_BG;
+}
 
 // NEW: combat unit colors (tint derived from owner slot)
 function colorForSlot(slot) {
-  const idx = (typeof slot === 'number' && slot >= 0) ? slot : 0;
-  return PLAYER_COLORS[idx % PLAYER_COLORS.length];
+  return colorForOwner(slot);
 }
 
 // Small axial helpers (odd-r)
@@ -175,19 +214,133 @@ function pickSpawnTiles(scene, count) {
   return result.slice(0, count);
 }
 
+/* ======================================================================
+   NEW: Unit badge visuals (directional background + non-rotating icon)
+   - Background rotates to show facing
+   - Icon NEVER rotates
+   - Background fill color = owner color (player slot or ai0/ai1)
+   ====================================================================== */
+
+/**
+ * Create a "directional badge" (like your unit mock):
+ * - circular/rounded body
+ * - sharp nose indicating direction (default points RIGHT)
+ * Returns:
+ *  { cont, bg, icon }
+ *
+ * Notes:
+ * - cont is positioned at hex center
+ * - bg is a Graphics object; rotate THIS for facing
+ * - icon is Text; do not rotate
+ */
+function createDirectionalUnitBadge(scene, x, y, ownerKey, iconText, sizePx, depth) {
+  const cont = scene.add.container(Math.round(x), Math.round(y)).setDepth(depth ?? UNIT_Z.player);
+
+  const fill = colorForOwner(ownerKey);
+  const s = Math.max(18, Math.round(sizePx || 28));
+  const r = Math.round(s * 0.55); // body radius-ish
+  const nose = Math.round(s * 0.55); // nose length
+  const borderW = 3;
+
+  const bg = scene.add.graphics();
+  bg.fillStyle(fill, 1);
+  bg.lineStyle(borderW, UNIT_BORDER_COLOR, 0.9);
+
+  // Body circle-ish (approximated with rounded rect) + triangular nose.
+  // Default facing RIGHT, rotate bg for direction.
+  const bodyW = Math.round(r * 2.1);
+  const bodyH = Math.round(r * 2.0);
+  const rx = -Math.round(bodyW / 2);
+  const ry = -Math.round(bodyH / 2);
+
+  // Rounded body
+  bg.fillRoundedRect(rx, ry, bodyW, bodyH, Math.round(r * 0.65));
+  bg.strokeRoundedRect(rx, ry, bodyW, bodyH, Math.round(r * 0.65));
+
+  // Nose triangle
+  const apexX = Math.round(bodyW / 2 + nose);
+  const baseX = Math.round(bodyW / 2 - 2);
+  const halfY = Math.round(bodyH * 0.33);
+
+  bg.beginPath();
+  bg.moveTo(apexX, 0);
+  bg.lineTo(baseX, -halfY);
+  bg.lineTo(baseX, +halfY);
+  bg.closePath();
+  bg.fillPath();
+  bg.strokePath();
+
+  // Icon (does not rotate)
+  const icon = scene.add.text(0, 0, iconText, {
+    fontFamily: 'Arial',
+    fontSize: `${Math.max(12, Math.round(s * 0.55))}px`,
+    color: '#ffffff',
+    stroke: '#0b0b0b',
+    strokeThickness: 3,
+  }).setOrigin(0.5);
+
+  cont.add(bg);
+  cont.add(icon);
+
+  // Make interactive region stable
+  try {
+    cont.setSize(bodyW + nose, bodyH);
+    cont.setInteractive();
+  } catch (_) {}
+
+  // Expose handles for orientation/color updates
+  cont._dirBg = bg;
+  cont._unitIcon = icon;
+  cont._ownerKey = ownerKey;
+
+  // Allow recolor when ownership changes
+  cont.setOwnerKey = (newOwnerKey) => {
+    cont._ownerKey = newOwnerKey;
+    const newFill = colorForOwner(newOwnerKey);
+    bg.clear();
+
+    bg.fillStyle(newFill, 1);
+    bg.lineStyle(borderW, UNIT_BORDER_COLOR, 0.9);
+
+    bg.fillRoundedRect(rx, ry, bodyW, bodyH, Math.round(r * 0.65));
+    bg.strokeRoundedRect(rx, ry, bodyW, bodyH, Math.round(r * 0.65));
+
+    bg.beginPath();
+    bg.moveTo(apexX, 0);
+    bg.lineTo(baseX, -halfY);
+    bg.lineTo(baseX, +halfY);
+    bg.closePath();
+    bg.fillPath();
+    bg.strokePath();
+  };
+
+  return { cont, bg, icon };
+}
+
 /**
  * Creates a mobile base unit (player "king" piece).
  *
- * radius scales with hex size so it still "fits" after resizing the grid.
- * Position is taken from scene.axialToWorld(), which includes elevation lift.
+ * Now uses a directional badge (icon 🏠), with owner color background.
  */
-function createMobileBase(scene, spawnTile, player, color, playerIndex) {
+function createMobileBase(scene, spawnTile, player, _color, playerIndex) {
   const pos = scene.axialToWorld(spawnTile.q, spawnTile.r);
 
   const size = (typeof scene.hexSize === 'number') ? scene.hexSize : 22;
-  const radius = Math.max(10, Math.round(size * 0.72)); // ~16 at hexSize=22
+  const s = Math.max(26, Math.round(size * 1.35));
 
-  const unit = scene.add.circle(pos.x, pos.y, radius, color).setDepth(UNIT_Z.player);
+  const ownerKey = (typeof playerIndex === 'number') ? playerIndex : 0;
+
+  const { cont } = createDirectionalUnitBadge(
+    scene,
+    pos.x,
+    pos.y,
+    ownerKey,
+    '🏠',
+    s,
+    UNIT_Z.player
+  );
+
+  const unit = cont;
 
   unit.q = spawnTile.q;
   unit.r = spawnTile.r;
@@ -215,8 +368,10 @@ function createMobileBase(scene, spawnTile, player, color, playerIndex) {
   applyUnitStateToPhaserUnit(unit, st);
 
   unit.facingAngle = 0;
-  if (typeof unit.setStrokeStyle === 'function') {
-    unit.setStrokeStyle(2, 0x000000, 0.7);
+
+  // Keep a stable id for selection systems
+  if (!unit.id && !unit.unitId) {
+    unit.id = `mb_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
   }
 
   return unit;
@@ -226,51 +381,34 @@ function createMobileBase(scene, spawnTile, player, color, playerIndex) {
  * Creates a Raider.
  * If controller='ai', unit is enemy.
  *
- * ✅ Raider is a Container centered on hex.
- * The triangle is drawn around (0,0), so it NEVER drifts into 6 offset positions.
- * Orientation uses unit.rotation.
+ * ✅ NEW: Raider is a badge with a knife icon, icon does not rotate.
+ * Background rotates for facing.
  */
 function createRaider(scene, q, r, opts = {}) {
   const controller = opts.controller || 'player';
   const pos = scene.axialToWorld(q, r);
 
   const size = (typeof scene.hexSize === 'number') ? scene.hexSize : 22;
-  const s = Math.max(12, Math.round(size * 0.75));
+  const s = Math.max(24, Math.round(size * 1.20));
 
-  const fillColor = (controller === 'ai')
-    ? (opts.color ?? ENEMY_COLOR)
-    : colorForSlot(opts.ownerSlot ?? 0);
+  // owner key:
+  // - player uses numeric slot
+  // - AI uses 'ai0' or 'ai1' (default ai0)
+  const ownerKey = (controller === 'ai')
+    ? normalizeOwnerKey(opts.ownerKey ?? opts.aiKey ?? 'ai0', 'ai0')
+    : normalizeOwnerKey(opts.ownerSlot ?? 0, 0);
 
-  // Container anchored at hex center
-  const unit = scene.add.container(pos.x, pos.y).setDepth(controller === 'ai' ? UNIT_Z.enemy : UNIT_Z.player);
+  const { cont } = createDirectionalUnitBadge(
+    scene,
+    pos.x,
+    pos.y,
+    ownerKey,
+    '🔪',
+    s,
+    controller === 'ai' ? UNIT_Z.enemy : UNIT_Z.player
+  );
 
-  // Draw triangle centered at (0,0). Default pointing RIGHT (rotation=0)
-  const g = scene.add.graphics();
-  g.fillStyle(fillColor, 1);
-  g.lineStyle(2, 0x000000, 0.6);
-
-  // Triangle geometry (pointing right)
-  const apexX = +s * 0.95;
-  const baseX = -s * 0.65;
-  const halfBaseY = s * 0.65;
-
-  g.beginPath();
-  g.moveTo(apexX, 0);
-  g.lineTo(baseX, -halfBaseY);
-  g.lineTo(baseX, +halfBaseY);
-  g.closePath();
-  g.fillPath();
-  g.strokePath();
-
-  unit.add(g);
-
-  // Make container interactive if other systems rely on it
-  try {
-    unit.setSize(Math.max(24, s * 2), Math.max(24, s * 2));
-    unit.setInteractive();
-  } catch (_) {}
-
-  unit._triangleGfx = g;
+  const unit = cont;
 
   unit.q = q;
   unit.r = r;
@@ -297,16 +435,18 @@ function createRaider(scene, q, r, opts = {}) {
   applyUnitStateToPhaserUnit(unit, st);
 
   unit.facingAngle = 0;
-  unit.rotation = 0;
 
   if (controller === 'ai') {
     unit.controller = 'ai';
     unit.aiProfile = 'aggressive';
+    unit._ownerKey = ownerKey;
+  } else {
+    unit._ownerKey = ownerKey;
   }
 
   // Ensure stable id for respawn tracking
   if (!unit.id && !unit.unitId) {
-    unit.id = `ai_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+    unit.id = `u_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
   }
 
   return unit;
@@ -319,7 +459,7 @@ function createRaider(scene, q, r, opts = {}) {
 function createEnemyUnit(scene, spawnTile) {
   const u = createRaider(scene, spawnTile.q, spawnTile.r, {
     controller: 'ai',
-    color: ENEMY_COLOR,
+    ownerKey: 'ai0',
   });
   u.type = 'enemy_raider';
   u.isEnemy = true;
@@ -333,7 +473,8 @@ function createEnemyUnit(scene, spawnTile) {
  * Exported helper for AI respawn system (Raider Camp).
  */
 export function spawnEnemyRaiderAt(scene, q, r) {
-  const u = createRaider(scene, q, r, { controller: 'ai', color: ENEMY_COLOR });
+  // If you later add a second AI faction, pass ownerKey:'ai1' from camp logic.
+  const u = createRaider(scene, q, r, { controller: 'ai', ownerKey: 'ai0' });
   u.type = 'enemy_raider';
   u.isEnemy = true;
   u.isPlayer = false;
@@ -349,17 +490,29 @@ export function spawnEnemyRaiderAt(scene, q, r) {
 }
 
 /**
- * Creates a player-controlled Transporter (circle).
+ * Creates a player-controlled Transporter.
+ * Now uses a directional badge (icon 🚚), icon does not rotate.
  */
 function createTransporter(scene, q, r, owner) {
   const pos = scene.axialToWorld(q, r);
   const size = (typeof scene.hexSize === 'number') ? scene.hexSize : 22;
-  const radius = Math.max(8, Math.round(size * 0.52));
+  const s = Math.max(22, Math.round(size * 1.10));
 
   const slot = owner?.playerIndex ?? owner?.ownerSlot ?? 0;
-  const color = colorForSlot(slot);
+  const ownerKey = normalizeOwnerKey(slot, 0);
 
-  const unit = scene.add.circle(pos.x, pos.y, radius, color).setDepth(UNIT_Z.player);
+  const { cont } = createDirectionalUnitBadge(
+    scene,
+    pos.x,
+    pos.y,
+    ownerKey,
+    '🚚',
+    s,
+    UNIT_Z.player
+  );
+
+  const unit = cont;
+
   unit.q = q;
   unit.r = r;
   unit.type = 'transporter';
@@ -383,7 +536,6 @@ function createTransporter(scene, q, r, owner) {
   });
   unit.unitName = def.name;
   applyUnitStateToPhaserUnit(unit, st);
-  if (typeof unit.setStrokeStyle === 'function') unit.setStrokeStyle(2, 0x000000, 0.6);
 
   return unit;
 }
@@ -407,7 +559,7 @@ function createRaiderCamp(scene, q, r) {
   const ownerSlot = 1; // AI should be blue like P2 in your palette
   const ownerColor = colorForSlot(ownerSlot);
 
-  const cont = scene.add.container(pos.x, pos.y).setDepth(UNIT_Z.building);
+  const cont = scene.add.container(Math.round(pos.x), Math.round(pos.y)).setDepth(UNIT_Z.building);
 
   const w = Math.max(28, Math.round(size * 1.35));
   const h = Math.max(22, Math.round(size * 1.10));
@@ -460,6 +612,10 @@ function createRaiderCamp(scene, q, r) {
   scene.raiderCamp = camp;
   return camp;
 }
+
+// ==============================
+// WorldSceneUnits.js (PART 2/2)
+// ==============================
 
 function pickRandomFreeLandTile(scene) {
   const land = (scene.mapData || []).filter(isLandTile);
@@ -890,7 +1046,7 @@ function stepTowards(scene, unit, targetQ, targetR) {
   unit.movementPoints = unit.mp;
 
   const pos = scene.axialToWorld(best.q, best.r);
-  try { unit.setPosition?.(pos.x, pos.y); } catch (e) { unit.x = pos.x; unit.y = pos.y; }
+  try { unit.setPosition?.(Math.round(pos.x), Math.round(pos.y)); } catch (e) { unit.x = Math.round(pos.x); unit.y = Math.round(pos.y); }
   return true;
 }
 
@@ -940,7 +1096,11 @@ export function applyEnemyAIOnEndTurn(scene) {
  * - But we map those 6 dirs to SCREEN angles with a lookup that swaps the vertical diagonals:
  *     logical order from neighborsOddR: [E, NE, NW, W, SW, SE]
  *     screen rotation steps (clockwise): [0, 5, 4, 3, 2, 1] * 60°
- *   This exactly swaps NE<->SE and NW<->SW on screen, which is what you asked for.
+ *   This exactly swaps NE<->SE and NW<->SW, matching your request.
+ *
+ * NEW:
+ * - If unit has a directional background (unit._dirBg), we rotate ONLY that bg.
+ * - Icon (unit._unitIcon) remains unrotated.
  */
 export function updateUnitOrientation(scene, unit, fromQ, fromR, toQ, toR) {
   if (!unit) return;
@@ -950,7 +1110,7 @@ export function updateUnitOrientation(scene, unit, fromQ, fromR, toQ, toR) {
   if (dq === 0 && dr === 0) return;
 
   // Match against odd-r neighbor deltas for THIS row parity
-  const neigh = neighborsOddR(fromQ, fromR); // fromQ unused, but signature kept
+  const neigh = neighborsOddR(fromQ, fromR);
   let dir = -1;
   for (let i = 0; i < neigh.length; i++) {
     const [ndq, ndr] = neigh[i];
@@ -962,7 +1122,6 @@ export function updateUnitOrientation(scene, unit, fromQ, fromR, toQ, toR) {
 
   // If somehow not a direct neighbor (teleport), fall back to "closest axial-ish angle"
   if (dir === -1) {
-    // crude fallback: prefer horizontal axis
     if (Math.abs(dq) >= Math.abs(dr)) dir = (dq >= 0) ? 0 : 3;
     else dir = (dr >= 0) ? 5 : 2;
   }
@@ -974,16 +1133,20 @@ export function updateUnitOrientation(scene, unit, fromQ, fromR, toQ, toR) {
   const step = STEP_BY_DIR[dir] ?? 0;
   const angle = step * (Math.PI / 3);
 
-  // Apply to Phaser display object:
-  // - Containers/Graphics: rotation is correct
-  // - Circles: rotation does nothing visually (fine)
-  if (typeof unit.rotation === 'number') {
+  // Rotate ONLY directional bg when present
+  if (unit._dirBg && typeof unit._dirBg.rotation === 'number') {
+    unit._dirBg.rotation = angle;
+    // keep icon stable
+    if (unit._unitIcon && typeof unit._unitIcon.rotation === 'number') {
+      unit._unitIcon.rotation = 0;
+    }
+  } else if (typeof unit.rotation === 'number') {
+    // fallback for legacy objects (circles, etc.)
     unit.rotation = angle;
   }
 
-  // Optional flip for sprite-based units (if any)
+  // Optional flip for sprite-based units (if any) — keep behavior
   if (typeof unit.setFlipX === 'function') {
-    // facing west-ish => flip (kept based on logical dir)
     const westish = (dir === 3 || dir === 2 || dir === 4);
     unit.setFlipX(westish);
   }
