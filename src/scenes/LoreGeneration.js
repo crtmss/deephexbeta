@@ -1,24 +1,11 @@
 // src/scenes/LoreGeneration.js
 //
 // Deterministic lore generation for the whole island.
-// Resource-aware + POI-aware lore.
 // seed -> lore -> POI (scene.mapInfo.objects)
 //
 // Public API:
 //   generateRuinLoreForTile(scene, tile)
-//   generateRoadLoreForExistingConnections(scene)   // kept for backward compatibility (now NO-OP)
-//
-// v7 FIX / CHANGELOG (2025-12-24):
-// - DF-like timeline ordering:
-//     Discovery (also creates first settlement) ->
-//     Main -> 2x Secondary -> Main -> 2x Secondary -> Main -> 2x Secondary -> Main -> Players Arrive
-// - Max 2 AI factions.
-// - Roads moved fully into LoreGeneration as secondary events.
-//   Roads are planned as scene.loreState.roadPlans (NOT scene.roadConnections).
-// - Removes "no one agrees..." filler. Events are causal and reference geography/resources/POIs.
-// - Keeps deterministic POI placement and ensures wreck/crash_site/vehicle exist.
-// - Road plans are de-duplicated / avoid parallel redundant roads (basic graph connectivity check).
-// - No POI endpoints on mountains; (path carving / drawing handled elsewhere).
+//   generateRoadLoreForExistingConnections(scene)   // NO-OP for backward compat
 
 function hashStr32(s) {
   let h = 2166136261 >>> 0;
@@ -59,51 +46,11 @@ const RELIGIONS = [
   "the Lantern Choir",
 ];
 
-const ISLAND_PREFIX = [
-  "Isle of",
-  "Island of",
-  "Shoals of",
-  "Reach of",
-  "Haven of",
-  "Reef of",
-];
+const ISLAND_PREFIX = ["Isle of", "Island of", "Shoals of", "Reach of", "Haven of", "Reef of"];
+const ISLAND_ROOT = ["Brinefall", "Nareth", "Korvan", "Greywatch", "Solmere", "Lowmar", "Tiderest", "Stormwake", "Gloomharbor"];
 
-const ISLAND_ROOT = [
-  "Brinefall",
-  "Nareth",
-  "Korvan",
-  "Greywatch",
-  "Solmere",
-  "Lowmar",
-  "Tiderest",
-  "Stormwake",
-  "Gloomharbor",
-];
-
-const PLACE_PREFIX = [
-  "Outpost",
-  "Harbor",
-  "Fort",
-  "Watch",
-  "Camp",
-  "Dock",
-  "Station",
-  "Hold",
-  "Gate",
-];
-
-const PLACE_ROOT = [
-  "Aster",
-  "Gale",
-  "Karn",
-  "Mire",
-  "Ridge",
-  "Pearl",
-  "Thorn",
-  "Skerry",
-  "Cairn",
-  "Warden",
-];
+const PLACE_PREFIX = ["Outpost", "Harbor", "Fort", "Watch", "Camp", "Dock", "Station", "Hold", "Gate"];
+const PLACE_ROOT = ["Aster", "Gale", "Karn", "Mire", "Ridge", "Pearl", "Thorn", "Skerry", "Cairn", "Warden"];
 
 const DISASTER_TYPES = [
   "a meteor shower",
@@ -129,10 +76,6 @@ function pickMany(rng, arr, count) {
   return res;
 }
 
-/**
- * Lightweight scan of terrain & resources to drive resource-aware lore.
- * Tries to be robust to unknown structures by checking several patterns.
- */
 function analyzeResources(tiles, mapObjects) {
   let waterTiles = 0;
   let shallowWaterTiles = 0;
@@ -186,7 +129,6 @@ function analyzeResources(tiles, mapObjects) {
   };
 }
 
-// Axial distance
 function hexDistance(a, b) {
   const dq = (b.q - a.q);
   const dr = (b.r - a.r);
@@ -198,8 +140,7 @@ function ensureWorldLoreGenerated(scene) {
   if (!scene || scene.__worldLoreGenerated) return;
 
   const seedStr = String(scene.seed || "000000");
-  // v7: DF order + roadPlans + max 2 factions
-  const rng = xorshift32(hashStr32(`${seedStr}|worldLoreV7`));
+  const rng = xorshift32(hashStr32(`${seedStr}|worldLoreV8`));
 
   const addEntry = scene.addHistoryEntry
     ? (entry) => scene.addHistoryEntry(entry)
@@ -211,15 +152,12 @@ function ensureWorldLoreGenerated(scene) {
   }
 
   const tiles = Array.isArray(scene.mapData) ? scene.mapData : [];
-
   const originalMapObjects =
     scene.mapInfo && Array.isArray(scene.mapInfo.objects)
       ? scene.mapInfo.objects
       : [];
 
-  // Start with a shallow copy of whatever is already present.
   const worldObjects = originalMapObjects.map((o) => ({ ...o }));
-
   const resInfo = analyzeResources(tiles, worldObjects);
 
   const anyLand = tiles.filter((t) => t && t.type !== "water");
@@ -228,8 +166,6 @@ function ensureWorldLoreGenerated(scene) {
   const getTile = (q, r) => tiles.find((t) => t.q === q && t.r === r);
 
   const isMountainish = (t) => t && (t.type === "mountain" || t.elevation === 7);
-  const isHigh = (t) => t && (typeof t.elevation === "number") && t.elevation >= 5 && t.type !== "water";
-  const isForesty = (t) => t && (t.hasForest || String(t.type || "").toLowerCase() === "forest");
 
   const dirs = [[1,0],[-1,0],[0,1],[0,-1],[1,-1],[-1,1]];
 
@@ -256,10 +192,10 @@ function ensureWorldLoreGenerated(scene) {
     return d <= 2;
   };
 
-  // --- Island name & factions (MAX 2) ---
+  // ✅ IMPORTANT: max 2 factions AI, but we want to actually see 2 often.
   const islandName = `${pick(rng, ISLAND_PREFIX)} ${pick(rng, ISLAND_ROOT)}`;
-  const factionCount = 1 + Math.floor(rng() * 2); // 1–2 (hard cap)
-  const factions = pickMany(rng, FACTIONS, factionCount);
+  const factionCount = (rng() < 0.80) ? 2 : 1; // 80% -> 2 factions
+  const factions = pickMany(rng, FACTIONS, Math.min(2, factionCount));
   const factionA = factions[0];
   const factionB = factions[1] || null;
 
@@ -268,12 +204,7 @@ function ensureWorldLoreGenerated(scene) {
     return factions[Math.floor(rng() * factions.length)];
   }
 
-  // ============================================================
-  // POI generation: deterministic placement, but narrative-driven usage later.
-  // (We still place POIs here because rendering/flags rely on mapInfo.objects.)
-  // ============================================================
-
-  // Reserve already-present POIs to avoid collisions
+  // ----- POI placement bookkeeping -----
   const taken = new Set();
   const placed = [];
   for (const o of worldObjects) {
@@ -300,7 +231,7 @@ function ensureWorldLoreGenerated(scene) {
       const t = pool[Math.floor(rng() * pool.length)];
       if (!t) continue;
       if (!isFree(t.q, t.r)) continue;
-      if (isMountainish(t)) continue; // HARD RULE: no POI on mountains
+      if (isMountainish(t)) continue; // ✅ no POI on mountains
       if (!farEnough(t.q, t.r, minDist)) continue;
       return t;
     }
@@ -334,24 +265,21 @@ function ensureWorldLoreGenerated(scene) {
     markTaken(q, r);
 
     const tile = getTile(q, r);
-    if (tile) {
-      if (type === "settlement") {
-        tile.cityName = name || tile.cityName;
-        tile.settlementName = name || tile.settlementName;
-        tile.owningFaction = faction || tile.owningFaction;
-      }
-      if (type === "ruin") {
-        tile.cityName = name || tile.cityName;
-        if (faction) tile.ruinClaimFaction = faction;
-      }
+    if (tile && type === "settlement") {
+      tile.cityName = name || tile.cityName;
+      tile.settlementName = name || tile.settlementName;
+      tile.owningFaction = faction || tile.owningFaction;
+    }
+    if (tile && type === "ruin") {
+      tile.cityName = name || tile.cityName;
+      if (faction) tile.ruinClaimFaction = faction;
     }
   }
 
   const coastLand = anyLand.filter(isCoast).filter((t) => !isMountainish(t));
-  const forestLand = anyLand.filter(isForesty).filter((t) => !isMountainish(t));
-  const mountainLand = anyLand.filter(isMountainish);
-  const highLand = anyLand.filter(isHigh).filter((t) => !isMountainish(t));
   const inlandLand = anyLand.filter((t) => t && !isCoast(t) && t.type !== "water" && !isMountainish(t));
+  const forestLand = anyLand.filter((t) => t && (t.hasForest || String(t.type || "").toLowerCase() === "forest")).filter((t) => !isMountainish(t));
+  const highLand = anyLand.filter((t) => t && (typeof t.elevation === "number") && t.elevation >= 5 && t.type !== "water" && !isMountainish(t));
 
   const coastalWater = anyWater.filter(isCoastalWater);
   const shallowCoastalWater = coastalWater.filter(isShallow);
@@ -365,7 +293,7 @@ function ensureWorldLoreGenerated(scene) {
   const mines = [];
   const shrines = [];
 
-  // --- Settlements: Discovery MUST create first settlement (exactly 1 here) ---
+  // ----- DISCOVERY MUST create first settlement -----
   let firstSettlement = null;
   {
     const pool = coastLand.length ? coastLand : (inlandLand.length ? inlandLand : anyLand);
@@ -378,8 +306,9 @@ function ensureWorldLoreGenerated(scene) {
     }
   }
 
-  // Optional second settlement (only if we later need a "destruction -> ruin" arc without killing all settlements)
-  if (rng() < 0.45) {
+  // Optional second settlement (helps “ruin” story without wiping everything)
+  const allowSecondSettlement = rng() < 0.55;
+  if (allowSecondSettlement) {
     const pool = inlandLand.length ? inlandLand : anyLand;
     const t2 = pickTileFromPool(pool, { minDist: 8 });
     if (t2) {
@@ -389,7 +318,7 @@ function ensureWorldLoreGenerated(scene) {
     }
   }
 
-  // --- Ruins (1–2), claimed by factions (no filler) ---
+  // Ruins (1–2)
   const ruinCount = 1 + Math.floor(rng() * 2);
   for (let i = 0; i < ruinCount; i++) {
     const pool = inlandLand.length ? inlandLand : anyLand;
@@ -401,40 +330,38 @@ function ensureWorldLoreGenerated(scene) {
     ruins.push({ name, q: t.q, r: t.r, type: "ruin", faction: claimant });
   }
 
-  // --- Mines (0–1), prefer high ground but NOT mountains ---
-  const mineCount = (highLand.length) ? (rng() < 0.55 ? 1 : 0) : 0;
-  for (let i = 0; i < mineCount; i++) {
-    const pool = highLand.length ? highLand : inlandLand;
-    const t = pickTileFromPool(pool, { minDist: 6 });
-    if (!t) break;
-    const owner = pickFactionOwner();
-    addPOI({ type: "mine", q: t.q, r: t.r, faction: owner });
-    mines.push({ q: t.q, r: t.r, type: "mine", faction: owner });
+  // Mines (0–1)
+  if (highLand.length && rng() < 0.55) {
+    const t = pickTileFromPool(highLand, { minDist: 6 });
+    if (t) {
+      const owner = pickFactionOwner();
+      addPOI({ type: "mine", q: t.q, r: t.r, faction: owner });
+      mines.push({ q: t.q, r: t.r, type: "mine", faction: owner });
+    }
   }
 
-  // --- Watchtowers (0–1), prefer high land ---
-  const towerCount = (highLand.length) ? (rng() < 0.55 ? 1 : 0) : 0;
-  for (let i = 0; i < towerCount; i++) {
-    const pool = highLand.length ? highLand : inlandLand;
-    const t = pickTileFromPool(pool, { minDist: 6 });
-    if (!t) break;
-    const owner = pickFactionOwner();
-    addPOI({ type: "watchtower", q: t.q, r: t.r, faction: owner });
-    watchtowers.push({ q: t.q, r: t.r, type: "watchtower", faction: owner });
+  // Watchtower (0–1)
+  if (highLand.length && rng() < 0.55) {
+    const t = pickTileFromPool(highLand, { minDist: 6 });
+    if (t) {
+      const owner = pickFactionOwner();
+      addPOI({ type: "watchtower", q: t.q, r: t.r, faction: owner });
+      watchtowers.push({ q: t.q, r: t.r, type: "watchtower", faction: owner });
+    }
   }
 
-  // --- Shrines (0–1), prefer forest/inland ---
-  const shrineCount = (forestLand.length || inlandLand.length) ? (rng() < 0.55 ? 1 : 0) : 0;
-  for (let i = 0; i < shrineCount; i++) {
+  // Shrine (0–1)
+  if ((forestLand.length || inlandLand.length) && rng() < 0.55) {
     const pool = forestLand.length ? forestLand : inlandLand;
     const t = pickTileFromPool(pool, { minDist: 6 });
-    if (!t) break;
-    const owner = pickFactionOwner();
-    addPOI({ type: "shrine", q: t.q, r: t.r, faction: owner, meta: { religion: pick(rng, RELIGIONS) } });
-    shrines.push({ q: t.q, r: t.r, type: "shrine", faction: owner });
+    if (t) {
+      const owner = pickFactionOwner();
+      addPOI({ type: "shrine", q: t.q, r: t.r, faction: owner, meta: { religion: pick(rng, RELIGIONS) } });
+      shrines.push({ q: t.q, r: t.r, type: "shrine", faction: owner });
+    }
   }
 
-  // --- Roadside camps (0–1) ---
+  // Roadside camp (0–1)
   if (rng() < 0.6) {
     const pool = inlandLand.length ? inlandLand : anyLand;
     const t = pickTileFromPool(pool, { minDist: 5 });
@@ -445,18 +372,18 @@ function ensureWorldLoreGenerated(scene) {
     }
   }
 
-  // --- Raider camps (0–1), prefer second faction if exists ---
+  // Raider camp (0–1) prefer second faction
   if (rng() < 0.55) {
     const pool = inlandLand.length ? inlandLand : anyLand;
     const t = pickTileFromPool(pool, { minDist: 7 });
     if (t) {
-      const owner = (factionB && rng() < 0.75) ? factionB : pickFactionOwner();
+      const owner = (factionB && rng() < 0.80) ? factionB : pickFactionOwner();
       addPOI({ type: "raider_camp", q: t.q, r: t.r, faction: owner });
       raiderCamps.push({ q: t.q, r: t.r, type: "raider_camp", faction: owner });
     }
   }
 
-  // --- Ensure legacy POIs exist: crash_site / wreck / vehicle ---
+  // Ensure crash_site / vehicle / wreck exist
   const ensureTypeAtLeast = (type, count, pool, opts, factoryMeta = null) => {
     const current = worldObjects.filter((o) => String(o.type || "").toLowerCase() === type).length;
     const need = Math.max(0, count - current);
@@ -474,7 +401,7 @@ function ensureWorldLoreGenerated(scene) {
     }
   };
 
-  // Crash sites: land near coast
+  // Crash site on land
   ensureTypeAtLeast(
     "crash_site",
     1,
@@ -483,16 +410,23 @@ function ensureWorldLoreGenerated(scene) {
     (t, owner) => ({ salvageClaim: owner })
   );
 
-  // Wreck: in water near coast (coastal water)
+  // Vehicle inland
+  ensureTypeAtLeast(
+    "vehicle",
+    1,
+    (inlandLand.length ? inlandLand : anyLand),
+    { minDist: 7 },
+    (t, owner) => ({ salvageClaim: owner })
+  );
+
+  // Wreck on water near coast (ensure free)
   const wreckPool = (shallowCoastalWater.length ? shallowCoastalWater : (coastalWater.length ? coastalWater : anyWater));
-  // NOTE: wreck is water, so we do NOT use pickTileFromPool (it rejects mountains only; ok)
-  // But we must avoid taken collisions too. We'll custom-pick from wreckPool.
   const ensureWreck = () => {
     const existing = worldObjects.some((o) => String(o.type || "").toLowerCase() === "wreck");
     if (existing) return;
     if (!wreckPool.length) return;
 
-    for (let i = 0; i < 120; i++) {
+    for (let i = 0; i < 180; i++) {
       const t = wreckPool[Math.floor(rng() * wreckPool.length)];
       if (!t) continue;
       if (!isFree(t.q, t.r)) continue;
@@ -503,15 +437,6 @@ function ensureWorldLoreGenerated(scene) {
   };
   ensureWreck();
 
-  // Vehicle: inland land
-  ensureTypeAtLeast(
-    "vehicle",
-    1,
-    (inlandLand.length ? inlandLand : anyLand),
-    { minDist: 7 },
-    (t, owner) => ({ salvageClaim: owner })
-  );
-
   const crashSites = worldObjects.filter((o) => String(o.type || "").toLowerCase() === "crash_site");
   const wrecks = worldObjects.filter((o) => String(o.type || "").toLowerCase() === "wreck");
   const vehicles = worldObjects.filter((o) => {
@@ -520,7 +445,7 @@ function ensureWorldLoreGenerated(scene) {
   });
 
   // ============================================================
-  // Timeline builder (DF-like strict order)
+  // Timeline (DF-like strict order, now with extra block before players)
   // ============================================================
   const baseYear = 5000;
   let year = baseYear;
@@ -542,16 +467,9 @@ function ensureWorldLoreGenerated(scene) {
     events.push(ev);
   }
 
-  function pushMain(ev) {
-    pushEvent({ ...ev, __isMain: true });
-  }
+  function pushMain(ev) { pushEvent({ ...ev, __isMain: true }); }
+  function pushSecondary(ev) { pushEvent({ ...ev, __isMain: false }); }
 
-  function pushSecondary(ev) {
-    pushEvent({ ...ev, __isMain: false });
-  }
-
-  // Simple road plan dedupe / no-parallel:
-  // - do not add if endpoints already connected through existing planned roads.
   function keyEdge(a, b) {
     const A = `${a.q},${a.r}`;
     const B = `${b.q},${b.r}`;
@@ -575,7 +493,6 @@ function ensureWorldLoreGenerated(scene) {
 
     const q = [start];
     const seen = new Set([start]);
-
     while (q.length) {
       const cur = q.shift();
       const nbs = adj.get(cur) || [];
@@ -599,15 +516,54 @@ function ensureWorldLoreGenerated(scene) {
     return true;
   }
 
+  // ✅ NEW: check if from->to is connected by land at all (prevents “two islands” road)
+  function hasLandPath(from, to) {
+    const start = { q: from.q, r: from.r };
+    const goalK = `${to.q},${to.r}`;
+
+    const startTile = getTile(start.q, start.r);
+    const goalTile = getTile(to.q, to.r);
+    if (!startTile || !goalTile) return false;
+    if (startTile.type === "water" || goalTile.type === "water") return false;
+    if (isMountainish(startTile) || isMountainish(goalTile)) return false;
+
+    const q = [`${start.q},${start.r}`];
+    const seen = new Set(q);
+
+    while (q.length) {
+      const cur = q.shift();
+      if (cur === goalK) return true;
+
+      const [cq, cr] = cur.split(",").map(Number);
+      for (const [dq, dr] of dirs) {
+        const nq = cq + dq;
+        const nr = cr + dr;
+        const nt = getTile(nq, nr);
+        if (!nt) continue;
+        if (nt.type === "water") continue;
+        if (isMountainish(nt)) continue;
+
+        const nk = `${nq},${nr}`;
+        if (!seen.has(nk)) {
+          seen.add(nk);
+          q.push(nk);
+        }
+      }
+    }
+    return false;
+  }
+
   function planRoad({ from, to, faction, reason, yearPlanned }) {
     if (!from || !to) return false;
     if (!canUseAsRoadEndpoint(from) || !canUseAsRoadEndpoint(to)) return false;
 
-    // avoid duplicates
+    // ✅ reject if no land connectivity (different islands)
+    if (!hasLandPath(from, to)) return false;
+
     const edgeKey = keyEdge(from, to);
     if (roadPlans.some((rp) => keyEdge(rp.from, rp.to) === edgeKey)) return false;
 
-    // avoid parallel redundant roads: if already connected, skip
+    // avoid redundant parallel roads
     if (graphHasPath(from, to)) return false;
 
     roadPlans.push({
@@ -657,9 +613,7 @@ function ensureWorldLoreGenerated(scene) {
     return notes.join(", ");
   }
 
-  // ----------------------------
-  // 1) DISCOVERY (also first settlement)
-  // ----------------------------
+  // 1) Discovery (also first settlement)
   if (firstSettlement) {
     pushMain({
       year: baseYear,
@@ -671,44 +625,13 @@ function ensureWorldLoreGenerated(scene) {
       settlementName: firstSettlement.name,
       text: `${factionA} discovers ${islandName}, ${describeIslandGeography()}. They establish ${firstSettlement.name} at ${humanCoord(firstSettlement.q, firstSettlement.r)}.`,
     });
-  } else if (anyLand.length) {
-    const t = anyLand[Math.floor(rng() * anyLand.length)];
-    pushMain({
-      year: baseYear,
-      type: "opening",
-      q: t.q,
-      r: t.r,
-      faction: factionA,
-      text: `${factionA} discovers ${islandName} and make landfall at ${humanCoord(t.q, t.r)}. The first camp becomes a foothold for what follows.`,
-    });
   }
 
-  // Helper pools for main/secondary selection
-  const mainPool = {
-    settlements: settlements.slice(),
-    ruins: ruins.slice(),
-    crashSites: crashSites.slice(),
-    wrecks: wrecks.slice(),
-    vehicles: vehicles.slice(),
-    mines: mines.slice(),
-    watchtowers: watchtowers.slice(),
-    shrines: shrines.slice(),
-    roadsideCamps: roadsideCamps.slice(),
-    raiderCamps: raiderCamps.slice(),
-  };
-
-  // ----------------------------
-  // 2) MAIN EVENTS (exactly 4 main events total after discovery)
-  // We'll pick from: founding outpost/settlement, destruction->ruin, crash, war/truce.
-  // ----------------------------
-
-  // Decide political state: war/peace only matters if factionB exists
   const hasTwoFactions = !!factionB;
   let warOngoing = false;
-  let truceHappened = false;
+  let trucePlanned = false;
 
   function mainEvent_Founding() {
-    // Found a new outpost (represented as settlement #2 if exists, otherwise watchtower/camp)
     const s2 = settlements[1] || null;
     if (s2) {
       pushMain({
@@ -721,10 +644,10 @@ function ensureWorldLoreGenerated(scene) {
         settlementName: s2.name,
         text: `${factionA} expand inland and found ${s2.name} at ${humanCoord(s2.q, s2.r)} to secure routes and resources.`,
       });
-      return;
+      return true;
     }
 
-    const w = mainPool.watchtowers[0] || null;
+    const w = watchtowers[0] || null;
     if (w) {
       pushMain({
         year: nextYear(1, 3),
@@ -735,88 +658,23 @@ function ensureWorldLoreGenerated(scene) {
         faction: w.faction || factionA,
         text: `${w.faction || factionA} raise a watchtower at ${humanCoord(w.q, w.r)} to mark borders and keep eyes on the interior.`,
       });
-      return;
+      return true;
     }
 
-    const c = mainPool.roadsideCamps[0] || null;
-    if (c) {
-      pushMain({
-        year: nextYear(1, 3),
-        type: "founding",
-        poiType: "roadside_camp",
-        q: c.q,
-        r: c.r,
-        faction: c.faction || factionA,
-        text: `${c.faction || factionA} establish a roadside camp at ${humanCoord(c.q, c.r)} as the first dependable stop away from the coast.`,
-      });
-      return;
-    }
-
-    // fallback: survey becomes main
     pushMain({
       year: nextYear(1, 3),
       type: "survey",
       faction: factionA,
       text: `Scouts chart the safest passes and the first reliable trails across ${islandName}.`,
     });
-  }
-
-  function mainEvent_DestructionToRuin() {
-    // pick one settlement that can be destroyed (prefer s2 so s1 remains)
-    const candidate = settlements.length > 1 ? settlements[1] : settlements[0];
-    if (!candidate) return;
-
-    const reasons = [
-      "a flood that swallowed the low ground",
-      "a sickness that emptied the streets",
-      "a civil clash that burned storehouses",
-      "raids that never stopped long enough to rebuild",
-      "a sudden quake that cracked foundations",
-    ];
-
-    const reason = pick(rng, reasons);
-
-    // convert that settlement POI into ruin POI in worldObjects (so map shows ruins later)
-    // find matching object
-    const idx = worldObjects.findIndex((o) =>
-      String(o.type || "").toLowerCase() === "settlement" &&
-      o.q === candidate.q && o.r === candidate.r
-    );
-    const ruinName = `Ruins of ${String(candidate.name || pick(rng, PLACE_ROOT))}`;
-
-    if (idx >= 0) {
-      worldObjects[idx].type = "ruin";
-      worldObjects[idx].name = ruinName;
-      worldObjects[idx].ruinedFromSettlement = true;
-      worldObjects[idx].faction = candidate.faction || factionA;
-    } else {
-      addPOI({ type: "ruin", q: candidate.q, r: candidate.r, name: ruinName, faction: candidate.faction || factionA });
-    }
-
-    // reflect in local ruins list (for UI)
-    ruins.push({ name: ruinName, q: candidate.q, r: candidate.r, type: "ruin", faction: candidate.faction || factionA });
-
-    pushMain({
-      year: nextYear(1, 3),
-      type: "disaster",
-      poiType: "ruin",
-      q: candidate.q,
-      r: candidate.r,
-      faction: candidate.faction || factionA,
-      ruinName,
-      text: `${candidate.name || "A settlement"} falls to ${reason}. What remains is now known as ${ruinName} at ${humanCoord(candidate.q, candidate.r)}.`,
-    });
+    return true;
   }
 
   function mainEvent_Crash() {
-    const c = mainPool.crashSites[0] || crashSites[0] || null;
-    if (!c) return;
+    const c = crashSites[0] || null;
+    if (!c) return false;
 
-    const reasons = [
-      "mechanical failure",
-      "unknown causes",
-      "suspected sabotage",
-    ];
+    const reasons = ["mechanical failure", "unknown causes", "suspected sabotage"];
     const reason = pick(rng, reasons);
 
     pushMain({
@@ -828,28 +686,74 @@ function ensureWorldLoreGenerated(scene) {
       faction: c.faction || pickFactionOwner(),
       text: `A ship falls from the sky at ${humanCoord(c.q, c.r)}. ${c.faction || "Salvage crews"} claim the site, citing ${reason}.`,
     });
+    return true;
   }
 
-  function mainEvent_WarOrTruce() {
+  // ✅ Destruction is optional now, and only if we have a “spare” settlement
+  function mainEvent_DestructionToRuin() {
+    if (settlements.length < 2) return false;
+    if (rng() < 0.45) return false; // ~55% chance to NOT do it at all
+
+    const candidate = settlements[1];
+    if (!candidate) return false;
+
+    const reasons = [
+      "a flood that swallowed the low ground",
+      "a sickness that emptied the streets",
+      "a civil clash that burned storehouses",
+      "raids that never stopped long enough to rebuild",
+      "a sudden quake that cracked foundations",
+    ];
+    const reason = pick(rng, reasons);
+
+    const idx = worldObjects.findIndex((o) =>
+      String(o.type || "").toLowerCase() === "settlement" &&
+      o.q === candidate.q && o.r === candidate.r
+    );
+
+    const ruinName = `Ruins of ${String(candidate.name || pick(rng, PLACE_ROOT))}`;
+
+    if (idx >= 0) {
+      worldObjects[idx].type = "ruin";
+      worldObjects[idx].name = ruinName;
+      worldObjects[idx].ruinedFromSettlement = true;
+      worldObjects[idx].faction = candidate.faction || factionA;
+    } else {
+      addPOI({ type: "ruin", q: candidate.q, r: candidate.r, name: ruinName, faction: candidate.faction || factionA });
+    }
+
+    ruins.push({ name: ruinName, q: candidate.q, r: candidate.r, type: "ruin", faction: candidate.faction || factionA });
+
+    pushMain({
+      year: nextYear(1, 3),
+      type: "disaster",
+      poiType: "ruin",
+      q: candidate.q,
+      r: candidate.r,
+      faction: candidate.faction || factionA,
+      ruinName,
+      text: `${candidate.name} falls to ${reason}. What remains is now known as ${ruinName} at ${humanCoord(candidate.q, candidate.r)}.`,
+    });
+    return true;
+  }
+
+  function mainEvent_WarOrPolitics() {
     if (!hasTwoFactions) {
-      // single-faction politics: internal reform / split (still main)
       pushMain({
         year: nextYear(1, 3),
         type: "politics",
         faction: factionA,
-        text: `${factionA} fracture into rival crews for a season, then reunite under a hard compromise to survive the interior.`,
+        text: `${factionA} reorganize after internal disputes, formalizing patrol routes and trade agreements to hold the island.`,
       });
-      return;
+      return true;
     }
 
-    // decide war then maybe truce later
     warOngoing = true;
-
     const causes = [
       "a war for resources",
       "a war for territory",
       "a religious war",
-      "a cycle of raids that escalated into open battle",
+      "a spiral of raids that became open battle",
     ];
     const cause = pick(rng, causes);
 
@@ -861,79 +765,69 @@ function ensureWorldLoreGenerated(scene) {
       text: `${factionA} and ${factionB} enter ${cause}. Patrols clash and banners move across the ridges.`,
     });
 
-    // 55% chance to later truce (but that would be secondary later, NOT now)
-    truceHappened = (rng() < 0.55);
+    trucePlanned = (rng() < 0.60);
+    return true;
   }
 
-  // Select 4 main events (after discovery), with deterministic mixture:
-  // M1 founding, M2 crash OR destruction, M3 war/politics, M4 destruction/crash (whichever not used) if possible.
-  const mainEvents = [];
-
-  // always start with founding-type main
-  mainEvents.push(mainEvent_Founding);
-
-  // choose between crash and destruction for 2nd
-  if (rng() < 0.55) mainEvents.push(mainEvent_Crash);
-  else mainEvents.push(mainEvent_DestructionToRuin);
-
-  // third: war/politics
-  mainEvents.push(mainEvent_WarOrTruce);
-
-  // fourth: whichever not used yet, fallback to a resource-driven main
-  const usedCrash = mainEvents.includes(mainEvent_Crash);
-  const usedDestr = mainEvents.includes(mainEvent_DestructionToRuin);
-
-  if (!usedCrash && crashSites.length) mainEvents.push(mainEvent_Crash);
-  else if (!usedDestr && settlements.length) mainEvents.push(mainEvent_DestructionToRuin);
-  else {
-    // resource-driven main (mine/shrine as major shift)
-    const m = mines[0] || null;
-    if (m) {
-      pushMain({
-        year: nextYear(1, 3),
-        type: "major",
-        poiType: "mine",
-        q: m.q,
-        r: m.r,
-        faction: m.faction || pickFactionOwner(),
-        text: `${m.faction || "A faction"} open a mine at ${humanCoord(m.q, m.r)}, changing trade routes and drawing guards inland.`,
-      });
-      // placeholder to keep count stable
-      mainEvents.push(() => {});
-    } else {
+  // Main events list (4 mains in the “core” chain)
+  const mainFns = [
+    mainEvent_Founding,
+    (rng() < 0.55 ? mainEvent_Crash : mainEvent_DestructionToRuin),
+    mainEvent_WarOrPolitics,
+    // 4th main: choose whichever is still meaningful
+    () => {
+      // Prefer crash if not used or if destruction skipped
+      if (crashSites.length && rng() < 0.55) return mainEvent_Crash();
+      // Sometimes convert settlement->ruin if it didn’t happen yet
+      if (settlements.length >= 2) return mainEvent_DestructionToRuin();
+      // Otherwise major “mine/shrine” opening
+      const m = mines[0] || null;
+      if (m) {
+        pushMain({
+          year: nextYear(1, 3),
+          type: "major",
+          poiType: "mine",
+          q: m.q,
+          r: m.r,
+          faction: m.faction || pickFactionOwner(),
+          text: `${m.faction || "A faction"} open a mine at ${humanCoord(m.q, m.r)}, shifting trade and forcing escort patrols inland.`,
+        });
+        return true;
+      }
+      const s = shrines[0] || null;
+      if (s) {
+        const obj = worldObjects.find((o) => String(o.type || "").toLowerCase() === "shrine" && o.q === s.q && o.r === s.r);
+        const religion = obj?.religion || obj?.meta?.religion || pick(rng, RELIGIONS);
+        pushMain({
+          year: nextYear(1, 3),
+          type: "major",
+          poiType: "shrine",
+          q: s.q,
+          r: s.r,
+          faction: s.faction || pickFactionOwner(),
+          text: `${s.faction || "A faction"} proclaim a shrine to ${religion} at ${humanCoord(s.q, s.r)}—pilgrims and guards soon follow.`,
+        });
+        return true;
+      }
       pushMain({
         year: nextYear(1, 3),
         type: "major",
         faction: factionA,
-        text: `A harsh season forces new rules: rationing, escorts, and organized caravans across ${islandName}.`,
+        text: `A hard season forces new rules: rationing, escorts, and organized caravans across ${islandName}.`,
       });
-      mainEvents.push(() => {});
+      return true;
     }
-  }
+  ];
 
-  // ----------------------------
-  // 3) SECONDARY EVENTS (exactly 2 after each of the first 3 main events)
-  // Secondary types:
-  // - road_built (also creates roadPlan)
-  // - abandoned_vehicle
-  // - wreck_found
-  // - shrine_founded
-  // - watchtower_built
-  // - camp_founded
-  // - famine/flood/harvest/disaster (conditional)
-  // ----------------------------
-  function doSecondaryPair(afterMainIndex) {
-    // choose 2 secondary events deterministically without spamming roads.
-    // We'll allow at most 2 road events total in whole timeline.
-    const maxRoadEvents = 2;
+  // Secondary generator
+  const maxRoadEvents = 2;
 
-    const canRoad = () => roadPlans.length < maxRoadEvents;
+  function doSecondaryPair() {
+    const candidates = [];
 
-    const secondaryCandidates = [];
-
-    // roads: connect meaningful endpoints (settlement -> mine/shrine/watchtower/ruin/settlement)
-    if (canRoad()) {
-      secondaryCandidates.push(() => {
+    // ✅ ROAD: only if feasible AND only if planRoad succeeds
+    if (roadPlans.length < maxRoadEvents) {
+      candidates.push(() => {
         const endpoints = []
           .concat(settlements.map(s => ({ ...s, type: "settlement" })))
           .concat(mines.map(m => ({ ...m, type: "mine" })))
@@ -944,21 +838,18 @@ function ensureWorldLoreGenerated(scene) {
         const usable = endpoints.filter(canUseAsRoadEndpoint);
         if (usable.length < 2) return false;
 
-        // prefer connecting settlement to something else
         const from = settlements[0] ? { ...settlements[0], type: "settlement" } : usable[0];
-        let to = null;
 
-        // choose "to" as far-ish distinct endpoint
         const sorted = usable
           .filter(e => !(e.q === from.q && e.r === from.r))
           .slice()
           .sort((a, b) => {
             const da = hexDistance(from, a);
             const db = hexDistance(from, b);
-            return db - da; // far first
+            return db - da;
           });
 
-        to = sorted[Math.floor(rng() * Math.min(3, sorted.length))] || sorted[0];
+        const to = sorted[Math.floor(rng() * Math.min(3, sorted.length))] || sorted[0];
         if (!to) return false;
 
         const owner = pickFactionOwner(from.faction || null);
@@ -971,7 +862,8 @@ function ensureWorldLoreGenerated(scene) {
           reason: "trade and faster patrols",
           yearPlanned,
         });
-        if (!ok) return false;
+
+        if (!ok) return false; // ✅ IMPORTANT: if not possible, we will pick another secondary
 
         pushSecondary({
           year: yearPlanned,
@@ -988,7 +880,7 @@ function ensureWorldLoreGenerated(scene) {
 
     // vehicle abandoned
     if (vehicles.length) {
-      secondaryCandidates.push(() => {
+      candidates.push(() => {
         const v = vehicles[Math.floor(rng() * vehicles.length)];
         if (!v) return false;
         const yearEv = nextYear(1, 2);
@@ -1001,7 +893,7 @@ function ensureWorldLoreGenerated(scene) {
           q: v.q,
           r: v.r,
           faction: owner,
-          text: `${owner} lose a transport to ${pick(rng, reasons)} at ${humanCoord(v.q, v.r)}. The wrecked vehicle becomes a waypoint for travelers.`,
+          text: `${owner} lose a transport to ${pick(rng, reasons)} at ${humanCoord(v.q, v.r)}. The vehicle becomes a landmark for travelers.`,
         });
         return true;
       });
@@ -1009,7 +901,7 @@ function ensureWorldLoreGenerated(scene) {
 
     // wreck found
     if (wrecks.length) {
-      secondaryCandidates.push(() => {
+      candidates.push(() => {
         const w = wrecks[Math.floor(rng() * wrecks.length)];
         if (!w) return false;
         const yearEv = nextYear(1, 2);
@@ -1030,9 +922,8 @@ function ensureWorldLoreGenerated(scene) {
 
     // shrine founded
     if (shrines.length) {
-      secondaryCandidates.push(() => {
+      candidates.push(() => {
         const s = shrines[0];
-        if (!s) return false;
         const yearEv = nextYear(1, 2);
         const owner = s.faction || pickFactionOwner();
         const obj = worldObjects.find((o) => String(o.type || "").toLowerCase() === "shrine" && o.q === s.q && o.r === s.r);
@@ -1044,27 +935,7 @@ function ensureWorldLoreGenerated(scene) {
           q: s.q,
           r: s.r,
           faction: owner,
-          text: `${owner} found a shrine to ${religion} at ${humanCoord(s.q, s.r)}, and the nearest trails become calmer under watchful eyes.`,
-        });
-        return true;
-      });
-    }
-
-    // watchtower built
-    if (watchtowers.length) {
-      secondaryCandidates.push(() => {
-        const w = watchtowers[0];
-        if (!w) return false;
-        const yearEv = nextYear(1, 2);
-        const owner = w.faction || pickFactionOwner();
-        pushSecondary({
-          year: yearEv,
-          type: "watchtower_built",
-          poiType: "watchtower",
-          q: w.q,
-          r: w.r,
-          faction: owner,
-          text: `${owner} fortify a watchtower at ${humanCoord(w.q, w.r)} to signal raids and guide caravans.`,
+          text: `${owner} found a shrine to ${religion} at ${humanCoord(s.q, s.r)}—pilgrims and guards soon follow the marked paths.`,
         });
         return true;
       });
@@ -1072,9 +943,8 @@ function ensureWorldLoreGenerated(scene) {
 
     // camp founded
     if (roadsideCamps.length) {
-      secondaryCandidates.push(() => {
+      candidates.push(() => {
         const c = roadsideCamps[0];
-        if (!c) return false;
         const yearEv = nextYear(1, 2);
         const owner = c.faction || pickFactionOwner();
         pushSecondary({
@@ -1090,81 +960,9 @@ function ensureWorldLoreGenerated(scene) {
       });
     }
 
-    // global event (conditional)
-    secondaryCandidates.push(() => {
-      const yearEv = nextYear(1, 2);
-
-      const roll = rng();
-      if (roll < 0.25) {
-        pushSecondary({
-          year: yearEv,
-          type: "flood",
-          text: `Floodwaters redraw safe paths; some low routes become impassable for a season.`,
-        });
-      } else if (roll < 0.50) {
-        pushSecondary({
-          year: yearEv,
-          type: "famine",
-          text: `A lean season strains stores; escorts become common and petty theft rises along the trails.`,
-        });
-      } else if (roll < 0.75) {
-        pushSecondary({
-          year: yearEv,
-          type: "good_harvest",
-          text: `A good harvest steadies morale and supplies; repairs and building projects surge.`,
-        });
-      } else {
-        // disaster that fits geography slightly (soft-constraint)
-        const d = pick(rng, DISASTER_TYPES);
-        pushSecondary({
-          year: yearEv,
-          type: "disaster",
-          text: `A season of trouble—${d}—forces patrols to redraw their routes and rely on marked crossings.`,
-        });
-      }
-      return true;
-    });
-
-    // pick 2 successful candidates
-    let made = 0;
-    const tried = new Set();
-    while (made < 2 && tried.size < secondaryCandidates.length) {
-      const idx = Math.floor(rng() * secondaryCandidates.length);
-      if (tried.has(idx)) continue;
-      tried.add(idx);
-
-      const ok = secondaryCandidates[idx]();
-      if (ok) made++;
-    }
-
-    // If somehow nothing worked, still add 2 generic secondaries
-    while (made < 2) {
-      const yearEv = nextYear(1, 2);
-      pushSecondary({
-        year: yearEv,
-        type: "minor",
-        text: `Work crews clear brush and stack stones along the most traveled paths.`,
-      });
-      made++;
-    }
-  }
-
-  // ----------------------------
-  // Build exact DF order:
-  // Discovery already pushed.
-  // For i=0..2: Main(i) -> 2 Secondary
-  // Then Main(3)
-  // Then Players Arrive
-  // ----------------------------
-  for (let i = 0; i < 4; i++) {
-    const fn = mainEvents[i];
-    if (typeof fn === "function") fn();
-
-    if (i < 3) {
-      doSecondaryPair(i);
-
-      // If we had a war main and truceHappened, express truce as SECONDARY in one of these pairs
-      if (hasTwoFactions && warOngoing && truceHappened && rng() < 0.5) {
+    // truce (as secondary, only if war happened)
+    if (hasTwoFactions && warOngoing && trucePlanned) {
+      candidates.push(() => {
         const yearEv = nextYear(1, 2);
         pushSecondary({
           year: yearEv,
@@ -1174,35 +972,104 @@ function ensureWorldLoreGenerated(scene) {
           text: `${factionA} and ${factionB} sign a tense truce—trade resumes under escort, and border stones are quietly reset.`,
         });
         warOngoing = false;
-        truceHappened = false;
-      }
+        trucePlanned = false;
+        return true;
+      });
     }
+
+    // global event
+    candidates.push(() => {
+      const yearEv = nextYear(1, 2);
+      const roll = rng();
+      if (roll < 0.25) {
+        pushSecondary({ year: yearEv, type: "flood", text: `Floodwaters redraw safe paths; some low routes become impassable for a season.` });
+      } else if (roll < 0.50) {
+        pushSecondary({ year: yearEv, type: "famine", text: `A lean season strains stores; escorts become common and petty theft rises along the trails.` });
+      } else if (roll < 0.75) {
+        pushSecondary({ year: yearEv, type: "good_harvest", text: `A good harvest steadies morale and supplies; repairs and building projects surge.` });
+      } else {
+        pushSecondary({ year: yearEv, type: "disaster", text: `A season of trouble—${pick(rng, DISASTER_TYPES)}—forces patrols to redraw their routes.` });
+      }
+      return true;
+    });
+
+    // Pick 2 successful
+    let made = 0;
+    const tried = new Set();
+    while (made < 2 && tried.size < candidates.length) {
+      const idx = Math.floor(rng() * candidates.length);
+      if (tried.has(idx)) continue;
+      tried.add(idx);
+      if (candidates[idx]()) made++;
+    }
+
+    while (made < 2) {
+      const yearEv = nextYear(1, 2);
+      pushSecondary({ year: yearEv, type: "minor", text: `Work crews clear brush and stack stones along the most traveled paths.` });
+      made++;
+    }
+  }
+
+  // ---- Build order:
+  // Discovery already in
+  // Main -> 2 Secondary (x3)
+  // Main
+  // ✅ EXTRA: Main -> 2 Secondary
+  // Players arrive (last)
+  for (let i = 0; i < 4; i++) {
+    mainFns[i]?.();
+    if (i < 3) doSecondaryPair();
+  }
+
+  // ✅ NEW: extra block before players
+  // Main + 2 secondaries
+  {
+    // extra main: try “founding outpost / fortification / claim mine”
+    const yearEv = nextYear(1, 3);
+    const pickMain = rng();
+
+    if (watchtowers[0] && pickMain < 0.34) {
+      const w = watchtowers[0];
+      pushMain({
+        year: yearEv,
+        type: "founding",
+        poiType: "watchtower",
+        q: w.q,
+        r: w.r,
+        faction: w.faction || pickFactionOwner(),
+        text: `${w.faction || "A faction"} strengthen the watchtower at ${humanCoord(w.q, w.r)}—a clear sign they intend to stay.`,
+      });
+    } else if (mines[0] && pickMain < 0.67) {
+      const m = mines[0];
+      pushMain({
+        year: yearEv,
+        type: "major",
+        poiType: "mine",
+        q: m.q,
+        r: m.r,
+        faction: m.faction || pickFactionOwner(),
+        text: `${m.faction || "A faction"} officially claim the mine at ${humanCoord(m.q, m.r)} and begin guarded caravans.`,
+      });
+    } else {
+      pushMain({
+        year: yearEv,
+        type: "major",
+        faction: pickFactionOwner(),
+        text: `A new wave of settlers arrives, bringing tools, debts, and fresh rivalries.`,
+      });
+    }
+
+    doSecondaryPair(); // +2 secondary right before players
   }
 
   // Players arrive (always last)
   pushMain({
     year: nextYear(1, 2),
     type: "players_arrive",
-    text: `New arrivals land on ${islandName}. Old claims, half-built roads, and unresolved grudges now collide with the player’s ambitions.`,
+    text: `New arrivals land on ${islandName}. Old claims, half-built roads, and unresolved grudges now collide with the player's ambitions.`,
   });
 
-  // Optional cataclysm (RULE: if there is a settlement => no apocalyptic end)
-  // We do not add cataclysm in v7 if any settlement exists.
-  let finalCataclysmEvent = null;
-  const allowCataclysm = settlements.length === 0;
-  if (allowCataclysm && rng() < 0.25) {
-    const yearEv = nextYear(1, 2);
-    const disaster = pick(rng, DISASTER_TYPES);
-    finalCataclysmEvent = {
-      year: yearEv,
-      text: `When ${disaster} sweeps ${islandName}, the remaining camps are abandoned and their fires finally go cold.`,
-      type: "cataclysm",
-      disaster,
-    };
-    pushMain(finalCataclysmEvent);
-  }
-
-  // Sort & commit events (stable)
+  // Sort & commit
   events.sort((a, b) => (a.year || 0) - (b.year || 0));
 
   for (const ev of events) {
@@ -1221,7 +1088,6 @@ function ensureWorldLoreGenerated(scene) {
     if (ev.poiType) entry.poiType = ev.poiType;
     if (ev.from && Number.isFinite(ev.from.q) && Number.isFinite(ev.from.r)) entry.from = ev.from;
     if (ev.to && Number.isFinite(ev.to.q) && Number.isFinite(ev.to.r)) entry.to = ev.to;
-    if (Array.isArray(ev.targets) && ev.targets.length) entry.targets = ev.targets;
     if (ev.faction) entry.faction = ev.faction;
     if (ev.otherFaction) entry.otherFaction = ev.otherFaction;
     if (ev.settlementName) entry.settlementName = ev.settlementName;
@@ -1230,15 +1096,10 @@ function ensureWorldLoreGenerated(scene) {
     addEntry(entry);
   }
 
-  // Legacy: some UI expects loreState.outposts (named places for highlighting).
-  const namedPlaces = []
-    .concat(settlements)
-    .concat(ruins);
-
   scene.loreState = {
     islandName,
     factions,
-    outposts: namedPlaces, // legacy field
+    outposts: [].concat(settlements).concat(ruins),
     settlements,
     ruins,
     mines,
@@ -1247,36 +1108,23 @@ function ensureWorldLoreGenerated(scene) {
     roadsideCamps,
     raiderCamps,
     resources: resInfo,
-    disaster: finalCataclysmEvent?.disaster || null,
-
-    // NEW: road plans created only via secondary events
+    disaster: null,
     roadPlans,
   };
 
-  // Commit worldObjects back into mapInfo / hexMap
   if (!scene.mapInfo) scene.mapInfo = { tiles, objects: [] };
   scene.mapInfo.objects = worldObjects;
-  if (scene.hexMap) {
-    scene.hexMap.objects = worldObjects;
-  }
+  if (scene.hexMap) scene.hexMap.objects = worldObjects;
 
   scene.__worldLoreGenerated = true;
 }
 
-// Called per-ruin from WorldSceneMapLocations.
-// Ensures world-level lore exists and marks the tile.
 export function generateRuinLoreForTile(scene, tile) {
   if (!scene || !tile) return;
   ensureWorldLoreGenerated(scene);
   tile.__loreGenerated = true;
 }
 
-/**
- * BACKWARD COMPATIBILITY:
- * Old pipeline called this after MapLocations produced scene.roadConnections.
- * In v7, roads are NOT generated there; they are planned inside lore as secondary events.
- * So this function is intentionally a NO-OP besides ensuring lore exists.
- */
 export function generateRoadLoreForExistingConnections(scene) {
   if (!scene) return;
   ensureWorldLoreGenerated(scene);
