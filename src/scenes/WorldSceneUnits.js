@@ -223,8 +223,7 @@ function pickSpawnTiles(scene, count) {
 
 /**
  * Create a "directional badge" (like your unit mock):
- * - circular/rounded body
- * - sharp nose indicating direction (default points RIGHT)
+ * - smooth teardrop: circle arc + nose (default points RIGHT)
  * Returns:
  *  { cont, bg, icon }
  *
@@ -238,34 +237,47 @@ function createDirectionalUnitBadge(scene, x, y, ownerKey, iconText, sizePx, dep
 
   const fill = colorForOwner(ownerKey);
   const s = Math.max(18, Math.round(sizePx || 28));
-  const r = Math.round(s * 0.55); // body radius-ish
-  const nose = Math.round(s * 0.55); // nose length
-  const borderW = 3;
+
+  // Keep border even-ish for a crisper look on many displays.
+  // (Odd widths often look slightly blurrier on diagonals.)
+  const borderW = 2;
 
   const bg = scene.add.graphics();
   bg.fillStyle(fill, 1);
   bg.lineStyle(borderW, UNIT_BORDER_COLOR, 0.9);
 
-  // Body circle-ish (approximated with rounded rect) + triangular nose.
-  // Default facing RIGHT, rotate bg for direction.
-  const bodyW = Math.round(r * 2.1);
-  const bodyH = Math.round(r * 2.0);
-  const rx = -Math.round(bodyW / 2);
-  const ry = -Math.round(bodyH / 2);
+  // --- Teardrop shape (circle + nose), default points RIGHT ---
+  // Geometry (all ints for less blur)
+  const radius = Math.round(s * 0.55);
+  const noseLen = Math.round(s * 0.62);
 
-  // Rounded body
-  bg.fillRoundedRect(rx, ry, bodyW, bodyH, Math.round(r * 0.65));
-  bg.strokeRoundedRect(rx, ry, bodyW, bodyH, Math.round(r * 0.65));
+  // Circle center slightly left so there is room for the nose
+  const cx = -Math.round(radius * 0.10);
+  const cy = 0;
 
-  // Nose triangle
-  const apexX = Math.round(bodyW / 2 + nose);
-  const baseX = Math.round(bodyW / 2 - 2);
-  const halfY = Math.round(bodyH * 0.33);
+  // Cut angle where the nose attaches (35..55° feel good)
+  const theta = Math.PI / 4; // 45°
 
+  // Attachment points on the right side of the circle
+  const ax = Math.round(cx + radius * Math.cos(theta));
+  const ay = Math.round(cy - radius * Math.sin(theta));
+  const bx = Math.round(cx + radius * Math.cos(theta));
+  const by = Math.round(cy + radius * Math.sin(theta));
+
+  // Tip of the teardrop
+  const tipX = Math.round(cx + radius + noseLen);
+  const tipY = 0;
+
+  // One continuous outline: arc around left side, then two edges to the nose tip.
   bg.beginPath();
-  bg.moveTo(apexX, 0);
-  bg.lineTo(baseX, -halfY);
-  bg.lineTo(baseX, +halfY);
+  // Arc from -theta to (2π + theta), going around the LEFT side
+  // This draws the round body and leaves the "front" open for the nose join.
+  bg.arc(cx, cy, radius, -theta, (Math.PI * 2) + theta, false);
+
+  // connect from end of arc to nose tip and back to start
+  bg.lineTo(tipX, tipY);
+  bg.lineTo(ax, ay);
+
   bg.closePath();
   bg.fillPath();
   bg.strokePath();
@@ -284,7 +296,9 @@ function createDirectionalUnitBadge(scene, x, y, ownerKey, iconText, sizePx, dep
 
   // Make interactive region stable
   try {
-    cont.setSize(bodyW + nose, bodyH);
+    const estW = (radius * 2) + noseLen;
+    const estH = radius * 2;
+    cont.setSize(estW, estH);
     cont.setInteractive();
   } catch (_) {}
 
@@ -293,22 +307,19 @@ function createDirectionalUnitBadge(scene, x, y, ownerKey, iconText, sizePx, dep
   cont._unitIcon = icon;
   cont._ownerKey = ownerKey;
 
-  // Allow recolor when ownership changes
+  // Allow recolor when ownership changes (rebuild same geometry)
   cont.setOwnerKey = (newOwnerKey) => {
     cont._ownerKey = newOwnerKey;
     const newFill = colorForOwner(newOwnerKey);
-    bg.clear();
 
+    bg.clear();
     bg.fillStyle(newFill, 1);
     bg.lineStyle(borderW, UNIT_BORDER_COLOR, 0.9);
 
-    bg.fillRoundedRect(rx, ry, bodyW, bodyH, Math.round(r * 0.65));
-    bg.strokeRoundedRect(rx, ry, bodyW, bodyH, Math.round(r * 0.65));
-
     bg.beginPath();
-    bg.moveTo(apexX, 0);
-    bg.lineTo(baseX, -halfY);
-    bg.lineTo(baseX, +halfY);
+    bg.arc(cx, cy, radius, -theta, (Math.PI * 2) + theta, false);
+    bg.lineTo(tipX, tipY);
+    bg.lineTo(ax, ay);
     bg.closePath();
     bg.fillPath();
     bg.strokePath();
@@ -612,7 +623,6 @@ function createRaiderCamp(scene, q, r) {
   scene.raiderCamp = camp;
   return camp;
 }
-
 // ==============================
 // WorldSceneUnits.js (PART 2/2)
 // ==============================
