@@ -926,23 +926,21 @@ export function applyEnemyAIOnEndTurn(scene) {
 /**
  * Update unit orientation based on movement direction.
  *
- * ✅ FIX (core):
- * Your grid uses ODD-R neighbors (see neighborsOddR),
- * but the previous version tried to map dq/dr like axial-cube neighbors.
- * That mismatch is why units "turn wrong".
+ * Your grid uses ODD-R neighbors (see neighborsOddR).
+ * Phaser's rotation is clockwise-positive because Y grows downward.
  *
- * New behavior:
- * - Determine direction index by matching (dq,dr) against neighborsOddR(fromR parity)
- * - Convert that dir index into an angle, with a single consistent convention:
- *     dir 0 = +X (east)  -> angle 0
- *     then clockwise steps of 60°:
- *       0: E, 1: NE, 2: NW, 3: W, 4: SW, 5: SE
+ * What was wrong before:
+ * - We assumed "dir index * 60°" would map to NE/NW/...
+ *   but on screen, +60° from east points DOWN-RIGHT (SE), not UP-RIGHT (NE).
+ * - That makes diagonal turns appear mirrored:
+ *     right-up ↔ right-down, left-up ↔ left-down.
  *
- * Notes:
- * - This matches the order returned by neighborsOddR for BOTH parities.
- * - We also store unit.facing = dir and unit.facingAngle = angle.
- * - For Graphics/Containers: use unit.rotation.
- * - For Sprites that rely on flipX: we set flipX only when we have that API.
+ * Fix:
+ * - We still identify the direction index by matching (dq,dr) against neighborsOddR(fromR parity)
+ * - But we map those 6 dirs to SCREEN angles with a lookup that swaps the vertical diagonals:
+ *     logical order from neighborsOddR: [E, NE, NW, W, SW, SE]
+ *     screen rotation steps (clockwise): [0, 5, 4, 3, 2, 1] * 60°
+ *   This exactly swaps NE<->SE and NW<->SW on screen, which is what you asked for.
  */
 export function updateUnitOrientation(scene, unit, fromQ, fromR, toQ, toR) {
   if (!unit) return;
@@ -969,8 +967,12 @@ export function updateUnitOrientation(scene, unit, fromQ, fromR, toQ, toR) {
     else dir = (dr >= 0) ? 5 : 2;
   }
 
-  // Angle convention (dir 0 = east)
-  const angle = dir * (Math.PI / 3);
+  // ✅ Screen-correct angle mapping (fixes mirrored diagonals)
+  // neighborsOddR dir order: 0:E, 1:NE, 2:NW, 3:W, 4:SW, 5:SE
+  // screen clockwise steps:  0,   5,    4,    3,    2,    1
+  const STEP_BY_DIR = [0, 5, 4, 3, 2, 1];
+  const step = STEP_BY_DIR[dir] ?? 0;
+  const angle = step * (Math.PI / 3);
 
   // Apply to Phaser display object:
   // - Containers/Graphics: rotation is correct
@@ -981,7 +983,7 @@ export function updateUnitOrientation(scene, unit, fromQ, fromR, toQ, toR) {
 
   // Optional flip for sprite-based units (if any)
   if (typeof unit.setFlipX === 'function') {
-    // facing west-ish => flip
+    // facing west-ish => flip (kept based on logical dir)
     const westish = (dir === 3 || dir === 2 || dir === 4);
     unit.setFlipX(westish);
   }
