@@ -267,11 +267,27 @@ function createDirectionalUnitBadge(scene, x, y, ownerKey, iconText, sizePx, dep
   // Draw drop path
   const drawDrop = () => {
     bg.beginPath();
-    bg.moveTo(tipX, 0);
+
+    // Phaser Graphics in some versions doesn't expose quadraticCurveTo / quadraticBezierTo.
+    // We approximate quadratic curves with short line segments.
+    let x = tipX;
+    let y = 0;
+    bg.moveTo(x, y);
+
+    const quadTo = (cx1, cy1, x2, y2, steps = 14) => {
+      for (let i = 1; i <= steps; i++) {
+        const t = i / steps;
+        const mt = 1 - t;
+        const xt = (mt * mt) * x + 2 * mt * t * cx1 + (t * t) * x2;
+        const yt = (mt * mt) * y + 2 * mt * t * cy1 + (t * t) * y2;
+        bg.lineTo(xt, yt);
+      }
+      x = x2;
+      y = y2;
+    };
 
     // Tip -> upper join (smooth)
-    // Phaser Graphics uses quadraticBezierTo (not quadraticCurveTo)
-    bg.quadraticBezierTo(
+    quadTo(
       tipX - Math.max(6, Math.round(tail * 0.35)),
       -Math.max(6, Math.round(r * 0.60)),
       joinX,
@@ -281,8 +297,12 @@ function createDirectionalUnitBadge(scene, x, y, ownerKey, iconText, sizePx, dep
     // Circle arc from -theta to +theta, going the long way around (through the left side)
     bg.arc(cx, cy, r, -theta, Math.PI * 2 + theta, false);
 
+    // Arc ends at lower join
+    x = joinX;
+    y = joinY;
+
     // Lower join -> tip (smooth)
-    bg.quadraticBezierTo(
+    quadTo(
       tipX - Math.max(6, Math.round(tail * 0.35)),
       Math.max(6, Math.round(r * 0.60)),
       tipX,
