@@ -270,7 +270,8 @@ function createDirectionalUnitBadge(scene, x, y, ownerKey, iconText, sizePx, dep
     bg.moveTo(tipX, 0);
 
     // Tip -> upper join (smooth)
-    bg.quadraticCurveTo(
+    // Phaser Graphics uses quadraticBezierTo (not quadraticCurveTo)
+    bg.quadraticBezierTo(
       tipX - Math.max(6, Math.round(tail * 0.35)),
       -Math.max(6, Math.round(r * 0.60)),
       joinX,
@@ -281,7 +282,7 @@ function createDirectionalUnitBadge(scene, x, y, ownerKey, iconText, sizePx, dep
     bg.arc(cx, cy, r, -theta, Math.PI * 2 + theta, false);
 
     // Lower join -> tip (smooth)
-    bg.quadraticCurveTo(
+    bg.quadraticBezierTo(
       tipX - Math.max(6, Math.round(tail * 0.35)),
       Math.max(6, Math.round(r * 0.60)),
       tipX,
