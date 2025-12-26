@@ -9,7 +9,8 @@ import { getLobbyState } from '../net/LobbyManager.js';
 import { createUnitState, applyUnitStateToPhaserUnit } from '../units/UnitFactory.js';
 import { getUnitDef } from '../units/UnitDefs.js';
 
-const DASH_FRAME_URL = 'assets/sprites/DashFrameForUnits.png';
+const DASH_FRAME_URL = "src/assets/sprites/DashFrameForUnits.png";
+// If your dev server does not serve files from /src, move the PNG to a public/assets folder and change the URL accordingly.
 // Basic visual / model constants
 const UNIT_Z = {
   player: 2000,
@@ -295,12 +296,21 @@ function createDirectionalUnitBadge(scene, x, y, ownerKey, iconText, sizePx, dep
       scene._dashFrameForUnitsQueued = true;
       scene.load.image(FRAME_KEY, DASH_FRAME_URL);
 
-      // When loaded, swap any fallback graphics to the sprite.
-      scene.load.once('complete', () => {
-        scene.events.emit('dashFrameForUnitsLoaded');
-      });
+// When THIS image is loaded, swap any fallback graphics to the sprite.
+scene.load.once(`filecomplete-image-${FRAME_KEY}`, () => {
+  scene.events.emit('dashFrameForUnitsLoaded');
+});
 
-      // Start loader if not already running
+// Helpful diagnostics if the URL is wrong:
+scene.load.once('loaderror', (file) => {
+  try {
+    if (file && file.key === FRAME_KEY) {
+      // eslint-disable-next-line no-console
+      console.error('[DashFrameForUnits] failed to load:', file.src || file.url || file);
+    }
+  } catch (_) {}
+});
+// Start loader if not already running
       if (typeof scene.load.start === 'function') scene.load.start();
     }
 
