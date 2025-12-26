@@ -8,8 +8,8 @@ import { getLobbyState } from '../net/LobbyManager.js';
 // Stage A unit stats infrastructure (pure logic + backwards compatible fields)
 import { createUnitState, applyUnitStateToPhaserUnit } from '../units/UnitFactory.js';
 import { getUnitDef } from '../units/UnitDefs.js';
-import DashFrameForUnitsUrl from '../assets/sprites/DashFrameForUnits.png';
 
+const DASH_FRAME_URL = 'assets/sprites/DashFrameForUnits.png';
 // Basic visual / model constants
 const UNIT_Z = {
   player: 2000,
@@ -293,7 +293,7 @@ function createDirectionalUnitBadge(scene, x, y, ownerKey, iconText, sizePx, dep
     // This will only run once per scene instance.
     if (!scene._dashFrameForUnitsQueued && scene.load && typeof scene.load.image === 'function') {
       scene._dashFrameForUnitsQueued = true;
-      scene.load.image(FRAME_KEY, DashFrameForUnitsUrl);
+      scene.load.image(FRAME_KEY, DASH_FRAME_URL);
 
       // When loaded, swap any fallback graphics to the sprite.
       scene.load.once('complete', () => {
