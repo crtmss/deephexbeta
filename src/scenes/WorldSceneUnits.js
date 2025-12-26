@@ -256,13 +256,13 @@ function createRaider(scene, q, r, opts = {}) {
 
   const cx = -s * 0.20;
   const cy = 0;
-  const r = s * 0.80;
+  const rad = s * 0.80;
   const tipX = +s * 0.98;
 
   bg.beginPath();
   // Start at bottom of circle, sweep up via LEFT side to make a smooth rounded back.
-  bg.moveTo(cx, cy + r);
-  bg.arc(cx, cy, r, Math.PI / 2, -Math.PI / 2, true);
+  bg.moveTo(cx, cy + rad);
+  bg.arc(cx, cy, rad, Math.PI / 2, -Math.PI / 2, true);
   // Connect to tip and close.
   bg.lineTo(tipX, 0);
   bg.closePath();
@@ -273,7 +273,7 @@ function createRaider(scene, q, r, opts = {}) {
 
   // === Raider icon (does NOT rotate) ===
   // We keep the icon itself fixed; only the background rotates to indicate facing.
-  const icon = scene.add.text(cx + r * 0.15, 0, '🔪', {
+  const icon = scene.add.text(cx + rad * 0.15, 0, '🔪', {
     fontSize: Math.max(14, Math.round(s * 0.85)) + 'px',
     color: '#ffffff',
   }).setOrigin(0.5);
@@ -283,8 +283,8 @@ function createRaider(scene, q, r, opts = {}) {
 
   // Keep compatibility with click-selection logic that expects interactive objects
   try {
-    const w = Math.max(28, Math.round((r + (tipX - cx)) * 1.05));
-    const h = Math.max(28, Math.round(r * 2.05));
+    const w = Math.max(28, Math.round((rad + (tipX - cx)) * 1.05));
+    const h = Math.max(28, Math.round(rad * 2.05));
     unit.setSize(w, h);
     unit.setInteractive();
   } catch (_) {}
@@ -294,7 +294,7 @@ function createRaider(scene, q, r, opts = {}) {
   unit._unitIcon = icon;
 
   unit.q = q;
-  unit.r = r;
+  unit.rad = rad;
   unit.type = (controller === 'ai') ? 'enemy_raider' : 'raider';
   unit.isEnemy = (controller === 'ai');
   unit.isPlayer = (controller !== 'ai');
@@ -311,7 +311,7 @@ function createRaider(scene, q, r, opts = {}) {
     ownerSlot: unit.playerIndex,
     controller: controller,
     q,
-    r,
+    rad,
     facing: 0,
   });
   unit.unitName = def.name;
@@ -340,7 +340,7 @@ function createRaider(scene, q, r, opts = {}) {
  * (kept for compatibility, but we no longer spawn these globally)
  */
 function createEnemyUnit(scene, spawnTile) {
-  const u = createRaider(scene, spawnTile.q, spawnTile.r, {
+  const u = createRaider(scene, spawnTile.q, spawnTile.rad, {
     controller: 'ai',
     color: ENEMY_COLOR,
   });
@@ -355,8 +355,8 @@ function createEnemyUnit(scene, spawnTile) {
 /**
  * Exported helper for AI respawn system (Raider Camp).
  */
-export function spawnEnemyRaiderAt(scene, q, r) {
-  const u = createRaider(scene, q, r, { controller: 'ai', color: ENEMY_COLOR });
+export function spawnEnemyRaiderAt(scene, q, rad) {
+  const u = createRaider(scene, q, rad, { controller: 'ai', color: ENEMY_COLOR });
   u.type = 'enemy_raider';
   u.isEnemy = true;
   u.isPlayer = false;
@@ -374,8 +374,8 @@ export function spawnEnemyRaiderAt(scene, q, r) {
 /**
  * Creates a player-controlled Transporter (circle).
  */
-function createTransporter(scene, q, r, owner) {
-  const pos = scene.axialToWorld(q, r);
+function createTransporter(scene, q, rad, owner) {
+  const pos = scene.axialToWorld(q, rad);
   const size = (typeof scene.hexSize === 'number') ? scene.hexSize : 22;
   const radius = Math.max(8, Math.round(size * 0.52));
 
