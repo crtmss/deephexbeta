@@ -33,9 +33,6 @@
 //   This file must NOT add history entries about roads anymore.
 
 import {
-
-// Default neutral tint for POI/Resource diamond frames
-const RES_NEUTRAL_GRAY = 0x9aa0a6;
   effectiveElevationLocal,
   initOrUpdateGeography,
   drawGeographyOverlay,
@@ -313,8 +310,66 @@ export function applyLocationFlags(mapData, mapObjects) {
 /* ---------------------------------------------------------------
    Rendering: Roads + POIs + Geography
    --------------------------------------------------------------- */
-export function drawLocationsAndRoads() {
-  const scene = this;
+export function \1
+  // ---------------------------------------------------------------------------
+  // PNG diamond badges (POI / resources)
+  // - Neutral gray by default
+  // - Tint updates to last player who stepped on the hex
+  // ---------------------------------------------------------------------------
+  const RES_NEUTRAL_GRAY = 0x9aa0a6;
+  const ROMB_KEY = "rombFrameForObjects";
+  const ROMB_URL = "src/assets/sprites/RombFrameForObjects.png";
+
+  // Persistent per-hex claim tint: key "q,r" -> owner slot (number or string) or null
+  scene._diamondClaimByHex = scene._diamondClaimByHex || new Map();
+
+  const ensureRombTexture = () => {
+    if (scene.textures && scene.textures.exists(ROMB_KEY)) return true;
+
+    // Queue load once, use string URL to avoid MIME module errors
+    if (!scene._rombFrameQueued && scene.load && typeof scene.load.image === "function") {
+      scene._rombFrameQueued = true;
+      scene.load.image(ROMB_KEY, ROMB_URL);
+
+      scene.load.once("complete", () => {
+        scene.events.emit("rombFrameForObjectsLoaded");
+      });
+
+      if (typeof scene.load.start === "function") scene.load.start();
+    }
+    return false;
+  };
+
+  // Update claim/tint each frame after movement resolves
+  if (!scene._rombClaimPostUpdateHooked) {
+    scene._rombClaimPostUpdateHooked = true;
+    scene.events.on("postupdate", () => {
+      const players = scene.players || [];
+      const allUnits = []
+        .concat(scene.units || [])
+        .concat(players)
+        .concat(scene.enemies || [])
+        .concat(scene.haulers || []);
+
+      for (const u of allUnits) {
+        if (!u || u.isDead) continue;
+        const q = u.q, r = u.r;
+        if (!Number.isFinite(q) || !Number.isFinite(r)) continue;
+
+        // Determine owner slot color (prefer numeric playerIndex if present)
+        const ownerSlot =
+          (typeof u.playerIndex === "number" ? u.playerIndex :
+           (typeof u.ownerSlot === "number" ? u.ownerSlot :
+            (typeof u.ownerKey === "number" ? u.ownerKey :
+             (typeof u.owner === "number" ? u.owner : null))));
+
+        // Only players (numeric slots) claim; ignore enemies/neutral unless you want them too
+        if (typeof ownerSlot === "number") {
+          scene._diamondClaimByHex.set(`${q},${r}`, ownerSlot);
+        }
+      }
+    });
+  }
   const map = this.mapData;
   const size = this.hexSize || 24;
 
@@ -395,50 +450,7 @@ export function drawLocationsAndRoads() {
   /* ------------------- Badge helpers ------------------- */
   const noPOISet = getNoPOISet(map);
 
-  
-const ROMB_KEY = "rombFrameForObjects";
-
-const ensureRombTexture = () => {
-  if (scene.textures && scene.textures.exists(ROMB_KEY)) return true;
-  if (!scene._rombFrameQueued && scene.load && typeof scene.load.image === "function") {
-    scene._rombFrameQueued = true;
-    // IMPORTANT: do NOT import PNG as a module; load by URL string to avoid MIME module errors
-    scene.load.image(ROMB_KEY, "src/assets/sprites/RombFrameForObjects.png");
-    scene.load.once("complete", () => scene.events.emit("rombFrameLoaded"));
-    if (typeof scene.load.start === "function") scene.load.start();
-  }
-  return false;
-};
-
-// Track all romb badges (POI + Geo) to recolor based on last player stepping on the tile.
-if (!scene._rombBadges) scene._rombBadges = [];
-if (!scene._rombBadgeUpdaterInstalled) {
-  scene._rombBadgeUpdaterInstalled = true;
-  scene.events.on("postupdate", () => {
-    const players = scene.players || [];
-    if (!players.length) return;
-    for (const u of players) {
-      if (!u || u.isDead) continue;
-      const q = u.q, r = u.r;
-      if (!Number.isFinite(q) || !Number.isFinite(r)) continue;
-      // Update any badge on this tile
-      for (const b of scene._rombBadges) {
-        if (!b || !b._tile) continue;
-        if (b._tile.q === q && b._tile.r === r) {
-          const slot = (Number.isFinite(u.playerIndex) ? u.playerIndex : u.ownedByPlayer);
-          if (slot == null) continue;
-          if (b._tile.lastSteppedBy !== slot) {
-            b._tile.lastSteppedBy = slot;
-            const tint = getOwnerColor(scene, slot);
-            if (b._bg && typeof b._bg.setTint === "function") b._bg.setTint(tint);
-          }
-        }
-      }
-    }
-  });
-}
-
-const makeDiamondBadge = (x, y, _fillColorIgnored, px, depth, tileRef) => {
+  const makeDiamondBadge = (x, y, _fillColorIgnored, px, depth, tileRef) => {
   const badge = scene.add.container(x, y).setDepth(depth);
 
   // size: px is icon font-size; diamond surrounds it
@@ -474,6 +486,7 @@ const makeDiamondBadge = (x, y, _fillColorIgnored, px, depth, tileRef) => {
   return badge;
 };
 
+
   const addBadgeEmoji = (q, r, ox, oy, char, px, depth = 106, opts = null) => {
     const t = scene.mapData.find((h) => h.q === q && h.r === r);
     if (!t) return null;
@@ -508,6 +521,7 @@ const makeDiamondBadge = (x, y, _fillColorIgnored, px, depth, tileRef) => {
 
     return badge;
   };
+
 
   /* ------------------- POI/Geo icons + Mountains ------------------- */
   // Keep ref for tree spacing (for decor scaling)
