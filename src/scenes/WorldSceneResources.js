@@ -86,7 +86,6 @@ export function spawnFishResources() {
       fontSizePx: px,
       ownedByPlayer: null,
       depth: 2050,
-      tileRef: tile,
     });
 
     // Backwards compatibility:
@@ -182,7 +181,6 @@ export function spawnCrudeOilResources() {
       fontSizePx: px,
       ownedByPlayer: null,
       depth: 2050,
-      tileRef: tile,
     });
 
     scene.resources.push({
@@ -336,6 +334,9 @@ function fallbackAxialToWorld(scene, q, r) {
 const RES_NEUTRAL_GRAY = 0x9aa0a6;
 const RES_BADGE_BORDER = 0x0b1d2a;
 
+const ROMB_KEY = "rombFrameForObjects";
+const ROMB_URL = "src/assets/sprites/RombFrameForObjects.png";
+
 const RES_DEFAULT_OWNER_COLORS = {
   0: 0xff3b30, // P0 red
   1: 0x34c759, // P1 green
@@ -386,97 +387,84 @@ function resolveOwnerColor(scene, ownerId) {
  *
  * Note: we store bg so other systems can recolor it later on claim.
  */
-
 function createDiamondBadge(scene, x, y, emoji, opts) {
-  const o = opts || {};
-  const depth = o.depth != null ? o.depth : 120;
-  const px = (o.px != null ? o.px : (o.fontSizePx != null ? o.fontSizePx : 28));
+  const {
+    fontSizePx = 22,
+    depth = 120,
+    opacity = 1,
+    ownedByPlayer = null,
+  } = opts || {};
 
-  const ROMB_KEY = "rombFrameForObjects";
-
+  // Ensure texture loaded (string URL; no PNG import to avoid MIME module errors)
   const ensureRombTexture = () => {
     if (scene.textures && scene.textures.exists(ROMB_KEY)) return true;
     if (!scene._rombFrameQueued && scene.load && typeof scene.load.image === "function") {
       scene._rombFrameQueued = true;
-      // IMPORTANT: do NOT import PNG as a module; load by URL string to avoid MIME module errors
-      scene.load.image(ROMB_KEY, "src/assets/sprites/RombFrameForObjects.png");
-      scene.load.once("complete", () => scene.events.emit("rombFrameLoaded"));
+      scene.load.image(ROMB_KEY, ROMB_URL);
+      scene.load.once("complete", () => scene.events.emit("rombFrameForObjectsLoaded"));
       if (typeof scene.load.start === "function") scene.load.start();
     }
     return false;
   };
 
-  if (!scene._rombBadgesResources) scene._rombBadgesResources = [];
-  if (!scene._rombBadgeUpdaterInstalled) {
-    scene._rombBadgeUpdaterInstalled = true;
-    scene.events.on("postupdate", () => {
-      const players = scene.players || [];
-      if (!players.length) return;
-
-      for (const u of players) {
-        if (!u || u.isDead) continue;
-        const q = u.q, r = u.r;
-        if (!Number.isFinite(q) || !Number.isFinite(r)) continue;
-
-        for (const b of scene._rombBadgesResources) {
-          if (!b || !b._tile) continue;
-          if (b._tile.q === q && b._tile.r === r) {
-            const slot = (Number.isFinite(u.playerIndex) ? u.playerIndex : u.ownedByPlayer);
-            if (slot == null) continue;
-            if (b._tile.lastSteppedBy !== slot) {
-              b._tile.lastSteppedBy = slot;
-              const tint = getOwnerColor(scene, slot);
-              if (b._bg && typeof b._bg.setTint === "function") b._bg.setTint(tint);
-            }
-          }
-        }
-      }
-    });
-  }
-
   const badge = scene.add.container(x, y).setDepth(depth);
 
-  // Square size around emoji. Keep it square to avoid stretching.
-  const half = Math.max(14, Math.round(px * 0.95));
-  const size = half * 2;
+  const fillColor = resolveOwnerColor(scene, ownedByPlayer);
 
-  const hasTex = ensureRombTexture();
-  const bg = scene.add.image(0, 0, ROMB_KEY).setOrigin(0.5);
-  bg.setDisplaySize(size, size);
+  // --- Background: PNG diamond (under icon) ---
+  const hasTexture = ensureRombTexture();
+  const bg = hasTexture
+    ? scene.add.image(0, 0, ROMB_KEY).setOrigin(0.5)
+    : null;
 
-  // Start neutral gray; recolor when a player steps on it
-  bg.setTint(RES_NEUTRAL_GRAY);
-
-  const icon = scene.add
-    .text(0, 0, emoji, {
-      fontFamily: "Arial",
-      fontSize: `${Math.max(12, Math.round(px * 0.72))}px`,
-      color: "#ffffff",
-    })
-    .setOrigin(0.5);
-
-  // Background behind icon
-  badge.add(bg);
-  badge.add(icon);
-
-  // Track + apply persisted tint if present
-  const tileRef = o.tileRef || null;
-  badge._bg = bg;
-  badge._tile = tileRef;
-  scene._rombBadgesResources.push(badge);
-
-  if (tileRef && tileRef.lastSteppedBy != null) {
-    const tint = getOwnerColor(scene, tileRef.lastSteppedBy);
-    if (typeof bg.setTint === "function") bg.setTint(tint);
-  }
-
-  if (!hasTex) {
-    scene.events.once("rombFrameLoaded", () => {
+  if (bg) {
+    // Keep square format and scale from icon size
+    const side = Math.max(26, Math.round(fontSizePx * 2.25));
+    bg.setDisplaySize(side, side);
+    bg.setTint(fillColor);
+    bg.setAlpha(opacity);
+    badge.add(bg);
+  } else {
+    // If not yet loaded, wait and then attach
+    scene.events.once("rombFrameForObjectsLoaded", () => {
       if (!badge.scene) return;
       if (!(scene.textures && scene.textures.exists(ROMB_KEY))) return;
-      bg.setTexture(ROMB_KEY);
+      const side = Math.max(26, Math.round(fontSizePx * 2.25));
+      const img = scene.add.image(0, 0, ROMB_KEY).setOrigin(0.5);
+      img.setDisplaySize(side, side);
+      img.setTint(resolveOwnerColor(scene, ownedByPlayer));
+      img.setAlpha(opacity);
+      // add at back
+      badge.addAt(img, 0);
+      badge.bg = img;
     });
   }
 
-  return { badge, icon, bg };
+  // --- Icon: above background ---
+  const icon = scene.add.text(0, 0, emoji, {
+    fontFamily: "Arial",
+    fontSize: `${Math.max(10, Math.round(fontSizePx))}px`,
+    color: "#ffffff",
+    stroke: "#000000",
+    strokeThickness: Math.max(2, Math.round(fontSizePx * 0.12)),
+  }).setOrigin(0.5);
+
+  icon.setAlpha(opacity);
+  badge.add(icon);
+
+  // Expose references
+  badge.icon = icon;
+  badge.bg = bg;
+
+  // Allow tint update (ownership change)
+  badge.setOwner = (newOwnerId) => {
+    const c = resolveOwnerColor(scene, newOwnerId);
+    badge.ownedByPlayer = newOwnerId;
+    if (badge.bg && typeof badge.bg.setTint === "function") badge.bg.setTint(c);
+  };
+
+  badge.ownedByPlayer = ownedByPlayer;
+
+  return badge;
 }
+
