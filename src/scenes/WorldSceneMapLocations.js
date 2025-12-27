@@ -310,23 +310,27 @@ export function applyLocationFlags(mapData, mapObjects) {
 /* ---------------------------------------------------------------
    Rendering: Roads + POIs + Geography
    --------------------------------------------------------------- */
-export function \1
-  // ---------------------------------------------------------------------------
-  // PNG diamond badges (POI / resources)
-  // - Neutral gray by default
-  // - Tint updates to last player who stepped on the hex
-  // ---------------------------------------------------------------------------
-  const RES_NEUTRAL_GRAY = 0x9aa0a6;
-  const ROMB_KEY = "rombFrameForObjects";
-  const ROMB_URL = "src/assets/sprites/RombFrameForObjects.png";
+export function drawLocationsAndRoads() {
+  const scene = this;
 
-  // Persistent per-hex claim tint: key "q,r" -> owner slot (number or string) or null
+  // ---------------------------------------------------------------------------
+  // PNG diamond badges for POI / resources (replaces Graphics diamond drawing)
+  // - Neutral gray by default
+  // - Tint updates to the last player who stepped onto the hex
+  // ---------------------------------------------------------------------------
+  const ROMB_KEY = "rombFrameForObjects";
+  const ROMB_URL = "src/assets/sprites/RombFrameForObjects.png"; // served by your dev server
+  const RES_NEUTRAL_GRAY = 0x9aa0a6;
+
+  // per-hex last-claimer: "q,r" -> player slot (number)
   scene._diamondClaimByHex = scene._diamondClaimByHex || new Map();
+  // per-hex badge bg sprites for live tint updates
+  scene._diamondBadgeBgByHex = scene._diamondBadgeBgByHex || new Map();
 
   const ensureRombTexture = () => {
     if (scene.textures && scene.textures.exists(ROMB_KEY)) return true;
 
-    // Queue load once, use string URL to avoid MIME module errors
+    // Queue load once (string URL, avoids MIME module import errors)
     if (!scene._rombFrameQueued && scene.load && typeof scene.load.image === "function") {
       scene._rombFrameQueued = true;
       scene.load.image(ROMB_KEY, ROMB_URL);
@@ -340,32 +344,41 @@ export function \1
     return false;
   };
 
-  // Update claim/tint each frame after movement resolves
-  if (!scene._rombClaimPostUpdateHooked) {
-    scene._rombClaimPostUpdateHooked = true;
+  const getClaimFill = (q, r) => {
+    const k = `${q},${r}`;
+    const slot = scene._diamondClaimByHex.get(k);
+    if (typeof slot === "number") return getOwnerColor(scene, slot);
+    // start-of-game: neutral gray
+    return RES_NEUTRAL_GRAY;
+  };
+
+  // Hook once: on each postupdate, mark the hex under each player unit as claimed.
+  if (!scene._diamondClaimHooked) {
+    scene._diamondClaimHooked = true;
     scene.events.on("postupdate", () => {
       const players = scene.players || [];
-      const allUnits = []
-        .concat(scene.units || [])
-        .concat(players)
-        .concat(scene.enemies || [])
-        .concat(scene.haulers || []);
-
-      for (const u of allUnits) {
+      for (const u of players) {
         if (!u || u.isDead) continue;
         const q = u.q, r = u.r;
         if (!Number.isFinite(q) || !Number.isFinite(r)) continue;
 
-        // Determine owner slot color (prefer numeric playerIndex if present)
-        const ownerSlot =
+        const slot =
           (typeof u.playerIndex === "number" ? u.playerIndex :
            (typeof u.ownerSlot === "number" ? u.ownerSlot :
-            (typeof u.ownerKey === "number" ? u.ownerKey :
-             (typeof u.owner === "number" ? u.owner : null))));
+            (typeof u.slot === "number" ? u.slot : null)));
 
-        // Only players (numeric slots) claim; ignore enemies/neutral unless you want them too
-        if (typeof ownerSlot === "number") {
-          scene._diamondClaimByHex.set(`${q},${r}`, ownerSlot);
+        if (typeof slot !== "number") continue;
+
+        const key = `${q},${r}`;
+        const prev = scene._diamondClaimByHex.get(key);
+        if (prev !== slot) {
+          scene._diamondClaimByHex.set(key, slot);
+
+          // live update badge tint if exists
+          const bg = scene._diamondBadgeBgByHex.get(key);
+          if (bg && typeof bg.setTint === "function") {
+            bg.setTint(getOwnerColor(scene, slot));
+          }
         }
       }
     });
@@ -450,41 +463,46 @@ export function \1
   /* ------------------- Badge helpers ------------------- */
   const noPOISet = getNoPOISet(map);
 
-  const makeDiamondBadge = (x, y, _fillColorIgnored, px, depth, tileRef) => {
-  const badge = scene.add.container(x, y).setDepth(depth);
+  const makeDiamondBadge = (x, y, fillColor, px, depth) => {
+    const badge = scene.add.container(x, y).setDepth(depth);
 
-  // size: px is icon font-size; diamond surrounds it
-  const half = Math.max(14, Math.round(px * 0.95));
-  const size = half * 2;
+    // px is icon font-size; diamond should surround it
+    const half = Math.max(14, Math.round(px * 0.95));
+    const sizePx = half * 2;
 
-  const hasTex = ensureRombTexture();
+    const makeBg = () => {
+      const img = scene.add.image(0, 0, ROMB_KEY).setOrigin(0.5);
+      // Keep square format so the diamond doesn't look stretched
+      img.setDisplaySize(sizePx, sizePx);
+      // Tint the frame (PNG should be a neutral/white mask for best results)
+      img.setTint(fillColor);
+      return img;
+    };
 
-  const bg = scene.add.image(0, 0, ROMB_KEY).setOrigin(0.5);
-  // Keep square format (avoid stretching)
-  bg.setDisplaySize(size, size);
+    badge._bg = null;
 
-  // Start neutral gray; recolor when a player steps on it
-  bg.setTint(RES_NEUTRAL_GRAY ?? 0x9aa0a6);
+    // Ensure texture is queued/loaded; if ready, create immediately; otherwise swap in after load.
+    if (ensureRombTexture()) {
+      const bg = makeBg();
+      badge._bg = bg;
+      badge.add(bg);
+      return badge;
+    }
 
-  badge.add(bg);
-
-  // keep references for updater
-  badge._bg = bg;
-  badge._tile = tileRef;
-  scene._rombBadges.push(badge);
-
-  // If texture wasn't loaded yet, swap once loaded (keeps icon ordering intact)
-  if (!hasTex) {
-    scene.events.once("rombFrameLoaded", () => {
-      if (!badge.scene) return;
+    scene.events.once("rombFrameForObjectsLoaded", () => {
+      if (!badge || !badge.scene) return;
       if (!(scene.textures && scene.textures.exists(ROMB_KEY))) return;
-      // refresh texture binding
-      bg.setTexture(ROMB_KEY);
-    });
-  }
 
-  return badge;
-};
+      const bg = makeBg();
+      badge._bg = bg;
+      badge.addAt(bg, 0);
+
+      // If we already know this hex key (stored by addBadgeEmoji), it can be live-tinted later.
+    });
+
+    return badge;
+  };
+
 
 
   const addBadgeEmoji = (q, r, ox, oy, char, px, depth = 106, opts = null) => {
@@ -499,10 +517,14 @@ export function \1
     const x = c.x + offsetX + ox;
     const y = c.y + offsetY + oy - LIFT * effectiveElevationLocal(t);
 
-    const ownerId = getOwnedByPlayerFromTile(t);
-    const fill = getOwnerColor(scene, ownerId);
+    const fill = getClaimFill(q, r);
 
     const badge = makeDiamondBadge(x, y, fill, px, depth);
+
+    // register bg sprite for live tint updates
+    if (badge && badge._bg) {
+      scene._diamondBadgeBgByHex.set(`${q},${r}`, badge._bg);
+    }
 
     const icon = scene.add
       .text(0, 0, char, {
@@ -521,7 +543,6 @@ export function \1
 
     return badge;
   };
-
 
   /* ------------------- POI/Geo icons + Mountains ------------------- */
   // Keep ref for tree spacing (for decor scaling)
