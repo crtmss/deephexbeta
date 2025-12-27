@@ -33,6 +33,9 @@
 //   This file must NOT add history entries about roads anymore.
 
 import {
+
+// Default neutral tint for POI/Resource diamond frames
+const RES_NEUTRAL_GRAY = 0x9aa0a6;
   effectiveElevationLocal,
   initOrUpdateGeography,
   drawGeographyOverlay,
