@@ -8,7 +8,7 @@ import { getLobbyState } from '../net/LobbyManager.js';
 // Stage A unit stats infrastructure (pure logic + backwards compatible fields)
 import { createUnitState, applyUnitStateToPhaserUnit } from '../units/UnitFactory.js';
 import { getUnitDef } from '../units/UnitDefs.js';
-import DashFrameForUnitsUrl from '../assets/sprites/DashFrameForUnits.png';
+const DASH_FRAME_URL = "assets/sprites/DashFrameForUnits.png";
 
 // Basic visual / model constants
 const UNIT_Z = {
@@ -239,76 +239,62 @@ function createDirectionalUnitBadge(scene, x, y, ownerKey, iconText, sizePx, dep
 
   const fill = colorForOwner(ownerKey);
   const s = Math.max(18, Math.round(sizePx || 28));
-  const r = Math.round(s * 0.55); // body radius-ish (used for fallback placeholder)
-  const nose = Math.round(s * 0.55); // kept for sizing (legacy geometry)
+  const r = Math.round(s * 0.55);       // head radius
+  const tail = Math.round(s * 0.55);    // point length
   const borderW = 3;
 
-  // Keep the same logical badge bounds as before (body + nose).
-  const bodyW = Math.round(r * 2.1);
-  const bodyH = Math.round(r * 2.0);
+  const bg = scene.add.graphics();
+  bg.fillStyle(fill, 1);
+  bg.lineStyle(borderW, UNIT_BORDER_COLOR, 0.9);
 
-  // Sprite asset key
-  const FRAME_KEY = 'dashFrameForUnits';
+  // “Drop / pin” silhouette (like your reference image), pointing RIGHT by default.
+  // We rotate bg for facing, so the point acts as a direction indicator.
+  // Implementation: circle head + smooth tapered point.
+  const cx = -Math.round(r * 0.20);           // circle center X (slightly left)
+  const cy = 0;
+  const tipX = cx + r + tail;                 // tip of the drop
+  const theta = 0.95;                         // join angle (~54°)
+  const joinX = cx + r * Math.cos(theta);
+  const joinY = r * Math.sin(theta);
 
-  // Background (directional) - now a sprite instead of Graphics.
-  // The sprite is authored pointing RIGHT by default; rotate bg to show facing.
-  let bg = null;
+  // Bounding box (used for interaction)
+  const left = cx - r;
+  const right = tipX;
+  const top = -r;
+  const bottom = r;
+  const bodyW = Math.round(right - left);
+  const bodyH = Math.round(bottom - top);
 
-  const makeSpriteBg = () => {
-    const spr = scene.add.image(0, 0, FRAME_KEY).setOrigin(0.5);
-    // Scale to match old badge footprint (body + nose).
-    spr.setDisplaySize(bodyW + nose, bodyH);
-    // Tint by owner color (works best if the PNG is white/neutral with alpha).
-    spr.setTint(fill);
-    return spr;
+  // Draw drop path
+  const drawDrop = () => {
+    bg.beginPath();
+    bg.moveTo(tipX, 0);
+
+    // Tip -> upper join (smooth)
+    bg.quadraticCurveTo(
+      tipX - Math.max(6, Math.round(tail * 0.35)),
+      -Math.max(6, Math.round(r * 0.60)),
+      joinX,
+      -joinY
+    );
+
+    // Circle arc from -theta to +theta, going the long way around (through the left side)
+    bg.arc(cx, cy, r, -theta, Math.PI * 2 + theta, false);
+
+    // Lower join -> tip (smooth)
+    bg.quadraticCurveTo(
+      tipX - Math.max(6, Math.round(tail * 0.35)),
+      Math.max(6, Math.round(r * 0.60)),
+      tipX,
+      0
+    );
+
+    bg.closePath();
+    bg.fillPath();
+    bg.strokePath();
   };
 
-  const makeFallbackBg = () => {
-    // Fallback placeholder if the texture is not loaded yet.
-    const g = scene.add.graphics();
-    g.fillStyle(fill, 1);
-    g.lineStyle(borderW, UNIT_BORDER_COLOR, 0.9);
-    // Simple rounded capsule + nose triangle, same as old behavior (so game doesn't break).
-    const rx = -Math.round(bodyW / 2);
-    const ry = -Math.round(bodyH / 2);
-    g.fillRoundedRect(rx, ry, bodyW, bodyH, Math.round(r * 0.65));
-    g.strokeRoundedRect(rx, ry, bodyW, bodyH, Math.round(r * 0.65));
-    const apexX = Math.round(bodyW / 2 + nose);
-    const baseX = Math.round(bodyW / 2 - 2);
-    const halfY = Math.round(bodyH * 0.33);
-    g.beginPath();
-    g.moveTo(apexX, 0);
-    g.lineTo(baseX, -halfY);
-    g.lineTo(baseX, +halfY);
-    g.closePath();
-    g.fillPath();
-    g.strokePath();
-    return g;
-  };
-
-  const ensureFrameTexture = () => {
-    if (scene.textures && scene.textures.exists(FRAME_KEY)) return true;
-
-    // Lazy-load if this scene doesn't have a preload pipeline for assets yet.
-    // This will only run once per scene instance.
-    if (!scene._dashFrameForUnitsQueued && scene.load && typeof scene.load.image === 'function') {
-      scene._dashFrameForUnitsQueued = true;
-      scene.load.image(FRAME_KEY, DashFrameForUnitsUrl);
-
-      // When loaded, swap any fallback graphics to the sprite.
-      scene.load.once('complete', () => {
-        scene.events.emit('dashFrameForUnitsLoaded');
-      });
-
-      // Start loader if not already running
-      if (typeof scene.load.start === 'function') scene.load.start();
-    }
-
-    return false;
-  };
-
-  const hasTexture = ensureFrameTexture();
-  bg = hasTexture ? makeSpriteBg() : makeFallbackBg();
+  drawDrop();
 
   // Icon (does not rotate)
   const icon = scene.add.text(0, 0, iconText, {
@@ -322,31 +308,9 @@ function createDirectionalUnitBadge(scene, x, y, ownerKey, iconText, sizePx, dep
   cont.add(bg);
   cont.add(icon);
 
-  // If we had to use fallback bg, hot-swap to sprite when the asset arrives.
-  if (!hasTexture) {
-    scene.events.once('dashFrameForUnitsLoaded', () => {
-      if (!cont || !cont.scene) return;
-      if (!(scene.textures && scene.textures.exists(FRAME_KEY))) return;
-
-      const prevRot = bg.rotation || 0;
-      const prevVisible = bg.visible;
-
-      // Remove the old graphics background
-      try { cont.remove(bg, true); } catch (_) { try { bg.destroy(); } catch (__) {} }
-
-      // Insert sprite background at index 0
-      bg = makeSpriteBg();
-      bg.setRotation(prevRot);
-      bg.setVisible(prevVisible);
-
-      cont.addAt(bg, 0);
-      cont._dirBg = bg;
-    });
-  }
-
   // Make interactive region stable
   try {
-    cont.setSize(bodyW + nose, bodyH);
+    cont.setSize(bodyW, bodyH);
     cont.setInteractive();
   } catch (_) {}
 
@@ -359,36 +323,12 @@ function createDirectionalUnitBadge(scene, x, y, ownerKey, iconText, sizePx, dep
   cont.setOwnerKey = (newOwnerKey) => {
     cont._ownerKey = newOwnerKey;
     const newFill = colorForOwner(newOwnerKey);
+    bg.clear();
 
-    // If sprite background: tint is enough.
-    if (bg && typeof bg.setTint === 'function') {
-      bg.setTint(newFill);
-      return;
-    }
+    bg.fillStyle(newFill, 1);
+    bg.lineStyle(borderW, UNIT_BORDER_COLOR, 0.9);
 
-    // If fallback graphics: redraw.
-    if (bg && typeof bg.clear === 'function') {
-      bg.clear();
-      bg.fillStyle(newFill, 1);
-      bg.lineStyle(borderW, UNIT_BORDER_COLOR, 0.9);
-
-      const rx = -Math.round(bodyW / 2);
-      const ry = -Math.round(bodyH / 2);
-      bg.fillRoundedRect(rx, ry, bodyW, bodyH, Math.round(r * 0.65));
-      bg.strokeRoundedRect(rx, ry, bodyW, bodyH, Math.round(r * 0.65));
-
-      const apexX = Math.round(bodyW / 2 + nose);
-      const baseX = Math.round(bodyW / 2 - 2);
-      const halfY = Math.round(bodyH * 0.33);
-
-      bg.beginPath();
-      bg.moveTo(apexX, 0);
-      bg.lineTo(baseX, -halfY);
-      bg.lineTo(baseX, +halfY);
-      bg.closePath();
-      bg.fillPath();
-      bg.strokePath();
-    }
+    drawDrop();
   };
 
   return { cont, bg, icon };
