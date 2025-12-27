@@ -74,12 +74,6 @@ const DEFAULT_OWNER_COLORS = {
 const NEUTRAL_GRAY = 0x9aa0a6;
 const BADGE_BORDER = 0x0b1d2a;
 
-// Sprite-based rhombus badge (replaces Graphics diamond).
-// NOTE: do NOT `import` PNG as a module; load via Phaser loader to avoid MIME errors.
-const ROMB_BADGE_KEY = "rombFrameForObjects";
-const ROMB_BADGE_URL = "src/assets/sprites/RombFrameForObjects.png";
-
-
 function getOwnedByPlayerFromTile(tile) {
   // tolerate different representations:
   // - number 0..3 for players
@@ -398,65 +392,84 @@ export function drawLocationsAndRoads() {
   /* ------------------- Badge helpers ------------------- */
   const noPOISet = getNoPOISet(map);
 
-  const makeDiamondBadge = (x, y, fillColor, px, depth) => {
-    const badge = scene.add.container(x, y).setDepth(depth);
+  
+const ROMB_KEY = "rombFrameForObjects";
 
-    // size: px is icon font-size; diamond should surround it
-    const half = Math.max(14, Math.round(px * 0.95));
-    const sizePx = half * 2;
+const ensureRombTexture = () => {
+  if (scene.textures && scene.textures.exists(ROMB_KEY)) return true;
+  if (!scene._rombFrameQueued && scene.load && typeof scene.load.image === "function") {
+    scene._rombFrameQueued = true;
+    // IMPORTANT: do NOT import PNG as a module; load by URL string to avoid MIME module errors
+    scene.load.image(ROMB_KEY, "src/assets/sprites/RombFrameForObjects.png");
+    scene.load.once("complete", () => scene.events.emit("rombFrameLoaded"));
+    if (typeof scene.load.start === "function") scene.load.start();
+  }
+  return false;
+};
 
-    const ensureRombTexture = () => {
-      if (scene.textures && scene.textures.exists(ROMB_BADGE_KEY)) return true;
-
-      // Lazy-load once per scene instance.
-      if (!scene._rombBadgeQueued && scene.load && typeof scene.load.image === "function") {
-        scene._rombBadgeQueued = true;
-
-        // Optional diagnostics
-        scene.load.once("loaderror", (file) => {
-          if (file && file.key === ROMB_BADGE_KEY) {
-            // eslint-disable-next-line no-console
-            console.warn("[MapLocations] Failed to load romb badge:", file && file.src);
+// Track all romb badges (POI + Geo) to recolor based on last player stepping on the tile.
+if (!scene._rombBadges) scene._rombBadges = [];
+if (!scene._rombBadgeUpdaterInstalled) {
+  scene._rombBadgeUpdaterInstalled = true;
+  scene.events.on("postupdate", () => {
+    const players = scene.players || [];
+    if (!players.length) return;
+    for (const u of players) {
+      if (!u || u.isDead) continue;
+      const q = u.q, r = u.r;
+      if (!Number.isFinite(q) || !Number.isFinite(r)) continue;
+      // Update any badge on this tile
+      for (const b of scene._rombBadges) {
+        if (!b || !b._tile) continue;
+        if (b._tile.q === q && b._tile.r === r) {
+          const slot = (Number.isFinite(u.playerIndex) ? u.playerIndex : u.ownedByPlayer);
+          if (slot == null) continue;
+          if (b._tile.lastSteppedBy !== slot) {
+            b._tile.lastSteppedBy = slot;
+            const tint = getOwnerColor(scene, slot);
+            if (b._bg && typeof b._bg.setTint === "function") b._bg.setTint(tint);
           }
-        });
-
-        scene.load.image(ROMB_BADGE_KEY, ROMB_BADGE_URL);
-
-        scene.load.once("complete", () => {
-          scene.events.emit("rombBadgeLoaded");
-        });
-
-        if (typeof scene.load.start === "function") scene.load.start();
+        }
       }
-
-      return false;
-    };
-
-    const addSprite = () => {
-      const img = scene.add.image(0, 0, ROMB_BADGE_KEY).setOrigin(0.5);
-      // Keep badge square and sized to prior geometry.
-      img.setDisplaySize(sizePx, sizePx);
-
-      // Preserve ownership coloring behaviour.
-      if (img && typeof img.setTint === "function") img.setTint(fillColor);
-
-      badge.add(img);
-      badge._rombBg = img;
-    };
-
-    if (ensureRombTexture()) {
-      addSprite();
-    } else {
-      // No placeholder drawing (old diamond Graphics removed). Add sprite when loaded.
-      scene.events.once("rombBadgeLoaded", () => {
-        if (!badge || !badge.scene) return;
-        if (!(scene.textures && scene.textures.exists(ROMB_BADGE_KEY))) return;
-        addSprite();
-      });
     }
+  });
+}
 
-    return badge;
-  };
+const makeDiamondBadge = (x, y, _fillColorIgnored, px, depth, tileRef) => {
+  const badge = scene.add.container(x, y).setDepth(depth);
+
+  // size: px is icon font-size; diamond surrounds it
+  const half = Math.max(14, Math.round(px * 0.95));
+  const size = half * 2;
+
+  const hasTex = ensureRombTexture();
+
+  const bg = scene.add.image(0, 0, ROMB_KEY).setOrigin(0.5);
+  // Keep square format (avoid stretching)
+  bg.setDisplaySize(size, size);
+
+  // Start neutral gray; recolor when a player steps on it
+  bg.setTint(RES_NEUTRAL_GRAY ?? 0x9aa0a6);
+
+  badge.add(bg);
+
+  // keep references for updater
+  badge._bg = bg;
+  badge._tile = tileRef;
+  scene._rombBadges.push(badge);
+
+  // If texture wasn't loaded yet, swap once loaded (keeps icon ordering intact)
+  if (!hasTex) {
+    scene.events.once("rombFrameLoaded", () => {
+      if (!badge.scene) return;
+      if (!(scene.textures && scene.textures.exists(ROMB_KEY))) return;
+      // refresh texture binding
+      bg.setTexture(ROMB_KEY);
+    });
+  }
+
+  return badge;
+};
 
   const addBadgeEmoji = (q, r, ox, oy, char, px, depth = 106, opts = null) => {
     const t = scene.mapData.find((h) => h.q === q && h.r === r);
