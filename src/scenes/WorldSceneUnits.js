@@ -8,9 +8,8 @@ import { getLobbyState } from '../net/LobbyManager.js';
 // Stage A unit stats infrastructure (pure logic + backwards compatible fields)
 import { createUnitState, applyUnitStateToPhaserUnit } from '../units/UnitFactory.js';
 import { getUnitDef } from '../units/UnitDefs.js';
+import DashFrameForUnitsUrl from '../assets/sprites/DashFrameForUnits.png';
 
-const DASH_FRAME_URL = "src/assets/sprites/DashFrameForUnits.png";
-// If your dev server does not serve files from /src, move the PNG to a public/assets folder and change the URL accordingly.
 // Basic visual / model constants
 const UNIT_Z = {
   player: 2000,
@@ -257,14 +256,34 @@ function createDirectionalUnitBadge(scene, x, y, ownerKey, iconText, sizePx, dep
 
   const makeSpriteBg = () => {
     const spr = scene.add.image(0, 0, FRAME_KEY).setOrigin(0.5);
-    // IMPORTANT:
-    // - Keep the frame square (avoid squashing)
-    // - Make it 20% smaller than the previous stretched size so it fits inside the hex nicely
-    const baseSide = Math.max(8, Math.round(Math.min(bodyW + nose, bodyH) * 0.8));
-    spr.setDisplaySize(baseSide, baseSide);
+    // Scale to match old badge footprint (body + nose).
+    spr.setDisplaySize(bodyW + nose, bodyH);
     // Tint by owner color (works best if the PNG is white/neutral with alpha).
     spr.setTint(fill);
     return spr;
+  };
+
+  const makeFallbackBg = () => {
+    // Fallback placeholder if the texture is not loaded yet.
+    const g = scene.add.graphics();
+    g.fillStyle(fill, 1);
+    g.lineStyle(borderW, UNIT_BORDER_COLOR, 0.9);
+    // Simple rounded capsule + nose triangle, same as old behavior (so game doesn't break).
+    const rx = -Math.round(bodyW / 2);
+    const ry = -Math.round(bodyH / 2);
+    g.fillRoundedRect(rx, ry, bodyW, bodyH, Math.round(r * 0.65));
+    g.strokeRoundedRect(rx, ry, bodyW, bodyH, Math.round(r * 0.65));
+    const apexX = Math.round(bodyW / 2 + nose);
+    const baseX = Math.round(bodyW / 2 - 2);
+    const halfY = Math.round(bodyH * 0.33);
+    g.beginPath();
+    g.moveTo(apexX, 0);
+    g.lineTo(baseX, -halfY);
+    g.lineTo(baseX, +halfY);
+    g.closePath();
+    g.fillPath();
+    g.strokePath();
+    return g;
   };
 
   const ensureFrameTexture = () => {
@@ -274,23 +293,14 @@ function createDirectionalUnitBadge(scene, x, y, ownerKey, iconText, sizePx, dep
     // This will only run once per scene instance.
     if (!scene._dashFrameForUnitsQueued && scene.load && typeof scene.load.image === 'function') {
       scene._dashFrameForUnitsQueued = true;
-      scene.load.image(FRAME_KEY, DASH_FRAME_URL);
+      scene.load.image(FRAME_KEY, DashFrameForUnitsUrl);
 
-// When THIS image is loaded, swap any fallback graphics to the sprite.
-scene.load.once(`filecomplete-image-${FRAME_KEY}`, () => {
-  scene.events.emit('dashFrameForUnitsLoaded');
-});
+      // When loaded, swap any fallback graphics to the sprite.
+      scene.load.once('complete', () => {
+        scene.events.emit('dashFrameForUnitsLoaded');
+      });
 
-// Helpful diagnostics if the URL is wrong:
-scene.load.once('loaderror', (file) => {
-  try {
-    if (file && file.key === FRAME_KEY) {
-      // eslint-disable-next-line no-console
-      console.error('[DashFrameForUnits] failed to load:', file.src || file.url || file);
-    }
-  } catch (_) {}
-});
-// Start loader if not already running
+      // Start loader if not already running
       if (typeof scene.load.start === 'function') scene.load.start();
     }
 
@@ -298,9 +308,7 @@ scene.load.once('loaderror', (file) => {
   };
 
   const hasTexture = ensureFrameTexture();
-  // If the texture isn't ready yet, don't draw the old triangle/square fallback.
-  // We attach an invisible placeholder and hot-swap to the sprite once loaded.
-  bg = hasTexture ? makeSpriteBg() : scene.add.rectangle(0, 0, 1, 1, 0x000000, 0).setOrigin(0.5);
+  bg = hasTexture ? makeSpriteBg() : makeFallbackBg();
 
   // Icon (does not rotate)
   const icon = scene.add.text(0, 0, iconText, {
@@ -356,6 +364,30 @@ scene.load.once('loaderror', (file) => {
     if (bg && typeof bg.setTint === 'function') {
       bg.setTint(newFill);
       return;
+    }
+
+    // If fallback graphics: redraw.
+    if (bg && typeof bg.clear === 'function') {
+      bg.clear();
+      bg.fillStyle(newFill, 1);
+      bg.lineStyle(borderW, UNIT_BORDER_COLOR, 0.9);
+
+      const rx = -Math.round(bodyW / 2);
+      const ry = -Math.round(bodyH / 2);
+      bg.fillRoundedRect(rx, ry, bodyW, bodyH, Math.round(r * 0.65));
+      bg.strokeRoundedRect(rx, ry, bodyW, bodyH, Math.round(r * 0.65));
+
+      const apexX = Math.round(bodyW / 2 + nose);
+      const baseX = Math.round(bodyW / 2 - 2);
+      const halfY = Math.round(bodyH * 0.33);
+
+      bg.beginPath();
+      bg.moveTo(apexX, 0);
+      bg.lineTo(baseX, -halfY);
+      bg.lineTo(baseX, +halfY);
+      bg.closePath();
+      bg.fillPath();
+      bg.strokePath();
     }
   };
 
