@@ -8,7 +8,6 @@ import { getLobbyState } from '../net/LobbyManager.js';
 // Stage A unit stats infrastructure (pure logic + backwards compatible fields)
 import { createUnitState, applyUnitStateToPhaserUnit } from '../units/UnitFactory.js';
 import { getUnitDef } from '../units/UnitDefs.js';
-const DASH_FRAME_URL = "assets/sprites/DashFrameForUnits.png";
 
 // Basic visual / model constants
 const UNIT_Z = {
@@ -239,62 +238,78 @@ function createDirectionalUnitBadge(scene, x, y, ownerKey, iconText, sizePx, dep
 
   const fill = colorForOwner(ownerKey);
   const s = Math.max(18, Math.round(sizePx || 28));
-  const r = Math.round(s * 0.55);       // head radius
-  const tail = Math.round(s * 0.55);    // point length
-  const borderW = 3;
 
-  const bg = scene.add.graphics();
-  bg.fillStyle(fill, 1);
-  bg.lineStyle(borderW, UNIT_BORDER_COLOR, 0.9);
+  // Sprite frame (authored as a square). We scale it up by +30% as requested.
+  const FRAME_KEY = 'dashFrameForUnits';
+  const FRAME_URL = 'src/assets/sprites/DashFrameForUnits.png';
+  const scaleMul = 1.30;
 
-  // “Drop / pin” silhouette (like your reference image), pointing RIGHT by default.
-  // We rotate bg for facing, so the point acts as a direction indicator.
-  // Implementation: circle head + smooth tapered point.
-  const cx = -Math.round(r * 0.20);           // circle center X (slightly left)
-  const cy = 0;
-  const tipX = cx + r + tail;                 // tip of the drop
-  const theta = 0.95;                         // join angle (~54°)
-  const joinX = cx + r * Math.cos(theta);
-  const joinY = r * Math.sin(theta);
+  // We keep the sprite square to avoid squishing.
+  const frameSize = Math.round(s * scaleMul);
 
-  // Bounding box (used for interaction)
-  const left = cx - r;
-  const right = tipX;
-  const top = -r;
-  const bottom = r;
-  const bodyW = Math.round(right - left);
-  const bodyH = Math.round(bottom - top);
+  // Ensure texture is queued for loading exactly once.
+  if (scene.textures && !scene.textures.exists(FRAME_KEY) && scene.load && !scene._dashFrameForUnitsQueued) {
+    scene._dashFrameForUnitsQueued = true;
 
-  // Draw drop path
-  const drawDrop = () => {
-    bg.beginPath();
-    bg.moveTo(tipX, 0);
+    // Helpful diagnostics if path is wrong.
+    if (!scene._dashFrameForUnitsLoadDiagHooked && scene.load.on) {
+      scene._dashFrameForUnitsLoadDiagHooked = true;
+      scene.load.on('loaderror', (file) => {
+        try {
+          if (file && file.key === FRAME_KEY) {
+            // eslint-disable-next-line no-console
+            console.warn('[DashFrameForUnits] loaderror', file.src || file.url || file);
+          }
+        } catch (_) {}
+      });
+    }
 
-    // Tip -> upper join (smooth)
-    bg.quadraticCurveTo(
-      tipX - Math.max(6, Math.round(tail * 0.35)),
-      -Math.max(6, Math.round(r * 0.60)),
-      joinX,
-      -joinY
-    );
+    scene.load.image(FRAME_KEY, FRAME_URL);
+    scene.load.once('complete', () => {
+      scene.events.emit('dashFrameForUnitsLoaded');
+    });
 
-    // Circle arc from -theta to +theta, going the long way around (through the left side)
-    bg.arc(cx, cy, r, -theta, Math.PI * 2 + theta, false);
+    if (typeof scene.load.start === 'function') scene.load.start();
+  }
 
-    // Lower join -> tip (smooth)
-    bg.quadraticCurveTo(
-      tipX - Math.max(6, Math.round(tail * 0.35)),
-      Math.max(6, Math.round(r * 0.60)),
-      tipX,
-      0
-    );
+  // Background (directional) — sprite, rotated for facing.
+  // If the texture isn't available yet, we show a tiny invisible placeholder and swap on load.
+  let bg = null;
 
-    bg.closePath();
-    bg.fillPath();
-    bg.strokePath();
+  const makeSpriteBg = () => {
+    const spr = scene.add.image(0, 0, FRAME_KEY).setOrigin(0.5);
+    spr.setDisplaySize(frameSize, frameSize); // keep square
+    // Tint to owner color (works best if your PNG is neutral/white with alpha).
+    if (typeof spr.setTint === 'function') spr.setTint(fill);
+    return spr;
   };
 
-  drawDrop();
+  const makePlaceholderBg = () => {
+    // Minimal placeholder (no triangle/square). Hidden by default.
+    const g = scene.add.graphics();
+    g.setVisible(false);
+    return g;
+  };
+
+  if (scene.textures && scene.textures.exists(FRAME_KEY)) {
+    bg = makeSpriteBg();
+  } else {
+    bg = makePlaceholderBg();
+    // Swap in the sprite as soon as it loads.
+    scene.events.once('dashFrameForUnitsLoaded', () => {
+      if (!cont || !cont.scene) return;
+      if (!(scene.textures && scene.textures.exists(FRAME_KEY))) return;
+
+      const prevRot = bg.rotation || 0;
+
+      try { cont.remove(bg, true); } catch (_) { try { bg.destroy(); } catch (__) {} }
+
+      bg = makeSpriteBg();
+      bg.setRotation(prevRot);
+      cont.addAt(bg, 0);
+      cont._dirBg = bg;
+    });
+  }
 
   // Icon (does not rotate)
   const icon = scene.add.text(0, 0, iconText, {
@@ -308,9 +323,9 @@ function createDirectionalUnitBadge(scene, x, y, ownerKey, iconText, sizePx, dep
   cont.add(bg);
   cont.add(icon);
 
-  // Make interactive region stable
+  // Stable interaction bounds (square to match the frame).
   try {
-    cont.setSize(bodyW, bodyH);
+    cont.setSize(frameSize, frameSize);
     cont.setInteractive();
   } catch (_) {}
 
@@ -323,17 +338,15 @@ function createDirectionalUnitBadge(scene, x, y, ownerKey, iconText, sizePx, dep
   cont.setOwnerKey = (newOwnerKey) => {
     cont._ownerKey = newOwnerKey;
     const newFill = colorForOwner(newOwnerKey);
-    bg.clear();
 
-    bg.fillStyle(newFill, 1);
-    bg.lineStyle(borderW, UNIT_BORDER_COLOR, 0.9);
-
-    drawDrop();
+    const b = cont._dirBg;
+    if (b && typeof b.setTint === 'function') {
+      b.setTint(newFill);
+    }
   };
 
   return { cont, bg, icon };
 }
-
 /**
  * Creates a mobile base unit (player "king" piece).
  *
