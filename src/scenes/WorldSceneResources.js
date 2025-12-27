@@ -14,6 +14,12 @@
 
 import { cyrb128, sfc32 } from '../engine/PRNG.js';
 
+// Sprite-based rhombus badge (replaces Graphics diamond).
+// NOTE: do NOT `import` PNG as a module; load via Phaser loader to avoid MIME errors.
+const ROMB_BADGE_KEY = 'rombFrameForObjects';
+const ROMB_BADGE_URL = 'src/assets/sprites/RombFrameForObjects.png';
+
+
 /**
  * Spawn up to 5 fish on water tiles.
  * Deterministic per world seed; uses its own PRNG stream.
@@ -392,67 +398,68 @@ function createDiamondBadge(scene, x, y, emoji, opts) {
   const badge = scene.add.container(x, y).setDepth(depth);
 
   const half = Math.max(14, Math.round(fontSizePx * 0.95));
-  const borderW = Math.max(2, Math.round(fontSizePx * 0.12));
+  const sizePx = half * 2;
   const fillColor = resolveOwnerColor(scene, ownedByPlayer);
 
-  const bg = scene.add.graphics();
+  const ensureRombTexture = () => {
+    if (scene.textures && scene.textures.exists(ROMB_BADGE_KEY)) return true;
 
-  // border
-  bg.fillStyle(RES_BADGE_BORDER, 1);
-  bg.beginPath();
-  bg.moveTo(0, -half);
-  bg.lineTo(half, 0);
-  bg.lineTo(0, half);
-  bg.lineTo(-half, 0);
-  bg.closePath();
-  bg.fillPath();
+    if (!scene._rombBadgeQueued && scene.load && typeof scene.load.image === 'function') {
+      scene._rombBadgeQueued = true;
 
-  // inner fill
-  const inner = Math.max(4, half - borderW);
-  bg.fillStyle(fillColor, 1);
-  bg.beginPath();
-  bg.moveTo(0, -inner);
-  bg.lineTo(inner, 0);
-  bg.lineTo(0, inner);
-  bg.lineTo(-inner, 0);
-  bg.closePath();
-  bg.fillPath();
+      scene.load.once('loaderror', (file) => {
+        if (file && file.key === ROMB_BADGE_KEY) {
+          console.warn('[Resources] Failed to load romb badge:', file && file.src);
+        }
+      });
+
+      scene.load.image(ROMB_BADGE_KEY, ROMB_BADGE_URL);
+      scene.load.once('complete', () => {
+        scene.events.emit('rombBadgeLoaded');
+      });
+      if (typeof scene.load.start === 'function') scene.load.start();
+    }
+
+    return false;
+  };
+
+  const addSprite = () => {
+    const bg = scene.add.image(0, 0, ROMB_BADGE_KEY).setOrigin(0.5);
+    bg.setDisplaySize(sizePx, sizePx);
+    if (typeof bg.setTint === 'function') bg.setTint(fillColor);
+    badge.add(bg);
+    badge._rombBg = bg;
+    return bg;
+  };
+
+  // background sprite (no Graphics fallback; old diamond drawing removed)
+  let bg = null;
+  if (ensureRombTexture()) {
+    bg = addSprite();
+  } else {
+    scene.events.once('rombBadgeLoaded', () => {
+      if (!badge || !badge.scene) return;
+      if (!(scene.textures && scene.textures.exists(ROMB_BADGE_KEY))) return;
+      bg = addSprite();
+    });
+  }
 
   const icon = scene.add.text(0, 0, emoji, {
     fontFamily: 'Arial',
-    fontSize: `${Math.max(12, Math.round(fontSizePx * 0.72))}px`,
+    fontSize: `${fontSizePx}px`,
     color: '#ffffff',
+    stroke: '#000000',
+    strokeThickness: 3,
   }).setOrigin(0.5);
 
-  badge.add(bg);
   badge.add(icon);
 
-  // Optional helper for later: recolor without needing to know internals.
-  // (Other files can call resource.badge?.setOwnerColor(...))
-  badge.setOwnerColor = (newOwnerId) => {
-    const c = resolveOwnerColor(scene, newOwnerId);
-    bg.clear();
-
-    // border
-    bg.fillStyle(RES_BADGE_BORDER, 1);
-    bg.beginPath();
-    bg.moveTo(0, -half);
-    bg.lineTo(half, 0);
-    bg.lineTo(0, half);
-    bg.lineTo(-half, 0);
-    bg.closePath();
-    bg.fillPath();
-
-    // inner fill
-    bg.fillStyle(c, 1);
-    bg.beginPath();
-    bg.moveTo(0, -inner);
-    bg.lineTo(inner, 0);
-    bg.lineTo(0, inner);
-    bg.lineTo(-inner, 0);
-    bg.closePath();
-    bg.fillPath();
+  // Keep compatibility: allow recolor later by setting tint
+  badge.setOwnedByPlayer = (playerIdOrSlot) => {
+    const c = resolveOwnerColor(scene, playerIdOrSlot);
+    const bgObj = badge._rombBg || bg;
+    if (bgObj && typeof bgObj.setTint === 'function') bgObj.setTint(c);
   };
 
-  return { badge, icon, bg };
+  return { badge, icon, bg: badge._rombBg || bg };
 }
