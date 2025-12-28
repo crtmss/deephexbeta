@@ -319,7 +319,7 @@ function createDirectionalUnitBadge(scene, x, y, ownerKey, iconText, sizePx, dep
     if (cont._dirBg && typeof cont._dirBg.setTint === 'function') cont._dirBg.setTint(newFill);
   };
 
-  return cont;
+  return { cont, bg, icon };
 }
 
 /**
