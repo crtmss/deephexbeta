@@ -16,6 +16,11 @@ const UNIT_Z = {
   building: 1500, // Raider Camp marker
 };
 
+
+// Badge sprite offset tuning (DashFrameForUnits.png is a right-pointing drop).
+// We shift the whole badge so the circular head is centered on the hex and the top isn't visually clipped.
+const UNIT_BADGE_OFFSET_X_RATIO = 0.14; // ~14% of frameSize
+const UNIT_BADGE_OFFSET_Y_RATIO = 0.06; // ~6% of frameSize
 // 4 player colors (slots 0..3)
 const PLAYER_COLORS = [
   0xff4b4b, // P1 - red
@@ -32,12 +37,6 @@ const AI_COLORS = [
 
 // Border + neutral
 const UNIT_BORDER_COLOR = 0x0b1d2a;
-
-// Badge sprite offset tuning:
-// The badge sprite is a right-pointing 'drop'. We offset the whole badge so the circular head
-// sits on the hex center and the top doesn't get visually clipped.
-const UNIT_BADGE_BG_OFFSET_X_RATIO = 0.14; // ~14% of badge side
-const UNIT_BADGE_BG_OFFSET_Y_RATIO = 0.06; // ~6% of badge side
 const UNIT_NEUTRAL_BG   = 0x9aa0a6;
 
 /**
@@ -240,73 +239,66 @@ function pickSpawnTiles(scene, count) {
  * - icon is Text; do not rotate
  */
 function createDirectionalUnitBadge(scene, x, y, ownerKey, iconText, sizePx, depth) {
-    // Offset badge so the circular head of the drop aligns with the hex center
-  // and the sprite isn't visually clipped at the top.
-  const _sideForOffset = Math.max(8, Math.round(Math.max(18, Math.round(sizePx || 28)) * 1.3));
-  const offX = Math.round(_sideForOffset * UNIT_BADGE_BG_OFFSET_X_RATIO);
-  const offY = Math.round(_sideForOffset * UNIT_BADGE_BG_OFFSET_Y_RATIO);
-  const cont = scene.add.container(Math.round(x + offX), Math.round(y + offY)).setDepth(depth ?? UNIT_Z.player);
-
   const fill = colorForOwner(ownerKey);
   const s = Math.max(18, Math.round(sizePx || 28));
-  const r = Math.round(s * 0.55);       // head radius
-  const tail = Math.round(s * 0.55);    // point length
-  const borderW = 3;
 
-  const bg = scene.add.graphics();
-  bg.fillStyle(fill, 1);
-  bg.lineStyle(borderW, UNIT_BORDER_COLOR, 0.9);
+  // Sprite frame (authored as a square). We scale it up by +30% as requested.
+  const FRAME_KEY = 'dashFrameForUnits';
+  const FRAME_URL = 'src/assets/sprites/DashFrameForUnits.png';
+  const scaleMul = 1.30;
 
-  // “Drop / pin” silhouette (like your reference image), pointing RIGHT by default.
-  // We rotate bg for facing, so the point acts as a direction indicator.
-  // Implementation: circle head + smooth tapered point.
-  const cx = -Math.round(r * 0.20);           // circle center X (slightly left)
-  const cy = 0;
-  const tipX = cx + r + tail;                 // tip of the drop
-  const theta = 0.95;                         // join angle (~54°)
-  const joinX = cx + r * Math.cos(theta);
-  const joinY = r * Math.sin(theta);
+  // Keep the sprite square to avoid squishing.
+  const frameSize = Math.round(s * scaleMul);
 
-  // Bounding box (used for interaction)
-  const left = cx - r;
-  const right = tipX;
-  const top = -r;
-  const bottom = r;
-  const bodyW = Math.round(right - left);
-  const bodyH = Math.round(bottom - top);
+  // Offset whole badge so the circular head is centered on the hex and the top isn't clipped.
+  const offX = Math.round(frameSize * UNIT_BADGE_OFFSET_X_RATIO);
+  const offY = Math.round(frameSize * UNIT_BADGE_OFFSET_Y_RATIO);
 
-  // Draw drop path
-  const drawDrop = () => {
-    bg.beginPath();
-    bg.moveTo(tipX, 0);
+  const cont = scene.add.container(Math.round(x + offX), Math.round(y + offY)).setDepth(depth ?? UNIT_Z.player);
 
-    // Tip -> upper join (smooth)
-    bg.quadraticCurveTo(
-      tipX - Math.max(6, Math.round(tail * 0.35)),
-      -Math.max(6, Math.round(r * 0.60)),
-      joinX,
-      -joinY
-    );
+  // Ensure texture is queued for loading exactly once.
+  if (scene.textures && !scene.textures.exists(FRAME_KEY) && scene.load && !scene._dashFrameForUnitsQueued) {
+    scene._dashFrameForUnitsQueued = true;
 
-    // Circle arc from -theta to +theta, going the long way around (through the left side)
-    bg.arc(cx, cy, r, -theta, Math.PI * 2 + theta, false);
+    // Helpful diagnostics if path is wrong.
+    if (!scene._dashFrameForUnitsLoadDiagHooked && scene.load.on) {
+      scene._dashFrameForUnitsLoadDiagHooked = true;
+      scene.load.on('loaderror', (file) => {
+        try {
+          if (file && file.key === FRAME_KEY) {
+            // eslint-disable-next-line no-console
+            console.warn('[DashFrameForUnits] loaderror', file.src || file.url || file);
+          }
+        } catch (_) {}
+      });
+    }
 
-    // Lower join -> tip (smooth)
-    bg.quadraticCurveTo(
-      tipX - Math.max(6, Math.round(tail * 0.35)),
-      Math.max(6, Math.round(r * 0.60)),
-      tipX,
-      0
-    );
+    scene.load.image(FRAME_KEY, FRAME_URL);
+    scene.load.once('complete', () => scene.events.emit('dashFrameForUnitsLoaded'));
+    if (typeof scene.load.start === 'function') scene.load.start();
+  }
 
-    bg.closePath();
-    bg.fillPath();
-    bg.strokePath();
-  };
+  // Background (direction indicator) - sprite, tinted.
+  let bg = null;
+  if (scene.textures && scene.textures.exists(FRAME_KEY)) {
+    bg = scene.add.image(0, 0, FRAME_KEY).setOrigin(0.5);
+    bg.setDisplaySize(frameSize, frameSize);
+    bg.setTint(fill);
+    cont.add(bg);
+  } else {
+    // If not loaded yet, swap-in when loaded.
+    scene.events.once('dashFrameForUnitsLoaded', () => {
+      if (!cont.scene) return;
+      if (!(scene.textures && scene.textures.exists(FRAME_KEY))) return;
+      const img = scene.add.image(0, 0, FRAME_KEY).setOrigin(0.5);
+      img.setDisplaySize(frameSize, frameSize);
+      img.setTint(colorForOwner(ownerKey));
+      cont.addAt(img, 0);
+      cont._dirBg = img;
+    });
+  }
 
-  drawDrop();
-
-  // Icon (does not rotate)
+  // Icon above background
   const icon = scene.add.text(0, 0, iconText, {
     fontFamily: 'Arial',
     fontSize: `${Math.max(12, Math.round(s * 0.55))}px`,
@@ -315,33 +307,19 @@ function createDirectionalUnitBadge(scene, x, y, ownerKey, iconText, sizePx, dep
     strokeThickness: 3,
   }).setOrigin(0.5);
 
-  cont.add(bg);
   cont.add(icon);
 
-  // Make interactive region stable
-  try {
-    cont.setSize(bodyW, bodyH);
-    cont.setInteractive();
-  } catch (_) {}
-
-  // Expose handles for orientation/color updates
   cont._dirBg = bg;
   cont._unitIcon = icon;
   cont._ownerKey = ownerKey;
 
-  // Allow recolor when ownership changes
   cont.setOwnerKey = (newOwnerKey) => {
     cont._ownerKey = newOwnerKey;
     const newFill = colorForOwner(newOwnerKey);
-    bg.clear();
-
-    bg.fillStyle(newFill, 1);
-    bg.lineStyle(borderW, UNIT_BORDER_COLOR, 0.9);
-
-    drawDrop();
+    if (cont._dirBg && typeof cont._dirBg.setTint === 'function') cont._dirBg.setTint(newFill);
   };
 
-  return { cont, bg, icon };
+  return cont;
 }
 
 /**
