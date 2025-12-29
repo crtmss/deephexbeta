@@ -376,10 +376,10 @@ export function setupUnitActionPanel(scene) {
 
   buttons.attack = makeTextButton(scene, container, colX + (btnW + btnPad) * 2, rowY + (btnH + btnPad) * 0, btnW, btnH, 'Attack', () => {
     if (!scene.selectedUnit) return;
-    scene.unitCommandMode = (scene.unitCommandMode === 'attack') ? null : 'attack';
-    if (scene.unitCommandMode === 'attack') updateCombatPreview(scene);
-    else { clearCombatPreview(scene); scene.attackableHexes = null; }
-    console.log('[UNITS] Attack mode:', scene.unitCommandMode === 'attack' ? 'ON' : 'OFF');
+    // Attack button: highlight enemies in weapon range (click-to-attack is handled in WorldSceneUI)
+    scene.selectedUnit = unit;
+    scene.unitCommandMode = 'attack';
+    updateCombatPreview(scene);
     scene.refreshUnitActionPanel?.();
   });
 
