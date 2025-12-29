@@ -7,6 +7,39 @@
 // Compatibility note:
 // In this project CombatResolver may have ONLY named exports (no default).
 // We import as namespace and read computeDamage if present.
+// ---------------------------------------------------------------------------
+// Targeting helpers (attack preview)
+// ---------------------------------------------------------------------------
+function ensureCombatPreview(scene) {
+  if (!scene.combatPreview) scene.combatPreview = {};
+  if (!scene.combatPreview.graphics) {
+    scene.combatPreview.graphics = scene.add.graphics().setDepth(9500);
+  } else {
+    scene.combatPreview.graphics.setDepth(9500);
+  }
+  return scene.combatPreview;
+}
+
+function uniqUnits(list) {
+  const out = [];
+  const seen = new Set();
+  for (const u of list) {
+    if (!u || u.isDead) continue;
+    const id = u.unitId ?? u.id ?? `${u.type}:${u.q},${u.r}`;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    out.push(u);
+  }
+  return out;
+}
+
+function getSideKey(u) {
+  if (typeof u?.playerIndex === 'number') return `p:${u.playerIndex}`;
+  if (typeof u?.ownerSlot === 'number') return `p:${u.ownerSlot}`;
+  if (u?.isEnemy) return 'enemy';
+  if (u?.isPlayer) return 'player';
+  return 'neutral';
+}
 
 import * as CombatResolver from '../units/CombatResolver.js';
 import { getWeaponDef } from '../units/WeaponDefs.js';
@@ -45,6 +78,7 @@ function hexDistance(scene, q1, r1, q2, r2) {
 }
 
 export function updateCombatPreview(scene) {
+  ensureCombatPreview(scene);
   if (!scene || scene.unitCommandMode !== 'attack') {
     clearCombatPreview(scene);
     return;
@@ -87,12 +121,43 @@ export function updateCombatPreview(scene) {
   scene.combatPreview.labels = [];
 
   
-    // Attack UX: we highlight ENEMIES in range (not every in-range tile).
-  // scene.attackableHexes contains ONLY hexes that have an enemy target.
+  // Precompute attackable hexes for click-to-attack UX
+  // (stored on scene so input handler can validate clicks)
   const attackable = new Set();
   const rangeMin = Number.isFinite(weapon.rangeMin) ? weapon.rangeMin : 1;
   const rangeMax = Number.isFinite(weapon.rangeMax) ? weapon.rangeMax : (Number.isFinite(weapon.range) ? weapon.range : 1);
 
+  // Draw generic attack range (all hexes within range)
+  const mapW = scene.mapWidth || 0;
+  const mapH = scene.mapHeight || 0;
+
+  // If map size unknown, skip tile highlight (still shows enemy target preview)
+  if (mapW > 0 && mapH > 0) {
+    for (let q = 0; q < mapW; q++) {
+      for (let r = 0; r < mapH; r++) {
+        // Only highlight existing tiles (tileAt is defined in WorldSceneMap)
+        if (typeof scene.tileAt === 'function' && !scene.tileAt(q, r)) continue;
+
+        const dist = hexDistance(scene, attacker.q, attacker.r, q, r);
+        if (!Number.isFinite(dist)) continue;
+        if (dist < rangeMin || dist > rangeMax) continue;
+
+        attackable.add(`${q},${r}`);
+
+        const pos = (typeof scene.axialToWorld === 'function')
+          ? scene.axialToWorld(q, r)
+          : { x: 0, y: 0 };
+
+        // Subtle outline for in-range hexes
+        g.lineStyle(2, 0xffd166, 0.35);
+        g.strokeCircle(pos.x, pos.y, (scene.hexSize || 22) * 0.52);
+      }
+    }
+  }
+
+    scene.attackableHexes = attackable;
+  // eslint-disable-next-line no-console
+  console.log('[ATTACK] preview targets', { weaponId, rangeMin, rangeMax, enemiesInRange });
 // Collect all possible targets from arrays to avoid missing "blue units"
   const allUnits =
     []
@@ -112,8 +177,6 @@ export function updateCombatPreview(scene) {
     const pos = (typeof scene.axialToWorld === 'function')
       ? scene.axialToWorld(target.q, target.r)
       : { x: 0, y: 0 };
-
-    attackable.add(`${target.q},${target.r}`);
 
     // Highlight target hex
     g.lineStyle(3, 0xff5555, 0.85);
@@ -137,9 +200,6 @@ export function updateCombatPreview(scene) {
 
     scene.combatPreview.labels.push(txt);
   }
-
-  scene.attackableHexes = attackable;
-
 }
 
 function damageColor(dmg) {
