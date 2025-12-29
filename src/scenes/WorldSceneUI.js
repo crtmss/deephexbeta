@@ -10,8 +10,79 @@ import { applyAttack, applyDefence } from '../units/UnitActions.js';
 
 // Stage F: attack preview
 import { updateCombatPreview, clearCombatPreview } from './WorldSceneCombatPreview.js';
+import { pixelToHex, roundHex } from './WorldSceneMap.js';
+import { validateAttack, resolveAttack } from '../units/CombatResolver.js';
+import { ensureUnitCombatFields, spendAp } from '../units/UnitActions.js';
+import { getWeaponDef } from '../units/WeaponDefs.js';
+import { applyCombatEvent } from './WorldSceneCombatRuntime.js';
 
 /* ---------------- Camera controls (unused unless called) ---------------- */
+
+function findUnitAtHex(scene, q, r) {
+  const all =
+    []
+      .concat(scene.units || [])
+      .concat(scene.players || [])
+      .concat(scene.enemies || [])
+      .concat(scene.haulers || []);
+  return all.find(u => u && !u.isDead && u.q === q && u.r === r) || null;
+}
+
+function getActiveWeapon(attacker) {
+  const weapons = attacker?.weapons || [];
+  const weaponId = weapons[attacker.activeWeaponIndex] || weapons[0] || null;
+  const weapon = weaponId ? getWeaponDef(weaponId) : null;
+  return { weaponId, weapon };
+}
+
+function tryAttackHex(scene, attacker, q, r) {
+  if (!scene || !attacker) return false;
+
+  // Must be in attack mode
+  if (scene.unitCommandMode !== 'attack') return false;
+
+  // Must be highlighted
+  const key = `${q},${r}`;
+  if (!scene.attackableHexes || !scene.attackableHexes.has(key)) return false;
+
+  // Need AP
+  ensureUnitCombatFields(attacker);
+  if ((attacker.ap || 0) <= 0) return false;
+
+  const target = findUnitAtHex(scene, q, r);
+  if (!target || target === attacker) return false;
+
+  const { weaponId, weapon } = getActiveWeapon(attacker);
+  if (!weaponId || !weapon) return false;
+
+  // Validate by resolver rules
+  const v = validateAttack(attacker, target, weaponId);
+  if (!v.ok) return false;
+
+  // Spend AP and resolve damage
+  spendAp(attacker, 1);
+  ensureUnitCombatFields(target);
+
+  const res = resolveAttack(attacker, target, weaponId);
+  const dmg = Number.isFinite(res?.damage) ? res.damage :
+              (Number.isFinite(res?.finalDamage) ? res.finalDamage : 0);
+
+  // Apply combat event (handles HP reduction + death)
+  applyCombatEvent(scene, {
+    type: 'combat:attack',
+    attackerId: attacker.id || attacker.unitId,
+    defenderId: target.id || target.unitId,
+    damage: dmg,
+    weaponId,
+  });
+
+  // Refresh preview after AP/damage
+  updateCombatPreview(scene);
+  scene.refreshUnitActionPanel?.();
+
+  return true;
+}
+
 export function setupCameraControls(scene) {
   scene.input.setDefaultCursor('grab');
   scene.isDragging = false;
@@ -27,10 +98,31 @@ export function setupCameraControls(scene) {
     }
   });
 
-  scene.input.on('pointerup', () => {
+  scene.input.on('pointerup', (pointer) => {
     if (scene.isDragging) {
       scene.isDragging = false;
       scene.input.setDefaultCursor('grab');
+      return;
+    }
+
+    // Left click: attack mode click-to-attack
+    if (scene.unitCommandMode === 'attack' && pointer && !pointer.rightButtonDown?.()) {
+      const attacker = scene.selectedUnit;
+      if (attacker) {
+        const worldX = pointer.worldX - (scene.mapOffsetX || 0);
+        const worldY = pointer.worldY - (scene.mapOffsetY || 0);
+        const frac = pixelToHex(worldX, worldY, scene.hexSize || 22);
+        const axial = roundHex(frac.q, frac.r);
+
+        const did = tryAttackHex(scene, attacker, axial.q, axial.r);
+        if (!did) {
+          // Clicked outside valid targets -> exit attack mode & clear highlights
+          scene.unitCommandMode = null;
+          clearCombatPreview(scene);
+          scene.attackableHexes = null;
+          scene.refreshUnitActionPanel?.();
+        }
+      }
     }
   });
 
