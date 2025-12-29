@@ -73,7 +73,7 @@ export function updateCombatPreview(scene) {
   }
 
   scene.combatPreview = scene.combatPreview || {
-    graphics: scene.add.graphics().setDepth(2500),
+    graphics: scene.add.graphics().setDepth(9500),
     labels: [],
   };
 
