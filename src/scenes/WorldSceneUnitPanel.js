@@ -375,13 +375,16 @@ export function setupUnitActionPanel(scene) {
   });
 
   buttons.attack = makeTextButton(scene, container, colX + (btnW + btnPad) * 2, rowY + (btnH + btnPad) * 0, btnW, btnH, 'Attack', () => {
-    if (!scene.selectedUnit) return;
-    // Attack button: highlight enemies in weapon range (click-to-attack is handled in WorldSceneUI)
-    scene.selectedUnit = unit;
+    // Attack button: highlight ENEMIES that are in weapon range for the currently selected unit.
+    const u = scene.selectedUnit;
+    if (!u) return;
+
+    // This is NOT a toggle: it always enters attack targeting mode and draws highlights.
     scene.unitCommandMode = 'attack';
     updateCombatPreview(scene);
     scene.refreshUnitActionPanel?.();
   });
+
 
   buttons.convoy = makeTextButton(scene, container, colX + (btnW + btnPad) * 0, rowY + (btnH + btnPad) * 1, btnW, btnH, 'Convoy', () => {
     console.log('[UNITS] Convoy (placeholder)');
