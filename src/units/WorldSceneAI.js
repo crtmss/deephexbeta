@@ -278,7 +278,6 @@ export async function moveEnemies(scene) {
 
   const enemies = scene.enemies || [];
   for (const enemy of enemies) {
-      ensureUnitCombatFields(enemy);
     if (!enemy || enemy.isDead) continue;
     if (enemy.controller !== 'ai' && !enemy.isEnemy) continue;
 
@@ -315,7 +314,11 @@ export async function moveEnemies(scene) {
           spendAp(enemy, 1);
           ensureUnitCombatFields(nearest);
           const res = resolveAttack(enemy, nearest, weaponId);
+          ensureUnitCombatFields(nearest);
+          spendAp(enemy, 1);
           const dmg = Number.isFinite(res?.damage) ? res.damage : (Number.isFinite(res?.finalDamage) ? res.finalDamage : 0);
+          // eslint-disable-next-line no-console
+          console.log('[AI] attack', { attacker: enemy.unitId ?? enemy.id, defender: nearest.unitId ?? nearest.id, weaponId, dist });
           applyCombatEvent(scene, {
             type: 'combat:attack',
             attackerId: enemy.unitId ?? enemy.id,
