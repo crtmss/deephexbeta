@@ -687,10 +687,7 @@ export function setupWorldInputUI(scene) {
       scene.clearPathPreview?.();
 
       if (scene.unitCommandMode === 'attack') updateCombatPreview(scene);
-      else clearCombatPreview(scene);
-
-      console.log('[UNITS] Attack mode:', scene.unitCommandMode === 'attack' ? 'ON' : 'OFF');
-      return;
+      else clearCombatPreview(scene);      return;
     }
 
     if (key === 'd') {
