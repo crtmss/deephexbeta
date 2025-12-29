@@ -365,7 +365,7 @@ function createMobileBase(scene, spawnTile, player, _color, playerIndex) {
     ownerId: unit.playerId,
     ownerSlot: playerIndex,
     controller: 'player',
-    faction: `player${(opts.ownerSlot ?? 0)}`,
+    faction: `player${(typeof playerIndex === 'number' ? playerIndex : 0)}`,
     q: spawnTile.q,
     r: spawnTile.r,
     facing: 0,
