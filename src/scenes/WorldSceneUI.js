@@ -15,6 +15,15 @@ import { validateAttack, resolveAttack } from '../units/CombatResolver.js';
 import { ensureUnitCombatFields, spendAp } from '../units/UnitActions.js';
 import { getWeaponDef } from '../units/WeaponDefs.js';
 import { applyCombatEvent } from './WorldSceneCombatRuntime.js';
+import { AttackController } from '../combat/AttackController.js';
+
+
+function ensureAttackController(scene) {
+  if (!scene.attackController) {
+    scene.attackController = new AttackController(scene);
+  }
+  return scene.attackController;
+}
 
 /* ---------------- Camera controls (unused unless called) ---------------- */
 
@@ -114,8 +123,11 @@ export function setupCameraControls(scene) {
         const frac = pixelToHex(worldX, worldY, scene.hexSize || 22);
         const axial = roundHex(frac.q, frac.r);
 
-        const did = tryAttackHex(scene, attacker, axial.q, axial.r);
-        if (!did) {
+        const ac = ensureAttackController(scene);
+        const handled = ac.isActive() ? ac.tryAttackHex(axial.q, axial.r) : tryAttackHex(scene, attacker, axial.q, axial.r);
+        if (!handled) {
+          ac.exit();
+
           // Clicked outside valid targets -> exit attack mode & clear highlights
           scene.unitCommandMode = null;
           clearCombatPreview(scene);
