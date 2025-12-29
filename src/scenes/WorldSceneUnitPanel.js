@@ -18,6 +18,7 @@
 import { applyDefence } from '../units/UnitActions.js';
 import { updateCombatPreview, clearCombatPreview } from './WorldSceneCombatPreview.js';
 import { getWeaponDef } from '../units/WeaponDefs.js';
+import { AttackController } from '../combat/AttackController.js';
 
 const PANEL_DEPTH = 4200;
 
