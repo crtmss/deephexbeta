@@ -278,6 +278,7 @@ export async function moveEnemies(scene) {
 
   const enemies = scene.enemies || [];
   for (const enemy of enemies) {
+      ensureUnitCombatFields(enemy);
     if (!enemy || enemy.isDead) continue;
     if (enemy.controller !== 'ai' && !enemy.isEnemy) continue;
 
