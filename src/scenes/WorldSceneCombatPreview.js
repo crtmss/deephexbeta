@@ -41,6 +41,35 @@ function getSideKey(u) {
   return 'neutral';
 }
 
+function getFaction(u) {
+  return String(u?.faction ?? u?.ownerId ?? u?.ownerSlot ?? (u?.isEnemy ? 'raiders' : 'neutral'));
+}
+
+// Compute a hex outline ring (flat-top) in *iso* space, matching WorldSceneMap.drawHex.
+function hexIsoRing(scene, xIso, yIso, size) {
+  const ISO_SHEAR = scene.ISO_SHEAR ?? 0.5;
+  const ISO_YSCALE = scene.ISO_YSCALE ?? 0.866;
+
+  const isoOffset = (x, y) => ({ x: x - y * ISO_SHEAR, y: y * ISO_YSCALE });
+
+  const w = size * Math.sqrt(3) / 2;
+  const h = size / 2;
+  const d = [
+    { dx: 0,  dy: -size },
+    { dx: +w, dy: -h    },
+    { dx: +w, dy: +h    },
+    { dx: 0,  dy: +size },
+    { dx: -w, dy: +h    },
+    { dx: -w, dy: -h    },
+  ];
+  return d.map(({dx,dy}) => {
+    const off = isoOffset(dx, dy);
+    return { x: xIso + off.x, y: yIso + off.y };
+  });
+}
+
+
+
 import * as CombatResolver from '../units/CombatResolver.js';
 import { getWeaponDef } from '../units/WeaponDefs.js';
 
@@ -178,9 +207,14 @@ export function updateCombatPreview(scene) {
       ? scene.axialToWorld(target.q, target.r)
       : { x: 0, y: 0 };
 
-    // Highlight target hex
-    g.lineStyle(3, 0xff5555, 0.85);
-    g.strokeCircle(pos.x, pos.y, (scene.hexSize || 22) * 0.55);
+    // Highlight target hex (outline, so unit badge doesn't hide it)
+    const ring = hexIsoRing(scene, pos.x, pos.y, size);
+    g.lineStyle(3, 0xffd166, 1);
+    g.beginPath();
+    g.moveTo(ring[0].x, ring[0].y);
+    for (let i = 1; i < 6; i++) g.lineTo(ring[i].x, ring[i].y);
+    g.closePath();
+    g.strokePath();
 
     // Damage label
     const dmgValue =
