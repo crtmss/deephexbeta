@@ -2,6 +2,7 @@
 import { findPath as aStarFindPath } from '../engine/AStar.js';
 import { validateAttack, resolveAttack } from './CombatResolver.js';
 import { ensureUnitCombatFields, spendAp } from './UnitActions.js';
+import { applyCombatEvent } from '../scenes/WorldSceneCombatRuntime.js';
 
 import { getTile } from '../scenes/WorldSceneWorldMeta.js';
 import { spawnEnemyRaiderAt } from '../scenes/WorldSceneUnits.js';
@@ -312,7 +313,15 @@ export async function moveEnemies(scene) {
         if (v.ok) {
           spendAp(enemy, 1);
           ensureUnitCombatFields(nearest);
-          resolveAttack(enemy, nearest, weaponId);
+          const res = resolveAttack(enemy, nearest, weaponId);
+          const dmg = Number.isFinite(res?.damage) ? res.damage : (Number.isFinite(res?.finalDamage) ? res.finalDamage : 0);
+          applyCombatEvent(scene, {
+            type: 'combat:attack',
+            attackerId: enemy.id || enemy.unitId,
+            defenderId: nearest.id || nearest.unitId,
+            damage: dmg,
+            weaponId,
+          });
           continue;
         }
       }
