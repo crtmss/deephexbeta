@@ -365,12 +365,14 @@ function createMobileBase(scene, spawnTile, player, _color, playerIndex) {
     ownerId: unit.playerId,
     ownerSlot: playerIndex,
     controller: 'player',
+    faction: `player${(opts.ownerSlot ?? 0)}`,
     q: spawnTile.q,
     r: spawnTile.r,
     facing: 0,
   });
   unit.unitName = def.name;
   applyUnitStateToPhaserUnit(unit, st);
+  unit.faction = st.faction;
 
   unit.facingAngle = 0;
 
@@ -432,12 +434,14 @@ function createRaider(scene, q, r, opts = {}) {
     ownerId: unit.playerId,
     ownerSlot: unit.playerIndex,
     controller: controller,
+    faction: (controller === 'ai') ? 'raiders' : `player${opts.ownerSlot ?? 0}` ,
     q,
     r,
     facing: 0,
   });
   unit.unitName = def.name;
   applyUnitStateToPhaserUnit(unit, st);
+  unit.faction = st.faction;
 
   unit.facingAngle = 0;
 
@@ -541,6 +545,7 @@ function createTransporter(scene, q, r, owner) {
   });
   unit.unitName = def.name;
   applyUnitStateToPhaserUnit(unit, st);
+  unit.faction = st.faction;
 
   return unit;
 }
