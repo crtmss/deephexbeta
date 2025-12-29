@@ -317,8 +317,8 @@ export async function moveEnemies(scene) {
           const dmg = Number.isFinite(res?.damage) ? res.damage : (Number.isFinite(res?.finalDamage) ? res.finalDamage : 0);
           applyCombatEvent(scene, {
             type: 'combat:attack',
-            attackerId: enemy.id || enemy.unitId,
-            defenderId: nearest.id || nearest.unitId,
+            attackerId: enemy.unitId ?? enemy.id,
+            defenderId: nearest.unitId ?? nearest.id,
             damage: dmg,
             weaponId,
           });
