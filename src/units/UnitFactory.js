@@ -57,6 +57,7 @@ export function createUnitState(opts) {
     ownerId: opts.ownerId ?? null,
     ownerSlot: opts.ownerSlot ?? null,
     controller: opts.controller || 'player',
+    faction: opts.faction ?? (opts.controller === 'ai' ? 'raiders' : `player${opts.ownerSlot ?? 0}`),
     q: opts.q,
     r: opts.r,
     facing: Number.isFinite(opts.facing) ? opts.facing : 0,
@@ -94,6 +95,9 @@ export function applyUnitStateToPhaserUnit(phaserUnit, state) {
   phaserUnit.ownerId = state.ownerId;
   phaserUnit.ownerSlot = state.ownerSlot;
   phaserUnit.controller = state.controller;
+  phaserUnit.faction = state.faction;
+  // Mirror id for systems that look at `unit.id`
+  if (!phaserUnit.id) phaserUnit.id = state.id;
   phaserUnit.facing = state.facing;
 
   phaserUnit.hp = state.hp;
