@@ -16,6 +16,7 @@
 //  - Turn: opens direction picker (free)
 
 import { applyDefence } from '../units/UnitActions.js';
+import { updateCombatPreview, clearCombatPreview } from './WorldSceneCombatPreview.js';
 import { getWeaponDef } from '../units/WeaponDefs.js';
 
 const PANEL_DEPTH = 4200;
@@ -375,6 +376,8 @@ export function setupUnitActionPanel(scene) {
   buttons.attack = makeTextButton(scene, container, colX + (btnW + btnPad) * 2, rowY + (btnH + btnPad) * 0, btnW, btnH, 'Attack', () => {
     if (!scene.selectedUnit) return;
     scene.unitCommandMode = (scene.unitCommandMode === 'attack') ? null : 'attack';
+    if (scene.unitCommandMode === 'attack') updateCombatPreview(scene);
+    else { clearCombatPreview(scene); scene.attackableHexes = null; }
     console.log('[UNITS] Attack mode:', scene.unitCommandMode === 'attack' ? 'ON' : 'OFF');
     scene.refreshUnitActionPanel?.();
   });
