@@ -15,6 +15,52 @@
 //  - Convoy/Hide: no-op placeholders
 //  - Turn: opens direction picker (free)
 
+// -----------------------------------------------------------------------------
+// Attack debug helpers
+// -----------------------------------------------------------------------------
+function hexDistanceAxial(q1, r1, q2, r2) {
+  const dq = q2 - q1;
+  const dr = r2 - r1;
+  const ds = -dq - dr;
+  return (Math.abs(dq) + Math.abs(dr) + Math.abs(ds)) / 2;
+}
+
+function getActiveWeaponId(unit) {
+  const weapons = unit?.weapons || [];
+  if (!weapons.length) return null;
+  const idx = Number.isFinite(unit.activeWeaponIndex) ? unit.activeWeaponIndex : 0;
+  return weapons[idx] || weapons[0] || null;
+}
+
+function getWeaponRange(weapon) {
+  const rangeMin = Number.isFinite(weapon?.rangeMin) ? weapon.rangeMin : 1;
+  const rangeMax = Number.isFinite(weapon?.rangeMax)
+    ? weapon.rangeMax
+    : (Number.isFinite(weapon?.range) ? weapon.range : 1);
+  return { rangeMin, rangeMax };
+}
+
+function countEnemiesInRange(scene, attacker, rangeMin, rangeMax) {
+  const all = []
+    .concat(scene.units || [])
+    .concat(scene.players || [])
+    .concat(scene.enemies || [])
+    .concat(scene.haulers || []);
+  let n = 0;
+  for (const u of all) {
+    if (!u || u.isDead) continue;
+    if (u === attacker) continue;
+
+    // Enemy check (player vs enemy or different owner)
+    if (attacker.isEnemy && u.isEnemy) continue;
+    if (attacker.isPlayer && u.isPlayer) continue;
+
+    const d = hexDistanceAxial(attacker.q, attacker.r, u.q, u.r);
+    if (d >= rangeMin && d <= rangeMax) n++;
+  }
+  return n;
+}
+
 import { applyDefence } from '../units/UnitActions.js';
 import { updateCombatPreview, clearCombatPreview } from './WorldSceneCombatPreview.js';
 import { getWeaponDef } from '../units/WeaponDefs.js';
@@ -375,11 +421,28 @@ export function setupUnitActionPanel(scene) {
   });
 
   buttons.attack = makeTextButton(scene, container, colX + (btnW + btnPad) * 2, rowY + (btnH + btnPad) * 0, btnW, btnH, 'Attack', () => {
-    // Attack button: highlight ENEMIES that are in weapon range for the currently selected unit.
     const u = scene.selectedUnit;
-    if (!u) return;
+    if (!u) {
+      console.warn('[ATTACK] Clicked Attack but no selectedUnit');
+      return;
+    }
 
-    // This is NOT a toggle: it always enters attack targeting mode and draws highlights.
+    const wid = getActiveWeaponId(u);
+    const wdef = wid ? getWeaponDef(wid) : null;
+    const { rangeMin, rangeMax } = getWeaponRange(wdef);
+    const enemiesInRange = countEnemiesInRange(scene, u, rangeMin, rangeMax);
+
+    console.log('[ATTACK] button pressed', {
+      unitId: u.unitId ?? u.id,
+      unitType: u.type,
+      ap: u.ap,
+      weaponId: wid,
+      rangeMin,
+      rangeMax,
+      enemiesInRange,
+    });
+
+    // Enter targeting mode and draw highlights
     scene.unitCommandMode = 'attack';
     updateCombatPreview(scene);
     scene.refreshUnitActionPanel?.();
@@ -419,6 +482,22 @@ export function setupUnitActionPanel(scene) {
     if (!u || ws.length <= 1) return;
     const idx = Number.isFinite(u.activeWeaponIndex) ? u.activeWeaponIndex : 0;
     u.activeWeaponIndex = (idx + 1) % ws.length;
+
+    const wid = getActiveWeaponId(u);
+    const wdef = wid ? getWeaponDef(wid) : null;
+    const { rangeMin, rangeMax } = getWeaponRange(wdef);
+    const enemiesInRange = countEnemiesInRange(scene, u, rangeMin, rangeMax);
+    console.log('[ATTACK] weapon switched', {
+      unitId: u.unitId ?? u.id,
+      weaponId: wid,
+      rangeMin,
+      rangeMax,
+      enemiesInRange,
+    });
+
+    if (scene.unitCommandMode === 'attack') {
+      updateCombatPreview(scene);
+    }
     scene.refreshUnitActionPanel?.();
   });
 
