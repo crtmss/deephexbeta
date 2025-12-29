@@ -86,7 +86,44 @@ export function updateCombatPreview(scene) {
   });
   scene.combatPreview.labels = [];
 
-  // Collect all possible targets from arrays to avoid missing "blue units"
+  
+  // Precompute attackable hexes for click-to-attack UX
+  // (stored on scene so input handler can validate clicks)
+  const attackable = new Set();
+  const rangeMin = Number.isFinite(weapon.rangeMin) ? weapon.rangeMin : 1;
+  const rangeMax = Number.isFinite(weapon.rangeMax) ? weapon.rangeMax : (Number.isFinite(weapon.range) ? weapon.range : 1);
+
+  // Draw generic attack range (all hexes within range)
+  const mapW = scene.mapWidth || 0;
+  const mapH = scene.mapHeight || 0;
+
+  // If map size unknown, skip tile highlight (still shows enemy target preview)
+  if (mapW > 0 && mapH > 0) {
+    for (let q = 0; q < mapW; q++) {
+      for (let r = 0; r < mapH; r++) {
+        // Only highlight existing tiles (tileAt is defined in WorldSceneMap)
+        if (typeof scene.tileAt === 'function' && !scene.tileAt(q, r)) continue;
+
+        const dist = hexDistance(scene, attacker.q, attacker.r, q, r);
+        if (!Number.isFinite(dist)) continue;
+        if (dist < rangeMin || dist > rangeMax) continue;
+
+        attackable.add(`${q},${r}`);
+
+        const pos = (typeof scene.axialToWorld === 'function')
+          ? scene.axialToWorld(q, r)
+          : { x: 0, y: 0 };
+
+        // Subtle outline for in-range hexes
+        g.lineStyle(2, 0xffd166, 0.35);
+        g.strokeCircle(pos.x, pos.y, (scene.hexSize || 22) * 0.52);
+      }
+    }
+  }
+
+  scene.attackableHexes = attackable;
+
+// Collect all possible targets from arrays to avoid missing "blue units"
   const allUnits =
     []
       .concat(scene.units || [])
