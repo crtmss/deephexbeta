@@ -706,7 +706,8 @@ export function setupUnitActionPanel(scene) {
 
     // Title
     const nm = unit.unitName || unit.type || 'Unit';
-    panel.titleText.setText(nm);
+    const fac = unit.faction || 'neutral';
+    panel.titleText.setText(`${nm} [${fac}]`);
 
     // Stats
     const hp = Number.isFinite(unit.hp) ? unit.hp : 0;
