@@ -20,6 +20,30 @@ function ensureCombatPreview(scene) {
   return scene.combatPreview;
 }
 
+// ---------------------------------------------------------------------------
+// __COMBAT_DEBUG__ (auto-instrumentation)
+// Toggle in devtools: window.__COMBAT_DEBUG_ENABLED__ = true/false
+// ---------------------------------------------------------------------------
+const __DBG_ENABLED__ = () => (typeof window !== 'undefined' ? (window.__COMBAT_DEBUG_ENABLED__ ?? true) : true);
+function __dbg_ts() {
+  try { return new Date().toISOString().slice(11, 23); } catch (_) { return ''; }
+}
+function __dbg(tag, data) {
+  if (!__DBG_ENABLED__()) return;
+  try { console.log('[' + tag + '] ' + __dbg_ts(), data); } catch (_) {}
+}
+function __dbg_group(tag, title, data) {
+  if (!__DBG_ENABLED__()) return;
+  try {
+    console.groupCollapsed('[' + tag + '] ' + __dbg_ts() + ' ' + title);
+    if (data !== undefined) console.log(data);
+  } catch (_) {}
+}
+function __dbg_group_end() {
+  if (!__DBG_ENABLED__()) return;
+  try { console.groupEnd(); } catch (_) {}
+}
+
 function uniqUnits(list) {
   const out = [];
   const seen = new Set();
@@ -107,6 +131,7 @@ function hexDistance(scene, q1, r1, q2, r2) {
 }
 
 export function updateCombatPreview(scene) {
+  __dbg_group('PLAYER:Preview', 'start', { mode: scene.unitCommandMode, selected: { id: scene.selectedUnit?.unitId ?? scene.selectedUnit?.id, q: scene.selectedUnit?.q, r: scene.selectedUnit?.r, ap: scene.selectedUnit?.ap, weapons: scene.selectedUnit?.weapons, activeWeaponIndex: scene.selectedUnit?.activeWeaponIndex } });
   ensureCombatPreview(scene);
   if (!scene || scene.unitCommandMode !== 'attack') {
     clearCombatPreview(scene);
@@ -153,6 +178,8 @@ export function updateCombatPreview(scene) {
   // Precompute attackable hexes for click-to-attack UX
   // (stored on scene so input handler can validate clicks)
   const attackable = new Set();
+  let __dbgTargetCount = 0;
+  const __dbgTargetMax = 50;
   const rangeMin = Number.isFinite(weapon.rangeMin) ? weapon.rangeMin : 1;
   const rangeMax = Number.isFinite(weapon.rangeMax) ? weapon.rangeMax : (Number.isFinite(weapon.range) ? weapon.range : 1);
 
@@ -185,6 +212,8 @@ export function updateCombatPreview(scene) {
   }
 
     scene.attackableHexes = attackable;
+  __dbg('PLAYER:Preview:summary', { attackableCount: attackable.size, keys: Array.from(attackable).slice(0, 50) });
+  __dbg_group_end();
   // eslint-disable-next-line no-console
   console.log('[ATTACK] preview targets', { weaponId, rangeMin, rangeMax, enemiesInRange });
 // Collect all possible targets from arrays to avoid missing "blue units"
