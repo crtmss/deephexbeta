@@ -13,6 +13,30 @@
 //  - This file contains ONLY rule logic (no Phaser, no rendering)
 //  - Damage calculation will later be delegated to CombatResolver.js
 
+// ---------------------------------------------------------------------------
+// __COMBAT_DEBUG__ (auto-instrumentation)
+// Toggle in devtools: window.__COMBAT_DEBUG_ENABLED__ = true/false
+// ---------------------------------------------------------------------------
+const __DBG_ENABLED__ = () => (typeof window !== 'undefined' ? (window.__COMBAT_DEBUG_ENABLED__ ?? true) : true);
+function __dbg_ts() {
+  try { return new Date().toISOString().slice(11, 23); } catch (_) { return ''; }
+}
+function __dbg(tag, data) {
+  if (!__DBG_ENABLED__()) return;
+  try { console.log('[' + tag + '] ' + __dbg_ts(), data); } catch (_) {}
+}
+function __dbg_group(tag, title, data) {
+  if (!__DBG_ENABLED__()) return;
+  try {
+    console.groupCollapsed('[' + tag + '] ' + __dbg_ts() + ' ' + title);
+    if (data !== undefined) console.log(data);
+  } catch (_) {}
+}
+function __dbg_group_end() {
+  if (!__DBG_ENABLED__()) return;
+  try { console.groupEnd(); } catch (_) {}
+}
+
 import { getWeaponDef } from './WeaponDefs.js';
 
 /* =========================================================
@@ -20,6 +44,7 @@ import { getWeaponDef } from './WeaponDefs.js';
    ========================================================= */
 
 export function ensureUnitCombatFields(unit) {
+  __dbg('COMBAT:ensureFields:before', { id: unit?.unitId ?? unit?.id, type: unit?.type, hp: unit?.hp, maxHp: unit?.maxHp, ap: unit?.ap, maxAp: unit?.maxAp, faction: unit?.faction });
   if (!unit) return;
 
   // HP
@@ -48,6 +73,8 @@ export function ensureUnitCombatFields(unit) {
 
   // Status flags
   unit.status = unit.status || {};
+
+  __dbg('COMBAT:ensureFields:after', { id: unit?.unitId ?? unit?.id, hp: unit?.hp, maxHp: unit?.maxHp, ap: unit?.ap, maxAp: unit?.maxAp, faction: unit?.faction });
 }
 
 /* =========================================================
@@ -60,6 +87,7 @@ export function canSpendAp(unit, n = 1) {
 }
 
 export function spendAp(unit, n = 1) {
+  __dbg('COMBAT:spendAp:before', { id: unit?.unitId ?? unit?.id, ap: unit?.ap, cost });
   ensureUnitCombatFields(unit);
   if ((unit.ap || 0) < n) return false;
   unit.ap -= n;
