@@ -5,6 +5,30 @@
 //
 // This is called on ALL clients (host included)
 
+// ---------------------------------------------------------------------------
+// __COMBAT_DEBUG__ (auto-instrumentation)
+// Toggle in devtools: window.__COMBAT_DEBUG_ENABLED__ = true/false
+// ---------------------------------------------------------------------------
+const __DBG_ENABLED__ = () => (typeof window !== 'undefined' ? (window.__COMBAT_DEBUG_ENABLED__ ?? true) : true);
+function __dbg_ts() {
+  try { return new Date().toISOString().slice(11, 23); } catch (_) { return ''; }
+}
+function __dbg(tag, data) {
+  if (!__DBG_ENABLED__()) return;
+  try { console.log('[' + tag + '] ' + __dbg_ts(), data); } catch (_) {}
+}
+function __dbg_group(tag, title, data) {
+  if (!__DBG_ENABLED__()) return;
+  try {
+    console.groupCollapsed('[' + tag + '] ' + __dbg_ts() + ' ' + title);
+    if (data !== undefined) console.log(data);
+  } catch (_) {}
+}
+function __dbg_group_end() {
+  if (!__DBG_ENABLED__()) return;
+  try { console.groupEnd(); } catch (_) {}
+}
+
 // IMPORTANT:
 // In your project you said you DON'T have WorldSceneCombatFX.js.
 // Static import would crash the module graph.
@@ -48,6 +72,7 @@ async function spawnDeathFXSafe(scene, unit) {
 }
 
 export function applyCombatEvent(scene, event) {
+  __dbg_group('COMBAT:event', 'apply', { evt });
   if (!scene || !event) return;
   if (event.type !== 'combat:attack') return;
 
@@ -124,6 +149,8 @@ export function applyCombatEvent(scene, event) {
       scene.refreshUnitActionPanel?.();
     }
   } catch (e) {}
+
+  __dbg_group_end();
 }
 
 /* ========================================================= */
