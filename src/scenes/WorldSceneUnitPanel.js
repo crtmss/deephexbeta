@@ -15,6 +15,30 @@
 //  - Convoy/Hide: no-op placeholders
 //  - Turn: opens direction picker (free)
 
+// ---------------------------------------------------------------------------
+// __COMBAT_DEBUG__ (auto-instrumentation)
+// Toggle in devtools: window.__COMBAT_DEBUG_ENABLED__ = true/false
+// ---------------------------------------------------------------------------
+const __DBG_ENABLED__ = () => (typeof window !== 'undefined' ? (window.__COMBAT_DEBUG_ENABLED__ ?? true) : true);
+function __dbg_ts() {
+  try { return new Date().toISOString().slice(11, 23); } catch (_) { return ''; }
+}
+function __dbg(tag, data) {
+  if (!__DBG_ENABLED__()) return;
+  try { console.log('[' + tag + '] ' + __dbg_ts(), data); } catch (_) {}
+}
+function __dbg_group(tag, title, data) {
+  if (!__DBG_ENABLED__()) return;
+  try {
+    console.groupCollapsed('[' + tag + '] ' + __dbg_ts() + ' ' + title);
+    if (data !== undefined) console.log(data);
+  } catch (_) {}
+}
+function __dbg_group_end() {
+  if (!__DBG_ENABLED__()) return;
+  try { console.groupEnd(); } catch (_) {}
+}
+
 // -----------------------------------------------------------------------------
 // Attack debug helpers
 // -----------------------------------------------------------------------------
@@ -421,6 +445,8 @@ export function setupUnitActionPanel(scene) {
   });
 
   buttons.attack = makeTextButton(scene, container, colX + (btnW + btnPad) * 2, rowY + (btnH + btnPad) * 0, btnW, btnH, 'Attack', () => {
+    __dbg_group('PLAYER:AttackBtn', 'pressed', { selectedUnit: { id: scene.selectedUnit?.unitId ?? scene.selectedUnit?.id, type: scene.selectedUnit?.type, q: scene.selectedUnit?.q, r: scene.selectedUnit?.r, ap: scene.selectedUnit?.ap, faction: scene.selectedUnit?.faction, weapons: scene.selectedUnit?.weapons, activeWeaponIndex: scene.selectedUnit?.activeWeaponIndex } });
+
     const u = scene.selectedUnit;
     if (!u) {
       console.warn('[ATTACK] Clicked Attack but no selectedUnit');
@@ -446,7 +472,9 @@ export function setupUnitActionPanel(scene) {
     scene.unitCommandMode = 'attack';
     updateCombatPreview(scene);
     scene.refreshUnitActionPanel?.();
-  });
+  
+    __dbg_group_end();
+});
 
 
   buttons.convoy = makeTextButton(scene, container, colX + (btnW + btnPad) * 0, rowY + (btnH + btnPad) * 1, btnW, btnH, 'Convoy', () => {
@@ -482,6 +510,7 @@ export function setupUnitActionPanel(scene) {
     if (!u || ws.length <= 1) return;
     const idx = Number.isFinite(u.activeWeaponIndex) ? u.activeWeaponIndex : 0;
     u.activeWeaponIndex = (idx + 1) % ws.length;
+    __dbg('PLAYER:WeaponSwitch', { unitId: u?.unitId ?? u?.id, activeWeaponIndex: u.activeWeaponIndex, weaponId: (u.weapons||[])[u.activeWeaponIndex] });
 
     const wid = getActiveWeaponId(u);
     const wdef = wid ? getWeaponDef(wid) : null;
