@@ -4,6 +4,30 @@ import { validateAttack, resolveAttack } from './CombatResolver.js';
 import { ensureUnitCombatFields, spendAp } from './UnitActions.js';
 import { applyCombatEvent } from '../scenes/WorldSceneCombatRuntime.js';
 
+// ---------------------------------------------------------------------------
+// __COMBAT_DEBUG__ (auto-instrumentation)
+// Toggle in devtools: window.__COMBAT_DEBUG_ENABLED__ = true/false
+// ---------------------------------------------------------------------------
+const __DBG_ENABLED__ = () => (typeof window !== 'undefined' ? (window.__COMBAT_DEBUG_ENABLED__ ?? true) : true);
+function __dbg_ts() {
+  try { return new Date().toISOString().slice(11, 23); } catch (_) { return ''; }
+}
+function __dbg(tag, data) {
+  if (!__DBG_ENABLED__()) return;
+  try { console.log('[' + tag + '] ' + __dbg_ts(), data); } catch (_) {}
+}
+function __dbg_group(tag, title, data) {
+  if (!__DBG_ENABLED__()) return;
+  try {
+    console.groupCollapsed('[' + tag + '] ' + __dbg_ts() + ' ' + title);
+    if (data !== undefined) console.log(data);
+  } catch (_) {}
+}
+function __dbg_group_end() {
+  if (!__DBG_ENABLED__()) return;
+  try { console.groupEnd(); } catch (_) {}
+}
+
 import { getTile } from '../scenes/WorldSceneWorldMeta.js';
 import { spawnEnemyRaiderAt } from '../scenes/WorldSceneUnits.js';
 
@@ -60,6 +84,8 @@ function moveAlongPath(scene, unit, path) {
 }
 
 export function computePathWithAStar(unit, targetHex, mapData, blockedPred, debugTag = null) {
+  __dbg('AI:tick', { fn: 'computePathWithAStar', enemies: (scene.enemies||[]).length, players: (scene.players||[]).length, units: (scene.units||[]).length });
+
   const start = { q: unit.q, r: unit.r };
   const goal = { q: targetHex.q, r: targetHex.r };
 
@@ -278,6 +304,8 @@ export async function moveEnemies(scene) {
 
   const enemies = scene.enemies || [];
   for (const enemy of enemies) {
+      __dbg_group('AI:enemy', 'start', { id: enemy?.unitId ?? enemy?.id, type: enemy?.type, q: enemy?.q, r: enemy?.r, ap: enemy?.ap, faction: enemy?.faction, weapons: enemy?.weapons, activeWeaponIndex: enemy?.activeWeaponIndex });
+
     if (!enemy || enemy.isDead) continue;
     if (enemy.controller !== 'ai' && !enemy.isEnemy) continue;
 
@@ -309,6 +337,7 @@ export async function moveEnemies(scene) {
       const weapons = enemy.weapons || [];
       const weaponId = weapons[enemy.activeWeaponIndex] || weapons[0] || null;
       if (weaponId && (enemy.ap || 0) > 0) {
+        __dbg('AI:attack:attempt', { enemy: enemy?.unitId ?? enemy?.id, target: nearest?.unitId ?? nearest?.id, weaponId, enemyAp: enemy?.ap, enemyQ: enemy?.q, enemyR: enemy?.r, targetQ: nearest?.q, targetR: nearest?.r, targetHp: nearest?.hp });
         const v = validateAttack(enemy, nearest, weaponId);
         if (v.ok) {
           spendAp(enemy, 1);
@@ -319,7 +348,8 @@ export async function moveEnemies(scene) {
           const dmg = Number.isFinite(res?.damage) ? res.damage : (Number.isFinite(res?.finalDamage) ? res.finalDamage : 0);
           // eslint-disable-next-line no-console
           console.log('[AI] attack', { attacker: enemy.unitId ?? enemy.id, defender: nearest.unitId ?? nearest.id, weaponId, dist });
-          applyCombatEvent(scene, {
+          __dbg('AI:attack:applyEvent', { attackerId: enemy?.unitId ?? enemy?.id, defenderId: nearest?.unitId ?? nearest?.id, weaponId, damage: dmg });
+        applyCombatEvent(scene, {
             type: 'combat:attack',
             attackerId: enemy.unitId ?? enemy.id,
             defenderId: nearest.unitId ?? nearest.id,
@@ -551,7 +581,9 @@ export async function moveEnemies(scene) {
       if (Number.isFinite(enemy.movementPoints)) enemy.movementPoints = mp;
       await moveAlongPath(scene, enemy, path.slice(0, lastIndex + 1));
     }
-  }
+  
+      __dbg_group_end();
+}
 
   // If camp target disappeared (dead), clear it so raiders return
   if (camp && camp.alertTargetId && !getCampTargetUnit(scene, camp)) {
