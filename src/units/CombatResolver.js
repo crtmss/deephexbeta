@@ -13,24 +13,13 @@
 // Toggle in devtools: window.__COMBAT_DEBUG_ENABLED__ = true/false
 // ---------------------------------------------------------------------------
 const __DBG_ENABLED__ = () => (typeof window !== 'undefined' ? (window.__COMBAT_DEBUG_ENABLED__ ?? true) : true);
-function __dbg_ts() {
-  try { return new Date().toISOString().slice(11, 23); } catch (_) { return ''; }
-}
-function __dbg(tag, data) {
-  if (!__DBG_ENABLED__()) return;
-  try { console.log('[' + tag + '] ' + __dbg_ts(), data); } catch (_) {}
-}
+function __dbg_ts() { try { return new Date().toISOString().slice(11, 23); } catch (_) { return ''; } }
+function __dbg(tag, data) { if (!__DBG_ENABLED__()) return; try { console.log('[' + tag + '] ' + __dbg_ts(), data); } catch (_) {} }
 function __dbg_group(tag, title, data) {
   if (!__DBG_ENABLED__()) return;
-  try {
-    console.groupCollapsed('[' + tag + '] ' + __dbg_ts() + ' ' + title);
-    if (data !== undefined) console.log(data);
-  } catch (_) {}
+  try { console.groupCollapsed('[' + tag + '] ' + __dbg_ts() + ' ' + title); if (data !== undefined) console.log(data); } catch (_) {}
 }
-function __dbg_group_end() {
-  if (!__DBG_ENABLED__()) return;
-  try { console.groupEnd(); } catch (_) {}
-}
+function __dbg_group_end() { if (!__DBG_ENABLED__()) return; try { console.groupEnd(); } catch (_) {} }
 
 import { armorPointsMultiplier, ARMOR_CLASSES } from './ArmorDefs.js';
 import { getWeaponDef } from './WeaponDefs.js';
@@ -62,7 +51,7 @@ function hexDistance(q1, r1, q2, r2) {
  * @returns {CombatResult}
  */
 export function resolveAttack(attacker, defender, weaponId) {
-  __dbg_group('COMBAT:resolve', 'start', { attacker: { id: attacker?.unitId ?? attacker?.id, ap: attacker?.ap }, defender: { id: defender?.unitId ?? defender?.id, hp: defender?.hp }, weaponId });
+  __dbg_group('COMBAT:resolve', 'start', { attacker: { id: attacker?.unitId ?? attacker?.id, q: attacker?.q, r: attacker?.r }, defender: { id: defender?.unitId ?? defender?.id, q: defender?.q, r: defender?.r, hp: defender?.hp }, weaponId });
   const w = getWeaponDef(weaponId);
 
   const dist = hexDistance(attacker.q, attacker.r, defender.q, defender.r);
@@ -89,8 +78,7 @@ export function resolveAttack(attacker, defender, weaponId) {
   const raw = baseDamage * armorClassMult * distanceMult * armorPointsMult;
   const finalDamage = Math.max(0, Math.round(raw));
 
-  __dbg_group_end();
-  __dbg('COMBAT:resolve:computed', { damage, hit, crit, finalDamage });
+  __dbg('COMBAT:resolve:computed', { dist, baseDamage, armorClassMult, distanceMult, armorPointsMult, finalDamage, weaponId: w?.id });
   __dbg_group_end();
   return {
     distance: dist,
@@ -112,17 +100,13 @@ export function resolveAttack(attacker, defender, weaponId) {
  * @returns {{ok: boolean, reason?: string, distance?: number}}
  */
 export function validateAttack(attacker, defender, weaponId) {
-  __dbg_group('COMBAT:validate', 'start', { attacker: { id: attacker?.unitId ?? attacker?.id, type: attacker?.type, q: attacker?.q, r: attacker?.r, ap: attacker?.ap, faction: attacker?.faction }, defender: { id: defender?.unitId ?? defender?.id, type: defender?.type, q: defender?.q, r: defender?.r, hp: defender?.hp, faction: defender?.faction }, weaponId });
+  __dbg_group('COMBAT:validate', 'start', { attacker: { id: attacker?.unitId ?? attacker?.id, q: attacker?.q, r: attacker?.r, ap: attacker?.ap, faction: attacker?.faction, weapons: attacker?.weapons, activeWeaponIndex: attacker?.activeWeaponIndex }, defender: { id: defender?.unitId ?? defender?.id, q: defender?.q, r: defender?.r, hp: defender?.hp, faction: defender?.faction }, weaponId });
   const w = getWeaponDef(weaponId);
   const dist = hexDistance(attacker.q, attacker.r, defender.q, defender.r);
 
-  if (!Number.isFinite(dist)) __dbg_group_end();
-  return { ok: false, reason: 'bad_distance' };
-  if (dist < w.rangeMin) __dbg_group_end();
-  return { ok: false, reason: 'too_close', distance: dist };
-  if (dist > w.rangeMax) __dbg_group_end();
-  return { ok: false, reason: 'out_of_range', distance: dist };
+  if (!Number.isFinite(dist)) return { ok: false, reason: 'bad_distance' };
+  if (dist < w.rangeMin) return { ok: false, reason: 'too_close', distance: dist };
+  if (dist > w.rangeMax) return { ok: false, reason: 'out_of_range', distance: dist };
 
-  __dbg_group_end();
   return { ok: true, distance: dist };
 }
