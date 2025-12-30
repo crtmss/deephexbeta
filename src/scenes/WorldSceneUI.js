@@ -1,5 +1,29 @@
 // src/scenes/WorldSceneUI.js
 
+// ---------------------------------------------------------------------------
+// __COMBAT_DEBUG__ (auto-instrumentation)
+// Toggle in devtools: window.__COMBAT_DEBUG_ENABLED__ = true/false
+// ---------------------------------------------------------------------------
+const __DBG_ENABLED__ = () => (typeof window !== 'undefined' ? (window.__COMBAT_DEBUG_ENABLED__ ?? true) : true);
+function __dbg_ts() {
+  try { return new Date().toISOString().slice(11, 23); } catch (_) { return ''; }
+}
+function __dbg(tag, data) {
+  if (!__DBG_ENABLED__()) return;
+  try { console.log('[' + tag + '] ' + __dbg_ts(), data); } catch (_) {}
+}
+function __dbg_group(tag, title, data) {
+  if (!__DBG_ENABLED__()) return;
+  try {
+    console.groupCollapsed('[' + tag + '] ' + __dbg_ts() + ' ' + title);
+    if (data !== undefined) console.log(data);
+  } catch (_) {}
+}
+function __dbg_group_end() {
+  if (!__DBG_ENABLED__()) return;
+  try { console.groupEnd(); } catch (_) {}
+}
+
 import { refreshUnits } from './WorldSceneActions.js';
 import { findPath as aStarFindPath } from '../engine/AStar.js';
 import { setupLogisticsPanel } from './WorldSceneLogistics.js';
@@ -45,28 +69,38 @@ function getActiveWeapon(attacker) {
 }
 
 function tryAttackHex(scene, attacker, q, r) {
-  if (!scene || !attacker) return false;
+  __dbg_group('PLAYER:tryAttack', `q=${q},r=${r}`, { attacker: { id: attacker?.unitId ?? attacker?.id, q: attacker?.q, r: attacker?.r, ap: attacker?.ap, faction: attacker?.faction, weapons: attacker?.weapons, activeWeaponIndex: attacker?.activeWeaponIndex }, clicked: { q, r }, attackableHas: scene.attackableHexes?.has?.(`${q},${r}`) });
+
+  if (!scene || !attacker) __dbg_group_end();
+  return false;
 
   // Must be in attack mode
-  if (scene.unitCommandMode !== 'attack') return false;
+  if (scene.unitCommandMode !== 'attack') __dbg_group_end();
+  return false;
 
   // Must be highlighted
   const key = `${q},${r}`;
-  if (!scene.attackableHexes || !scene.attackableHexes.has(key)) return false;
+  if (!scene.attackableHexes || !scene.attackableHexes.has(key)) __dbg_group_end();
+  return false;
 
   // Need AP
   ensureUnitCombatFields(attacker);
-  if ((attacker.ap || 0) <= 0) return false;
+  if ((attacker.ap || 0) <= 0) __dbg_group_end();
+  return false;
 
   const target = findUnitAtHex(scene, q, r);
-  if (!target || target === attacker) return false;
+    __dbg('PLAYER:tryAttack:target', { found: !!target, id: target?.unitId ?? target?.id, type: target?.type, q: target?.q, r: target?.r, hp: target?.hp, faction: target?.faction });
+  if (!target || target === attacker) __dbg_group_end();
+  return false;
 
   const { weaponId, weapon } = getActiveWeapon(attacker);
-  if (!weaponId || !weapon) return false;
+  if (!weaponId || !weapon) __dbg_group_end();
+  return false;
 
   // Validate by resolver rules
   const v = validateAttack(attacker, target, weaponId);
-  if (!v.ok) return false;
+  if (!v.ok) __dbg_group_end();
+  return false;
 
   // Spend AP and resolve damage
   spendAp(attacker, 1);
@@ -89,6 +123,7 @@ function tryAttackHex(scene, attacker, q, r) {
   updateCombatPreview(scene);
   scene.refreshUnitActionPanel?.();
 
+  __dbg_group_end();
   return true;
 }
 
@@ -122,6 +157,7 @@ export function setupCameraControls(scene) {
         const worldY = pointer.worldY - (scene.mapOffsetY || 0);
         const frac = pixelToHex(worldX, worldY, scene.hexSize || 22);
         const axial = roundHex(frac.q, frac.r);
+      __dbg('PLAYER:Click', { worldX, worldY, frac, axial, mode: scene.unitCommandMode, attackableCount: scene.attackableHexes?.size, isAttackable: scene.attackableHexes?.has?.(`${axial.q},${axial.r}`) });
 
         const ac = ensureAttackController(scene);
         const handled = ac.isActive() ? ac.tryAttackHex(axial.q, axial.r) : tryAttackHex(scene, attacker, axial.q, axial.r);
@@ -324,7 +360,8 @@ function computePathWithAStar(scene, unit, targetHex, blockedPred) {
   }
 
   const isBlocked = tile => {
-    if (!tile) return true;
+    if (!tile) __dbg_group_end();
+  return true;
     return blockedPred ? blockedPred(tile) : false;
   };
 
@@ -345,14 +382,19 @@ function isEnemy(u) {
  *   если у них есть mp/mpMax или movementPoints.
  */
 function isControllable(u) {
-  if (!u) return false;
-  if (u.isEnemy || u.controller === 'ai') return false;
+  if (!u) __dbg_group_end();
+  return false;
+  if (u.isEnemy || u.controller === 'ai') __dbg_group_end();
+  return false;
 
-  if (u.isPlayer) return true;
+  if (u.isPlayer) __dbg_group_end();
+  return true;
 
   // fallback: если объект имеет MP-поля, считаем его управляемым
-  if (Number.isFinite(u.mpMax) || Number.isFinite(u.mp) || Number.isFinite(u.movementPoints)) return true;
+  if (Number.isFinite(u.mpMax) || Number.isFinite(u.mp) || Number.isFinite(u.movementPoints)) __dbg_group_end();
+  return true;
 
+  __dbg_group_end();
   return false;
 }
 
@@ -401,7 +443,8 @@ function hexDistance(q1, r1, q2, r2) {
  * Otherwise fallback to local applyAttack (singleplayer/dev).
  */
 function trySendAttackIntent(scene, attacker, defender) {
-  if (!scene || !attacker || !defender) return false;
+  if (!scene || !attacker || !defender) __dbg_group_end();
+  return false;
 
   const weapons = attacker.weapons || [];
   const weaponId = weapons[attacker.activeWeaponIndex] || weapons[0] || null;
@@ -436,14 +479,17 @@ function trySendAttackIntent(scene, attacker, defender) {
 
   if (typeof scene.sendCombatIntent === 'function') {
     scene.sendCombatIntent(intent);
-    return true;
+    __dbg_group_end();
+  return true;
   }
 
   if (scene.isHost && typeof scene.handleCombatIntent === 'function') {
     scene.handleCombatIntent(intent);
-    return true;
+    __dbg_group_end();
+  return true;
   }
 
+  __dbg_group_end();
   return false;
 }
 
@@ -631,9 +677,11 @@ export function setupWorldInputUI(scene) {
   // Prevent world input while hovering over history panel
   // (panel is on screen space, pointer world coords still update).
   const isPointerOverHistoryPanel = (pointer) => {
-    if (!scene.isHistoryPanelOpen) return false;
+    if (!scene.isHistoryPanelOpen) __dbg_group_end();
+  return false;
     const p = scene.historyPanelContainer;
-    if (!p || !p.visible) return false;
+    if (!p || !p.visible) __dbg_group_end();
+  return false;
 
     const px = pointer.x;
     const py = pointer.y;
@@ -823,11 +871,15 @@ export function setupWorldInputUI(scene) {
       }
 
       const blocked = t => {
-        if (!t) return true;
-        if (t.type === 'water' || t.type === 'mountain') return true;
+        if (!t) __dbg_group_end();
+  return true;
+        if (t.type === 'water' || t.type === 'mountain') __dbg_group_end();
+  return true;
         const occ = getUnitAtHex(scene, t.q, t.r);
-        if (occ && occ !== scene.selectedUnit) return true;
-        return false;
+        if (occ && occ !== scene.selectedUnit) __dbg_group_end();
+  return true;
+        __dbg_group_end();
+  return false;
       };
 
       const fullPath = computePathWithAStar(scene, scene.selectedUnit, rounded, blocked);
@@ -925,11 +977,15 @@ export function setupWorldInputUI(scene) {
     }
 
     const blocked = t => {
-      if (!t) return true;
-      if (t.type === 'water' || t.type === 'mountain') return true;
+      if (!t) __dbg_group_end();
+  return true;
+      if (t.type === 'water' || t.type === 'mountain') __dbg_group_end();
+  return true;
       const occ = getUnitAtHex(scene, t.q, t.r);
-      if (occ && occ !== scene.selectedUnit) return true;
-      return false;
+      if (occ && occ !== scene.selectedUnit) __dbg_group_end();
+  return true;
+      __dbg_group_end();
+  return false;
     };
 
     const fullPath = computePathWithAStar(scene, scene.selectedUnit, rounded, blocked);
