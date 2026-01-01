@@ -74,7 +74,7 @@ export function canSpendAp(unit, n = 1) {
 }
 
 export function spendAp(unit, n = 1) {
-  __dbg('COMBAT:spendAp', { id: unit?.unitId ?? unit?.id, ap: unit?.ap, cost });
+  __dbg('COMBAT:spendAp', { id: unit?.unitId ?? unit?.id, ap: unit?.ap, n });
   ensureUnitCombatFields(unit);
   if ((unit.ap || 0) < n) return false;
   unit.ap -= n;
