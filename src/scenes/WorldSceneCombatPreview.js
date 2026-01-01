@@ -120,7 +120,12 @@ function hexDistance(scene, q1, r1, q2, r2) {
 }
 
 export function updateCombatPreview(scene) {
-  __dbg('PLAYER:Preview:start', { mode: scene.unitCommandMode, selected: { id: scene.selectedUnit?.unitId ?? scene.selectedUnit?.id, q: scene.selectedUnit?.q, r: scene.selectedUnit?.r, ap: scene.selectedUnit?.ap, weapons: scene.selectedUnit?.weapons, activeWeaponIndex: scene.selectedUnit?.activeWeaponIndex } });
+  // Debug: throttle preview logs (updateCombatPreview can run very frequently)
+  const __sel = scene.selectedUnit;
+  const __wid = (__sel?.weapons && __sel.weapons.length) ? (__sel.weapons[Number.isFinite(__sel.activeWeaponIndex) ? __sel.activeWeaponIndex : 0] ?? __sel.weapons[0]) : null;
+  const __cache = (scene.__combatDbgPreviewCache ||= { last: null });
+  const __sig = JSON.stringify({ mode: scene.unitCommandMode, id: __sel?.unitId ?? __sel?.id, q: __sel?.q, r: __sel?.r, ap: __sel?.ap, wid: __wid });
+  if (__cache.last !== __sig) { __cache.last = __sig; __dbg('PLAYER:Preview', { mode: scene.unitCommandMode, id: __sel?.unitId ?? __sel?.id, q: __sel?.q, r: __sel?.r, ap: __sel?.ap, weaponId: __wid }); }
   ensureCombatPreview(scene);
   if (!scene || scene.unitCommandMode !== 'attack') {
     clearCombatPreview(scene);
@@ -199,7 +204,9 @@ export function updateCombatPreview(scene) {
   }
 
     scene.attackableHexes = attackable;
-  __dbg('PLAYER:Preview:summary', { attackableCount: attackable.size, keys: Array.from(attackable).slice(0, 50) });
+  const __sumSig = JSON.stringify({ cnt: attackable.size, keys: Array.from(attackable).slice(0, 20) });
+  const __cache2 = (scene.__combatDbgPreviewCache ||= { last: null, lastSum: null });
+  if (__cache2.lastSum !== __sumSig) { __cache2.lastSum = __sumSig; __dbg('PLAYER:Preview:summary', { attackableCount: attackable.size, keys: Array.from(attackable).slice(0, 50) }); }
   // eslint-disable-next-line no-console
   console.log('[ATTACK] preview targets', { weaponId, rangeMin, rangeMax, enemiesInRange });
 // Collect all possible targets from arrays to avoid missing "blue units"
