@@ -47,7 +47,6 @@ function hexDistance(q1, r1, q2, r2) {
  * @returns {CombatResult}
  */
 export function resolveAttack(attacker, defender, weaponId) {
-  try {
   const w = getWeaponDef(weaponId);
   if (!w) { __t('COMBAT_RESOLVE_ERR', { weaponId, reason:'bad_weapon' }); return { distance: NaN, finalDamage: 0, weaponId }; }
   if (!w) { __t('COMBAT_VALIDATE', { ok:false, reason:'bad_weapon', weaponId }); return { ok:false, reason:'bad_weapon' }; }
