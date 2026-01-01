@@ -3,19 +3,15 @@ import { findPath as aStarFindPath } from '../engine/AStar.js';
 import { validateAttack, resolveAttack } from './CombatResolver.js';
 import { ensureUnitCombatFields, spendAp } from './UnitActions.js';
 import { applyCombatEvent } from '../scenes/WorldSceneCombatRuntime.js';
-
 // ---------------------------------------------------------------------------
-// __COMBAT_DEBUG__ (auto-instrumentation)
-// Toggle in devtools: window.__COMBAT_DEBUG_ENABLED__ = true/false
+// __COMBAT_TRACE__ (compact logs)
+// Enable/disable in DevTools: window.__COMBAT_TRACE__ = true/false
 // ---------------------------------------------------------------------------
-const __DBG_ENABLED__ = () => (typeof window !== 'undefined' ? (window.__COMBAT_DEBUG_ENABLED__ ?? true) : true);
-function __dbg_ts() { try { return new Date().toISOString().slice(11, 23); } catch (_) { return ''; } }
-function __dbg(tag, data) { if (!__DBG_ENABLED__()) return; try { console.log('[' + tag + '] ' + __dbg_ts(), data); } catch (_) {} }
-function __dbg_group(tag, title, data) {
-  if (!__DBG_ENABLED__()) return;
-  try { console.groupCollapsed('[' + tag + '] ' + __dbg_ts() + ' ' + title); if (data !== undefined) console.log(data); } catch (_) {}
+const __TRACE_ON__ = () => (typeof window !== 'undefined' ? (window.__COMBAT_TRACE__ ?? true) : true);
+function __t(tag, data) {
+  if (!__TRACE_ON__()) return;
+  try { console.log(`[$AI]`, data); } catch (_) {}
 }
-function __dbg_group_end() { if (!__DBG_ENABLED__()) return; try { console.groupEnd(); } catch (_) {} }
 
 import { getTile } from '../scenes/WorldSceneWorldMeta.js';
 import { spawnEnemyRaiderAt } from '../scenes/WorldSceneUnits.js';
@@ -322,7 +318,7 @@ export async function moveEnemies(scene) {
       const weapons = enemy.weapons || [];
       const weaponId = weapons[enemy.activeWeaponIndex] || weapons[0] || null;
       if (weaponId && (enemy.ap || 0) > 0) {
-        __dbg('AI:attack:attempt', { enemy: enemy?.unitId ?? enemy?.id, eq: enemy?.q, er: enemy?.r, ap: enemy?.ap, target: nearest?.unitId ?? nearest?.id, tq: nearest?.q, tr: nearest?.r, thp: nearest?.hp, weaponId });
+        __t('AI_ATTACK', { step:'attempt', eid: enemy.id || enemy.unitId, eq: enemy.q, er: enemy.r, ap: enemy.ap, tid: nearest?.id || nearest?.unitId, tq: nearest?.q, tr: nearest?.r, thp: nearest?.hp, weaponId });
       const v = validateAttack(enemy, nearest, weaponId);
         if (v.ok) {
           spendAp(enemy, 1);
@@ -333,7 +329,9 @@ export async function moveEnemies(scene) {
           const dmg = Number.isFinite(res?.damage) ? res.damage : (Number.isFinite(res?.finalDamage) ? res.finalDamage : 0);
           // eslint-disable-next-line no-console
           console.log('[AI] attack', { attacker: enemy.unitId ?? enemy.id, defender: nearest.unitId ?? nearest.id, weaponId, dist });
-          applyCombatEvent(scene, {
+          const hpBefore = nearest.hp;
+        __t('AI_ATTACK', { step:'apply_event', eid: enemy.id || enemy.unitId, tid: nearest.id || nearest.unitId, weaponId, dmg, hpBefore });
+        applyCombatEvent(scene, {
             type: 'combat:attack',
             attackerId: enemy.unitId ?? enemy.id,
             defenderId: nearest.unitId ?? nearest.id,
