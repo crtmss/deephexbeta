@@ -1,17 +1,13 @@
 // src/scenes/WorldSceneUI.js
-
 // ---------------------------------------------------------------------------
-// __COMBAT_DEBUG__ (auto-instrumentation)
-// Toggle in devtools: window.__COMBAT_DEBUG_ENABLED__ = true/false
+// __COMBAT_TRACE__ (compact logs)
+// Enable/disable in DevTools: window.__COMBAT_TRACE__ = true/false
 // ---------------------------------------------------------------------------
-const __DBG_ENABLED__ = () => (typeof window !== 'undefined' ? (window.__COMBAT_DEBUG_ENABLED__ ?? true) : true);
-function __dbg_ts() { try { return new Date().toISOString().slice(11, 23); } catch (_) { return ''; } }
-function __dbg(tag, data) { if (!__DBG_ENABLED__()) return; try { console.log('[' + tag + '] ' + __dbg_ts(), data); } catch (_) {} }
-function __dbg_group(tag, title, data) {
-  if (!__DBG_ENABLED__()) return;
-  try { console.groupCollapsed('[' + tag + '] ' + __dbg_ts() + ' ' + title); if (data !== undefined) console.log(data); } catch (_) {}
+const __TRACE_ON__ = () => (typeof window !== 'undefined' ? (window.__COMBAT_TRACE__ ?? true) : true);
+function __t(tag, data) {
+  if (!__TRACE_ON__()) return;
+  try { console.log(`[$PLAYER]`, data); } catch (_) {}
 }
-function __dbg_group_end() { if (!__DBG_ENABLED__()) return; try { console.groupEnd(); } catch (_) {} }
 
 import { refreshUnits } from './WorldSceneActions.js';
 import { findPath as aStarFindPath } from '../engine/AStar.js';
@@ -58,31 +54,30 @@ function getActiveWeapon(attacker) {
 }
 
 function tryAttackHex(scene, attacker, q, r) {
-  __dbg('PLAYER:tryAttack:start', { clicked: { q, r }, attacker: { id: attacker?.unitId ?? attacker?.id, q: attacker?.q, r: attacker?.r, ap: attacker?.ap, weapons: attacker?.weapons, activeWeaponIndex: attacker?.activeWeaponIndex } });
-
-  if (!scene || !attacker) return false;
+  const aid = attacker?.id || attacker?.unitId;
+  const trace = (step, extra) => __t('PLAYER_ATTACK', { step, aid, q, r, mode: scene?.unitCommandMode, ...extra });
+  if (!scene || !attacker) { trace('fail:no_scene_or_attacker'); return false; }
 
   // Must be in attack mode
-  if (scene.unitCommandMode !== 'attack') return false;
+  if (scene.unitCommandMode !== 'attack') { trace('fail:not_in_attack_mode'); return false; }
 
   // Must be highlighted
   const key = `${q},${r}`;
-  if (!scene.attackableHexes || !scene.attackableHexes.has(key)) return false;
+  if (!scene.attackableHexes || !scene.attackableHexes.has(key)) { trace('fail:not_highlighted', { hasAttackable: !!scene.attackableHexes, size: scene.attackableHexes?.size }); return false; }
 
   // Need AP
   ensureUnitCombatFields(attacker);
-  if ((attacker.ap || 0) <= 0) return false;
+  if ((attacker.ap || 0) <= 0) { trace('fail:no_ap', { ap: attacker.ap }); return false; }
 
   const target = findUnitAtHex(scene, q, r);
-    __dbg('PLAYER:tryAttack:target', { found: !!target, id: target?.unitId ?? target?.id, q: target?.q, r: target?.r, hp: target?.hp, faction: target?.faction });
-  if (!target || target === attacker) return false;
+  if (!target || target === attacker) { trace('fail:no_target', { targetFound: !!target }); return false; }
 
   const { weaponId, weapon } = getActiveWeapon(attacker);
-  if (!weaponId || !weapon) return false;
+  if (!weaponId || !weapon) { trace('fail:no_weapon', { weaponId }); return false; }
 
   // Validate by resolver rules
   const v = validateAttack(attacker, target, weaponId);
-  if (!v.ok) return false;
+  if (!v.ok) { trace('fail:validate', { reason: v.reason, distance: v.distance, weaponId }); return false; }
 
   // Spend AP and resolve damage
   spendAp(attacker, 1);
@@ -93,6 +88,8 @@ function tryAttackHex(scene, attacker, q, r) {
               (Number.isFinite(res?.finalDamage) ? res.finalDamage : 0);
 
   // Apply combat event (handles HP reduction + death)
+  const hpBefore = target.hp;
+  __t('PLAYER_ATTACK', { step: 'apply_event', aid, tid: (target.id || target.unitId), weaponId, dmg, hpBefore });
   applyCombatEvent(scene, {
     type: 'combat:attack',
     attackerId: attacker.id || attacker.unitId,
@@ -102,6 +99,7 @@ function tryAttackHex(scene, attacker, q, r) {
   });
 
   // Refresh preview after AP/damage
+  __t('PLAYER_ATTACK', { step: 'after_event', tid: (target.id || target.unitId), hpAfter: target.hp });
   updateCombatPreview(scene);
   scene.refreshUnitActionPanel?.();
 
@@ -138,7 +136,6 @@ export function setupCameraControls(scene) {
         const worldY = pointer.worldY - (scene.mapOffsetY || 0);
         const frac = pixelToHex(worldX, worldY, scene.hexSize || 22);
         const axial = roundHex(frac.q, frac.r);
-      __dbg('PLAYER:Click', { worldX, worldY, frac, axial, mode: scene.unitCommandMode, attackableCount: scene.attackableHexes?.size, isAttackable: scene.attackableHexes?.has?.(`${axial.q},${axial.r}`) });
 
         const ac = ensureAttackController(scene);
         const handled = ac.isActive() ? ac.tryAttackHex(axial.q, axial.r) : tryAttackHex(scene, attacker, axial.q, axial.r);
@@ -703,7 +700,8 @@ export function setupWorldInputUI(scene) {
       scene.unitCommandMode = (scene.unitCommandMode === 'attack') ? null : 'attack';
       scene.clearPathPreview?.();
 
-      if (scene.unitCommandMode === 'attack') updateCombatPreview(scene);
+      if (scene.unitCommandMode === 'attack') __t('PLAYER_ATTACK', { step: 'after_event', tid: (target.id || target.unitId), hpAfter: target.hp });
+  updateCombatPreview(scene);
       else clearCombatPreview(scene);      return;
     }
 
@@ -912,7 +910,8 @@ export function setupWorldInputUI(scene) {
 
     if (scene.unitCommandMode === 'attack') {
       scene.clearPathPreview?.();
-      updateCombatPreview(scene);
+      __t('PLAYER_ATTACK', { step: 'after_event', tid: (target.id || target.unitId), hpAfter: target.hp });
+  updateCombatPreview(scene);
       return;
     } else {
       clearCombatPreview(scene);
