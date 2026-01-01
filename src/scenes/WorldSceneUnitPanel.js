@@ -446,17 +446,6 @@ export function setupUnitActionPanel(scene) {
     const wdef = wid ? getWeaponDef(wid) : null;
     const { rangeMin, rangeMax } = getWeaponRange(wdef);
     const enemiesInRange = countEnemiesInRange(scene, u, rangeMin, rangeMax);
-
-    console.log('[ATTACK] button pressed', {
-      unitId: u.unitId ?? u.id,
-      unitType: u.type,
-      ap: u.ap,
-      weaponId: wid,
-      rangeMin,
-      rangeMax,
-      enemiesInRange,
-    });
-
     // Enter targeting mode and draw highlights
     scene.unitCommandMode = 'attack';
     updateCombatPreview(scene);
@@ -503,14 +492,6 @@ export function setupUnitActionPanel(scene) {
     const wdef = wid ? getWeaponDef(wid) : null;
     const { rangeMin, rangeMax } = getWeaponRange(wdef);
     const enemiesInRange = countEnemiesInRange(scene, u, rangeMin, rangeMax);
-    console.log('[ATTACK] weapon switched', {
-      unitId: u.unitId ?? u.id,
-      weaponId: wid,
-      rangeMin,
-      rangeMax,
-      enemiesInRange,
-    });
-
     if (scene.unitCommandMode === 'attack') {
       updateCombatPreview(scene);
     }
