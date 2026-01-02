@@ -27,6 +27,14 @@ function __dbg_group(tag, title, data) {
 function __dbg_group_end() { if (!__DBG_ENABLED__()) return; try { console.groupEnd(); } catch (_) {} }
 
 import { getWeaponDef } from './WeaponDefs.js';
+import { validateAttack, resolveAttack } from './CombatResolver.js';
+
+function axialDistance(q1, r1, q2, r2) {
+  const dq = q2 - q1;
+  const dr = r2 - r1;
+  const ds = -dq - dr;
+  return (Math.abs(dq) + Math.abs(dr) + Math.abs(ds)) / 2;
+}
 
 /* =========================================================
    Core normalization
@@ -113,11 +121,7 @@ export function applyDefence(unit) {
   };
 }
 
-/* =========================================================
-   Attack action (NEW — REQUIRED BY WorldSceneUI)
-   ========================================================= */
-
-export function applyAttack(attacker, target, opts = {}) {
+/* ===export function applyAttack(attacker, target, opts = {}) {
   ensureUnitCombatFields(attacker);
   ensureUnitCombatFields(target);
 
@@ -126,43 +130,90 @@ export function applyAttack(attacker, target, opts = {}) {
     return { ok: false, reason: 'invalid_target' };
   }
 
+  // AP gate
   if (!canSpendAp(attacker, 1)) {
     return { ok: false, reason: 'no_ap' };
   }
 
   // Select weapon
   const weapons = attacker.weapons || [];
-  const idx = Number.isFinite(attacker.activeWeaponIndex)
-    ? attacker.activeWeaponIndex
-    : 0;
-
+  const idx = Number.isFinite(attacker.activeWeaponIndex) ? attacker.activeWeaponIndex : 0;
   const weaponId = weapons[idx] || weapons[0];
   if (!weaponId) {
     return { ok: false, reason: 'no_weapon' };
   }
 
   const weapon = getWeaponDef(weaponId);
+  if (!weapon) {
+    return { ok: false, reason: 'bad_weapon' };
+  }
 
-  // Distance check (hex distance must be provided by caller)
-  const dist = Number.isFinite(opts.distance) ? opts.distance : null;
-  if (dist != null) {
-    if (dist < weapon.rangeMin || dist > weapon.rangeMax) {
-      return { ok: false, reason: 'out_of_range' };
+  // Distance (caller may provide, else compute axial)
+  const dist =
+    Number.isFinite(opts.distance)
+      ? opts.distance
+      : ((Number.isFinite(attacker.q) && Number.isFinite(attacker.r) && Number.isFinite(target.q) && Number.isFinite(target.r))
+          ? axialDistance(attacker.q, attacker.r, target.q, target.r)
+          : NaN);
+
+  // Validate range via CombatResolver rules when available (falls back to simple range checks)
+  try {
+    const v = validateAttack(attacker, target, weaponId);
+    if (!v?.ok) return { ok: false, reason: v?.reason || 'invalid_attack', distance: v?.distance ?? dist };
+  } catch (_) {
+    // Fallback: simple range check
+    if (Number.isFinite(dist)) {
+      const rmin = Number.isFinite(weapon.rangeMin) ? weapon.rangeMin : 1;
+      const rmax = Number.isFinite(weapon.rangeMax) ? weapon.rangeMax : rmin;
+      if (dist < rmin) return { ok: false, reason: 'too_close', distance: dist };
+      if (dist > rmax) return { ok: false, reason: 'out_of_range', distance: dist };
     }
   }
 
-  // Spend AP (damage resolution later)
+  // Spend AP (authoritative)
   spendAp(attacker, 1);
 
-  attacker.status.attackedThisTurn = true;
+  // Compute damage
+  let dmg = 0;
+  let result = null;
+  try {
+    result = resolveAttack(attacker, target, weaponId);
+    dmg = Number.isFinite(result?.damage) ? result.damage : (Number.isFinite(result?.finalDamage) ? result.finalDamage : 0);
+  } catch (_) {
+    // Fallback: baseDamage only
+    dmg = Number.isFinite(weapon.baseDamage) ? weapon.baseDamage : 0;
+  }
+  if (!Number.isFinite(dmg)) dmg = 0;
 
-  // NOTE:
-  // Actual damage calculation will be done in CombatResolver.js
-  // For now we only return an intent object.
+  const hpBefore = Number.isFinite(target.hp) ? target.hp : 0;
+  target.hp = Math.max(0, hpBefore - dmg);
+
+  const killed = target.hp <= 0;
+
+  const attackerId = attacker.id ?? attacker.unitId ?? attacker.uuid ?? attacker.netId ?? `${attacker.unitName || attacker.name}@${attacker.q},${attacker.r}`;
+  const defenderId = target.id ?? target.unitId ?? target.uuid ?? target.netId ?? `${target.unitName || target.name}@${target.q},${target.r}`;
+
+  const event = {
+    type: 'combat:attack',
+    attackerId: String(attackerId),
+    defenderId: String(defenderId),
+    damage: dmg,
+    weaponId,
+  };
 
   return {
     ok: true,
     weaponId,
+    distance: dist,
+    damage: dmg,
+    hpBefore,
+    hpAfter: target.hp,
+    killed,
+    event,
+    result,
+  };
+}
+   weaponId,
     baseDamage: weapon.baseDamage,
     armorClassMult: weapon.armorClassMult,
     distanceCurve: weapon.distanceCurve || {},
