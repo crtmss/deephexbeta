@@ -315,32 +315,63 @@ export async function moveEnemies(scene) {
       if (!nearest) continue;
 
       // attack if possible
-      const weapons = enemy.weapons || [];
-      const weaponId = weapons[enemy.activeWeaponIndex] || weapons[0] || null;
-      if (weaponId && (enemy.ap || 0) > 0) {
-        __t('AI_ATTACK', { step:'attempt', eid: enemy.id || enemy.unitId, eq: enemy.q, er: enemy.r, ap: enemy.ap, tid: nearest?.id || nearest?.unitId, tq: nearest?.q, tr: nearest?.r, thp: nearest?.hp, weaponId });
-      const v = validateAttack(enemy, nearest, weaponId);
-        if (v.ok) {
-          spendAp(enemy, 1);
-          ensureUnitCombatFields(nearest);
-          const res = resolveAttack(enemy, nearest, weaponId);
-          ensureUnitCombatFields(nearest);
-          spendAp(enemy, 1);
-          const dmg = Number.isFinite(res?.damage) ? res.damage : (Number.isFinite(res?.finalDamage) ? res.finalDamage : 0);
-          // eslint-disable-next-line no-console
-          console.log('[AI] attack', { attacker: enemy.unitId ?? enemy.id, defender: nearest.unitId ?? nearest.id, weaponId, dist });
-          const hpBefore = nearest.hp;
-        __t('AI_ATTACK', { step:'apply_event', eid: enemy.id || enemy.unitId, tid: nearest.id || nearest.unitId, weaponId, dmg, hpBefore });
-        applyCombatEvent(scene, {
-            type: 'combat:attack',
-            attackerId: enemy.unitId ?? enemy.id,
-            defenderId: nearest.unitId ?? nearest.id,
-            damage: dmg,
-            weaponId,
-          });
-          continue;
-        }
-      }
+const weapons = enemy.weapons || [];
+const weaponId = weapons[enemy.activeWeaponIndex] || weapons[0] || null;
+
+if (weaponId && (enemy.ap || 0) > 0) {
+  const v = validateAttack(enemy, nearest, weaponId);
+  const dist = Number.isFinite(v?.distance)
+    ? v.distance
+    : axialDistance(enemy.q, enemy.r, nearest.q, nearest.r);
+
+  __t('AI_ATTACK', {
+    step: 'attempt',
+    eid: enemy.id || enemy.unitId,
+    eq: enemy.q,
+    er: enemy.r,
+    ap: enemy.ap,
+    tid: nearest?.id || nearest?.unitId,
+    tq: nearest?.q,
+    tr: nearest?.r,
+    thp: nearest?.hp,
+    weaponId,
+    dist,
+    ok: !!v?.ok,
+    reason: v?.reason,
+  });
+
+  if (v.ok) {
+    spendAp(enemy, 1);
+
+    ensureUnitCombatFields(nearest);
+    const res = resolveAttack(enemy, nearest, weaponId);
+    const dmg = Number.isFinite(res?.damage)
+      ? res.damage
+      : (Number.isFinite(res?.finalDamage) ? res.finalDamage : 0);
+
+    const hpBefore = nearest.hp;
+
+    __t('AI_ATTACK', {
+      step: 'apply_event',
+      eid: enemy.id || enemy.unitId,
+      tid: nearest.id || nearest.unitId,
+      weaponId,
+      dmg,
+      hpBefore,
+    });
+
+    applyCombatEvent(scene, {
+      type: 'combat:attack',
+      attackerId: enemy.unitId ?? enemy.id,
+      defenderId: nearest.unitId ?? nearest.id,
+      damage: dmg,
+      weaponId,
+    });
+
+    continue;
+  }
+}
+
 
       // move toward nearest
       if ((enemy.mp || 0) <= 0) continue;
