@@ -15,7 +15,7 @@ import { setupLogisticsPanel } from './WorldSceneLogistics.js';
 import { setupEconomyUI } from './WorldSceneEconomy.js';
 
 // Stage B/D combat
-import { applyAttack, applyDefence } from '../units/UnitActions.js';
+import { applyDefence } from '../units/UnitActions.js';
 
 // Stage F: attack preview
 import { updateCombatPreview, clearCombatPreview } from './WorldSceneCombatPreview.js';
@@ -702,21 +702,11 @@ export function setupWorldInputUI(scene) {
       const sent = trySendAttackIntent(scene, scene.selectedUnit, clickedUnit);
 
       if (!sent) {
-        const dist = (typeof scene.hexDistance === 'function')
-          ? scene.hexDistance(scene.selectedUnit.q, scene.selectedUnit.r, clickedUnit.q, clickedUnit.r)
-          : null;
-
-        const atk = applyAttack(scene.selectedUnit, clickedUnit, { distance: dist });
-        if (!atk.ok) {
-          console.log('[ATTACK] failed:', atk.reason);
+        // Local (singleplayer) fallback: execute attack directly via validate/resolve/applyCombatEvent chain.
+        const ok = tryAttackHex(scene, scene.selectedUnit, clickedUnit.q, clickedUnit.r);
+        if (!ok) {
+          console.log('[ATTACK] local fallback failed (see [PLAYER:ATTACK] logs for details)');
           return;
-        }
-
-        const details = atk.details || atk.result || null;
-        if (details) {
-          console.log(
-            `[ATTACK] ${scene.selectedUnit.name} -> enemy (${clickedUnit.q},${clickedUnit.r}) with ${details.weaponId}`
-          );
         }
 
         if (clickedUnit.hp <= 0) {
