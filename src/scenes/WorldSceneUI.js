@@ -6,7 +6,7 @@
 const __TRACE_ON__ = () => (typeof window !== 'undefined' ? (window.__COMBAT_TRACE__ ?? true) : true);
 function __t(tag, data) {
   if (!__TRACE_ON__()) return;
-  try { console.log(`[$PLAYER]`, data); } catch (_) {}
+  try { console.log(`[PLAYER:${tag}]`, data); } catch (_) {}
 }
 
 import { refreshUnits } from './WorldSceneActions.js';
@@ -25,7 +25,6 @@ import { ensureUnitCombatFields, spendAp } from '../units/UnitActions.js';
 import { getWeaponDef } from '../units/WeaponDefs.js';
 import { applyCombatEvent } from './WorldSceneCombatRuntime.js';
 import { AttackController } from '../combat/AttackController.js';
-
 
 function ensureAttackController(scene) {
   if (!scene.attackController) {
@@ -55,7 +54,7 @@ function getActiveWeapon(attacker) {
 
 function tryAttackHex(scene, attacker, q, r) {
   const aid = attacker?.id || attacker?.unitId;
-  const trace = (step, extra) => __t('PLAYER_ATTACK', { step, aid, q, r, mode: scene?.unitCommandMode, ...extra });
+  const trace = (step, extra) => __t('ATTACK', { step, aid, q, r, mode: scene?.unitCommandMode, ...extra });
   if (!scene || !attacker) { trace('fail:no_scene_or_attacker'); return false; }
 
   // Must be in attack mode
@@ -63,7 +62,10 @@ function tryAttackHex(scene, attacker, q, r) {
 
   // Must be highlighted
   const key = `${q},${r}`;
-  if (!scene.attackableHexes || !scene.attackableHexes.has(key)) { trace('fail:not_highlighted', { hasAttackable: !!scene.attackableHexes, size: scene.attackableHexes?.size }); return false; }
+  if (!scene.attackableHexes || !scene.attackableHexes.has(key)) {
+    trace('fail:not_highlighted', { hasAttackable: !!scene.attackableHexes, size: scene.attackableHexes?.size });
+    return false;
+  }
 
   // Need AP
   ensureUnitCombatFields(attacker);
@@ -89,7 +91,8 @@ function tryAttackHex(scene, attacker, q, r) {
 
   // Apply combat event (handles HP reduction + death)
   const hpBefore = target.hp;
-  __t('PLAYER_ATTACK', { step: 'apply_event', aid, tid: (target.id || target.unitId), weaponId, dmg, hpBefore });
+  trace('apply_event', { tid: (target.id || target.unitId), weaponId, dmg, hpBefore });
+
   applyCombatEvent(scene, {
     type: 'combat:attack',
     attackerId: attacker.id || attacker.unitId,
@@ -98,8 +101,8 @@ function tryAttackHex(scene, attacker, q, r) {
     weaponId,
   });
 
-  // Refresh preview after AP/damage
-  __t('PLAYER_ATTACK', { step: 'after_event', tid: (target.id || target.unitId), hpAfter: target.hp });
+  trace('after_event', { tid: (target.id || target.unitId), hpAfter: target.hp });
+
   updateCombatPreview(scene);
   scene.refreshUnitActionPanel?.();
 
@@ -138,7 +141,10 @@ export function setupCameraControls(scene) {
         const axial = roundHex(frac.q, frac.r);
 
         const ac = ensureAttackController(scene);
-        const handled = ac.isActive() ? ac.tryAttackHex(axial.q, axial.r) : tryAttackHex(scene, attacker, axial.q, axial.r);
+        const handled = ac.isActive()
+          ? ac.tryAttackHex(axial.q, axial.r)
+          : tryAttackHex(scene, attacker, axial.q, axial.r);
+
         if (!handled) {
           ac.exit();
 
@@ -298,14 +304,6 @@ function getUnitAtHex(scene, q, r) {
   );
 }
 
-/* ---------------- Movement rules patch ----------------
-   Rules:
-   - Units cannot step if |Δelevation| > 1 between adjacent hexes
-   - Base move cost = 1 (all land)
-   - Forest adds +1
-   - Uphill (toElev > fromElev) adds +1
--------------------------------------------------------- */
-
 function tileElevation(t) {
   if (!t) return 0;
   if (Number.isFinite(t.visualElevation)) return t.visualElevation;
@@ -342,8 +340,6 @@ function computePathWithAStar(scene, unit, targetHex, blockedPred) {
     return blockedPred ? blockedPred(tile) : false;
   };
 
-  // If AStar.js supports dynamic move cost, it will use this.
-  // If not, it'll ignore the 5th argument; UI trimming/preview still applies rules below.
   return aStarFindPath(start, goal, scene.mapData, isBlocked, { getMoveCost: stepMoveCost });
 }
 
@@ -351,34 +347,20 @@ function isEnemy(u) {
   return !!(u && (u.isEnemy || u.controller === 'ai') && !u.isPlayer);
 }
 
-/**
- * Управляемый объект игрока:
- * - НЕ enemy/ai
- * - обычно isPlayer=true
- * - но также поддерживаем объекты без isPlayer (рейдеры/мобильная база и т.п.)
- *   если у них есть mp/mpMax или movementPoints.
- */
 function isControllable(u) {
   if (!u) return false;
   if (u.isEnemy || u.controller === 'ai') return false;
 
   if (u.isPlayer) return true;
 
-  // fallback: если объект имеет MP-поля, считаем его управляемым
   if (Number.isFinite(u.mpMax) || Number.isFinite(u.mp) || Number.isFinite(u.movementPoints)) return true;
 
   return false;
 }
 
-/**
- * Stage B: apply kill handling (remove from arrays, destroy GO)
- * NOTE: In host-authoritative mode, kills should primarily come from combat events.
- * This function is still kept for legacy/local fallback.
- */
 function killUnit(scene, unit) {
   if (!scene || !unit) return;
 
-  // Remove from arrays
   const rm = (arr) => {
     if (!Array.isArray(arr)) return;
     const idx = arr.indexOf(unit);
@@ -399,9 +381,6 @@ function killUnit(scene, unit) {
   scene.updateSelectionHighlight?.();
 }
 
-/**
- * Axial hex distance helper (for preview if needed elsewhere).
- */
 function hexDistance(q1, r1, q2, r2) {
   const dq = q2 - q1;
   const dr = r2 - r1;
@@ -409,11 +388,6 @@ function hexDistance(q1, r1, q2, r2) {
   return (Math.abs(dq) + Math.abs(dr) + Math.abs(ds)) / 2;
 }
 
-/**
- * Host-authoritative: send attack intent from clients.
- * If scene.sendCombatIntent exists, we use it.
- * Otherwise fallback to local applyAttack (singleplayer/dev).
- */
 function trySendAttackIntent(scene, attacker, defender) {
   if (!scene || !attacker || !defender) return false;
 
@@ -502,17 +476,6 @@ function setAutoMoveTarget(unit, q, r) {
 
 /* ---------------- Path preview helpers ---------------- */
 
-/**
- * Takes a full A* path and splits it into:
- * - within: the segment this unit can traverse this turn (<= MP)
- * - beyond: the rest of the path (starts at last point of within so the line connects)
- *
- * Also returns:
- * - usablePath: the validated prefix of fullPath up to the first illegal step (Infinity etc.)
- * - costs: per-step move costs (index aligned to usablePath; costs[0]=0)
- * - cum: cumulative cost per node in usablePath (cum[0]=0)
- * - cutIndex: last index (in usablePath) that is reachable this turn
- */
 function splitPathByMP(scene, unit, fullPath, blockedPred) {
   const mp = getMP(unit);
   const within = [];
@@ -566,10 +529,6 @@ function splitPathByMP(scene, unit, fullPath, blockedPred) {
   return { within, beyond, usablePath, costs, cum, cutIndex, mp };
 }
 
-/**
- * Возвращает массив меток { q, r, turnIndex } только в границах ходов + цель.
- * Первый ход использует текущий MP, далее mpMax.
- */
 function computeTurnMarkers(scene, unit, usablePath, costs) {
   const markers = [];
   if (!Array.isArray(usablePath) || usablePath.length < 2) return markers;
@@ -583,11 +542,9 @@ function computeTurnMarkers(scene, unit, usablePath, costs) {
     const stepCost = costs[i] ?? 0;
 
     if (stepCost > mpLeft) {
-      // заканчиваем ход на предыдущей клетке
       const prev = usablePath[i - 1];
       markers.push({ q: prev.q, r: prev.r, turnIndex: turn });
 
-      // новый ход
       turn += 1;
       mpLeft = mpMax;
     }
@@ -636,14 +593,11 @@ export function setupWorldInputUI(scene) {
     scene.hexDistance = hexDistance;
   }
 
-  // ✅ If UI (History) set a short click-block flag, respect it here.
   const isUiPointerBlocked = () => {
     const now = scene.time?.now ?? (typeof performance !== 'undefined' ? performance.now() : Date.now());
     return !!(scene.__uiPointerBlockUntil && now < scene.__uiPointerBlockUntil);
   };
 
-  // Prevent world input while hovering over history panel
-  // (panel is on screen space, pointer world coords still update).
   const isPointerOverHistoryPanel = (pointer) => {
     if (!scene.isHistoryPanelOpen) return false;
     const p = scene.historyPanelContainer;
@@ -670,7 +624,6 @@ export function setupWorldInputUI(scene) {
     const key = String(ev.key || '').toLowerCase();
 
     if (key === 'escape') {
-      // 1) cancel command mode
       if (scene.unitCommandMode) {
         scene.unitCommandMode = null;
         scene.clearPathPreview?.();
@@ -679,7 +632,6 @@ export function setupWorldInputUI(scene) {
         return;
       }
 
-      // 2) cancel selected unit auto-move
       if (scene.selectedUnit && isControllable(scene.selectedUnit)) {
         cancelAutoMove(scene.selectedUnit);
         console.log('[MOVE] Auto-move cancelled');
@@ -700,9 +652,14 @@ export function setupWorldInputUI(scene) {
       scene.unitCommandMode = (scene.unitCommandMode === 'attack') ? null : 'attack';
       scene.clearPathPreview?.();
 
-      if (scene.unitCommandMode === 'attack') __t('PLAYER_ATTACK', { step: 'after_event', tid: (target.id || target.unitId), hpAfter: target.hp });
-  updateCombatPreview(scene);
-      else clearCombatPreview(scene);      return;
+      if (scene.unitCommandMode === 'attack') {
+        updateCombatPreview(scene);
+      } else {
+        clearCombatPreview(scene);
+      }
+
+      scene.refreshUnitActionPanel?.();
+      return;
     }
 
     if (key === 'd') {
@@ -723,7 +680,7 @@ export function setupWorldInputUI(scene) {
     if (scene.logisticsInputLocked) return;
     if (scene.isDragging) return;
     if (pointer.rightButtonDown && pointer.rightButtonDown()) return;
-    if (isUiPointerBlocked()) return;              // ✅ NEW: prevent click-through from History
+    if (isUiPointerBlocked()) return;
     if (isPointerOverHistoryPanel(pointer)) return;
 
     const rounded = scene.worldToAxial(pointer.worldX, pointer.worldY);
@@ -777,7 +734,6 @@ export function setupWorldInputUI(scene) {
       return;
     }
 
-    // Unit selection
     if (clickedUnit) {
       scene.toggleSelectedUnitAtHex?.(q, r);
       scene.clearPathPreview?.();
@@ -790,19 +746,14 @@ export function setupWorldInputUI(scene) {
       return;
     }
 
-    // Ground click
-    // If no unit is selected, allow selecting ANY hex (including water)
-    // and show its info in the Unit panel (hex inspector).
     if (!scene.selectedUnit) {
       scene.selectedHex = { q, r };
       scene.selectedBuilding = null;
 
-      // Close any lingering command mode / previews
       scene.unitCommandMode = null;
       scene.clearPathPreview?.();
       clearCombatPreview(scene);
 
-      // Open hex inspector in the same panel used for units
       scene.openHexInspectPanel?.(q, r);
 
       scene.updateSelectionHighlight?.();
@@ -848,7 +799,6 @@ export function setupWorldInputUI(scene) {
       const fullPath = computePathWithAStar(scene, scene.selectedUnit, rounded, blocked);
 
       if (fullPath && fullPath.length > 1) {
-        // ✅ AUTO-MOVE always stores target
         setAutoMoveTarget(scene.selectedUnit, rounded.q, rounded.r);
 
         const movementPoints = getMP(scene.selectedUnit);
@@ -904,14 +854,13 @@ export function setupWorldInputUI(scene) {
   scene.input.on('pointermove', pointer => {
     if (scene.logisticsInputLocked) return;
     if (scene.isDragging) return;
-    if (isUiPointerBlocked()) return;              // ✅ NEW: prevent preview churn right after History click
+    if (isUiPointerBlocked()) return;
     if (isPointerOverHistoryPanel(pointer)) return;
     if (!scene.selectedUnit || scene.isUnitMoving) return;
 
     if (scene.unitCommandMode === 'attack') {
       scene.clearPathPreview?.();
-      __t('PLAYER_ATTACK', { step: 'after_event', tid: (target.id || target.unitId), hpAfter: target.hp });
-  updateCombatPreview(scene);
+      updateCombatPreview(scene);
       return;
     } else {
       clearCombatPreview(scene);
@@ -964,7 +913,6 @@ export function setupWorldInputUI(scene) {
 
       if (usablePath.length <= 1) return;
 
-      // ✅ Colors: cyan + grey
       const withinColor = 0x00ffff; // cyan
       const beyondColor = 0x8a8a8a; // grey
 
@@ -975,13 +923,11 @@ export function setupWorldInputUI(scene) {
         drawPathLine(scene, beyond, { color: beyondColor, alpha: 0.85, width: 3, depth: 50 });
       }
 
-      // ✅ Only show "turns to goal" markers
       const markers = computeTurnMarkers(scene, scene.selectedUnit, usablePath, costs);
 
       for (const m of markers) {
         const { x, y } = scene.axialToWorld(m.q, m.r);
 
-        // marker color: reachable this turn => cyan, else grey
         const idx = usablePath.findIndex(p => p.q === m.q && p.r === m.r);
         const c = (idx >= 0) ? (cum[idx] ?? 0) : 0;
         const labelColor = (c <= movementPoints) ? '#00ffff' : '#b0b0b0';
