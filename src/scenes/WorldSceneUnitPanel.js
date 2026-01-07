@@ -442,13 +442,24 @@ export function setupUnitActionPanel(scene) {
       return;
     }
 
-    const wid = getActiveWeaponId(u);
-    const wdef = wid ? getWeaponDef(wid) : null;
-    const { rangeMin, rangeMax } = getWeaponRange(wdef);
-    const enemiesInRange = countEnemiesInRange(scene, u, rangeMin, rangeMax);
-    // Enter targeting mode and draw highlights
-    scene.unitCommandMode = 'attack';
-    updateCombatPreview(scene);
+const wid = getActiveWeaponId(u);
+const wdef = wid ? getWeaponDef(wid) : null;
+const { rangeMin, rangeMax } = getWeaponRange(wdef);
+
+// Enter targeting mode via AttackController (highlights + authoritative click filtering)
+const ac = scene.attackController || (scene.attackController = new AttackController(scene));
+ac.enter(u);
+
+// Also update numeric preview labels (damage estimates, etc.)
+updateCombatPreview(scene);
+
+__dbg('PLAYER:AttackTargets', {
+  unitId: u.id,
+  weaponId: wid,
+  rangeMin,
+  rangeMax,
+  attackable: scene.attackableHexes?.size ?? 0
+});
     scene.refreshUnitActionPanel?.();
   });
 
