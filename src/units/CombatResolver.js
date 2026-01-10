@@ -21,10 +21,16 @@ import { armorPointsMultiplier, ARMOR_CLASSES } from './ArmorDefs.js';
 import { getWeaponDef } from './WeaponDefs.js';
 
 function hexDistance(q1, r1, q2, r2) {
-  const dq = q2 - q1;
-  const dr = r2 - r1;
-  const ds = -dq - dr;
-  return (Math.abs(dq) + Math.abs(dr) + Math.abs(ds)) / 2;
+  // ODD-R offset coordinates → cube distance
+  const toCube = (q, r) => {
+    const x = q - ((r - (r & 1)) / 2);
+    const z = r;
+    const y = -x - z;
+    return { x, y, z };
+  };
+  const a = toCube(q1, r1);
+  const b = toCube(q2, r2);
+  return Math.max(Math.abs(a.x - b.x), Math.abs(a.y - b.y), Math.abs(a.z - b.z));
 }
 
 /**
