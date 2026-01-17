@@ -121,11 +121,35 @@ function classifyGeographyFromTiles(tiles, width, height) {
 
 /* ------------------------------ LOBBY SCENE -------------------------------- */
 
+const FACTIONS = [
+  'Admiralty',
+  'Cannibals',
+  'Collective',
+  'Fabricators',
+  'Mutants',
+  'Transcendent',
+];
+
+function factionKey(factionName) {
+  return `lobbybg_${String(factionName || '').toLowerCase()}`;
+}
+
 export default class LobbyScene extends Phaser.Scene {
   constructor() {
     super('LobbyScene');
     this.waitEvent = null;
     this.waitStatusText = null;
+
+    this.selectedFaction = 'Admiralty';
+    this.bgImage = null;
+  }
+
+  preload() {
+    // Preload faction background images
+    // Files are located in deephexbeta/src/assets/art/
+    for (const f of FACTIONS) {
+      this.load.image(factionKey(f), `assets/art/${f}.png`);
+    }
   }
 
   async create() {
@@ -138,6 +162,46 @@ export default class LobbyScene extends Phaser.Scene {
       dc.style.background = 'transparent';
     }
 
+    // Background (default faction)
+    const applyLobbyBackground = (factionName) => {
+      const key = factionKey(factionName);
+      if (!this.textures.exists(key)) {
+        console.warn('[LOBBY] Missing background texture:', key);
+        return;
+      }
+
+      if (!this.bgImage) {
+        this.bgImage = this.add.image(0, 0, key)
+          .setOrigin(0, 0)
+          .setScrollFactor(0)
+          .setDepth(-100);
+
+        // Scale to cover the full screen
+        const cam = this.cameras.main;
+        const tex = this.textures.get(key);
+        const src = tex.getSourceImage();
+        const sx = cam.width / src.width;
+        const sy = cam.height / src.height;
+        const scale = Math.max(sx, sy);
+        this.bgImage.setScale(scale);
+
+      } else {
+        this.bgImage.setTexture(key);
+
+        // Recompute scale for new texture (images may have different aspect)
+        const cam = this.cameras.main;
+        const tex = this.textures.get(key);
+        const src = tex.getSourceImage();
+        const sx = cam.width / src.width;
+        const sy = cam.height / src.height;
+        const scale = Math.max(sx, sy);
+        this.bgImage.setScale(scale);
+      }
+    };
+
+    applyLobbyBackground(this.selectedFaction);
+
+    // Title
     this.add.text(500, 60, 'DeepHex Multiplayer Lobby', {
       fontSize: '28px', fill: '#ffffff'
     }).setScrollFactor(0);
@@ -276,6 +340,40 @@ export default class LobbyScene extends Phaser.Scene {
       outline: 'none'
     });
 
+    /* ===== Faction Selector (NEW) ===== */
+    this.add.text(400, 420, 'Faction:', {
+      fontSize: '18px', fill: '#ffffff'
+    });
+
+    const factionSelect = this.add.dom(640, 420, 'select')
+      .setOrigin(0.5).setDepth(1200);
+
+    FACTIONS.forEach((f, idx) => {
+      const opt = document.createElement('option');
+      opt.value = f;
+      opt.textContent = f;
+      if (f === this.selectedFaction || idx === 0) opt.selected = true;
+      factionSelect.node.appendChild(opt);
+    });
+
+    Object.assign(factionSelect.node.style, {
+      pointerEvents: 'auto',
+      width: '220px',
+      height: '32px',
+      fontSize: '16px',
+      borderRadius: '8px',
+      border: '1px solid #88a',
+      background: '#0b0f1a',
+      color: '#e7f1ff',
+      outline: 'none'
+    });
+
+    factionSelect.node.addEventListener('change', () => {
+      const v = factionSelect.node.value || 'Admiralty';
+      this.selectedFaction = v;
+      applyLobbyBackground(v);
+    });
+
     /* ==============================
        PREVIEW FIXES (Option A)
        ============================== */
@@ -360,7 +458,7 @@ export default class LobbyScene extends Phaser.Scene {
     /* ========================= HOST GAME ========================= */
 
     const hostBtn = this.add.dom(
-      540, 450, 'button',
+      540, 480, 'button',
       {
         backgroundColor: '#006400',
         color: '#fff',
@@ -375,7 +473,7 @@ export default class LobbyScene extends Phaser.Scene {
     ).setDepth(1200);
 
     const joinBtn = this.add.dom(
-      720, 450, 'button',
+      720, 480, 'button',
       {
         backgroundColor: '#1E90FF',
         color: '#fff',
@@ -393,7 +491,7 @@ export default class LobbyScene extends Phaser.Scene {
     joinBtn.addListener('click');
 
     this.waitStatusText = this.add.text(
-      480, 500, '',
+      480, 530, '',
       { fontSize: '18px', fill: '#ffd27f' }
     );
 
@@ -417,6 +515,7 @@ export default class LobbyScene extends Phaser.Scene {
       maxPlayers = Math.min(4, Math.max(1, maxPlayers));
 
       const missionType = missionSelect.node.value || 'big_construction';
+      const faction = this.selectedFaction || 'Admiralty';
 
       // CHANGED: mapConfig → 29x29
       const initialState = {
@@ -430,6 +529,7 @@ export default class LobbyScene extends Phaser.Scene {
           slot: 0,
           isHost: true,
           isConnected: true,
+          faction,
           resources: { food: 200, scrap: 200, money: 200, influence: 200 },
         }],
         currentTurnPlayerId: hostPlayerId,
@@ -465,6 +565,7 @@ export default class LobbyScene extends Phaser.Scene {
           playerId: hostPlayerId,
           roomCode,
           isHost: true,
+          faction,
         });
 
       } catch (err) {
@@ -485,6 +586,7 @@ export default class LobbyScene extends Phaser.Scene {
       }
 
       const roomCode = code;
+      const faction = this.selectedFaction || 'Admiralty';
 
       try {
         const { data, error } = await supabase
@@ -514,6 +616,7 @@ export default class LobbyScene extends Phaser.Scene {
         if (existing) {
           newId = existing.id;
           existing.isConnected = true;
+          existing.faction = existing.faction || faction;
         } else {
           newId = `p${state.players.length + 1}`;
           state.players.push({
@@ -522,6 +625,7 @@ export default class LobbyScene extends Phaser.Scene {
             slot: state.players.length,
             isHost: false,
             isConnected: true,
+            faction,
             resources: { food: 200, scrap: 200, money: 200, influence: 200 },
           });
         }
@@ -540,6 +644,7 @@ export default class LobbyScene extends Phaser.Scene {
         }
 
         const seed = state.seed || code;
+        const missionType = state.missionType || 'big_construction';
 
         this.startWaitingForFullLobby({
           seed,
@@ -547,6 +652,7 @@ export default class LobbyScene extends Phaser.Scene {
           playerId: newId,
           roomCode,
           isHost: false,
+          faction,
         });
 
       } catch (err) {
@@ -561,7 +667,7 @@ export default class LobbyScene extends Phaser.Scene {
      ========================== */
 
   startWaitingForFullLobby(cfg) {
-    const { seed, playerName, playerId, roomCode, isHost } = cfg;
+    const { seed, playerName, playerId, roomCode, isHost, faction } = cfg;
 
     if (this.waitEvent) this.waitEvent.remove(false);
 
@@ -605,6 +711,7 @@ export default class LobbyScene extends Phaser.Scene {
               supabase,
               lobbyState: state,
               missionType,
+              faction: faction || this.selectedFaction || 'Admiralty',
             });
           }
         } catch (err) {
