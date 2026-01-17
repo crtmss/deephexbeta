@@ -130,6 +130,14 @@ const FACTIONS = [
   'Transcendent',
 ];
 
+// IMPORTANT:
+// These images live under src/assets/art. When deploying (Vite/GH Pages),
+// referencing them via plain string paths will 404 because src/ is not served.
+// Using import.meta.url makes the bundler include them and rewrite URLs.
+const FACTION_BG_URLS = Object.fromEntries(
+  FACTIONS.map(f => [f, new URL(`../assets/art/${f}.png`, import.meta.url).href])
+);
+
 function factionKey(factionName) {
   return `lobbybg_${String(factionName || '').toLowerCase()}`;
 }
@@ -146,9 +154,8 @@ export default class LobbyScene extends Phaser.Scene {
 
   preload() {
     // Preload faction background images
-    // Files are located in deephexbeta/src/assets/art/
     for (const f of FACTIONS) {
-      this.load.image(factionKey(f), `assets/art/${f}.png`);
+      this.load.image(factionKey(f), FACTION_BG_URLS[f]);
     }
   }
 
