@@ -1,8 +1,6 @@
 // deephexbeta/src/scenes/LobbyScene.js
 import { supabase } from '../net/SupabaseClient.js';
 import HexMap from '../engine/HexMap.js';
-
-// Preview renderer (Option A)
 import { getFillForTile } from './WorldSceneMap.js';
 
 /* ---------- fallback helpers (used only if worldMeta is missing) ---------- */
@@ -12,8 +10,8 @@ const inBounds = (q, r, w, h) => q >= 0 && q < w && r >= 0 && r < h;
 function neighborsOddR(q, r) {
   const even = (r % 2 === 0);
   return even
-    ? [[+1, 0], [0, -1], [-1, -1], [-1, 0], [+0, +1], [-1, +1]]
-    : [[+1, 0], [+1, -1], [0, -1], [-1, 0], [0, +1], [+1, +1]];
+    ? [[+1,0],[0,-1],[-1,-1],[-1,0],[+0,+1],[-1,+1]]
+    : [[+1,0],[+1,-1],[0,-1],[-1,0],[0,+1],[+1,+1]];
 }
 
 function classifyBiomeFromTiles(tiles) {
@@ -65,18 +63,17 @@ function classifyGeographyFromTiles(tiles, width, height) {
   if (comps >= 2) return 'Multiple Islands';
 
   // Inner water density → lagoon detection
-  const innerQ0 = Math.floor(width * 0.2), innerQ1 = Math.ceil(width * 0.8);
+  const innerQ0 = Math.floor(width * 0.2),  innerQ1 = Math.ceil(width * 0.8);
   const innerR0 = Math.floor(height * 0.2), innerR1 = Math.ceil(height * 0.8);
   let innerWater = 0, innerTot = 0;
 
-  for (let r = innerR0; r < innerR1; r++) {
+  for (let r = innerR0; r < innerR1; r++)
     for (let q = innerQ0; q < innerQ1; q++) {
       const t = byKey.get(keyOf(q, r));
       if (!t) continue;
       innerTot++;
       if (t.type === 'water') innerWater++;
     }
-  }
 
   const innerRatio = innerTot ? innerWater / innerTot : 0;
   if (innerRatio >= 0.12) return innerRatio >= 0.18 ? 'Big Lagoon' : 'Central Lake';
@@ -116,7 +113,6 @@ function classifyGeographyFromTiles(tiles, width, height) {
   const angle = Math.abs(0.5 * Math.atan2(2 * Sxy, Sxx - Syy) * 180 / Math.PI);
 
   if (ratio >= 1.6 && angle >= 20 && angle <= 70) return 'Diagonal Island';
-
   return 'Small Bays';
 }
 
@@ -133,7 +129,7 @@ const FACTIONS = [
 
 const factionKey = (f) => `lobbybg_${String(f || '').toLowerCase()}`;
 
-// IMPORTANT (Vite/ESM-friendly): resolve asset URLs at build-time
+// Vite/ESM-friendly asset URLs (these must match src/assets/art/)
 const FACTION_BG_URLS = {
   Admiralty: new URL('../assets/art/Admiralty.png', import.meta.url).href,
   Cannibals: new URL('../assets/art/Cannibals.png', import.meta.url).href,
@@ -152,6 +148,7 @@ export default class LobbyScene extends Phaser.Scene {
     this.selectedFaction = 'Admiralty';
     this.bgImage = null;
 
+    // preview dims
     this.previewSize = 80;
     this.previewWidth = 29;
     this.previewHeight = 29;
@@ -161,7 +158,6 @@ export default class LobbyScene extends Phaser.Scene {
   }
 
   preload() {
-    // Preload faction background images
     for (const f of FACTIONS) {
       const url = FACTION_BG_URLS[f];
       if (url) this.load.image(factionKey(f), url);
@@ -169,7 +165,7 @@ export default class LobbyScene extends Phaser.Scene {
   }
 
   async create() {
-    /* ===== DOM UI container (unchanged) ===== */
+    /* ===== UI Creation (unchanged) ===== */
     if (this.game && this.game.domContainer) {
       const dc = this.game.domContainer;
       dc.style.pointerEvents = 'none';
@@ -177,57 +173,71 @@ export default class LobbyScene extends Phaser.Scene {
       dc.style.background = 'transparent';
     }
 
-    // Background fit helper (covers full screen and updates on resize)
-    const fitBgToScreen = () => {
+    // If the camera has a background color, it will show through gaps.
+    // We keep it, but the image should fully cover now.
+    // (You can also set to black if you prefer.)
+    // this.cameras.main.setBackgroundColor('#000000');
+
+    const fitBgToCamera = () => {
       if (!this.bgImage) return;
 
-      const w = this.scale.width;
-      const h = this.scale.height;
+      const cam = this.cameras.main;
+
+      // use camera viewport size (most correct for what you actually see)
+      const vw = cam.width;
+      const vh = cam.height;
 
       const tex = this.textures.get(this.bgImage.texture.key);
       const src = tex?.getSourceImage?.();
       if (!src?.width || !src?.height) return;
 
-      const sx = w / src.width;
-      const sy = h / src.height;
+      const sx = vw / src.width;
+      const sy = vh / src.height;
+
+      // COVER behavior
       const scale = Math.max(sx, sy);
 
       this.bgImage
         .setOrigin(0.5, 0.5)
-        .setPosition(w / 2, h / 2)
+        // center in the camera viewport
+        .setPosition(cam.centerX, cam.centerY)
+        .setScrollFactor(0)
         .setScale(scale);
+
+      // Ensure it renders behind everything
+      this.bgImage.setDepth(-1000);
     };
 
     const applyLobbyBackground = (factionName) => {
       const key = factionKey(factionName);
+
       if (!this.textures.exists(key)) {
         console.warn('[LOBBY] Missing background texture:', key);
         return;
       }
 
       if (!this.bgImage) {
-        this.bgImage = this.add.image(0, 0, key)
-          .setScrollFactor(0)
-          .setDepth(-100);
+        this.bgImage = this.add.image(0, 0, key);
       } else {
         this.bgImage.setTexture(key);
       }
 
-      fitBgToScreen();
+      fitBgToCamera();
     };
 
-    // Refit bg when game resizes (very common on desktop / DPR / scale mode)
-    this.scale.on('resize', () => fitBgToScreen());
+    // Refit when Phaser resizes the game (covers DPR / window resize / scale mode changes)
+    this.scale.on('resize', () => {
+      // camera size can change too in some scale modes
+      fitBgToCamera();
+    });
 
-    // Default background
+    // default bg
     applyLobbyBackground(this.selectedFaction);
 
-    /* ===== Title ===== */
     this.add.text(500, 60, 'DeepHex Multiplayer Lobby', {
       fontSize: '28px', fill: '#ffffff'
     }).setScrollFactor(0);
 
-    /* ===== Supabase ping ===== */
     try {
       const { error: pingError } =
         await supabase.from('lobbies').select('id').limit(1);
@@ -338,10 +348,10 @@ export default class LobbyScene extends Phaser.Scene {
       .setOrigin(0.5).setDepth(1200);
 
     [
-      { value: 'big_construction', label: 'Big construction' },
+      { value: 'big_construction',    label: 'Big construction' },
       { value: 'resource_extraction', label: 'Resource extraction' },
-      { value: 'elimination', label: 'Elimination' },
-      { value: 'control_point', label: 'Control point' },
+      { value: 'elimination',         label: 'Elimination' },
+      { value: 'control_point',       label: 'Control point' },
     ].forEach((m, idx) => {
       const opt = document.createElement('option');
       opt.value = m.value;
@@ -397,7 +407,7 @@ export default class LobbyScene extends Phaser.Scene {
     });
 
     /* ==============================
-       PREVIEW (Option A)
+       PREVIEW
        ============================== */
 
     this.add.text(870, 130, 'Map Preview', {
@@ -730,7 +740,7 @@ export default class LobbyScene extends Phaser.Scene {
   }
 
   /* ==========================
-     PREVIEW RENDERER (Option A)
+     PREVIEW RENDERER
      ========================== */
 
   drawPreviewFromTiles(tiles) {
