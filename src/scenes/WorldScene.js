@@ -49,6 +49,25 @@ import { moveEnemies as moveEnemiesImpl } from '../units/WorldSceneAI.js';
 // ✅ NEW: ensure lore/POI exists before first draw
 import { generateRuinLoreForTile } from './LoreGeneration.js';
 
+// Abilities + Effects runtime (data-driven)
+import { getAbilityDef } from '../abilities/AbilityDefs.js';
+import {
+  ensureHexEffectsState,
+  ensureUnitEffectsState,
+  addUnitEffect,
+  placeHexEffect,
+  tickUnitEffects,
+  tickHexEffects,
+  decrementUnitEffectDurations,
+  decrementHexEffectDurations,
+  cleanupExpiredUnitEffects,
+  cleanupExpiredHexEffects,
+  ensurePassiveEffects,
+  hexKey as hexKeyEff,
+} from '../effects/EffectEngine.js';
+import { TICK_PHASE } from '../effects/EffectDefs.js';
+import { ensureUnitCombatFields, canSpendAp, spendAp } from '../units/UnitActions.js';
+
 /* ---------------------------
    Auto-move helpers (Civ-style)
    --------------------------- */
@@ -346,6 +365,244 @@ export default class WorldScene extends Phaser.Scene {
     }
   }
 
+  /* ========================================================================
+     Abilities + Effects runtime (deterministic, multiplayer-friendly)
+     ======================================================================== */
+
+  initEffectsRuntime() {
+    // Store hex effects on lobbyState (Supabase JSON friendly)
+    if (!this.lobbyState) this.lobbyState = {};
+    ensureHexEffectsState(this.lobbyState);
+
+    // Ensure every existing unit has an effects array
+    for (const u of this.getAllRuntimeUnits()) {
+      ensureUnitEffectsState(u);
+      ensureUnitCombatFields(u);
+    }
+
+    // Apply passive abilities as infinite-duration effects (if unit defines passives)
+    // Convention: unit.passives = ['thick_plating', ...] (AbilityDefs ids)
+    for (const u of this.getAllRuntimeUnits()) {
+      try {
+        ensurePassiveEffects(u, getAbilityDef);
+      } catch (e) {
+        console.warn('[EFF] ensurePassiveEffects failed:', u?.id, e);
+      }
+    }
+
+    if (typeof window !== 'undefined') {
+      // Toggle at runtime: window.__TRACE_EFF__ = true/false
+      // Toggle at runtime: window.__TRACE_ABIL__ = true/false
+      if (window.__TRACE_ABIL__ === undefined) window.__TRACE_ABIL__ = true;
+    }
+  }
+
+  getAllRuntimeUnits() {
+    // Keep this central so effects + AI + UI all use the same source of truth.
+    // Include everything that can have HP/effects: players + enemies + units + haulers + ships.
+    const all = []
+      .concat(this.players || [])
+      .concat(this.enemies || [])
+      .concat(this.units || [])
+      .concat(this.haulers || [])
+      .concat(this.ships || []);
+
+    // De-dupe by id if possible
+    const out = [];
+    const seen = new Set();
+    for (const u of all) {
+      if (!u) continue;
+      const id = u.id ?? u.unitId ?? null;
+      if (id && seen.has(id)) continue;
+      if (id) seen.add(id);
+      out.push(u);
+    }
+    return out;
+  }
+
+  traceAbility(tag, data) {
+    const on = (typeof window !== 'undefined') ? (window.__TRACE_ABIL__ ?? true) : true;
+    if (!on) return;
+    try { console.log(`[ABIL:${tag}]`, data); } catch (_) {}
+  }
+
+  runEffectPhase(phase) {
+    // Phase: TICK_PHASE.TURN_START or TICK_PHASE.TURN_END
+    const allUnits = this.getAllRuntimeUnits();
+    const ctx = {
+      turnOwner: this.turnOwner,
+      turnNumber: this.turnNumber,
+      roomCode: this.roomCode,
+    };
+
+    // Unit effects
+    for (const u of allUnits) {
+      try {
+        ensureUnitEffectsState(u);
+        tickUnitEffects(u, phase, ctx);
+      } catch (e) {
+        console.warn('[EFF] tickUnitEffects failed:', u?.id, phase, e);
+      }
+    }
+
+    // Hex effects
+    try {
+      ensureHexEffectsState(this.lobbyState);
+      tickHexEffects(this.lobbyState, allUnits, phase, ctx);
+    } catch (e) {
+      console.warn('[EFF] tickHexEffects failed:', phase, e);
+    }
+  }
+
+  advanceEffectsOnTurnEnd() {
+    // Decrement durations and cleanup after TURN_END tick.
+    const allUnits = this.getAllRuntimeUnits();
+
+    for (const u of allUnits) {
+      try {
+        decrementUnitEffectDurations(u);
+        cleanupExpiredUnitEffects(u);
+      } catch (e) {
+        console.warn('[EFF] unit cleanup failed:', u?.id, e);
+      }
+    }
+
+    try {
+      ensureHexEffectsState(this.lobbyState);
+      decrementHexEffectDurations(this.lobbyState);
+      cleanupExpiredHexEffects(this.lobbyState);
+    } catch (e) {
+      console.warn('[EFF] hex cleanup failed:', e);
+    }
+  }
+
+  /* ------------------------------------------------------------------------
+     Ability casting (local runtime helper)
+     - In multiplayer, host should turn this into an event and broadcast it.
+     - This helper is still useful for local dev and for host-side resolution.
+     ------------------------------------------------------------------------ */
+
+  /**
+   * Cast an ability from a unit.
+   * @param {any} caster
+   * @param {string} abilityId
+   * @param {{targetUnit?: any, targetHex?: {q:number,r:number}}} target
+   */
+  castAbility(caster, abilityId, target = {}) {
+    const a = getAbilityDef(abilityId);
+    if (!a || a.kind !== 'active') {
+      this.traceAbility('fail:bad_ability', { abilityId, casterId: caster?.id });
+      return { ok: false, reason: 'bad_ability' };
+    }
+
+    ensureUnitCombatFields(caster);
+    ensureUnitEffectsState(caster);
+
+    const apCost = Number.isFinite(a.active?.apCost) ? a.active.apCost : 1;
+    if (!canSpendAp(caster, apCost)) {
+      this.traceAbility('fail:no_ap', { abilityId, casterId: caster?.id, ap: caster?.ap, apCost });
+      return { ok: false, reason: 'no_ap' };
+    }
+
+    // Target resolution (minimal, no LoS for now)
+    const resolved = this.resolveAbilityTarget(a, caster, target);
+    if (!resolved.ok) {
+      this.traceAbility('fail:bad_target', { abilityId, casterId: caster?.id, ...resolved });
+      return resolved;
+    }
+
+    // Spend AP
+    spendAp(caster, apCost);
+
+    // Apply unit effects
+    const applied = [];
+    const unitSpecs = Array.isArray(a.active?.applyUnitEffects) ? a.active.applyUnitEffects : [];
+    for (const spec of unitSpecs) {
+      const dest = (spec.applyTo === 'self') ? caster : resolved.targetUnit;
+      if (!dest) continue;
+      ensureUnitEffectsState(dest);
+
+      addUnitEffect(dest, spec.effectId, {
+        duration: spec.duration,
+        stacks: spec.stacks,
+        params: spec.params,
+        sourceUnitId: caster.id,
+        sourceFaction: caster.faction,
+      });
+      applied.push({ to: dest.id, effectId: spec.effectId });
+    }
+
+    // Place hex effects
+    const placed = [];
+    const hexSpecs = Array.isArray(a.active?.placeHexEffects) ? a.active.placeHexEffects : [];
+    for (const spec of hexSpecs) {
+      const centers = (spec.placeOn === 'aoe' && Number.isFinite(a.active?.aoeRadius))
+        ? this.getHexesInRadius(resolved.targetHex.q, resolved.targetHex.r, a.active.aoeRadius)
+        : [resolved.targetHex];
+
+      for (const h of centers) {
+        placeHexEffect(this.lobbyState, h.q, h.r, spec.effectId, {
+          duration: spec.duration,
+          stacks: spec.stacks,
+          params: spec.params,
+          sourceUnitId: caster.id,
+          sourceFaction: caster.faction,
+        });
+        placed.push({ q: h.q, r: h.r, effectId: spec.effectId });
+      }
+    }
+
+    this.traceAbility('cast', {
+      abilityId: a.id,
+      casterId: caster.id,
+      apAfter: caster.ap,
+      applied,
+      placed,
+    });
+
+    return { ok: true, applied, placed };
+  }
+
+  resolveAbilityTarget(abilityDef, caster, target) {
+    const t = abilityDef?.active?.target;
+
+    if (t === 'self') {
+      return { ok: true, targetUnit: caster, targetHex: { q: caster.q, r: caster.r } };
+    }
+
+    if (t === 'unit') {
+      const tu = target?.targetUnit || null;
+      if (!tu || !Number.isFinite(tu.q) || !Number.isFinite(tu.r)) return { ok: false, reason: 'no_target_unit' };
+      return { ok: true, targetUnit: tu, targetHex: { q: tu.q, r: tu.r } };
+    }
+
+    // hex / hex_aoe
+    const th = target?.targetHex || null;
+    if (!th || !Number.isFinite(th.q) || !Number.isFinite(th.r)) return { ok: false, reason: 'no_target_hex' };
+    return { ok: true, targetUnit: null, targetHex: { q: th.q, r: th.r } };
+  }
+
+  // Axial distance helpers (odd-r layout already used elsewhere; distance is axial-cube)
+  hexDistance(q1, r1, q2, r2) {
+    const dq = q2 - q1;
+    const dr = r2 - r1;
+    const ds = -dq - dr;
+    return (Math.abs(dq) + Math.abs(d r) + Math.abs(ds)) / 2;
+  }
+
+  getHexesInRadius(cq, cr, radius) {
+    const out = [];
+    const r = Math.max(0, Math.trunc(radius));
+    for (let dq = -r; dq <= r; dq++) {
+      for (let dr = Math.max(-r, -dq - r); dr <= Math.min(r, -dq + r); dr++) {
+        const q = cq + dq;
+        const rr = cr + dr;
+        out.push({ q, r: rr });
+      }
+    }
+    return out;
+  }
+
   async create() {
     this.hexSize = 22;
     this.mapWidth = 29;
@@ -439,12 +696,32 @@ export default class WorldScene extends Phaser.Scene {
     this.applyCombatEvent = (ev) => applyCombatEvent(this, ev);
     this.moveEnemies = () => moveEnemiesImpl(this);
 
-    // Wrap endTurn so that AFTER advancing to the next owner + reset,
-    // we can run auto-moves for the new active side.
+    // Wrap endTurn so that we can:
+    // 1) tick effects at end of the current turn
+    // 2) advance turn owner + reset (endTurnImpl)
+    // 3) tick effects at start of the next turn
+    // 4) run auto-moves for the new active side
     this.endTurn = () => {
+      // Effect END phase (before ownership changes)
+      try {
+        this.runEffectPhase?.(TICK_PHASE.TURN_END);
+        this.advanceEffectsOnTurnEnd?.();
+      } catch (e) {
+        console.warn('[EFF] endTurn phase failed:', e);
+      }
+
       endTurnImpl(this);
+
       // If endTurnImpl early-returned due to lock, don't do anything.
       if (this.uiLocked) return;
+
+      // Effect START phase (after reset, for new owner)
+      try {
+        this.runEffectPhase?.(TICK_PHASE.TURN_START);
+      } catch (e) {
+        console.warn('[EFF] startTurn phase failed:', e);
+      }
+
       this.runAutoMovesForTurnOwner?.();
     };
 
@@ -470,6 +747,9 @@ export default class WorldScene extends Phaser.Scene {
 
     this.players = this.players && this.players.length ? this.players : this.units.filter(u => u.isPlayer);
     this.enemies = this.enemies && this.enemies.length ? this.enemies : this.units.filter(u => u.isEnemy);
+
+    // Effects runtime (must run after units exist)
+    this.initEffectsRuntime?.();
 
     // If players array is empty, still allow singleplayer turnOwner
     this.turnOwner = this.players[0]?.playerName || this.players[0]?.name || this.playerName || null;
