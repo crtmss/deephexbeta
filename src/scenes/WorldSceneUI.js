@@ -25,12 +25,21 @@ import { ensureUnitCombatFields, spendAp } from '../units/UnitActions.js';
 import { getWeaponDef } from '../units/WeaponDefs.js';
 import { applyCombatEvent } from './WorldSceneCombatRuntime.js';
 import { AttackController } from '../combat/AttackController.js';
+import { AbilityController } from '../abilities/AbilityController.js';
+
 
 function ensureAttackController(scene) {
   if (!scene.attackController) {
     scene.attackController = new AttackController(scene);
   }
   return scene.attackController;
+}
+
+function ensureAbilityController(scene) {
+  if (!scene.abilityController) {
+    scene.abilityController = new AbilityController(scene);
+  }
+  return scene.abilityController;
 }
 
 /* ---------------- Camera controls (unused unless called) ---------------- */
@@ -131,6 +140,39 @@ export function setupCameraControls(scene) {
       return;
     }
 
+    // Left click: ability mode click-to-cast (handled before attack)
+if (String(scene.unitCommandMode || '').startsWith('ability:') && pointer && !pointer.rightButtonDown?.()) {
+  const caster = scene.selectedUnit;
+  if (caster) {
+    const worldX = pointer.worldX - (scene.mapOffsetX || 0);
+    const worldY = pointer.worldY - (scene.mapOffsetY || 0);
+    const frac = pixelToHex(worldX, worldY, scene.hexSize || 22);
+    const axial = roundHex(frac.q, frac.r);
+
+    const ab = ensureAbilityController(scene);
+
+    // AbilityController.tryCastHex returns:
+    // - true  => click was handled (cast or valid inside)
+    // - false => click outside highlighted targets (cancel ability mode)
+    const handled = ab.tryCastHex(axial.q, axial.r);
+
+    if (!handled) {
+      ab.exit('click_outside');
+      scene.unitCommandMode = null;
+
+      // ability highlighting is managed by AbilityController graphics,
+      // but we still clear combat preview to avoid confusion.
+      clearCombatPreview(scene);
+      scene.refreshUnitActionPanel?.();
+    }
+  }
+  return; // prevent fallthrough into attack logic
+}
+
+
+
+
+    
     // Left click: attack mode click-to-attack
     if (scene.unitCommandMode === 'attack' && pointer && !pointer.rightButtonDown?.()) {
       const attacker = scene.selectedUnit;
