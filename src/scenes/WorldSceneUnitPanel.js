@@ -10,11 +10,16 @@
 //
 // Controls:
 //  - Move: clears attack mode (movement remains click-to-move as before)
-//  - Attack: toggles scene.unitCommandMode = 'attack'
+//  - Attack: highlights attackable hexes (via AttackController)
 //  - Defence: calls applyDefence(unit)
 //  - Convoy/Hide: no-op placeholders
 //  - Turn: opens direction picker (free)
-
+//
+// NEW (Abilities v1):
+//  - Active Abilities folder: shows up to 2 cast buttons for unit's active abilities
+//  - Passive Abilities folder: shows passive icons (emoji) + names
+//  - Clicking an active ability enters targeting mode via AbilityController.
+//
 // ---------------------------------------------------------------------------
 // __COMBAT_DEBUG__ (auto-instrumentation)
 // Toggle in devtools: window.__COMBAT_DEBUG_ENABLED__ = true/false
@@ -79,6 +84,11 @@ import { updateCombatPreview, clearCombatPreview } from './WorldSceneCombatPrevi
 import { getWeaponDef } from '../units/WeaponDefs.js';
 import { AttackController } from '../combat/AttackController.js';
 
+// NEW: Abilities
+import { getUnitDef } from '../units/UnitDefs.js';
+import { getAbilityDef } from '../abilities/AbilityDefs.js';
+import { AbilityController } from '../abilities/AbilityController.js';
+
 const PANEL_DEPTH = 4200;
 
 const DIR_ANGLES = [
@@ -125,6 +135,57 @@ function weaponTooltipText(unit) {
   }
 
   return lines.join('\n');
+}
+
+/* =========================================================
+   ABILITIES HELPERS
+   ========================================================= */
+
+function getAbilitiesForUnit(unit) {
+  if (!unit) return { actives: [], passives: [] };
+
+  // prefer runtime fields if present
+  const act = Array.isArray(unit.activeAbilities) ? unit.activeAbilities : null;
+  const pas = Array.isArray(unit.passiveAbilities) ? unit.passiveAbilities : null;
+  if (act || pas) {
+    return {
+      actives: act || [],
+      passives: pas || [],
+    };
+  }
+
+  // fallback to defs by type
+  const def = getUnitDef(unit.type);
+  return {
+    actives: Array.isArray(def.activeAbilities) ? def.activeAbilities : [],
+    passives: Array.isArray(def.passiveAbilities) ? def.passiveAbilities : [],
+  };
+}
+
+function summarizeAbility(abilityId) {
+  const a = getAbilityDef(abilityId);
+  if (!a) return { title: abilityId, body: 'Missing def' };
+
+  const icon = a.icon ? `${a.icon} ` : '';
+  if (a.kind === 'active') {
+    const ad = a.active || {};
+    const rm = Number.isFinite(ad.rangeMin) ? ad.rangeMin : 0;
+    const rx = Number.isFinite(ad.rangeMax) ? ad.rangeMax : rm;
+    const tgt = ad.target || 'self';
+    const ap = Number.isFinite(ad.apCost) ? ad.apCost : 1;
+    const aoe = Number.isFinite(ad.aoeRadius) ? ad.aoeRadius : 0;
+    const extra = aoe > 0 ? `, AOE:${aoe}` : '';
+    return {
+      title: `${icon}${a.name}`,
+      body: `Type: ACTIVE\nAP: ${ap}\nTarget: ${tgt}\nRange: ${rm}-${rx}${extra}\n\n${a.desc || ''}`.trim(),
+    };
+  }
+
+  const pd = a.passive || {};
+  return {
+    title: `${icon}${a.name}`,
+    body: `Type: PASSIVE\n\n${a.desc || ''}`.trim(),
+  };
 }
 
 /* =========================================================
@@ -204,7 +265,6 @@ function makeHexInspectObj(q, r) {
   return { __hexInspect: true, q, r };
 }
 
-
 function setFacing(scene, unit, dirIndex) {
   if (!scene || !unit) return;
   const d = clamp(dirIndex | 0, 0, 5);
@@ -218,186 +278,135 @@ function setFacing(scene, unit, dirIndex) {
 /**
  * Create a styled text button inside a fixed container.
  */
-function makeTextButton(scene, parent, x, y, w, h, label, onClick) {
+function makeTextButton(scene, container, x, y, w, h, label, onClick) {
   const g = scene.add.graphics();
-  g.fillStyle(0x173b52, 1);
-  g.fillRoundedRect(x, y, w, h, 10);
-  g.lineStyle(2, 0x6fe3ff, 0.7);
-  g.strokeRoundedRect(x, y, w, h, 10);
+  const hit = scene.add.rectangle(0, 0, w, h, 0x000000, 0);
+  hit.setOrigin(0, 0);
 
-  const t = scene.add.text(x + w / 2, y + h / 2, label, {
-    fontSize: '14px',
+  const t = scene.add.text(0, 0, label, {
+    fontSize: '13px',
     color: '#e8f6ff',
     align: 'center',
-    wordWrap: { width: w - 10 },
-  }).setOrigin(0.5);
-
-  const hit = scene.add.rectangle(x, y, w, h, 0x000000, 0)
-    .setOrigin(0, 0)
-    .setInteractive({ useHandCursor: true });
-
-  const drawNormal = () => {
-    g.clear();
-    g.fillStyle(0x173b52, 1);
-    g.fillRoundedRect(x, y, w, h, 10);
-    g.lineStyle(2, 0x6fe3ff, 0.7);
-    g.strokeRoundedRect(x, y, w, h, 10);
-  };
-
-  const drawHover = () => {
-    g.clear();
-    g.fillStyle(0x1a4764, 1);
-    g.fillRoundedRect(x, y, w, h, 10);
-    g.lineStyle(2, 0x9be4ff, 1);
-    g.strokeRoundedRect(x, y, w, h, 10);
-  };
-
-  hit.on('pointerover', drawHover);
-  hit.on('pointerout', drawNormal);
-  hit.on('pointerdown', (pointer, lx, ly, event) => {
-    event?.stopPropagation?.();
-    onClick?.();
-  });
-
-  // Also let label click
-  t.setInteractive({ useHandCursor: true });
-  t.on('pointerdown', (pointer, lx, ly, event) => {
-    event?.stopPropagation?.();
-    onClick?.();
-  });
-  t.on('pointerover', drawHover);
-  t.on('pointerout', drawNormal);
-
-  parent.add([g, t, hit]);
-  return { g, t, hit, setLabel: (s) => t.setText(s) };
-}
-
-function makeTooltip(scene) {
-  const c = scene.add.container(0, 0).setDepth(PANEL_DEPTH + 50).setScrollFactor(0);
-  const bg = scene.add.graphics();
-  const text = scene.add.text(0, 0, '', {
     fontFamily: 'monospace',
-    fontSize: '12px',
-    color: '#e8f6ff',
-    align: 'left',
+    wordWrap: { width: w - 8 },
   });
-  text.setOrigin(0, 0);
-  c.add([bg, text]);
-  c.visible = false;
+  t.setOrigin(0.5, 0.5);
 
-  function show(str, x, y) {
-    const pad = 8;
-    text.setText(str || '');
-    const bounds = text.getBounds();
-    bg.clear();
-    bg.fillStyle(0x050f1a, 0.92);
-    bg.fillRoundedRect(-pad, -pad, bounds.width + pad * 2, bounds.height + pad * 2, 10);
-    bg.lineStyle(1, 0x34d2ff, 0.9);
-    bg.strokeRoundedRect(-pad, -pad, bounds.width + pad * 2, bounds.height + pad * 2, 10);
-    c.setPosition(x, y);
-    c.visible = true;
-  }
+  const draw = (hover) => {
+    g.clear();
+    g.fillStyle(hover ? 0x2a3b66 : 0x1a2240, 0.92);
+    g.fillRoundedRect(x, y, w, h, 8);
+    g.lineStyle(2, hover ? 0x86d6ff : 0x4aa6d8, 0.85);
+    g.strokeRoundedRect(x, y, w, h, 8);
+  };
+  draw(false);
 
-  function hide() {
-    c.visible = false;
-  }
+  hit.setPosition(x, y);
+  t.setPosition(x + w / 2, y + h / 2);
 
-  return { c, text, bg, show, hide };
+  container.add([g, hit, t]);
+
+  hit.setInteractive({ useHandCursor: true });
+  hit.on('pointerover', () => draw(true));
+  hit.on('pointerout', () => draw(false));
+  hit.on('pointerdown', () => onClick?.());
+
+  return { g, hit, t, draw };
 }
 
 /**
- * Stage C entry point.
+ * Attach unit panel to scene.
+ * Called once from WorldSceneMenus.setupWorldMenus(scene).
  */
 export function setupUnitActionPanel(scene) {
-  if (!scene) return;
+  if (scene.unitActionPanel) return;
 
-  // Persistent state
-  scene.unitPanelState = scene.unitPanelState || {
+  // Panel state
+  scene.unitPanelState = {
     page: 'root', // 'root' | 'active' | 'passive'
     turnPickerOpen: false,
   };
 
-  const W = 620;
+  // Container dims
+  const W = 600;
   const H = 170;
 
-  const container = scene.add.container(0, 0)
-    .setScrollFactor(0)
-    .setDepth(PANEL_DEPTH);
+  // Root container
+  const container = scene.add.container(0, 0).setDepth(PANEL_DEPTH);
   container.visible = false;
 
-  // =========================================================
-  // LAYERING FIX (CRITICAL)
-  // =========================================================
-  // makeTextButton() immediately adds its graphics/text/hit objects
-  // into `container`. In the earlier version of this file we added
-  // the background/bezel AFTER creating buttons, which put the BG on
-  // top of buttons (Phaser container render order = child order).
-  // That caused exactly the "layers overlap" issue you see.
-  //
-  // To guarantee correct z-order:
-  //  1) Add bg/bezel/blocker FIRST.
-  //  2) Create buttons/text afterwards.
-  //  3) Keep blocker BELOW buttons so it doesn't steal pointer events.
-  // =========================================================
-
+  // Background (semi-transparent)
   const bg = scene.add.graphics();
-  bg.fillStyle(0x0f2233, 0.94);
+  bg.fillStyle(0x0b0f1a, 0.82);
   bg.fillRoundedRect(0, 0, W, H, 14);
-  bg.lineStyle(2, 0x3da9fc, 1);
-  bg.strokeRoundedRect(0, 0, W, H, 14);
 
+  // Bezel
   const bezel = scene.add.graphics();
-  bezel.lineStyle(1, 0x9be4ff, 0.22);
-  for (let i = 1; i <= 2; i++) {
-    bezel.strokeRect(10 * i, 10 * i, W - 20 * i, H - 20 * i);
-  }
+  bezel.lineStyle(2, 0x4aa6d8, 0.65);
+  bezel.strokeRoundedRect(0, 0, W, H, 14);
 
-  // Click-blocker so clicks on empty parts of the panel don't leak into the world.
-  // Must stay BELOW buttons/labels in display order.
-  const blocker = scene.add.rectangle(0, 0, W, H, 0x000000, 0)
-    .setOrigin(0, 0)
-    .setInteractive({ useHandCursor: false });
-  blocker.on('pointerdown', (pointer, lx, ly, event) => {
-    event?.stopPropagation?.();
-  });
+  // Input blocker so clicks don't leak to world
+  const blocker = scene.add.rectangle(0, 0, W, H, 0x000000, 0);
+  blocker.setOrigin(0, 0);
+  blocker.setInteractive();
 
-  // Add base layers FIRST (fixes overlap/"greyed" buttons)
   container.add([bg, bezel, blocker]);
 
-  // Title + stats
+  // Left info section
   const titleText = scene.add.text(16, 12, 'Unit', {
-    fontSize: '18px',
+    fontSize: '16px',
     color: '#e8f6ff',
     fontStyle: 'bold',
   });
 
-  const statsText = scene.add.text(16, 38, '', {
+  const statsText = scene.add.text(16, 40, '', {
     fontSize: '13px',
     color: '#cfefff',
     fontFamily: 'monospace',
   });
 
   // Weapon area
-  const weaponLabel = scene.add.text(16, 86, 'Weapon:', {
+  const weaponLabel = scene.add.text(16, 96, 'Weapon:', {
     fontSize: '13px',
     color: '#9be4ff',
     fontFamily: 'monospace',
   });
-  const weaponText = scene.add.text(80, 86, '', {
+
+  const weaponText = scene.add.text(80, 96, '', {
     fontSize: '13px',
     color: '#e8f6ff',
     fontFamily: 'monospace',
   });
 
-  const tooltip = makeTooltip(scene);
-
-  // Keep tooltip near cursor
-  scene.input.on('pointermove', (pointer) => {
-    if (!tooltip.c.visible) return;
-    const x = pointer.x + 14;
-    const y = pointer.y + 14;
-    tooltip.c.setPosition(x, y);
-  });
+  // Tooltip for weapon
+  const tooltip = {
+    box: scene.add.graphics().setDepth(PANEL_DEPTH + 100),
+    text: scene.add.text(0, 0, '', {
+      fontSize: '12px',
+      color: '#e8f6ff',
+      fontFamily: 'monospace',
+      backgroundColor: 'rgba(0,0,0,0)',
+    }).setDepth(PANEL_DEPTH + 101),
+    visible: false,
+    show(msg, x, y) {
+      this.text.setText(msg);
+      this.text.setPosition(x, y);
+      const pad = 6;
+      const b = this.text.getBounds();
+      this.box.clear();
+      this.box.fillStyle(0x000000, 0.85);
+      this.box.fillRoundedRect(b.x - pad, b.y - pad, b.width + pad * 2, b.height + pad * 2, 8);
+      this.visible = true;
+      this.box.setVisible(true);
+      this.text.setVisible(true);
+    },
+    hide() {
+      this.visible = false;
+      this.box.setVisible(false);
+      this.text.setVisible(false);
+    },
+  };
+  tooltip.hide();
 
   weaponText.setInteractive({ useHandCursor: true });
   weaponText.on('pointerover', () => {
@@ -419,17 +428,24 @@ export function setupUnitActionPanel(scene) {
   // Root action buttons
   buttons.move = makeTextButton(scene, container, colX + (btnW + btnPad) * 0, rowY + (btnH + btnPad) * 0, btnW, btnH, 'Move', () => {
     scene.unitCommandMode = null;
+    scene.attackController?.exit?.('move');
+    scene.abilityController?.exit?.('move');
+    clearCombatPreview(scene);
     console.log('[UNITS] Move selected (click-to-move)');
   });
 
   buttons.defence = makeTextButton(scene, container, colX + (btnW + btnPad) * 1, rowY + (btnH + btnPad) * 0, btnW, btnH, 'Defence', () => {
     const u = scene.selectedUnit;
     if (!u) return;
+
+    // any mode off
+    scene.attackController?.exit?.('defence');
+    scene.abilityController?.exit?.('defence');
+    scene.unitCommandMode = null;
+    clearCombatPreview(scene);
+
     const res = applyDefence(u);
-    if (!res.ok) {
-      console.log('[DEFENCE] failed:', res.reason);
-      return;
-    }
+    console.log('[DEFENCE]', { ok: res.ok, reason: res.reason, heal: res.heal, tempArmorBonus: res.tempArmorBonus, unitId: u.id, q: u.q, r: u.r });
     scene.refreshUnitActionPanel?.();
   });
 
@@ -442,27 +458,29 @@ export function setupUnitActionPanel(scene) {
       return;
     }
 
-const wid = getActiveWeaponId(u);
-const wdef = wid ? getWeaponDef(wid) : null;
-const { rangeMin, rangeMax } = getWeaponRange(wdef);
+    // turn off ability mode
+    scene.abilityController?.exit?.('attack_btn');
 
-// Enter targeting mode via AttackController (highlights + authoritative click filtering)
-const ac = scene.attackController || (scene.attackController = new AttackController(scene));
-ac.enter(u);
+    const wid = getActiveWeaponId(u);
+    const wdef = wid ? getWeaponDef(wid) : null;
+    const { rangeMin, rangeMax } = getWeaponRange(wdef);
 
-// Also update numeric preview labels (damage estimates, etc.)
-updateCombatPreview(scene);
+    // Enter targeting mode via AttackController (highlights + authoritative click filtering)
+    const ac = scene.attackController || (scene.attackController = new AttackController(scene));
+    ac.enter(u);
 
-__dbg('PLAYER:AttackTargets', {
-  unitId: u.id,
-  weaponId: wid,
-  rangeMin,
-  rangeMax,
-  attackable: scene.attackableHexes?.size ?? 0
-});
+    // Also update numeric preview labels (damage estimates, etc.)
+    updateCombatPreview(scene);
+
+    __dbg('PLAYER:AttackTargets', {
+      unitId: u.id,
+      weaponId: wid,
+      rangeMin,
+      rangeMax,
+      attackable: scene.attackableHexes?.size ?? 0
+    });
     scene.refreshUnitActionPanel?.();
   });
-
 
   buttons.convoy = makeTextButton(scene, container, colX + (btnW + btnPad) * 0, rowY + (btnH + btnPad) * 1, btnW, btnH, 'Convoy', () => {
     console.log('[UNITS] Convoy (placeholder)');
@@ -479,12 +497,24 @@ __dbg('PLAYER:AttackTargets', {
 
   // Folder buttons
   buttons.activeFolder = makeTextButton(scene, container, colX + (btnW + btnPad) * 0, rowY + (btnH + btnPad) * 2, btnW * 1 + btnPad, btnH, 'Active\nAbilities', () => {
+    // leave any targeting modes
+    scene.attackController?.exit?.('open_active_folder');
+    scene.abilityController?.exit?.('open_active_folder');
+    scene.unitCommandMode = null;
+    clearCombatPreview(scene);
+
     scene.unitPanelState.page = 'active';
     scene.unitPanelState.turnPickerOpen = false;
     scene.refreshUnitActionPanel?.();
   });
 
   buttons.passiveFolder = makeTextButton(scene, container, colX + (btnW + btnPad) * 2 - (btnW * 1 + btnPad), rowY + (btnH + btnPad) * 2, btnW * 1 + btnPad, btnH, 'Passive\nAbilities', () => {
+    // leave any targeting modes
+    scene.attackController?.exit?.('open_passive_folder');
+    scene.abilityController?.exit?.('open_passive_folder');
+    scene.unitCommandMode = null;
+    clearCombatPreview(scene);
+
     scene.unitPanelState.page = 'passive';
     scene.unitPanelState.turnPickerOpen = false;
     scene.refreshUnitActionPanel?.();
@@ -495,17 +525,27 @@ __dbg('PLAYER:AttackTargets', {
     const u = scene.selectedUnit;
     const ws = Array.isArray(u?.weapons) ? u.weapons : [];
     if (!u || ws.length <= 1) return;
+
+    // switching weapon should recompute attack highlights if in attack mode
     const idx = Number.isFinite(u.activeWeaponIndex) ? u.activeWeaponIndex : 0;
     u.activeWeaponIndex = (idx + 1) % ws.length;
-    __dbg('PLAYER:WeaponSwitch', { unitId: u?.unitId ?? u?.id, activeWeaponIndex: u.activeWeaponIndex, weaponId: (u.weapons||[])[u.activeWeaponIndex] });
 
-    const wid = getActiveWeaponId(u);
-    const wdef = wid ? getWeaponDef(wid) : null;
-    const { rangeMin, rangeMax } = getWeaponRange(wdef);
-    const enemiesInRange = countEnemiesInRange(scene, u, rangeMin, rangeMax);
+    __dbg('PLAYER:WeaponSwitch', {
+      unitId: u?.unitId ?? u?.id,
+      activeWeaponIndex: u.activeWeaponIndex,
+      weaponId: (u.weapons || [])[u.activeWeaponIndex]
+    });
+
     if (scene.unitCommandMode === 'attack') {
+      // refresh attack controller highlights
+      scene.attackController?.enter?.(u);
       updateCombatPreview(scene);
     }
+    if (String(scene.unitCommandMode || '').startsWith('ability:')) {
+      // ability targeting depends on range too (ability controller will recompute on enter)
+      scene.abilityController?.recompute?.();
+    }
+
     scene.refreshUnitActionPanel?.();
   });
 
@@ -521,11 +561,24 @@ __dbg('PLAYER:AttackTargets', {
     fontFamily: 'monospace',
     wordWrap: { width: btnW * 3 + btnPad * 2 },
   });
+
+  // Back button (subpages)
   const backBtn = makeTextButton(scene, container, colX, 120, 92, 34, 'Back', () => {
     scene.unitPanelState.page = 'root';
     scene.unitPanelState.turnPickerOpen = false;
     scene.refreshUnitActionPanel?.();
   });
+
+  // NEW: Active ability cast buttons (2 slots)
+  const abilBtnW = btnW * 3 + btnPad * 2;
+  buttons.abilityA = makeTextButton(scene, container, colX, 80, abilBtnW, 34, '—', () => {});
+  buttons.abilityB = makeTextButton(scene, container, colX, 118, abilBtnW, 34, '—', () => {});
+
+  // NEW: Passive ability icons (up to 4 shown as text blocks)
+  const passiveLine1 = scene.add.text(colX, 78, '', { fontSize: '14px', color: '#cfefff', fontFamily: 'monospace' });
+  const passiveLine2 = scene.add.text(colX, 100, '', { fontSize: '14px', color: '#cfefff', fontFamily: 'monospace' });
+  const passiveLine3 = scene.add.text(colX, 122, '', { fontSize: '14px', color: '#cfefff', fontFamily: 'monospace' });
+  const passiveLine4 = scene.add.text(colX, 144, '', { fontSize: '14px', color: '#cfefff', fontFamily: 'monospace' });
 
   // Turn picker (6 small buttons)
   const tp = {
@@ -558,9 +611,17 @@ __dbg('PLAYER:AttackTargets', {
 
   // NOTE: bg/bezel/blocker were already added FIRST.
   // Now add UI content above them.
-  container.add([titleText, statsText, weaponLabel, weaponText, pageTitle, pageBody, backBtn.g, backBtn.t, backBtn.hit, tp.label]);
-  // NOTE: buttons were already added to container in makeTextButton
-  // We'll manage visibility per-page.
+  container.add([
+    titleText,
+    statsText,
+    weaponLabel,
+    weaponText,
+    pageTitle,
+    pageBody,
+    backBtn.g, backBtn.t, backBtn.hit,
+    tp.label,
+    passiveLine1, passiveLine2, passiveLine3, passiveLine4,
+  ]);
 
   // Store UI handles
   scene.unitActionPanel = {
@@ -578,6 +639,7 @@ __dbg('PLAYER:AttackTargets', {
     pageBody,
     backBtn,
     turnPicker: tp,
+    passiveLines: [passiveLine1, passiveLine2, passiveLine3, passiveLine4],
     W,
     H,
   };
@@ -620,7 +682,6 @@ __dbg('PLAYER:AttackTargets', {
     scene.refreshUnitActionPanel?.(obj);
     scene.children.bringToTop(scene.unitActionPanel.container);
   };
-
 
   scene.closeUnitActionPanel = function () {
     if (!scene.unitActionPanel) return;
@@ -682,6 +743,9 @@ __dbg('PLAYER:AttackTargets', {
         if (b.t?.input) b.t.disableInteractive();
       }
 
+      // Hide passive lines
+      for (const ln of (panel.passiveLines || [])) ln.setVisible(false);
+
       panel.pageTitle.setVisible(false);
       panel.pageBody.setVisible(false);
       panel.backBtn.g.setVisible(false);
@@ -712,7 +776,7 @@ __dbg('PLAYER:AttackTargets', {
     panel.weaponLabel.setVisible(true);
     panel.weaponText.setVisible(true);
 
-    // Title
+    // Title (unit name + faction after name)
     const nm = unit.unitName || unit.type || 'Unit';
     const fac = unit.faction || 'neutral';
     panel.titleText.setText(`${nm} [${fac}]`);
@@ -729,12 +793,12 @@ __dbg('PLAYER:AttackTargets', {
     const armorClass = unit.armorClass || 'NONE';
 
     const attackMode = scene.unitCommandMode === 'attack' ? 'ON' : 'OFF';
-    const defending = unit.status?.defending ? 'DEF' : '';
+    const abilityMode = String(scene.unitCommandMode || '').startsWith('ability:') ? 'ON' : 'OFF';
 
     panel.statsText.setText(
       `HP: ${fmt(hp)}/${fmt(hpMax)}   ARM: ${fmt(armor)}${bonus ? `(+${fmt(bonus)})` : ''} (${armorClass})\n` +
-      `MP: ${fmt(mp)}/${fmt(mpMax)}   AP: ${fmt(ap)}/${fmt(apMax)}   ${defending}\n` +
-      `Mode: Attack ${attackMode}`
+      `MP: ${fmt(mp)}/${fmt(mpMax)}   AP: ${fmt(ap)}/${fmt(apMax)}\n` +
+      `Mode: Attack ${attackMode}   Ability ${abilityMode}`
     );
 
     // Weapon text
@@ -790,9 +854,129 @@ __dbg('PLAYER:AttackTargets', {
       (!isRoot) ? panel.backBtn.t.setInteractive({ useHandCursor: true }) : panel.backBtn.t.disableInteractive();
     }
 
+    // Ability buttons + passive lines default hide (enabled per-page below)
+    const abA = panel.buttons.abilityA;
+    const abB = panel.buttons.abilityB;
+    if (abA) { abA.g.setVisible(false); abA.t.setVisible(false); abA.hit.setVisible(false); abA.hit.disableInteractive(); }
+    if (abB) { abB.g.setVisible(false); abB.t.setVisible(false); abB.hit.setVisible(false); abB.hit.disableInteractive(); }
+    for (const ln of (panel.passiveLines || [])) ln.setVisible(false);
+
     if (!isRoot) {
-      panel.pageTitle.setText(page === 'active' ? 'Active abilities' : 'Passive abilities');
-      panel.pageBody.setText('No abilities yet.\n\n(Placeholder folder)');
+      if (page === 'active') {
+        panel.pageTitle.setText('Active abilities');
+        const { actives } = getAbilitiesForUnit(unit);
+
+        const a1 = actives[0] || null;
+        const a2 = actives[1] || null;
+
+        const makeLabel = (id) => {
+          if (!id) return '—';
+          const d = getAbilityDef(id);
+          if (!d) return id;
+          const ic = d.icon ? `${d.icon} ` : '';
+          return `${ic}${d.name}`;
+        };
+
+        // render help text
+        const lines = [];
+        if (!actives.length) lines.push('No active abilities.');
+        else {
+          for (let i = 0; i < Math.min(2, actives.length); i++) {
+            const s = summarizeAbility(actives[i]);
+            lines.push(`${i + 1}) ${s.title}`);
+          }
+          lines.push('');
+          lines.push('Click an ability → highlighted targets');
+          lines.push('Then click a highlighted hex to cast.');
+        }
+        panel.pageBody.setText(lines.join('\n'));
+
+        // show cast buttons
+        if (abA) {
+          abA.t.setText(makeLabel(a1));
+          abA.g.setVisible(true); abA.t.setVisible(true); abA.hit.setVisible(true);
+          if (a1) {
+            abA.hit.setInteractive({ useHandCursor: true });
+            abA.hit.removeAllListeners('pointerdown');
+            abA.hit.on('pointerdown', () => {
+              const caster = scene.selectedUnit;
+              if (!caster) return;
+
+              // leave attack mode
+              scene.attackController?.exit?.('ability_btn');
+              clearCombatPreview(scene);
+
+              const d = getAbilityDef(a1);
+              __dbg('PLAYER:AbilityBtn', { unitId: caster.id, abilityId: a1, name: d?.name, ap: caster.ap, q: caster.q, r: caster.r });
+
+              const ctrl = scene.abilityController || (scene.abilityController = new AbilityController(scene));
+              ctrl.enter(caster, a1);
+              scene.refreshUnitActionPanel?.();
+            });
+          } else {
+            abA.hit.disableInteractive();
+          }
+        }
+
+        if (abB) {
+          abB.t.setText(makeLabel(a2));
+          abB.g.setVisible(true); abB.t.setVisible(true); abB.hit.setVisible(true);
+          if (a2) {
+            abB.hit.setInteractive({ useHandCursor: true });
+            abB.hit.removeAllListeners('pointerdown');
+            abB.hit.on('pointerdown', () => {
+              const caster = scene.selectedUnit;
+              if (!caster) return;
+
+              scene.attackController?.exit?.('ability_btn');
+              clearCombatPreview(scene);
+
+              const d = getAbilityDef(a2);
+              __dbg('PLAYER:AbilityBtn', { unitId: caster.id, abilityId: a2, name: d?.name, ap: caster.ap, q: caster.q, r: caster.r });
+
+              const ctrl = scene.abilityController || (scene.abilityController = new AbilityController(scene));
+              ctrl.enter(caster, a2);
+              scene.refreshUnitActionPanel?.();
+            });
+          } else {
+            abB.hit.disableInteractive();
+          }
+        }
+      } else {
+        // passive page
+        panel.pageTitle.setText('Passive abilities');
+        const { passives } = getAbilitiesForUnit(unit);
+
+        const lines = [];
+        if (!passives.length) {
+          lines.push('No passive abilities.');
+        } else {
+          for (let i = 0; i < Math.min(4, passives.length); i++) {
+            const d = getAbilityDef(passives[i]);
+            const ic = d?.icon ? `${d.icon} ` : '';
+            lines.push(`${ic}${d?.name || passives[i]}`);
+          }
+        }
+        panel.pageBody.setText(
+          passives.length
+            ? 'Passives are always-on.\n(Their effects will be applied by EffectEngine each turn.)'
+            : '—'
+        );
+
+        // also show them as icon lines (so later we can replace with real sprites)
+        const out = [];
+        for (let i = 0; i < Math.min(4, passives.length); i++) {
+          const d = getAbilityDef(passives[i]);
+          const ic = d?.icon ? `${d.icon} ` : '';
+          out.push(`${ic}${d?.name || passives[i]}`);
+        }
+        for (let i = 0; i < (panel.passiveLines || []).length; i++) {
+          const ln = panel.passiveLines[i];
+          if (!ln) continue;
+          ln.setVisible(true);
+          ln.setText(out[i] || '');
+        }
+      }
     }
 
     // Turn picker visibility
