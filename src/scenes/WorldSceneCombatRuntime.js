@@ -14,6 +14,19 @@ function __t(tag, data) {
   try { console.log(`[$COMBAT]`, data); } catch (_) {}
 }
 
+// Abilities / effects (Stage G+)
+// - Ability events should be applied identically on all clients.
+// - We keep this runtime tolerant: unknown ability/effect ids are ignored.
+// - We store HEX effects in a scene-owned serializable bag: scene.effectsState.
+
+import { getAbilityDef } from '../abilities/AbilityDefs.js';
+import {
+  addUnitEffect,
+  placeHexEffect,
+  ensureHexEffectsState,
+  ensureUnitEffectsState,
+} from '../effects/EffectEngine.js';
+
 // IMPORTANT:
 // In your project you said you DON'T have WorldSceneCombatFX.js.
 // Static import would crash the module graph.
@@ -58,6 +71,13 @@ async function spawnDeathFXSafe(scene, unit) {
 
 export function applyCombatEvent(scene, event) {
   if (!scene || !event) return;
+
+  // Route other authoritative world events through the same entry point.
+  if (event.type === 'ability:cast') {
+    applyAbilityEvent(scene, event);
+    return;
+  }
+
   if (event.type !== 'combat:attack') return;
 
   const {
@@ -135,6 +155,133 @@ export function applyCombatEvent(scene, event) {
   } catch (e) {}
 }
 
+/* =========================================================
+   Abilities
+   ========================================================= */
+
+/**
+ * Apply an authoritative ability cast event.
+ *
+ * Expected shape (tolerant):
+ * {
+ *   type:'ability:cast',
+ *   casterId, abilityId,
+ *   targetUnitId?, targetHex?:{q,r},
+ *   casterApAfter?,
+ *   unitEffects?: [{ targetId, effectId, duration?, stacks?, params?, sourceUnitId?, sourceFaction? }],
+ *   hexEffects?:  [{ q, r, effectId, duration?, stacks?, params?, sourceUnitId?, sourceFaction? }],
+ * }
+ */
+export function applyAbilityEvent(scene, event) {
+  if (!scene || !event) return;
+  if (event.type !== 'ability:cast') return;
+
+  // Ensure effect state container exists
+  if (!scene.effectsState || typeof scene.effectsState !== 'object') {
+    scene.effectsState = {};
+  }
+  ensureHexEffectsState(scene.effectsState);
+
+  const caster = findUnit(scene, event.casterId);
+  if (!caster) {
+    console.warn('[ABILITY] Missing caster for event', event);
+    return;
+  }
+
+  ensureUnitEffectsState(caster);
+
+  // If the host included an authoritative AP value, apply it (do NOT guess)
+  if (Number.isFinite(event.casterApAfter)) {
+    caster.ap = Math.max(0, event.casterApAfter);
+  }
+
+  const abilityId = String(event.abilityId || '').trim().toLowerCase();
+  const adef = abilityId ? getAbilityDef(abilityId) : null;
+
+  const unitEffects = Array.isArray(event.unitEffects) ? event.unitEffects : [];
+  const hexEffects = Array.isArray(event.hexEffects) ? event.hexEffects : [];
+
+  // Apply UNIT effects
+  let appliedUnit = 0;
+  for (const ue of unitEffects) {
+    if (!ue || !ue.effectId) continue;
+    const target = findUnit(scene, ue.targetId);
+    if (!target) continue;
+    ensureUnitEffectsState(target);
+    const inst = addUnitEffect(target, String(ue.effectId), {
+      duration: ue.duration,
+      stacks: ue.stacks,
+      params: ue.params,
+      sourceUnitId: ue.sourceUnitId ?? event.casterId,
+      sourceFaction: ue.sourceFaction ?? caster.faction,
+      instanceId: ue.instanceId,
+    });
+    if (inst) appliedUnit++;
+  }
+
+  // Apply HEX effects
+  let appliedHex = 0;
+  for (const he of hexEffects) {
+    if (!he || !he.effectId) continue;
+    const q = Number(he.q);
+    const r = Number(he.r);
+    if (!Number.isFinite(q) || !Number.isFinite(r)) continue;
+
+    const inst = placeHexEffect(scene.effectsState, q, r, String(he.effectId), {
+      duration: he.duration,
+      stacks: he.stacks,
+      params: he.params,
+      sourceUnitId: he.sourceUnitId ?? event.casterId,
+      sourceFaction: he.sourceFaction ?? caster.faction,
+      instanceId: he.instanceId,
+    });
+    if (inst) appliedHex++;
+  }
+
+  // Compact trace
+  try {
+    const casterName = caster.unitName || caster.name || caster.type || caster.id || event.casterId;
+    const abName = adef?.name || abilityId || 'ability';
+    console.log('[ABILITY]', `${casterName} cast ${abName}`, {
+      abilityId,
+      casterId: event.casterId,
+      targetUnitId: event.targetUnitId ?? null,
+      targetHex: event.targetHex ?? null,
+      unitEffects: appliedUnit,
+      hexEffects: appliedHex,
+    });
+  } catch (_e) {}
+
+  // Optional: add to History panel
+  try {
+    const year =
+      (typeof scene.getNextHistoryYear === 'function')
+        ? scene.getNextHistoryYear()
+        : 5000 + (Number.isFinite(scene.turnNumber) ? scene.turnNumber : 0);
+
+    const tq = Number.isFinite(event?.targetHex?.q) ? event.targetHex.q : (caster.q ?? 0);
+    const tr = Number.isFinite(event?.targetHex?.r) ? event.targetHex.r : (caster.r ?? 0);
+
+    scene.addHistoryEntry?.({
+      year,
+      type: 'ability',
+      q: tq,
+      r: tr,
+      text: `${caster.unitName || caster.name || caster.type} cast ${adef?.name || abilityId}`,
+    });
+  } catch (_e) {}
+
+  // Hook for UI (icons, particles)
+  scene.onAbilityResolved?.(event);
+}
+
+export function applyWorldEvent(scene, event) {
+  // Convenience router for future net bridges.
+  if (!event) return;
+  if (event.type === 'combat:attack') return applyCombatEvent(scene, event);
+  if (event.type === 'ability:cast') return applyAbilityEvent(scene, event);
+}
+
 /* ========================================================= */
 
 function findUnit(scene, netId) {
@@ -178,4 +325,6 @@ function removeUnit(scene, unit) {
 
 export default {
   applyCombatEvent,
+  applyAbilityEvent,
+  applyWorldEvent,
 };
