@@ -583,12 +583,12 @@ export default class WorldScene extends Phaser.Scene {
   }
 
   // Axial distance helpers (odd-r layout already used elsewhere; distance is axial-cube)
-  hexDistance(q1, r1, q2, r2) {
-    const dq = q2 - q1;
-    const dr = r2 - r1;
-    const ds = -dq - dr;
-    return (Math.abs(dq) + Math.abs(d r) + Math.abs(ds)) / 2;
-  }
+hexDistance(q1, r1, q2, r2) {
+  const dq = q2 - q1;
+  const dr = r2 - r1;
+  const ds = -dq - dr;
+  return (Math.abs(dq) + Math.abs(dr) + Math.abs(ds)) / 2;
+}
 
   getHexesInRadius(cq, cr, radius) {
     const out = [];
