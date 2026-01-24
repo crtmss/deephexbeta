@@ -192,6 +192,18 @@ import { applyLogisticsOnEndTurn } from './WorldSceneLogistics.js';
 import { applyLogisticsRoutesOnEndTurn } from './WorldSceneLogisticsRuntime.js';
 
 import { updateTurnText } from './WorldSceneUI.js';
+
+// Effects / Abilities (pure logic)
+import { getAbilityDef } from '../abilities/AbilityDefs.js';
+import {
+  ensurePassiveEffects,
+  tickUnitEffects,
+  tickHexEffects,
+  decrementUnitEffectDurations,
+  decrementHexEffectDurations,
+  cleanupExpiredUnitEffects,
+  cleanupExpiredHexEffects,
+} from '../effects/EffectEngine.js';
 import { ensureUnitCombatFields } from '../units/UnitActions.js';
 import { applyElectricityOnEndTurn } from './WorldSceneElectricity.js';
 
@@ -251,6 +263,9 @@ export function endTurn(scene) {
   if (scene.uiLocked) return;
   scene.uiLocked = true;
 
+  const prevOwner = scene.turnOwner;
+  const prevTurnNumber = scene.turnNumber;
+
   console.log(`[TURN] Ending turn for ${scene.turnOwner} (Turn ${scene.turnNumber})`);
 
   // 1) Apply all "end of turn" systems for the CURRENT owner
@@ -277,6 +292,51 @@ export function endTurn(scene) {
     console.error('[ENERGY] Error during end-turn electricity tick:', err);
   }
 
+  // -------------------------------------------------------------------------
+  // Effects pipeline (compact, high-signal logs via EffectEngine)
+  // 1) Ensure passive effects exist (infinite duration) based on passive abilities
+  // 2) Tick effects (turnEnd) for the side that is ENDING their turn
+  // 3) Decrement durations and cleanup (1 decrement per player turn)
+  // -------------------------------------------------------------------------
+
+  try {
+    const allUnits = ([])
+      .concat(scene.units || [])
+      .concat(scene.players || [])
+      .concat(scene.enemies || [])
+      .concat(scene.haulers || [])
+      .concat(scene.ships || []);
+
+    // Ensure passives exist (cheap)
+    for (const u of allUnits) {
+      if (!u) continue;
+      ensurePassiveEffects(u, getAbilityDef);
+    }
+
+    // Tick unit effects
+    for (const u of allUnits) {
+      if (!u) continue;
+      tickUnitEffects(u, 'turnEnd', {
+        scene,
+        turnOwner: prevOwner,
+        turnNumber: prevTurnNumber,
+      });
+      decrementUnitEffectDurations(u);
+      cleanupExpiredUnitEffects(u);
+    }
+
+    // Tick hex effects
+    tickHexEffects(scene, 'turnEnd', {
+      scene,
+      turnOwner: prevOwner,
+      turnNumber: prevTurnNumber,
+    });
+    decrementHexEffectDurations(scene);
+    cleanupExpiredHexEffects(scene);
+  } catch (e) {
+    console.warn('[EFF] endTurn pipeline failed:', e);
+  }
+
   // 2) Advance to next owner FIRST (so that "resetUnitsForNewTurn" applies to the correct side)
   const playersArr = scene.players || [];
   const idx = playersArr.findIndex(p =>
@@ -301,6 +361,32 @@ export function endTurn(scene) {
 
   // 3) Now reset MP/AP for the NEW owner
   resetUnitsForNewTurn(scene);
+
+  // Turn-start tick (does not decrement durations)
+  try {
+    const allUnits = ([])
+      .concat(scene.units || [])
+      .concat(scene.players || [])
+      .concat(scene.enemies || [])
+      .concat(scene.haulers || [])
+      .concat(scene.ships || []);
+
+    for (const u of allUnits) {
+      if (!u) continue;
+      tickUnitEffects(u, 'turnStart', {
+        scene,
+        turnOwner: scene.turnOwner,
+        turnNumber: scene.turnNumber,
+      });
+    }
+    tickHexEffects(scene, 'turnStart', {
+      scene,
+      turnOwner: scene.turnOwner,
+      turnNumber: scene.turnNumber,
+    });
+  } catch (e) {
+    console.warn('[EFF] turnStart tick failed:', e);
+  }
 
   // 4) AI acts on its turn AFTER it has been reset
   // (This keeps "AI ALWAYS ACTS AFTER PLAYER TURN" behavior, but correctly aligned with turnOwner.)
