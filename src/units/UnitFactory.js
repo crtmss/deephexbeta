@@ -51,6 +51,10 @@ export function createUnitState(opts) {
   const def = getUnitDef(opts.type);
   const id = `u${_seq++}`;
 
+  const weapons = Array.isArray(def.weapons) ? def.weapons.slice() : [];
+  const activeAbilities = Array.isArray(def.activeAbilities) ? def.activeAbilities.slice() : [];
+  const passiveAbilities = Array.isArray(def.passiveAbilities) ? def.passiveAbilities.slice() : [];
+
   return {
     id,
     type: def.id,
@@ -61,6 +65,7 @@ export function createUnitState(opts) {
     q: opts.q,
     r: opts.r,
     facing: Number.isFinite(opts.facing) ? opts.facing : 0,
+    // Core stats
     hpMax: def.hpMax,
     hp: def.hpMax,
     armorPoints: def.armorPoints,
@@ -69,8 +74,20 @@ export function createUnitState(opts) {
     mp: def.mpMax,
     apMax: def.apMax,
     ap: def.apMax,
-    weapons: Array.isArray(def.weapons) ? def.weapons.slice() : [],
+
+    // Vision (used by fog-of-war and ability range in future)
+    visionMax: Number.isFinite(def.visionMax) ? def.visionMax : (Number.isFinite(def.vision) ? def.vision : 4),
+    vision: Number.isFinite(def.visionMax) ? def.visionMax : (Number.isFinite(def.vision) ? def.vision : 4),
+
+    // Weapons + abilities
+    weapons,
     activeWeaponIndex: 0,
+
+    activeAbilities,
+    passiveAbilities,
+
+    // Effect instances live here (EffectEngine ensures shape)
+    effects: [],
     status: {},
   };
 }
@@ -110,8 +127,18 @@ export function applyUnitStateToPhaserUnit(phaserUnit, state) {
   phaserUnit.ap = state.ap;
   phaserUnit.apMax = state.apMax;
 
+  phaserUnit.vision = state.vision;
+  phaserUnit.visionMax = state.visionMax;
+
   phaserUnit.weapons = state.weapons;
   phaserUnit.activeWeaponIndex = state.activeWeaponIndex;
+
+  phaserUnit.activeAbilities = state.activeAbilities;
+  phaserUnit.passiveAbilities = state.passiveAbilities;
+
+  // Effects array is managed by EffectEngine; keep it on unit for runtime.
+  if (!Array.isArray(phaserUnit.effects)) phaserUnit.effects = state.effects || [];
+
   phaserUnit.status = state.status;
 
   // Legacy compatibility
