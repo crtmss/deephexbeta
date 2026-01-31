@@ -42,6 +42,48 @@ function findUnitAtHex(scene, q, r) {
   return all.find(u => u && !u.isDead && u.q === q && u.r === r) || null;
 }
 
+function getFaction(u) {
+  // Keep consistent with the combat preview helpers.
+  return String(u?.faction ?? u?.ownerId ?? u?.ownerSlot ?? (u?.isEnemy ? 'raiders' : 'neutral'));
+}
+
+// Compute a hex outline ring (flat-top) in *iso* space, matching WorldSceneMap.drawHex.
+// Reused from WorldSceneCombatPreview.js so the highlight is the HEX CONTOUR (not a circle).
+function hexIsoRing(scene, xIso, yIso, size) {
+  const ISO_SHEAR = scene.ISO_SHEAR ?? 0.5;
+  const ISO_YSCALE = scene.ISO_YSCALE ?? 0.866;
+  const isoOffset = (x, y) => ({ x: x - y * ISO_SHEAR, y: y * ISO_YSCALE });
+
+  const w = size * Math.sqrt(3) / 2;
+  const h = size / 2;
+  const d = [
+    { dx: 0,  dy: -size },
+    { dx: +w, dy: -h    },
+    { dx: +w, dy: +h    },
+    { dx: 0,  dy: +size },
+    { dx: -w, dy: +h    },
+    { dx: -w, dy: -h    },
+  ];
+  return d.map(({ dx, dy }) => {
+    const off = isoOffset(dx, dy);
+    return { x: xIso + off.x, y: yIso + off.y };
+  });
+}
+
+function strokeHexOutline(scene, graphics, q, r, alpha = 0.85) {
+  const pos = (typeof scene.axialToWorld === 'function')
+    ? scene.axialToWorld(q, r)
+    : { x: 0, y: 0 };
+  const size = scene.hexSize || 22;
+  const ring = hexIsoRing(scene, pos.x, pos.y, size * 0.62);
+  graphics.lineStyle(3, 0x9bffb0, alpha);
+  graphics.beginPath();
+  graphics.moveTo(ring[0].x, ring[0].y);
+  for (let i = 1; i < 6; i++) graphics.lineTo(ring[i].x, ring[i].y);
+  graphics.closePath();
+  graphics.strokePath();
+}
+
 const __A_ON__ = () => (typeof window !== 'undefined' ? (window.__TRACE_ABILITY__ ?? true) : false);
 function __a(tag, data) {
   if (!__A_ON__()) return;
@@ -144,55 +186,57 @@ export class AbilityController {
       scene.abilityTargetableHexes = this.targetable;
       this.clearHighlights();
 
-      // draw only caster outline (so player understands it's a self cast)
-      const pos = (typeof scene.axialToWorld === 'function') ? scene.axialToWorld(caster.q, caster.r) : { x: 0, y: 0 };
-      const R = (scene.hexSize || 22) * 0.62;
-      this.g.lineStyle(3, 0x9bffb0, 0.95);
-      this.g.strokeCircle(pos.x, pos.y, R);
+      // draw caster HEX outline (so unit badge doesn't obscure it)
+      strokeHexOutline(scene, this.g, caster.q, caster.r, 0.95);
 
       __a('targets', { abilityId: def.id, mode: 'self', count: 1, at: { q: caster.q, r: caster.r } });
       return;
     }
 
-    const mapW = scene.mapWidth || 0;
-    const mapH = scene.mapHeight || 0;
+    // Prefer iterating actual tiles to avoid missing tiles when mapW/mapH differs.
+    const tiles = Array.isArray(scene.mapData) ? scene.mapData : [];
 
     const set = new Set();
+    const coords = [];
+
     this.clearHighlights();
 
-    // Use outline-only highlights (so unit badge / icons are not obscured)
-    this.g.lineStyle(3, 0x9bffb0, 0.85);
+    const casterFaction = getFaction(caster);
+    const enemyOnly = !!a.enemyOnly;
+    const allyOnly = !!a.allyOnly;
+    const emptyOnly = !!a.emptyOnly;
 
-    if (mapW > 0 && mapH > 0) {
-      for (let q = 0; q < mapW; q++) {
-        for (let r = 0; r < mapH; r++) {
-          if (typeof scene.tileAt === 'function' && !scene.tileAt(q, r)) continue;
+    for (const t of tiles) {
+      if (!t) continue;
+      const q = t.q;
+      const r = t.r;
+      if (!Number.isFinite(q) || !Number.isFinite(r)) continue;
 
-          const dist = hexDistanceOddR(caster.q, caster.r, q, r);
-          if (!Number.isFinite(dist)) continue;
-          if (dist < rangeMin || dist > rangeMax) continue;
+      const dist = hexDistanceOddR(caster.q, caster.r, q, r);
+      if (!Number.isFinite(dist)) continue;
+      if (dist < rangeMin || dist > rangeMax) continue;
 
-          // unit-target: require a unit on hex
-          if (target === 'unit') {
-            const u = findUnitAtHex(scene, q, r);
-            if (!u || u === caster) continue;
+      const u = findUnitAtHex(scene, q, r);
+      if (emptyOnly && u) continue;
 
-            // For now: everyone is hostile to everyone (as you requested earlier),
-            // so we allow any other unit. Later we can add faction filters in AbilityDefs.
-          }
-
-          set.add(key(q, r));
-
-          const pos = (typeof scene.axialToWorld === 'function') ? scene.axialToWorld(q, r) : { x: 0, y: 0 };
-          const R = (scene.hexSize || 22) * 0.60;
-          this.g.strokeCircle(pos.x, pos.y, R);
-        }
+      if (target === 'unit') {
+        if (!u || u === caster) continue;
+        const uf = getFaction(u);
+        if (enemyOnly && uf === casterFaction) continue;
+        if (allyOnly && uf !== casterFaction) continue;
       }
+
+      set.add(key(q, r));
+      coords.push([q, r]);
+
+      // HEX outline highlight (not circle)
+      strokeHexOutline(scene, this.g, q, r, 0.70);
     }
 
     this.targetable = set;
     scene.abilityTargetableHexes = set;
 
+    // Compact but useful: includes a sample of target coords.
     __a('targets', {
       abilityId: def.id,
       target,
@@ -200,6 +244,7 @@ export class AbilityController {
       rangeMax,
       aoeRadius,
       count: set.size,
+      sample: coords.slice(0, 12),
     });
   }
 
