@@ -9,10 +9,6 @@ import { getLobbyState } from '../net/LobbyManager.js';
 import { createUnitState, applyUnitStateToPhaserUnit } from '../units/UnitFactory.js';
 import { getUnitDef } from '../units/UnitDefs.js';
 
-// Abilities / effects
-import { getAbilityDef } from '../abilities/AbilityDefs.js';
-import { ensurePassiveEffects } from '../effects/EffectEngine.js';
-
 // Basic visual / model constants
 const UNIT_Z = {
   player: 2000,
@@ -378,11 +374,6 @@ function createMobileBase(scene, spawnTile, player, _color, playerIndex) {
   applyUnitStateToPhaserUnit(unit, st);
   unit.faction = st.faction;
 
-  try { ensurePassiveEffects(unit, getAbilityDef); } catch (_e) {}
-
-  // Passive abilities -> always-on effects
-  try { ensurePassiveEffects(unit, getAbilityDef); } catch (_e) {}
-
   unit.facingAngle = 0;
 
   // Keep a stable id for selection systems
@@ -555,8 +546,6 @@ function createTransporter(scene, q, r, owner) {
   unit.unitName = def.name;
   applyUnitStateToPhaserUnit(unit, st);
   unit.faction = st.faction;
-
-  try { ensurePassiveEffects(unit, getAbilityDef); } catch (_e) {}
 
   return unit;
 }
@@ -797,7 +786,18 @@ export async function spawnUnitsAndEnemies() {
     scene.players.push(unit);
   });
 
-  // =========================================================
+  
+
+// Elimination mission: no camps/enemies/resources, only players
+if (scene.isEliminationMission || scene.missionType === 'elimination') {
+  scene.enemies = scene.enemies || [];
+  scene.enemies.length = 0;
+  scene.raiderCamp = null;
+  console.log('[Units] Elimination mission: skipping enemy/camp spawns.');
+  console.log('[Units] Spawn complete: ' + scene.players.length + ' players, 0 enemies.');
+  return;
+}
+// =========================================================
   // ✅ PATCH: Enemy spawning logic changed:
   // - NO aiSlots spawning
   // - NO neutral enemies spawning
