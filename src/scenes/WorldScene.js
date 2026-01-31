@@ -336,6 +336,82 @@ function applyRoadPlansToMap(scene) {
   scene.__roadsAppliedFromLore = true;
 }
 
+/* =========================================================
+   Elimination mission: flat circular arena (no POI/resources/camps)
+   ========================================================= */
+
+function applyEliminationArenaMap(scene) {
+  const w = scene.mapWidth;
+  const h = scene.mapHeight;
+  if (!Array.isArray(scene.mapData) || scene.mapData.length === 0) return;
+
+  const cx = (w - 1) / 2;
+  const cy = (h - 1) / 2;
+  const radius = Math.floor(Math.min(w, h) * 0.42); // ~12 for 29x29
+
+  const isInside = (q, r) => {
+    const dx = q - cx;
+    const dy = r - cy;
+    // Euclidean works fine for a "round" arena in axial coords
+    return Math.sqrt(dx*dx + dy*dy) <= radius;
+  };
+
+  for (const t of scene.mapData) {
+    if (!t) continue;
+
+    // wipe world clutter flags
+    t.hasForest = false;
+    t.forestDensity = 0;
+    t.hasRoad = false;
+    if (t.roadLinks instanceof Set) t.roadLinks.clear();
+
+    // clear any lore / POI markers so drawLocations doesn't render anything
+    t.poi = null;
+    t.poiType = null;
+    t.poiEmoji = null;
+    t.ruin = null;
+    t.city = null;
+    t.camp = null;
+    t.location = null;
+
+    if (isInside(t.q, t.r)) {
+      // Flat land
+      t.type = 'grassland';
+      t.groundType = 'grassland';
+      t.baseElevation = 4;
+      t.elevation = 4;
+      t.visualElevation = 1;
+      t.isWater = false;
+      t.isUnderWater = false;
+      t.isCoveredByWater = false;
+      t.waterDepth = 0;
+    } else {
+      // Water outside arena
+      t.type = 'water';
+      t.groundType = 'water';
+      t.baseElevation = 1;
+      t.elevation = 1;
+      t.visualElevation = 0;
+      t.isWater = true;
+      t.isUnderWater = true;
+      t.isCoveredByWater = true;
+      t.waterDepth = 1;
+    }
+  }
+
+  // Ensure any mapInfo objects (geos, POI props) are removed
+  if (scene.mapInfo && Array.isArray(scene.mapInfo.objects)) scene.mapInfo.objects = [];
+  if (scene.hexMap) scene.hexMap.objects = [];
+
+  // Disable lore-driven systems for this mission
+  scene.__worldLoreGenerated = true;
+  scene.__roadsAppliedFromLore = true;
+  scene.loreState = scene.loreState || {};
+  scene.loreState.roadPlans = [];
+
+  console.log(`[MISSION] Elimination arena applied: radius=${radius} (${w}x${h})`);
+}
+
 export default class WorldScene extends Phaser.Scene {
   constructor() {
     super('WorldScene');
@@ -633,7 +709,7 @@ hexDistance(q1, r1, q2, r2) {
 
     this.uiLocked = false;
 
-    const { seed, playerName, roomCode, isHost, supabase, lobbyState } =
+    const { seed, playerName, roomCode, isHost, supabase, lobbyState, missionType } =
       this.scene.settings.data || {};
 
     this.seed = seed || '000000';
@@ -645,6 +721,10 @@ hexDistance(q1, r1, q2, r2) {
 
     this.supabase = supabase || sharedSupabase || null;
     this.lobbyState = lobbyState || { units: {}, enemies: [] };
+
+    // Mission type affects map generation/spawns
+    this.missionType = missionType || this.lobbyState?.missionType || 'big_construction';
+    this.isEliminationMission = (this.missionType === 'elimination');
 
     this.turnOwner = null;
     this.turnNumber = 1;
@@ -670,6 +750,10 @@ hexDistance(q1, r1, q2, r2) {
     this.mapInfo = mapInfo;
     this.hexMap.mapInfo = mapInfo;
     this.mapData = mapInfo.tiles;
+
+    if (this.isEliminationMission) {
+      applyEliminationArenaMap(this);
+    }
 
     // Electricity init
     this.electricitySystem = ElectricitySystem || null;
@@ -730,13 +814,19 @@ hexDistance(q1, r1, q2, r2) {
     // ✅ IMPORTANT CHANGE:
     // We need water-level recompute BEFORE lore (so "water"/land is final),
     // but we must NOT redraw until AFTER we apply lore road plans.
-    this.recomputeWaterFromLevel({ skipRedraw: true });
+    if (!this.isEliminationMission) {
+      this.recomputeWaterFromLevel({ skipRedraw: true });
+    }
 
     // ✅ Generate lore/POI now that water is correct
-    this.ensureLoreReadyBeforeFirstDraw();
+    if (!this.isEliminationMission) {
+      this.ensureLoreReadyBeforeFirstDraw();
+    }
 
     // ✅ Apply road plans from lore (roads now exist ONLY if there were secondary road events)
-    applyRoadPlansToMap(this);
+    if (!this.isEliminationMission) {
+      applyRoadPlansToMap(this);
+    }
 
     // ✅ Now draw world once (hexmap + locations/roads + resources)
     this.redrawWorld();
@@ -1075,11 +1165,15 @@ Biomes: ${biome}`;
   redrawWorld() {
     // ✅ Safety: any external redraw (water-level changes etc.)
     // must not happen before lore exists, otherwise POIs/history can desync.
-    this.ensureLoreReadyBeforeFirstDraw();
+    if (!this.isEliminationMission) {
+      this.ensureLoreReadyBeforeFirstDraw();
+    }
 
     // Ensure roads are applied (safe if already applied)
     if (!this.__roadsAppliedFromLore) {
+      if (!this.isEliminationMission) {
       applyRoadPlansToMap(this);
+    }
     }
 
     drawHexMap.call(this);
