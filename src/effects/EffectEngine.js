@@ -20,7 +20,7 @@
 // NOTE:
 // - This file does NOT know about supabase/lobby/host. It only manipulates plain objects.
 
-import { getEffectDef, EFFECT_KINDS, STACKING, TICK_PHASE, TICK_ACTIONS, MOD_STATS } from './EffectDefs.js';
+import { getEffectDef, EFFECT_KINDS, STACKING, TICK_ACTIONS, MOD_STATS } from './EffectDefs.js';
 
 /* ============================================================================
    Trace logger
@@ -50,9 +50,17 @@ function uid(prefix = 'e') {
   return `${prefix}_${Math.random().toString(36).slice(2, 9)}${Date.now().toString(36)}`;
 }
 
+/**
+ * Status slots (for UI):
+ * - unit.effects remains the authoritative list of effect instances.
+ * - unit.statuses is a UI-friendly list of active TEMPORARY statuses (max 10).
+ */
+const MAX_UNIT_STATUSES = 10;
+
 export function ensureUnitEffectsState(unit) {
   if (!unit) return;
   if (!Array.isArray(unit.effects)) unit.effects = [];
+  if (!Array.isArray(unit.statuses)) unit.statuses = [];
 }
 
 export function ensureHexEffectsState(state) {
@@ -87,6 +95,70 @@ function findHexEffect(state, key, defId) {
   return arr.find(e => e && e.defId === defId) || null;
 }
 
+/**
+ * Decide whether an effect instance should be represented in unit.statuses.
+ * Design rule (for now):
+ * - TEMPORARY effects (duration > 0) -> status slot
+ * - INFINITE effects (duration == 0) -> not a status slot (passives), unless forced
+ */
+function isStatusEffectInstance(inst, def) {
+  // if effect def explicitly says "uiHidden" or similar, you can wire it later in EffectDefs.
+  // For now we keep it rule-based.
+  if (!inst || !def) return false;
+  if (inst.disabled) return false;
+  const d = asInt(inst.duration, 0);
+  return d > 0; // temporary only
+}
+
+/**
+ * Ensure unit.statuses mirrors unit.effects (TEMP effects only), max 10.
+ * Keeps stable order: existing order preserved, then fills with newly found.
+ */
+export function syncUnitStatuses(unit) {
+  ensureUnitEffectsState(unit);
+
+  const existing = Array.isArray(unit.statuses) ? unit.statuses : [];
+  const existingIds = new Set(existing.map(s => s?.defId).filter(Boolean));
+
+  // build list of desired statuses from effects
+  const desired = [];
+  for (const inst of unit.effects) {
+    if (!inst || inst.disabled) continue;
+    const def = getEffectDef(inst.defId);
+    if (!def || def.kind !== EFFECT_KINDS.UNIT) continue;
+    if (!isStatusEffectInstance(inst, def)) continue;
+    desired.push(inst);
+  }
+
+  // keep current ones that still exist
+  const next = [];
+  for (const s of existing) {
+    if (!s || !s.defId) continue;
+    const still = desired.find(d => d && d.defId === s.defId);
+    if (still) next.push({ defId: still.defId, id: still.id });
+  }
+
+  // append new ones not present
+  for (const inst of desired) {
+    if (!inst) continue;
+    if (existingIds.has(inst.defId)) continue;
+    if (next.length >= MAX_UNIT_STATUSES) break;
+    next.push({ defId: inst.defId, id: inst.id });
+  }
+
+  unit.statuses = next;
+}
+
+/**
+ * Remove a specific defId from unit.statuses (fast path).
+ */
+function removeStatusByDefId(unit, defId) {
+  ensureUnitEffectsState(unit);
+  if (!defId) return;
+  if (!Array.isArray(unit.statuses) || !unit.statuses.length) return;
+  unit.statuses = unit.statuses.filter(s => s && s.defId !== defId);
+}
+
 /* ============================================================================
    Derived stats (modifiers)
    ========================================================================== */
@@ -112,7 +184,7 @@ export function computeEffectModifiers(unit) {
     rangeBonus: 0,
     damageDealtPct: 0,
     damageTakenPct: 0,
-    perTypeDamageTakenPct: {}, // e.g. { toxin: -25 }
+    perTypeDamageTakenPct: {}, // e.g. { toxic: -25 }
   };
 
   for (const inst of unit.effects) {
@@ -159,8 +231,7 @@ export function computeEffectModifiers(unit) {
           break;
       }
 
-      // allow param-based overrides: e.g. armorBonus from params
-      // (kept minimal: if you want fully data-driven, keep modifiers explicit)
+      // allow param-based overrides (kept minimal)
       void params;
     }
   }
@@ -197,6 +268,10 @@ export function getEffectiveWeaponRange(unit, weaponRange) {
 /**
  * Add or update a unit effect instance.
  *
+ * IMPORTANT (your design):
+ * - Only TEMP effects (duration > 0) occupy a "status slot" in unit.statuses.
+ * - Max 10 statuses: if full, new TEMP effect is ignored (refresh/stack existing is allowed).
+ *
  * @param {any} unit
  * @param {string} effectId
  * @param {object} [opts]
@@ -217,29 +292,52 @@ export function addUnitEffect(unit, effectId, opts = {}) {
   const stacking = def.stacking || STACKING.REFRESH;
   const maxStacks = Number.isFinite(def.maxStacks) ? def.maxStacks : 99;
 
-  const dur = Number.isFinite(opts.duration) ? asInt(opts.duration, def.baseDuration) : asInt(def.baseDuration, 0);
+  const dur = Number.isFinite(opts.duration)
+    ? asInt(opts.duration, def.baseDuration)
+    : asInt(def.baseDuration, 0);
+
   const isInfinite = dur <= 0;
 
   const existing = findUnitEffect(unit, def.id);
 
+  // If effect already exists: refresh/stack is allowed even if statuses are full.
   if (existing) {
     if (stacking === STACKING.IGNORE) return existing;
 
     if (stacking === STACKING.STACK) {
-      const next = Math.min(maxStacks, asInt(existing.stacks, 1) + (Number.isFinite(opts.stacks) ? asInt(opts.stacks, 1) : 1));
+      const next = Math.min(
+        maxStacks,
+        asInt(existing.stacks, 1) + (Number.isFinite(opts.stacks) ? asInt(opts.stacks, 1) : 1)
+      );
       existing.stacks = next;
     } else {
       // refresh: keep stacks unless explicit
       if (Number.isFinite(opts.stacks)) existing.stacks = asInt(opts.stacks, existing.stacks || 1);
     }
 
-    if (!isInfinite) existing.duration = dur; // refresh duration
+    // refresh duration only if not infinite
+    if (!isInfinite) existing.duration = dur;
+
     existing.params = mergedParams(def, { ...existing.params, ...opts.params });
     existing.sourceUnitId = opts.sourceUnitId ?? existing.sourceUnitId ?? null;
     existing.sourceFaction = opts.sourceFaction ?? existing.sourceFaction ?? null;
 
+    // sync statuses (in case duration changed temp<->infinite)
+    syncUnitStatuses(unit);
+
     __e(`[EFF:+unit] ${unit.id || unit.unitId || '?'} ~${def.id} dur=${existing.duration ?? '∞'} stacks=${existing.stacks ?? 1}`);
     return existing;
+  }
+
+  // New instance: if it is a TEMP status and we already have 10 statuses -> ignore.
+  if (!isInfinite) {
+    // ensure statuses are synced before checking
+    syncUnitStatuses(unit);
+    const hasSlots = (unit.statuses?.length ?? 0) < MAX_UNIT_STATUSES;
+    if (!hasSlots) {
+      __e(`[EFF:cap] ${unit.id || unit.unitId || '?'} status cap ${MAX_UNIT_STATUSES} reached, ignore +${def.id}`);
+      return null;
+    }
   }
 
   const inst = {
@@ -254,6 +352,12 @@ export function addUnitEffect(unit, effectId, opts = {}) {
   };
 
   unit.effects.push(inst);
+
+  // reflect into statuses if temporary
+  if (isStatusEffectInstance(inst, def)) {
+    syncUnitStatuses(unit);
+  }
+
   __e(`[EFF:+unit] ${unit.id || unit.unitId || '?'} +${def.id} dur=${inst.duration || '∞'} stacks=${inst.stacks} src=${inst.sourceUnitId || '-'}`);
   return inst;
 }
@@ -328,6 +432,7 @@ export function placeHexEffect(state, q, r, effectId, opts = {}) {
 
 /**
  * Decrement durations and remove expired effects from unit.effects.
+ * Also removes expired ones from unit.statuses.
  * Returns list of removed defIds.
  */
 export function cleanupExpiredUnitEffects(unit) {
@@ -350,8 +455,13 @@ export function cleanupExpiredUnitEffects(unit) {
   });
 
   for (const d of removed) {
+    removeStatusByDefId(unit, d);
     __e(`[EFF:exp] ${unit.id || unit.unitId || '?'} -${d}`);
   }
+
+  // ensure we don't exceed cap / keep order consistent after removals
+  syncUnitStatuses(unit);
+
   return removed;
 }
 
@@ -408,6 +518,10 @@ export function cleanupExpiredHexEffects(state) {
  */
 export function tickUnitEffects(unit, phase, ctx = {}) {
   ensureUnitEffectsState(unit);
+
+  // keep statuses consistent (cheap)
+  syncUnitStatuses(unit);
+
   const events = [];
 
   for (const inst of unit.effects) {
@@ -632,7 +746,7 @@ export function ensurePassiveEffects(unit, getAbilityDef) {
     const exists = findUnitEffect(unit, effectId);
     if (exists) continue;
 
-    // Add as infinite duration
+    // Add as infinite duration (does not take a status slot)
     addUnitEffect(unit, effectId, {
       duration: 0,
       stacks: 1,
@@ -641,12 +755,16 @@ export function ensurePassiveEffects(unit, getAbilityDef) {
       sourceFaction: unit.faction ?? null,
     });
   }
+
+  // keep status list valid
+  syncUnitStatuses(unit);
 }
 
 export default {
   hexKey,
   ensureUnitEffectsState,
   ensureHexEffectsState,
+  syncUnitStatuses,
   computeEffectModifiers,
   getEffectiveWeaponRange,
   addUnitEffect,
