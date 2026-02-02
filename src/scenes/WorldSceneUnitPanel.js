@@ -12,7 +12,8 @@
 //  - Move: clears attack mode (movement remains click-to-move as before)
 //  - Attack: highlights attackable hexes (via AttackController)
 //  - Defence: calls applyDefence(unit)
-//  - Convoy/Hide: no-op placeholders
+//  - Build: (Mobile Base only) placeholder for now (later via Build ability)
+//  - Hide: no-op placeholder
 //  - Turn: opens direction picker (free)
 //
 // NEW (Abilities v1):
@@ -88,6 +89,9 @@ import { AttackController } from '../combat/AttackController.js';
 import { getUnitDef } from '../units/UnitDefs.js';
 import { getAbilityDef } from '../abilities/AbilityDefs.js';
 import { AbilityController } from '../abilities/AbilityController.js';
+
+// NEW: Status icons from EffectDefs
+import { getEffectDef } from '../effects/EffectDefs.js';
 
 const PANEL_DEPTH = 4200;
 
@@ -181,7 +185,6 @@ function summarizeAbility(abilityId) {
     };
   }
 
-  const pd = a.passive || {};
   return {
     title: `${icon}${a.name}`,
     body: `Type: PASSIVE\n\n${a.desc || ''}`.trim(),
@@ -314,6 +317,44 @@ function makeTextButton(scene, container, x, y, w, h, label, onClick) {
   return { g, hit, t, draw };
 }
 
+/* =========================================================
+   NEW: UI helpers for stats/resists/statuses
+   ========================================================= */
+
+function getResistsRow(unit) {
+  const r = (unit?.resists && typeof unit.resists === 'object') ? unit.resists : {};
+  const v = (k) => (Number.isFinite(r?.[k]) ? r[k] : 0);
+
+  // compact labels to fit line
+  // physical thermal toxic cryo radiation energy corrosion
+  return (
+    `RES: ` +
+    `PHY ${fmt(v('physical'))}  ` +
+    `THR ${fmt(v('thermal'))}  ` +
+    `TOX ${fmt(v('toxic'))}  ` +
+    `CRY ${fmt(v('cryo'))}  ` +
+    `RAD ${fmt(v('radiation'))}  ` +
+    `ENG ${fmt(v('energy'))}  ` +
+    `COR ${fmt(v('corrosion'))}`
+  );
+}
+
+function getStatusesRow(unit) {
+  const list = Array.isArray(unit?.statuses) ? unit.statuses : [];
+  if (!list.length) return `STATUS: —`;
+
+  const icons = [];
+  for (let i = 0; i < Math.min(10, list.length); i++) {
+    const s = list[i];
+    const defId = s?.defId || s;
+    const ed = getEffectDef(defId);
+    icons.push(ed?.icon || '•');
+  }
+
+  const extra = list.length > 10 ? ` +${list.length - 10}` : '';
+  return `STATUS: ${icons.join(' ')}${extra}`;
+}
+
 /**
  * Attach unit panel to scene.
  * Called once from WorldSceneMenus.setupWorldMenus(scene).
@@ -366,13 +407,13 @@ export function setupUnitActionPanel(scene) {
   });
 
   // Weapon area
-  const weaponLabel = scene.add.text(16, 96, 'Weapon:', {
+  const weaponLabel = scene.add.text(16, 126, 'Weapon:', {
     fontSize: '13px',
     color: '#9be4ff',
     fontFamily: 'monospace',
   });
 
-  const weaponText = scene.add.text(80, 96, '', {
+  const weaponText = scene.add.text(80, 126, '', {
     fontSize: '13px',
     color: '#e8f6ff',
     fontFamily: 'monospace',
@@ -465,11 +506,10 @@ export function setupUnitActionPanel(scene) {
     const wdef = wid ? getWeaponDef(wid) : null;
     const { rangeMin, rangeMax } = getWeaponRange(wdef);
 
-    // Enter targeting mode via AttackController (highlights + authoritative click filtering)
+    // Enter targeting mode via AttackController
     const ac = scene.attackController || (scene.attackController = new AttackController(scene));
     ac.enter(u);
 
-    // Also update numeric preview labels (damage estimates, etc.)
     updateCombatPreview(scene);
 
     __dbg('PLAYER:AttackTargets', {
@@ -482,8 +522,18 @@ export function setupUnitActionPanel(scene) {
     scene.refreshUnitActionPanel?.();
   });
 
-  buttons.convoy = makeTextButton(scene, container, colX + (btnW + btnPad) * 0, rowY + (btnH + btnPad) * 1, btnW, btnH, 'Convoy', () => {
-    console.log('[UNITS] Convoy (placeholder)');
+  // Build (Mobile Base only)
+  buttons.build = makeTextButton(scene, container, colX + (btnW + btnPad) * 0, rowY + (btnH + btnPad) * 1, btnW, btnH, 'Build', () => {
+    const u = scene.selectedUnit;
+    if (!u) return;
+
+    // later: enter AbilityController with Build ability / open build grid inside unit panel
+    scene.attackController?.exit?.('build');
+    scene.abilityController?.exit?.('build');
+    scene.unitCommandMode = null;
+    clearCombatPreview(scene);
+
+    console.log('[BUILD] Clicked Build (placeholder)', { unitId: u.id, type: u.type });
   });
 
   buttons.hide = makeTextButton(scene, container, colX + (btnW + btnPad) * 1, rowY + (btnH + btnPad) * 1, btnW, btnH, 'Hide', () => {
@@ -497,7 +547,6 @@ export function setupUnitActionPanel(scene) {
 
   // Folder buttons
   buttons.activeFolder = makeTextButton(scene, container, colX + (btnW + btnPad) * 0, rowY + (btnH + btnPad) * 2, btnW * 1 + btnPad, btnH, 'Active\nAbilities', () => {
-    // leave any targeting modes
     scene.attackController?.exit?.('open_active_folder');
     scene.abilityController?.exit?.('open_active_folder');
     scene.unitCommandMode = null;
@@ -509,7 +558,6 @@ export function setupUnitActionPanel(scene) {
   });
 
   buttons.passiveFolder = makeTextButton(scene, container, colX + (btnW + btnPad) * 2 - (btnW * 1 + btnPad), rowY + (btnH + btnPad) * 2, btnW * 1 + btnPad, btnH, 'Passive\nAbilities', () => {
-    // leave any targeting modes
     scene.attackController?.exit?.('open_passive_folder');
     scene.abilityController?.exit?.('open_passive_folder');
     scene.unitCommandMode = null;
@@ -521,12 +569,11 @@ export function setupUnitActionPanel(scene) {
   });
 
   // Switch weapon
-  buttons.switchWeapon = makeTextButton(scene, container, 16, 118, 140, 34, 'Switch Weapon', () => {
+  buttons.switchWeapon = makeTextButton(scene, container, 16, 146, 140, 22, 'Switch Weapon', () => {
     const u = scene.selectedUnit;
     const ws = Array.isArray(u?.weapons) ? u.weapons : [];
     if (!u || ws.length <= 1) return;
 
-    // switching weapon should recompute attack highlights if in attack mode
     const idx = Number.isFinite(u.activeWeaponIndex) ? u.activeWeaponIndex : 0;
     u.activeWeaponIndex = (idx + 1) % ws.length;
 
@@ -537,12 +584,10 @@ export function setupUnitActionPanel(scene) {
     });
 
     if (scene.unitCommandMode === 'attack') {
-      // refresh attack controller highlights
       scene.attackController?.enter?.(u);
       updateCombatPreview(scene);
     }
     if (String(scene.unitCommandMode || '').startsWith('ability:')) {
-      // ability targeting depends on range too (ability controller will recompute on enter)
       scene.abilityController?.recompute?.();
     }
 
@@ -602,15 +647,13 @@ export function setupUnitActionPanel(scene) {
       const u = scene.selectedUnit;
       if (!u) return;
       setFacing(scene, u, i);
-      // turn is free; no cost
       scene.unitPanelState.turnPickerOpen = false;
       scene.refreshUnitActionPanel?.();
     });
     tp.buttons.push(b);
   }
 
-  // NOTE: bg/bezel/blocker were already added FIRST.
-  // Now add UI content above them.
+  // Add UI content above bg/bezel/blocker
   container.add([
     titleText,
     statsText,
@@ -668,10 +711,8 @@ export function setupUnitActionPanel(scene) {
     if (!scene.unitActionPanel) return;
     if (!Number.isFinite(q) || !Number.isFinite(r)) return;
 
-    // Hex can only be inspected when no unit is selected (caller enforces too)
     scene.selectedHex = { q, r };
 
-    // Clear command mode / previews
     scene.unitCommandMode = null;
     scene.clearPathPreview?.();
 
@@ -705,24 +746,19 @@ export function setupUnitActionPanel(scene) {
     }
 
     // =========================================================
-    // HEX INSPECT MODE (no buttons, no weapon, just tile info)
+    // HEX INSPECT MODE
     // =========================================================
     if (hexMode) {
       const q = unit.q;
       const r = unit.r;
 
-      // Title
       const hx = summarizeHex(scene, q, r);
       panel.titleText.setText(hx.title);
-
-      // Stats text (multi-line)
       panel.statsText.setText(hx.lines.join('\n'));
 
-      // Hide weapon area completely
       panel.weaponLabel.setVisible(false);
       panel.weaponText.setVisible(false);
 
-      // Hide switch weapon if present
       const sw = panel.buttons.switchWeapon;
       if (sw) {
         sw.g.setVisible(false);
@@ -732,7 +768,6 @@ export function setupUnitActionPanel(scene) {
         if (sw.t?.input) sw.t.disableInteractive();
       }
 
-      // Hide all action buttons & subpages
       for (const k of Object.keys(panel.buttons || {})) {
         const b = panel.buttons[k];
         if (!b) continue;
@@ -743,7 +778,6 @@ export function setupUnitActionPanel(scene) {
         if (b.t?.input) b.t.disableInteractive();
       }
 
-      // Hide passive lines
       for (const ln of (panel.passiveLines || [])) ln.setVisible(false);
 
       panel.pageTitle.setVisible(false);
@@ -753,7 +787,6 @@ export function setupUnitActionPanel(scene) {
       panel.backBtn.hit.setVisible(false);
       if (panel.backBtn.hit?.input) panel.backBtn.hit.disableInteractive();
 
-      // Turn picker hidden too
       panel.turnPicker?.label?.setVisible(false);
       if (panel.turnPicker?.buttons?.length) {
         for (const b of panel.turnPicker.buttons) {
@@ -769,37 +802,47 @@ export function setupUnitActionPanel(scene) {
     }
 
     // =========================================================
-    // UNIT MODE (original behavior)
+    // UNIT MODE (updated stats layout)
     // =========================================================
 
-    // Ensure weapon area visible
     panel.weaponLabel.setVisible(true);
     panel.weaponText.setVisible(true);
 
-    // Title (unit name + faction after name)
-    const nm = unit.unitName || unit.type || 'Unit';
-    const fac = unit.faction || 'neutral';
-    panel.titleText.setText(`${nm} [${fac}]`);
+    const def = getUnitDef(unit.type);
+    const displayName = unit.unitName || def?.name || unit.type || 'Unit';
+    const level = Number.isFinite(unit.level) ? unit.level : 1;
 
-    // Stats
+    // Title: LVL + NAME (top line)
+    panel.titleText.setText(`LVL ${fmt(level)} — ${displayName}`);
+
+    // Core values
     const hp = Number.isFinite(unit.hp) ? unit.hp : 0;
     const hpMax = Number.isFinite(unit.maxHp) ? unit.maxHp : (Number.isFinite(unit.hpMax) ? unit.hpMax : 0);
+
     const mp = Number.isFinite(unit.mp) ? unit.mp : (Number.isFinite(unit.movementPoints) ? unit.movementPoints : 0);
     const mpMax = Number.isFinite(unit.mpMax) ? unit.mpMax : (Number.isFinite(unit.maxMovementPoints) ? unit.maxMovementPoints : 0);
+
     const ap = Number.isFinite(unit.ap) ? unit.ap : 0;
     const apMax = Number.isFinite(unit.apMax) ? unit.apMax : 1;
-    const armor = Number.isFinite(unit.armorPoints) ? unit.armorPoints : 0;
-    const bonus = Number.isFinite(unit.tempArmorBonus) ? unit.tempArmorBonus : 0;
-    const armorClass = unit.armorClass || 'NONE';
 
-    const attackMode = scene.unitCommandMode === 'attack' ? 'ON' : 'OFF';
-    const abilityMode = String(scene.unitCommandMode || '').startsWith('ability:') ? 'ON' : 'OFF';
+    const groupSize = Number.isFinite(unit.groupSize) ? unit.groupSize : (Number.isFinite(def?.groupSize) ? def.groupSize : 1);
+    const groupAlive = Number.isFinite(unit.groupAlive) ? unit.groupAlive : groupSize;
 
-    panel.statsText.setText(
-      `HP: ${fmt(hp)}/${fmt(hpMax)}   ARM: ${fmt(armor)}${bonus ? `(+${fmt(bonus)})` : ''} (${armorClass})\n` +
-      `MP: ${fmt(mp)}/${fmt(mpMax)}   AP: ${fmt(ap)}/${fmt(apMax)}\n` +
-      `Mode: Attack ${attackMode}   Ability ${abilityMode}`
-    );
+    const morale = Number.isFinite(unit.morale) ? unit.morale : 0;
+    const moraleMax = Number.isFinite(unit.moraleMax) ? unit.moraleMax : 0;
+
+    // Rows:
+    const row1 =
+      `AP ${fmt(ap)}/${fmt(apMax)}   ` +
+      `MP ${fmt(mp)}/${fmt(mpMax)}   ` +
+      `GRP ${fmt(groupAlive)}/${fmt(groupSize)}   ` +
+      `HP ${fmt(hp)}/${fmt(hpMax)}   ` +
+      `MOR ${fmt(morale)}/${fmt(moraleMax)}`;
+
+    const row2 = getResistsRow(unit);
+    const row3 = getStatusesRow(unit);
+
+    panel.statsText.setText([row1, row2, row3].join('\n'));
 
     // Weapon text
     const weapons = Array.isArray(unit.weapons) ? unit.weapons : [];
@@ -826,7 +869,8 @@ export function setupUnitActionPanel(scene) {
     const isRoot = page === 'root';
 
     // Root buttons visible?
-    const rootButtons = ['move', 'defence', 'attack', 'convoy', 'hide', 'turn', 'activeFolder', 'passiveFolder'];
+    // (Build will be toggled separately per-unit)
+    const rootButtons = ['move', 'defence', 'attack', 'build', 'hide', 'turn', 'activeFolder', 'passiveFolder'];
     for (const k of rootButtons) {
       const b = panel.buttons[k];
       if (!b) continue;
@@ -838,6 +882,23 @@ export function setupUnitActionPanel(scene) {
       }
       if (b.t.input) {
         isRoot ? b.t.setInteractive({ useHandCursor: true }) : b.t.disableInteractive();
+      }
+    }
+
+    // Build button: ONLY Mobile Base
+    // (your rule: button appears only for Mobile Base; later we'll gate by "Build ability")
+    const isMobileBase = String(unit.type || '').toLowerCase() === 'mobile_base';
+    const bb = panel.buttons.build;
+    if (bb) {
+      const vis = isRoot && isMobileBase;
+      bb.g.setVisible(vis);
+      bb.t.setVisible(vis);
+      bb.hit.setVisible(vis);
+      if (bb.hit.input) {
+        vis ? bb.hit.setInteractive({ useHandCursor: true }) : bb.hit.disableInteractive();
+      }
+      if (bb.t.input) {
+        vis ? bb.t.setInteractive({ useHandCursor: true }) : bb.t.disableInteractive();
       }
     }
 
@@ -854,7 +915,7 @@ export function setupUnitActionPanel(scene) {
       (!isRoot) ? panel.backBtn.t.setInteractive({ useHandCursor: true }) : panel.backBtn.t.disableInteractive();
     }
 
-    // Ability buttons + passive lines default hide (enabled per-page below)
+    // Ability buttons + passive lines default hide
     const abA = panel.buttons.abilityA;
     const abB = panel.buttons.abilityB;
     if (abA) { abA.g.setVisible(false); abA.t.setVisible(false); abA.hit.setVisible(false); abA.hit.disableInteractive(); }
@@ -877,7 +938,6 @@ export function setupUnitActionPanel(scene) {
           return `${ic}${d.name}`;
         };
 
-        // render help text
         const lines = [];
         if (!actives.length) lines.push('No active abilities.');
         else {
@@ -891,7 +951,6 @@ export function setupUnitActionPanel(scene) {
         }
         panel.pageBody.setText(lines.join('\n'));
 
-        // show cast buttons
         if (abA) {
           abA.t.setText(makeLabel(a1));
           abA.g.setVisible(true); abA.t.setVisible(true); abA.hit.setVisible(true);
@@ -902,7 +961,6 @@ export function setupUnitActionPanel(scene) {
               const caster = scene.selectedUnit;
               if (!caster) return;
 
-              // leave attack mode
               scene.attackController?.exit?.('ability_btn');
               clearCombatPreview(scene);
 
@@ -943,7 +1001,6 @@ export function setupUnitActionPanel(scene) {
           }
         }
       } else {
-        // passive page
         panel.pageTitle.setText('Passive abilities');
         const { passives } = getAbilitiesForUnit(unit);
 
@@ -963,7 +1020,6 @@ export function setupUnitActionPanel(scene) {
             : '—'
         );
 
-        // also show them as icon lines (so later we can replace with real sprites)
         const out = [];
         for (let i = 0; i < Math.min(4, passives.length); i++) {
           const d = getAbilityDef(passives[i]);
