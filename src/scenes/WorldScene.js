@@ -68,6 +68,49 @@ import {
 import { TICK_PHASE } from '../effects/EffectDefs.js';
 import { ensureUnitCombatFields, canSpendAp, spendAp } from '../units/UnitActions.js';
 
+/* ========================================================================
+   Status icons (preload keys must match filenames in /assets/statuses)
+   ======================================================================== */
+
+export const STATUS_ICON_KEYS = [
+  // Physical
+  'PhysicalBleeding',
+  'PhysicalArmorbreach',
+  'PhysicalWeakspot',
+  // Thermal
+  'ThermalVolatileIgnition',
+  'ThermalHeatStress',
+  'ThermalBurning',
+  // Toxic
+  'ToxicIntoxication',
+  'ToxicInterference',
+  'ToxicToxiccloud',
+  // Cryo
+  'CryoBrittle',
+  'CryoShatter',
+  'CryoDeepfreeze',
+  // Radiation
+  'RadiationRadiationsickness',
+  'RadiationIonization',
+  'RadiationIrradiated',
+  // Energy
+  'EnergyElectrocution',
+  'EnergySystemdamage',
+  'EnergyShock',
+  // Corrosive
+  'CorrosiveCorrosivebial',
+  'CorrosiveDeterioration',
+  'CorrosiveArmorDissolution',
+];
+
+function unitHasEffect(unit, effectId) {
+  const arr = Array.isArray(unit?.effects) ? unit.effects : [];
+  if (!arr.length) return false;
+  const key = String(effectId || '').trim();
+  if (!key) return false;
+  return arr.some(e => e && (e.defId === key || e.defId === key.toUpperCase() || e.defId === key.toLowerCase()));
+}
+
 /* ---------------------------
    Auto-move helpers (Civ-style)
    --------------------------- */
@@ -417,7 +460,19 @@ export default class WorldScene extends Phaser.Scene {
     super('WorldScene');
   }
 
-  preload() {}
+  preload() {
+    // Preload status effect icons (for the unit panel status row)
+    // Expected path in repo: /assets/statuses/<Key>.png
+    // (If you later change extension, adjust here.)
+    try {
+      for (const k of STATUS_ICON_KEYS) {
+        if (this.textures && this.textures.exists && this.textures.exists(k)) continue;
+        this.load.image(k, `assets/statuses/${k}.png`);
+      }
+    } catch (e) {
+      console.warn('[PRELOAD] status icons failed:', e);
+    }
+  }
 
   /**
    * ✅ Ensure lore/POI is generated BEFORE first draw.
@@ -574,6 +629,13 @@ export default class WorldScene extends Phaser.Scene {
     ensureUnitCombatFields(caster);
     ensureUnitEffectsState(caster);
 
+    // STATUS HOOK: Shock blocks active ability use
+    // (Effect id should match your EffectDefs; we accept both exact and icon-key forms.)
+    if (unitHasEffect(caster, 'EnergyShock') || unitHasEffect(caster, 'ENERGY_SHOCK')) {
+      this.traceAbility('fail:shocked', { abilityId, casterId: caster?.id });
+      return { ok: false, reason: 'shocked' };
+    }
+
     const apCost = Number.isFinite(a.active?.apCost) ? a.active.apCost : 1;
     if (!canSpendAp(caster, apCost)) {
       this.traceAbility('fail:no_ap', { abilityId, casterId: caster?.id, ap: caster?.ap, apCost });
@@ -589,6 +651,15 @@ export default class WorldScene extends Phaser.Scene {
 
     // Spend AP
     spendAp(caster, apCost);
+
+    // STATUS HOOK: Volatile Ignition — taking thermal damage when using an ability
+    // Table: "If unit uses an ability, it take Thermal damage of 4"
+    if (unitHasEffect(caster, 'ThermalVolatileIgnition') || unitHasEffect(caster, 'THERMAL_VOLATILE_IGNITION')) {
+      const before = Number.isFinite(caster.hp) ? caster.hp : 0;
+      const dmg = 4;
+      caster.hp = Math.max(0, before - dmg);
+      this.traceAbility('status:volatile_ignition', { casterId: caster?.id, hpBefore: before, hpAfter: caster.hp, dmg });
+    }
 
     // Apply unit effects
     const applied = [];
@@ -659,12 +730,12 @@ export default class WorldScene extends Phaser.Scene {
   }
 
   // Axial distance helpers (odd-r layout already used elsewhere; distance is axial-cube)
-hexDistance(q1, r1, q2, r2) {
-  const dq = q2 - q1;
-  const dr = r2 - r1;
-  const ds = -dq - dr;
-  return (Math.abs(dq) + Math.abs(dr) + Math.abs(ds)) / 2;
-}
+  hexDistance(q1, r1, q2, r2) {
+    const dq = q2 - q1;
+    const dr = r2 - r1;
+    const ds = -dq - dr;
+    return (Math.abs(dq) + Math.abs(dr) + Math.abs(ds)) / 2;
+  }
 
   getHexesInRadius(cq, cr, radius) {
     const out = [];
@@ -777,7 +848,62 @@ hexDistance(q1, r1, q2, r2) {
     this.refreshAllIconWorldPositions = () => refreshAllIconWorldPositions(this);
 
     // bind these BEFORE UI/input setup
-    this.applyCombatEvent = (ev) => applyCombatEvent(this, ev);
+    this.applyCombatEvent = (ev) => {
+      // Apply baseline combat event (damage + visuals + death handling)
+      const res = applyCombatEvent(this, ev);
+
+      try {
+        // STATUS HOOK: Cryo Shatter — next physical hit deals bonus physical damage then disappears.
+        // We don't have explicit damage types per weapon yet, so we treat all attacks as physical for this hook
+        // unless the event provides a damageType.
+        const defender = ev && (ev.defenderId ? this.getAllRuntimeUnits().find(u => (u.id ?? u.unitId) === ev.defenderId) : null);
+        if (defender && (unitHasEffect(defender, 'CryoShatter') || unitHasEffect(defender, 'CRYO_SHATTER'))) {
+          const before = Number.isFinite(defender.hp) ? defender.hp : 0;
+          const bonus = 4;
+          defender.hp = Math.max(0, before - bonus);
+          // remove one instance by defId (best-effort)
+          if (Array.isArray(defender.effects)) {
+            const idx = defender.effects.findIndex(e => e && (e.defId === 'CryoShatter' || e.defId === 'CRYO_SHATTER'));
+            if (idx >= 0) defender.effects.splice(idx, 1);
+          }
+          console.log('[STATUS] Shatter bonus dmg', { defenderId: defender.id, bonus, hpBefore: before, hpAfter: defender.hp });
+        }
+
+        // STATUS HOOK: Radiation Irradiated — on death, apply effects to adjacent units.
+        // Table: "On death, apply 'Mutant stress' and 'Irradiated' to adjacent units".
+        // We'll re-apply Irradiated; MutantStress will be a no-op until EffectDefs defines it.
+        const all = this.getAllRuntimeUnits();
+        for (const u of all) {
+          if (!u || u.isDead) continue;
+          if (Number.isFinite(u.hp) && u.hp <= 0) {
+            // Mark as dead in a compatible way (if the runtime didn't already)
+            u.isDead = true;
+
+            if (unitHasEffect(u, 'RadiationIrradiated') || unitHasEffect(u, 'RADIATION_IRRADIATED') || unitHasEffect(u, 'IRRADIATED')) {
+              const neigh = this.getHexesInRadius(u.q, u.r, 1).filter(h => !(h.q === u.q && h.r === u.r));
+              for (const h of neigh) {
+                const v = (this.units || []).find(x => x && x.q === h.q && x.r === h.r) ||
+                          (this.players || []).find(x => x && x.q === h.q && x.r === h.r) ||
+                          (this.enemies || []).find(x => x && x.q === h.q && x.r === h.r) ||
+                          (this.haulers || []).find(x => x && x.q === h.q && x.r === h.r) ||
+                          (this.ships || []).find(x => x && x.q === h.q && x.r === h.r) ||
+                          null;
+                if (!v || v.isDead) continue;
+
+                ensureUnitEffectsState(v);
+                // Best-effort: add by id string; actual def must exist in EffectDefs.
+                addUnitEffect(v, 'RadiationIrradiated', { duration: 2, stacks: 1, sourceUnitId: u.id, sourceFaction: u.faction });
+                addUnitEffect(v, 'MutantStress', { duration: 2, stacks: 1, sourceUnitId: u.id, sourceFaction: u.faction });
+              }
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('[COMBAT] post-status hooks failed:', e);
+      }
+
+      return res;
+    };
     this.moveEnemies = () => moveEnemiesImpl(this);
 
     // Wrap endTurn so that we can:
@@ -1005,6 +1131,18 @@ Biomes: ${biome}`;
           unit.q = nextStep.q;
           unit.r = nextStep.r;
 
+          // STATUS HOOK: Corrosive bial — takes corrosive damage when moving
+          if (unitHasEffect(unit, 'CorrosiveCorrosivebial') || unitHasEffect(unit, 'CORROSIVE_BIAL')) {
+            const before = Number.isFinite(unit.hp) ? unit.hp : 0;
+            const dmg = 2;
+            unit.hp = Math.max(0, before - dmg);
+            // Optional: mark for UI refresh
+            this.refreshUnitActionPanel?.();
+            if (typeof console !== 'undefined') {
+              console.log('[STATUS] Corrosive bial move dmg', { unitId: unit.id, dmg, hpBefore: before, hpAfter: unit.hp });
+            }
+          }
+
           index += 1;
           stepNext();
         }
@@ -1172,8 +1310,8 @@ Biomes: ${biome}`;
     // Ensure roads are applied (safe if already applied)
     if (!this.__roadsAppliedFromLore) {
       if (!this.isEliminationMission) {
-      applyRoadPlansToMap(this);
-    }
+        applyRoadPlansToMap(this);
+      }
     }
 
     drawHexMap.call(this);
