@@ -1,36 +1,31 @@
 // src/scenes/WorldSceneUnitPanel.js
 //
-// New Unit Panel (v2) — aligned to your target UX.
-// - No Build menu.
-// - No Active/Passive "folder" pages.
-// - Passives are displayed as STATUS EFFECTS (from EffectEngine / unit.effects).
-// - Actives are buttons on the same row as Defence/Attack/etc.
-// - Weapon tooltip removed.
-// - Facing (Turn picker) kept, but controlled from this panel.
+// Unit panel UI (bottom-center).
 //
-// NOTE:
-// - Portraits are intentionally NOT implemented yet (you asked to postpone).
-// - Status icons are shown using EffectDefs.icon (emoji for now).
-// - Later we will replace buttons with UI icons from UI.rar and add pressed states.
+// Milestone scope:
+//  - Build menu (top-left) is removed elsewhere; building is initiated from unit panel.
+//  - Show unit header + core stats (AP/MP/Group/HP/Morale) + resistances row.
+//  - Show up to 10 status effect icons (from unit.effects -> EffectDefs.icon).
+//  - Action buttons are ICONS (from assets/ui/*). Actives are not in folders anymore.
 //
-// Compatibility:
-// - Keeps scene.openUnitActionPanel(unit), scene.closeUnitActionPanel(), scene.refreshUnitActionPanel()
-// - Keeps scene.openHexInspectPanel(q,r) for WorldSceneHistory.js
+// Notes:
+//  - No weapon tooltip.
+//  - No active/passive abilities pages.
+//  - Direction picker (facing) remains; it will be opened from the Turn icon.
+//
+// Textures expected (loaded in WorldScene.preload):
+//  Stats:  ui_stat_lvl ui_stat_ap ui_stat_mp ui_stat_group ui_stat_hp ui_stat_morale
+//  Dmg:    ui_dmg_physical ui_dmg_thermal ui_dmg_toxic ui_dmg_cryo ui_dmg_radiation ui_dmg_energy ui_dmg_corrosion
+//  Actions ui_action_defence/ui_action_defence_a ui_action_heal/ui_action_heal_a ui_action_ambush/ui_action_ambush_a
+//          ui_action_build/ui_action_build_a ui_action_switch/ui_action_switch_a ui_action_turn/ui_action_turn_a
+//          ui_action_endturn/ui_action_endturn_a ui_action_dismiss/ui_action_dismiss_a
 
 import { applyDefence } from '../units/UnitActions.js';
-import { updateCombatPreview, clearCombatPreview } from './WorldSceneCombatPreview.js';
-import { getWeaponDef } from '../units/WeaponDefs.js';
-import { AttackController } from '../combat/AttackController.js';
-
-// Actives as buttons in the same row
-import { getAbilityDef } from '../abilities/AbilityDefs.js';
-import { AbilityController } from '../abilities/AbilityController.js';
-
-// Status effects (passives, DOTs, debuffs etc.)
 import { getEffectDef } from '../effects/EffectDefs.js';
 
 const PANEL_DEPTH = 4200;
 
+// Facing angles (same as before)
 const DIR_ANGLES = [
   0,
   -Math.PI / 3,
@@ -43,400 +38,405 @@ const DIR_ANGLES = [
 function clamp(n, a, b) {
   return Math.max(a, Math.min(b, n));
 }
-
 function fmt(n) {
   if (!Number.isFinite(n)) return '0';
   return String(Math.round(n));
 }
 
-function asInt(n, fallback = 0) {
-  const x = Number(n);
-  return Number.isFinite(x) ? Math.trunc(x) : fallback;
-}
-
 function getActiveWeaponId(unit) {
   const weapons = Array.isArray(unit?.weapons) ? unit.weapons : [];
   if (!weapons.length) return null;
-  const idx = Number.isFinite(unit?.activeWeaponIndex) ? unit.activeWeaponIndex : 0;
+  const idx = Number.isFinite(unit.activeWeaponIndex) ? unit.activeWeaponIndex : 0;
   return weapons[idx] || weapons[0] || null;
 }
 
-function setFacing(scene, unit, dirIndex) {
-  if (!scene || !unit) return;
-  const d = clamp(dirIndex | 0, 0, 5);
-  unit.facing = d;
-  unit.facingAngle = DIR_ANGLES[d] ?? 0;
-  if (typeof unit.rotation === 'number') {
-    unit.rotation = unit.facingAngle;
+/* =========================================================
+   IconButton (image-based)
+   ========================================================= */
+
+class IconButton {
+  /**
+   * @param {Phaser.Scene} scene
+   * @param {Phaser.GameObjects.Container} container
+   * @param {number} x
+   * @param {number} y
+   * @param {string} keyNormal
+   * @param {string} keyActive
+   * @param {Function} onClick
+   */
+  constructor(scene, container, x, y, keyNormal, keyActive, onClick) {
+    this.scene = scene;
+    this.container = container;
+    this.keyNormal = keyNormal;
+    this.keyActive = keyActive || keyNormal;
+    this.onClick = onClick;
+
+    // background hit area (invisible but makes clicking easy)
+    this.hit = scene.add.rectangle(x, y, 44, 44, 0x000000, 0);
+    this.hit.setOrigin(0, 0);
+
+    // button icon
+    this.icon = scene.add.image(x + 22, y + 22, keyNormal);
+    this.icon.setOrigin(0.5, 0.5);
+
+    // scale down if the PNG is large
+    const target = 34;
+    const w = this.icon.width || 1;
+    const h = this.icon.height || 1;
+    const s = Math.min(target / w, target / h);
+    this.icon.setScale(s);
+
+    container.add([this.hit, this.icon]);
+
+    this.hit.setInteractive({ useHandCursor: true });
+    this.hit.on('pointerdown', () => this.onClick?.());
+
+    this._active = false;
+    this._enabled = true;
+  }
+
+  setActive(on) {
+    this._active = !!on;
+    const key = this._active ? this.keyActive : this.keyNormal;
+    if (this.scene.textures.exists(key)) this.icon.setTexture(key);
+    return this;
+  }
+
+  setEnabled(on) {
+    this._enabled = !!on;
+    if (this._enabled) this.hit.setInteractive({ useHandCursor: true });
+    else this.hit.disableInteractive();
+    this.icon.setAlpha(this._enabled ? 1.0 : 0.35);
+    return this;
+  }
+
+  setVisible(on) {
+    const v = !!on;
+    this.hit.setVisible(v);
+    this.icon.setVisible(v);
+    if (!v) {
+      // avoid catching clicks when hidden
+      this.hit.disableInteractive();
+    }
+    return this;
+  }
+
+  destroy() {
+    try { this.hit?.destroy(); } catch (_) {}
+    try { this.icon?.destroy(); } catch (_) {}
   }
 }
 
-function isHexInspect(obj) {
-  return !!(obj && obj.__hexInspect && Number.isFinite(obj.q) && Number.isFinite(obj.r));
-}
+/* =========================================================
+   Status icons (from unit.effects)
+   ========================================================= */
 
-function makeHexInspectObj(q, r) {
-  return { __hexInspect: true, q, r };
-}
-
-function getTileAt(scene, q, r) {
-  return (scene.mapData || []).find(t => t && t.q === q && t.r === r) || null;
-}
-
-function summarizeHex(scene, q, r) {
-  const t = getTileAt(scene, q, r);
-  if (!t) return { title: `Hex (${q}, ${r})`, lines: ['Tile not found.'] };
-
-  const terrain = t.type || 'unknown';
-  const ground = t.groundType || '—';
-  const elev =
-    Number.isFinite(t.visualElevation) ? t.visualElevation :
-    (Number.isFinite(t.elevation) ? t.elevation :
-    (Number.isFinite(t.baseElevation) ? t.baseElevation : 0));
-
-  const flags = [];
-  if (t.hasRoad) flags.push('Road');
-  if (t.hasForest) flags.push('Forest');
-  if (t.hasSettlement) flags.push(`Settlement${t.settlementName ? ` (${t.settlementName})` : ''}`);
-  if (t.hasRuin) flags.push('Ruin');
-  if (t.hasRaiderCamp) flags.push('Raider camp');
-  if (t.hasRoadsideCamp) flags.push('Roadside camp');
-  if (t.hasWatchtower) flags.push('Watchtower');
-  if (t.hasMinePOI) flags.push('Mine');
-  if (t.hasShrine) flags.push('Shrine');
-
-  const lines = [];
-  lines.push(`Terrain: ${terrain}   Ground: ${ground}`);
-  lines.push(`Elevation: ${fmt(elev)}   Underwater: ${t.isUnderWater ? 'YES' : 'NO'}`);
-  lines.push(`Features: ${flags.length ? flags.join(', ') : '—'}`);
-
-  const res = (scene.resources || []).filter(o => o && o.q === q && o.r === r);
-  if (res.length) {
-    const names = res.map(o => o.name || o.type || o.kind || 'resource');
-    lines.push(`Resources: ${names.slice(0, 5).join(', ')}${names.length > 5 ? ` +${names.length - 5}` : ''}`);
-  } else {
-    lines.push(`Resources: —`);
-  }
-
-  const objs = (scene.mapInfo?.objects || []).filter(o => o && o.q === q && o.r === r);
-  if (objs.length) {
-    const names = objs.map(o => o.name || o.type || 'object');
-    lines.push(`Map objects: ${names.slice(0, 4).join(', ')}${names.length > 4 ? ` +${names.length - 4}` : ''}`);
-  }
-
-  return { title: `Hex (${q}, ${r})`, lines };
-}
-
-/**
- * Simple button (text for now; later replaced by icon buttons).
- * Supports enabled/disabled and "active" visual mode (pressed).
- */
-function makeTextButton(scene, container, x, y, w, h, label, onClick) {
-  const g = scene.add.graphics();
-  const hit = scene.add.rectangle(0, 0, w, h, 0x000000, 0);
-  hit.setOrigin(0, 0);
-
-  const t = scene.add.text(0, 0, label, {
-    fontSize: '13px',
-    color: '#e8f6ff',
-    align: 'center',
-    fontFamily: 'monospace',
-    wordWrap: { width: w - 8 },
-  });
-  t.setOrigin(0.5, 0.5);
-
-  const state = {
-    enabled: true,
-    active: false,
-    label,
-  };
-
-  const draw = () => {
-    g.clear();
-
-    const fill = state.enabled
-      ? (state.active ? 0x335b88 : 0x1a2240)
-      : 0x101522;
-
-    const alpha = state.enabled ? 0.92 : 0.55;
-    const stroke = state.enabled ? (state.active ? 0x9de6ff : 0x4aa6d8) : 0x2b3a4a;
-
-    g.fillStyle(fill, alpha);
-    g.fillRoundedRect(x, y, w, h, 8);
-    g.lineStyle(2, stroke, 0.85);
-    g.strokeRoundedRect(x, y, w, h, 8);
-
-    t.setColor(state.enabled ? '#e8f6ff' : '#7f93a3');
-  };
-  draw();
-
-  hit.setPosition(x, y);
-  t.setPosition(x + w / 2, y + h / 2);
-
-  container.add([g, hit, t]);
-
-  const setEnabled = (v) => {
-    state.enabled = !!v;
-    if (state.enabled) hit.setInteractive({ useHandCursor: true });
-    else hit.disableInteractive();
-    draw();
-  };
-
-  const setActive = (v) => {
-    state.active = !!v;
-    draw();
-  };
-
-  const setLabel = (txt) => {
-    state.label = String(txt ?? '');
-    t.setText(state.label);
-    draw();
-  };
-
-  hit.setInteractive({ useHandCursor: true });
-  hit.on('pointerdown', () => {
-    if (!state.enabled) return;
-    onClick?.();
-  });
-
-  return { g, hit, t, setEnabled, setActive, setLabel, state };
-}
-
-/**
- * Reads status effects from unit.effects and returns up to 10 icons.
- * Uses EffectDefs.icon (emoji for now).
- */
-function getStatusIcons(unit, maxIcons = 10) {
+function getUnitStatusIcons(unit, limit = 10) {
   const out = [];
   const list = Array.isArray(unit?.effects) ? unit.effects : [];
   for (const inst of list) {
     if (!inst || inst.disabled) continue;
     const def = getEffectDef(inst.defId);
     if (!def) continue;
-    const ic = def.icon || '•';
-    out.push(ic);
-    if (out.length >= maxIcons) break;
+    const icon = def.icon || '•';
+    out.push(icon);
+    if (out.length >= limit) break;
   }
   return out;
 }
 
-/**
- * Extract resists from unit.resists (or unit.resistances), normalize keys.
- * Damage types required by your spec:
- * physical, thermal, toxic, cryo, radiation, energy, corrosion
- */
+/* =========================================================
+   Resist row (temporary default)
+   ========================================================= */
+
 function getResists(unit) {
-  const raw =
-    (unit && typeof unit.resists === 'object' && unit.resists) ? unit.resists :
-    (unit && typeof unit.resistances === 'object' && unit.resistances) ? unit.resistances :
-    null;
-
-  const r = (k) => (raw && Number.isFinite(raw[k])) ? raw[k] : 0;
-
-  // Accept toxin/toxic alias
-  const tox = Number.isFinite(raw?.toxic) ? raw.toxic : (Number.isFinite(raw?.toxin) ? raw.toxin : 0);
-
+  // Requested temporary rule:
+  // - physical shows "4 armor"
+  // - everything else 0
+  // If you later add real per-type resists, set unit.resists = { physical:4, thermal:..., ... }
+  const r = (unit && typeof unit.resists === 'object' && unit.resists) ? unit.resists : null;
   return {
-    physical: r('physical'),
-    thermal: r('thermal'),
-    toxic: tox,
-    cryo: r('cryo'),
-    radiation: r('radiation'),
-    energy: r('energy'),
-    corrosion: r('corrosion'),
+    physical: Number.isFinite(r?.physical) ? r.physical : 4,
+    thermal: Number.isFinite(r?.thermal) ? r.thermal : 0,
+    toxic: Number.isFinite(r?.toxic) ? r.toxic : 0,
+    cryo: Number.isFinite(r?.cryo) ? r.cryo : 0,
+    radiation: Number.isFinite(r?.radiation) ? r.radiation : 0,
+    energy: Number.isFinite(r?.energy) ? r.energy : 0,
+    corrosion: Number.isFinite(r?.corrosion) ? r.corrosion : 0,
   };
 }
 
-function getUnitLevel(unit) {
-  // for now: always 1 per your instruction
-  // later: we’ll implement level-up on kills
-  return 1;
+/* =========================================================
+   Facing setter
+   ========================================================= */
+
+function setFacing(scene, unit, dirIndex) {
+  if (!scene || !unit) return;
+  const d = clamp(dirIndex | 0, 0, 5);
+  unit.facing = d;
+  unit.facingAngle = DIR_ANGLES[d] ?? 0;
+  if (typeof unit.rotation === 'number') unit.rotation = unit.facingAngle;
 }
 
-function getGroup(unit) {
-  // new stat: size of squad
-  // fallback 1 for heavy units
-  return Number.isFinite(unit?.group) ? asInt(unit.group, 1) : 1;
-}
+/* =========================================================
+   Panel setup
+   ========================================================= */
 
-function getMorale(unit) {
-  // new stat: morale (for now always 0)
-  return Number.isFinite(unit?.morale) ? asInt(unit.morale, 0) : 0;
-}
-
-/**
- * Unit panel setup
- */
 export function setupUnitActionPanel(scene) {
   if (scene.unitActionPanel) return;
 
   // Panel state
   scene.unitPanelState = {
-    turnPickerOpen: false,
+    facingPickerOpen: false,
   };
 
-  // Container dims (tuned for new layout)
-  const W = 760;
-  const H = 190;
+  const W = 740;
+  const H = 210;
 
   const container = scene.add.container(0, 0).setDepth(PANEL_DEPTH);
   container.visible = false;
 
   // Background
   const bg = scene.add.graphics();
-  bg.fillStyle(0x0b0f1a, 0.86);
+  bg.fillStyle(0x0b0f1a, 0.82);
   bg.fillRoundedRect(0, 0, W, H, 14);
 
-  // Bezel
   const bezel = scene.add.graphics();
   bezel.lineStyle(2, 0x4aa6d8, 0.65);
   bezel.strokeRoundedRect(0, 0, W, H, 14);
 
-  // Input blocker
+  // Input blocker so clicks don't leak to world
   const blocker = scene.add.rectangle(0, 0, W, H, 0x000000, 0);
   blocker.setOrigin(0, 0);
   blocker.setInteractive();
 
   container.add([bg, bezel, blocker]);
 
-  // Left portrait placeholder (no portrait yet)
+  // Left portrait placeholder (future)
   const portraitBox = scene.add.graphics();
-  portraitBox.fillStyle(0x111827, 0.9);
-  portraitBox.fillRoundedRect(14, 14, 92, 92, 10);
-  portraitBox.lineStyle(2, 0x294a63, 0.9);
-  portraitBox.strokeRoundedRect(14, 14, 92, 92, 10);
+  portraitBox.fillStyle(0x05070f, 0.65);
+  portraitBox.fillRoundedRect(14, 14, 86, 86, 10);
+  portraitBox.lineStyle(1, 0x2f5f7b, 0.65);
+  portraitBox.strokeRoundedRect(14, 14, 86, 86, 10);
+  container.add(portraitBox);
 
-  const portraitHint = scene.add.text(14 + 46, 14 + 46, '—', {
-    fontSize: '22px',
-    color: '#5d7687',
-    fontFamily: 'monospace',
-  });
-  portraitHint.setOrigin(0.5, 0.5);
+  // Header: LVL icon + level + name
+  const headerY = 18;
+  const headerX = 112;
 
-  // Header (Level + Name)
-  const headerText = scene.add.text(120, 14, 'LVL 1 — Unit', {
-    fontSize: '18px',
+  const lvlIcon = scene.add.image(headerX, headerY + 8, 'ui_stat_lvl').setOrigin(0, 0.5);
+  lvlIcon.setScale(0.6);
+
+  const lvlText = scene.add.text(headerX + 26, headerY, '1', {
+    fontSize: '16px',
     color: '#e8f6ff',
+    fontFamily: 'monospace',
     fontStyle: 'bold',
   });
 
-  // Row 1: AP/MP/Group/HP/Morale
-  const coreStatsText = scene.add.text(120, 42, '', {
-    fontSize: '13px',
-    color: '#cfefff',
-    fontFamily: 'monospace',
-  });
-
-  // Row 2: Resists
-  const resistText = scene.add.text(120, 66, '', {
-    fontSize: '13px',
-    color: '#9be4ff',
-    fontFamily: 'monospace',
-  });
-
-  // Row 3: Status icons (up to 10)
-  const statusText = scene.add.text(120, 92, '', {
+  const nameText = scene.add.text(headerX + 56, headerY, 'Unit', {
     fontSize: '18px',
     color: '#e8f6ff',
     fontFamily: 'monospace',
+    fontStyle: 'bold',
   });
 
-  // Weapon line (no tooltip)
-  const weaponLabel = scene.add.text(120, 122, 'Weapon:', {
-    fontSize: '13px',
-    color: '#9be4ff',
-    fontFamily: 'monospace',
-  });
+  container.add([lvlIcon, lvlText, nameText]);
 
-  const weaponText = scene.add.text(184, 122, '—', {
-    fontSize: '13px',
-    color: '#e8f6ff',
-    fontFamily: 'monospace',
-  });
+  // Stats row (AP/MP/Group/HP/Morale)
+  const statsY = 52;
+  const statGap = 116;
 
-  // Right-side action bar (buttons)
-  const btnW = 94;
-  const btnH = 34;
-  const btnPad = 8;
+  const statBlocks = [
+    { key: 'ui_stat_ap', label: 'AP', x: headerX + 0 },
+    { key: 'ui_stat_mp', label: 'MP', x: headerX + statGap * 1 },
+    { key: 'ui_stat_group', label: 'GR', x: headerX + statGap * 2 },
+    { key: 'ui_stat_hp', label: 'HP', x: headerX + statGap * 3 },
+    { key: 'ui_stat_morale', label: 'MO', x: headerX + statGap * 4 },
+  ];
 
-  // Right edge alignment
-  const rightX = W - 14 - (btnW * 3 + btnPad * 2);
-  const topY = 14;
+  const statIcons = [];
+  const statTexts = [];
+  for (const b of statBlocks) {
+    const ic = scene.add.image(b.x, statsY, b.key).setOrigin(0, 0.5);
+    ic.setScale(0.62);
+    const tx = scene.add.text(b.x + 26, statsY - 10, `${b.label}: 0`, {
+      fontSize: '13px',
+      color: '#cfefff',
+      fontFamily: 'monospace',
+    });
+    statIcons.push(ic);
+    statTexts.push(tx);
+    container.add([ic, tx]);
+  }
+
+  // Resists row (damage type icons + numbers)
+  const resY = 86;
+  const resBlocks = [
+    { key: 'ui_dmg_physical', id: 'physical', x: headerX + 0 },
+    { key: 'ui_dmg_thermal', id: 'thermal', x: headerX + 74 },
+    { key: 'ui_dmg_toxic', id: 'toxic', x: headerX + 148 },
+    { key: 'ui_dmg_cryo', id: 'cryo', x: headerX + 222 },
+    { key: 'ui_dmg_radiation', id: 'radiation', x: headerX + 296 },
+    { key: 'ui_dmg_energy', id: 'energy', x: headerX + 370 },
+    { key: 'ui_dmg_corrosion', id: 'corrosion', x: headerX + 444 },
+  ];
+
+  const resIcons = [];
+  const resTexts = [];
+  for (const b of resBlocks) {
+    const ic = scene.add.image(b.x, resY, b.key).setOrigin(0, 0.5);
+    ic.setScale(0.58);
+    const tx = scene.add.text(b.x + 24, resY - 10, '0', {
+      fontSize: '13px',
+      color: '#cfefff',
+      fontFamily: 'monospace',
+    });
+    resIcons.push(ic);
+    resTexts.push(tx);
+    container.add([ic, tx]);
+  }
+
+  // Status effect icons row (10 slots)
+  const statusY = 124;
+  const statusX0 = 112;
+  const statusSlot = 32;
+
+  const statusSlots = [];
+  for (let i = 0; i < 10; i++) {
+    const x = statusX0 + i * statusSlot;
+
+    const box = scene.add.graphics();
+    box.fillStyle(0x05070f, 0.55);
+    box.fillRoundedRect(x, statusY, 26, 26, 6);
+    box.lineStyle(1, 0x2f5f7b, 0.55);
+    box.strokeRoundedRect(x, statusY, 26, 26, 6);
+
+    const txt = scene.add.text(x + 13, statusY + 13, '', {
+      fontSize: '16px',
+      color: '#e8f6ff',
+      fontFamily: 'monospace',
+    }).setOrigin(0.5, 0.5);
+
+    container.add([box, txt]);
+    statusSlots.push({ box, txt });
+  }
+
+  // Right action bar (icons)
+  const actionY = 154;
+  const actionX0 = W - 16 - (8 * 46); // 8 buttons * 46 spacing
+  const actionStep = 46;
 
   const buttons = {};
 
-  // Row 1 actions
-  buttons.move = makeTextButton(scene, container, rightX + (btnW + btnPad) * 0, topY + (btnH + btnPad) * 0, btnW, btnH, 'Move', () => {
-    scene.unitCommandMode = null;
-    scene.attackController?.exit?.('move');
-    scene.abilityController?.exit?.('move');
-    clearCombatPreview(scene);
-    scene.refreshUnitActionPanel?.();
-  });
+  const make = (k, keyN, keyA, onClick) => {
+    const b = new IconButton(scene, container, actionX0 + actionStep * k, actionY, keyN, keyA, onClick);
+    buttons[k] = b;
+    return b;
+  };
 
-  buttons.attack = makeTextButton(scene, container, rightX + (btnW + btnPad) * 1, topY + (btnH + btnPad) * 0, btnW, btnH, 'Attack', () => {
-    const u = scene.selectedUnit;
-    if (!u) return;
+  // We keep references by name too (more convenient)
+  const btn = {};
 
-    // leave any ability targeting
-    scene.abilityController?.exit?.('attack_btn');
+  // Defence
+  btn.defence = new IconButton(scene, container, actionX0 + actionStep * 0, actionY,
+    'ui_action_defence', 'ui_action_defence_a',
+    () => {
+      const u = scene.selectedUnit;
+      if (!u) return;
+      // any command modes should be off in the new UI
+      scene.unitCommandMode = null;
 
-    const ac = scene.attackController || (scene.attackController = new AttackController(scene));
-    ac.enter(u);
-
-    updateCombatPreview(scene);
-    scene.refreshUnitActionPanel?.();
-  });
-
-  buttons.defence = makeTextButton(scene, container, rightX + (btnW + btnPad) * 2, topY + (btnH + btnPad) * 0, btnW, btnH, 'Defence', () => {
-    const u = scene.selectedUnit;
-    if (!u) return;
-
-    // leave modes
-    scene.attackController?.exit?.('defence');
-    scene.abilityController?.exit?.('defence');
-    scene.unitCommandMode = null;
-    clearCombatPreview(scene);
-
-    applyDefence(u);
-    scene.refreshUnitActionPanel?.();
-  });
-
-  // Row 2 actions (2 ability slots + Turn)
-  buttons.ability1 = makeTextButton(scene, container, rightX + (btnW + btnPad) * 0, topY + (btnH + btnPad) * 1, btnW, btnH, '—', () => {});
-  buttons.ability2 = makeTextButton(scene, container, rightX + (btnW + btnPad) * 1, topY + (btnH + btnPad) * 1, btnW, btnH, '—', () => {});
-
-  buttons.turn = makeTextButton(scene, container, rightX + (btnW + btnPad) * 2, topY + (btnH + btnPad) * 1, btnW, btnH, 'Turn', () => {
-    scene.unitPanelState.turnPickerOpen = !scene.unitPanelState.turnPickerOpen;
-    scene.refreshUnitActionPanel?.();
-  });
-
-  // Row 3 actions: Switch weapon + placeholders (future: Heal / End Turn etc.)
-  buttons.switchWeapon = makeTextButton(scene, container, rightX + (btnW + btnPad) * 0, topY + (btnH + btnPad) * 2, btnW * 2 + btnPad, btnH, 'Switch Weapon', () => {
-    const u = scene.selectedUnit;
-    const ws = Array.isArray(u?.weapons) ? u.weapons : [];
-    if (!u || ws.length <= 1) return;
-
-    const idx = Number.isFinite(u.activeWeaponIndex) ? u.activeWeaponIndex : 0;
-    u.activeWeaponIndex = (idx + 1) % ws.length;
-
-    // refresh attack highlights if in attack mode
-    if (scene.unitCommandMode === 'attack') {
-      scene.attackController?.enter?.(u);
-      updateCombatPreview(scene);
+      const res = applyDefence(u);
+      console.log('[DEFENCE]', { ok: res.ok, reason: res.reason, heal: res.heal, tempArmorBonus: res.tempArmorBonus, unitId: u.id, q: u.q, r: u.r });
+      scene.refreshUnitActionPanel?.();
     }
+  );
 
-    scene.refreshUnitActionPanel?.();
-  });
+  // Heal (placeholder for your future heal action)
+  btn.heal = new IconButton(scene, container, actionX0 + actionStep * 1, actionY,
+    'ui_action_heal', 'ui_action_heal_a',
+    () => {
+      const u = scene.selectedUnit;
+      if (!u) return;
+      console.log('[HEAL] placeholder', { unitId: u.id });
+      // TODO: hook real heal action here (separate from defence)
+      scene.refreshUnitActionPanel?.();
+    }
+  );
 
-  buttons.extra = makeTextButton(scene, container, rightX + (btnW + btnPad) * 2, topY + (btnH + btnPad) * 2, btnW, btnH, '—', () => {
-    // reserved slot (future: Heal / End Turn / Build etc.)
-  });
-  buttons.extra.setEnabled(false);
+  // Ambush (placeholder)
+  btn.ambush = new IconButton(scene, container, actionX0 + actionStep * 2, actionY,
+    'ui_action_ambush', 'ui_action_ambush_a',
+    () => {
+      const u = scene.selectedUnit;
+      if (!u) return;
+      console.log('[AMBUSH] placeholder', { unitId: u.id });
+      // TODO: hook ambush logic here
+      scene.refreshUnitActionPanel?.();
+    }
+  );
 
-  // Turn picker (6 buttons)
-  const turnPicker = {
-    label: scene.add.text(120, 150, 'Facing:', {
+  // Build (placeholder; show only for certain units)
+  btn.build = new IconButton(scene, container, actionX0 + actionStep * 3, actionY,
+    'ui_action_build', 'ui_action_build_a',
+    () => {
+      const u = scene.selectedUnit;
+      if (!u) return;
+      console.log('[BUILD] placeholder', { unitId: u.id, type: u.type });
+      // TODO: open build picker UI for mobile base
+      scene.refreshUnitActionPanel?.();
+    }
+  );
+
+  // Switch weapon
+  btn.switchWeapon = new IconButton(scene, container, actionX0 + actionStep * 4, actionY,
+    'ui_action_switch', 'ui_action_switch_a',
+    () => {
+      const u = scene.selectedUnit;
+      const ws = Array.isArray(u?.weapons) ? u.weapons : [];
+      if (!u || ws.length <= 1) return;
+
+      const idx = Number.isFinite(u.activeWeaponIndex) ? u.activeWeaponIndex : 0;
+      u.activeWeaponIndex = (idx + 1) % ws.length;
+
+      console.log('[WEAPON] switched', { unitId: u.id ?? u.unitId, activeWeaponIndex: u.activeWeaponIndex, weaponId: getActiveWeaponId(u) });
+      scene.refreshUnitActionPanel?.();
+    }
+  );
+
+  // Turn (opens facing picker)
+  btn.turn = new IconButton(scene, container, actionX0 + actionStep * 5, actionY,
+    'ui_action_turn', 'ui_action_turn_a',
+    () => {
+      scene.unitPanelState.facingPickerOpen = !scene.unitPanelState.facingPickerOpen;
+      scene.refreshUnitActionPanel?.();
+    }
+  );
+
+  // End turn
+  btn.endTurn = new IconButton(scene, container, actionX0 + actionStep * 6, actionY,
+    'ui_action_endturn', 'ui_action_endturn_a',
+    () => {
+      if (typeof scene.endTurn === 'function') scene.endTurn();
+    }
+  );
+
+  // Dismiss (placeholder)
+  btn.dismiss = new IconButton(scene, container, actionX0 + actionStep * 7, actionY,
+    'ui_action_dismiss', 'ui_action_dismiss_a',
+    () => {
+      const u = scene.selectedUnit;
+      if (!u) return;
+      console.log('[DISMISS] placeholder', { unitId: u.id, type: u.type });
+      // TODO: implement dismiss (remove unit) if you want it
+      scene.refreshUnitActionPanel?.();
+    }
+  );
+
+  // Facing picker buttons (6 small icons/text)
+  const facing = {
+    label: scene.add.text(actionX0, actionY - 30, 'Facing:', {
       fontSize: '13px',
       color: '#9be4ff',
       fontFamily: 'monospace',
@@ -444,38 +444,57 @@ export function setupUnitActionPanel(scene) {
     buttons: [],
   };
 
-  const tpX = 184;
-  const tpY = 142;
-  const smallW = 44;
-  const smallH = 34;
+  const fpX0 = actionX0 + 70;
+  const fpY = actionY - 36;
+  const smallW = 34;
+  const smallH = 26;
   const smallPad = 6;
   const arrowLabels = ['→', '↘', '↙', '←', '↖', '↗'];
 
   for (let i = 0; i < 6; i++) {
-    const bx = tpX + (smallW + smallPad) * i;
-    const by = tpY;
-    const b = makeTextButton(scene, container, bx, by, smallW, smallH, arrowLabels[i], () => {
+    const x = fpX0 + i * (smallW + smallPad);
+
+    const g = scene.add.graphics();
+    const hit = scene.add.rectangle(x, fpY, smallW, smallH, 0x000000, 0).setOrigin(0, 0);
+    const t = scene.add.text(x + smallW / 2, fpY + smallH / 2, arrowLabels[i], {
+      fontSize: '15px',
+      color: '#e8f6ff',
+      fontFamily: 'monospace',
+    }).setOrigin(0.5, 0.5);
+
+    const draw = (hover) => {
+      g.clear();
+      g.fillStyle(hover ? 0x2a3b66 : 0x1a2240, 0.92);
+      g.fillRoundedRect(x, fpY, smallW, smallH, 6);
+      g.lineStyle(2, hover ? 0x86d6ff : 0x4aa6d8, 0.85);
+      g.strokeRoundedRect(x, fpY, smallW, smallH, 6);
+    };
+    draw(false);
+
+    hit.setInteractive({ useHandCursor: true });
+    hit.on('pointerover', () => draw(true));
+    hit.on('pointerout', () => draw(false));
+    hit.on('pointerdown', () => {
       const u = scene.selectedUnit;
       if (!u) return;
       setFacing(scene, u, i);
-      scene.unitPanelState.turnPickerOpen = false;
+      scene.unitPanelState.facingPickerOpen = false;
       scene.refreshUnitActionPanel?.();
     });
-    turnPicker.buttons.push(b);
+
+    container.add([g, hit, t]);
+    facing.buttons.push({ g, hit, t, draw });
   }
 
-  // Add UI elements
-  container.add([
-    portraitBox,
-    portraitHint,
-    headerText,
-    coreStatsText,
-    resistText,
-    statusText,
-    weaponLabel,
-    weaponText,
-    turnPicker.label,
-  ]);
+  // hide facing by default
+  facing.label.setVisible(false);
+  for (const b of facing.buttons) {
+    b.g.setVisible(false);
+    b.hit.setVisible(false);
+    b.t.setVisible(false);
+    b.hit.disableInteractive();
+  }
+  container.add(facing.label);
 
   // Positioning
   const position = () => {
@@ -486,243 +505,132 @@ export function setupUnitActionPanel(scene) {
   position();
   scene.scale.on('resize', position);
 
-  // Store handles
+  // Store UI handles
   scene.unitActionPanel = {
     container,
     bg,
     bezel,
     blocker,
     portraitBox,
-    portraitHint,
-    headerText,
-    coreStatsText,
-    resistText,
-    statusText,
-    weaponLabel,
-    weaponText,
-    buttons,
-    turnPicker,
+    lvlIcon,
+    lvlText,
+    nameText,
+    statIcons,
+    statTexts,
+    resIcons,
+    resTexts,
+    statusSlots,
+    buttons: btn,
+    facing,
     W,
     H,
   };
 
-  // API
+  // Public API
   scene.openUnitActionPanel = function (unit) {
     if (!scene.unitActionPanel) return;
-    scene.unitPanelState.turnPickerOpen = false;
+    scene.unitPanelState.facingPickerOpen = false;
     scene.unitActionPanel.container.visible = true;
     scene.refreshUnitActionPanel?.(unit);
     scene.children.bringToTop(scene.unitActionPanel.container);
   };
 
-  scene.openHexInspectPanel = function (q, r) {
-    if (!scene.unitActionPanel) return;
-    if (!Number.isFinite(q) || !Number.isFinite(r)) return;
-
-    scene.selectedHex = { q, r };
-
-    // Clear modes
-    scene.unitCommandMode = null;
-    scene.clearPathPreview?.();
-
-    const obj = makeHexInspectObj(q, r);
-    scene.unitPanelState.turnPickerOpen = false;
-    scene.unitActionPanel.container.visible = true;
-    scene.refreshUnitActionPanel?.(obj);
-    scene.children.bringToTop(scene.unitActionPanel.container);
-  };
-
   scene.closeUnitActionPanel = function () {
     if (!scene.unitActionPanel) return;
-    scene.unitPanelState.turnPickerOpen = false;
+    scene.unitPanelState.facingPickerOpen = false;
     scene.unitActionPanel.container.visible = false;
   };
 
-  // Renders unit OR hex-inspect
   scene.refreshUnitActionPanel = function (unitMaybe) {
     const panel = scene.unitActionPanel;
     if (!panel) return;
 
     const unit = unitMaybe || scene.selectedUnit;
 
-    // Hide if nothing selected
     if (!unit) {
       scene.closeUnitActionPanel?.();
       return;
     }
 
-    // =============================
-    // HEX INSPECT MODE
-    // =============================
-    if (isHexInspect(unit)) {
-      const q = unit.q;
-      const r = unit.r;
+    // Header
+    const level = Number.isFinite(unit.level) ? unit.level : 1;
+    panel.lvlText.setText(String(level));
 
-      const hx = summarizeHex(scene, q, r);
-      panel.headerText.setText(hx.title);
+    const nm = unit.unitName || unit.type || 'Unit';
+    panel.nameText.setText(nm);
 
-      // Show hex info in core text; hide other rows
-      panel.coreStatsText.setText(hx.lines.join('\n'));
-      panel.resistText.setText('');
-      panel.statusText.setText('');
-      panel.weaponLabel.setVisible(false);
-      panel.weaponText.setVisible(false);
-
-      // Hide portrait placeholders (optional: keep visible, but meaningless)
-      panel.portraitHint.setText('⬡');
-
-      // Hide all buttons
-      for (const k of Object.keys(panel.buttons || {})) {
-        const b = panel.buttons[k];
-        if (!b) continue;
-        b.g.setVisible(false);
-        b.t.setVisible(false);
-        b.hit.setVisible(false);
-        b.setEnabled(false);
-      }
-
-      // Hide turn picker
-      panel.turnPicker.label.setVisible(false);
-      for (const b of panel.turnPicker.buttons) {
-        b.g.setVisible(false);
-        b.t.setVisible(false);
-        b.hit.setVisible(false);
-        b.setEnabled(false);
-      }
-
-      return;
-    }
-
-    // =============================
-    // UNIT MODE
-    // =============================
-    panel.weaponLabel.setVisible(true);
-    panel.weaponText.setVisible(true);
-
-    // Title: LVL + name
-    const lvl = getUnitLevel(unit);
-    const nm = unit.unitName || unit.name || unit.type || 'Unit';
-    panel.headerText.setText(`LVL ${lvl} — ${nm}`);
-
-    // Core stats row
-    const hp = Number.isFinite(unit.hp) ? unit.hp : 0;
-    const hpMax = Number.isFinite(unit.maxHp) ? unit.maxHp : (Number.isFinite(unit.hpMax) ? unit.hpMax : 0);
+    // Core stats
+    const ap = Number.isFinite(unit.ap) ? unit.ap : 0;
+    const apMax = Number.isFinite(unit.apMax) ? unit.apMax : 1;
 
     const mp = Number.isFinite(unit.mp) ? unit.mp : (Number.isFinite(unit.movementPoints) ? unit.movementPoints : 0);
     const mpMax = Number.isFinite(unit.mpMax) ? unit.mpMax : (Number.isFinite(unit.maxMovementPoints) ? unit.maxMovementPoints : 0);
 
-    const ap = Number.isFinite(unit.ap) ? unit.ap : 0;
-    const apMax = Number.isFinite(unit.apMax) ? unit.apMax : 1;
+    const grp = Number.isFinite(unit.groupSize) ? unit.groupSize : (Number.isFinite(unit.stack) ? unit.stack : 1);
+    const hp = Number.isFinite(unit.hp) ? unit.hp : 0;
+    const hpMax = Number.isFinite(unit.maxHp) ? unit.maxHp : (Number.isFinite(unit.hpMax) ? unit.hpMax : 0);
+    const morale = Number.isFinite(unit.morale) ? unit.morale : 0;
 
-    const group = getGroup(unit);
-    const morale = getMorale(unit);
+    // statTexts order matches statBlocks: AP, MP, GR, HP, MO
+    panel.statTexts[0].setText(`AP: ${fmt(ap)}/${fmt(apMax)}`);
+    panel.statTexts[1].setText(`MP: ${fmt(mp)}/${fmt(mpMax)}`);
+    panel.statTexts[2].setText(`GR: ${fmt(grp)}`);
+    panel.statTexts[3].setText(`HP: ${fmt(hp)}/${fmt(hpMax)}`);
+    panel.statTexts[4].setText(`MO: ${fmt(morale)}`);
 
-    panel.coreStatsText.setText(
-      `AP ${fmt(ap)}/${fmt(apMax)}    MP ${fmt(mp)}/${fmt(mpMax)}    GROUP ${fmt(group)}    HP ${fmt(hp)}/${fmt(hpMax)}    MORALE ${fmt(morale)}`
-    );
+    // Resists
+    const res = getResists(unit);
+    panel.resTexts[0].setText(fmt(res.physical));
+    panel.resTexts[1].setText(fmt(res.thermal));
+    panel.resTexts[2].setText(fmt(res.toxic));
+    panel.resTexts[3].setText(fmt(res.cryo));
+    panel.resTexts[4].setText(fmt(res.radiation));
+    panel.resTexts[5].setText(fmt(res.energy));
+    panel.resTexts[6].setText(fmt(res.corrosion));
 
-    // Resist row
-    const rs = getResists(unit);
-    panel.resistText.setText(
-      `RESISTS: PHY ${fmt(rs.physical)}  THR ${fmt(rs.thermal)}  TOX ${fmt(rs.toxic)}  CRYO ${fmt(rs.cryo)}  RAD ${fmt(rs.radiation)}  ENG ${fmt(rs.energy)}  CORR ${fmt(rs.corrosion)}`
-    );
-
-    // Status row (up to 10 icons)
-    const icons = getStatusIcons(unit, 10);
-    panel.statusText.setText(icons.length ? icons.join(' ') : '');
-
-    // Weapon label
-    const wid = getActiveWeaponId(unit);
-    const w = wid ? getWeaponDef(wid) : null;
-    panel.weaponText.setText(w ? `${w.name} (${wid})` : '—');
-
-    // Switch weapon button visibility
-    const ws = Array.isArray(unit?.weapons) ? unit.weapons : [];
-    const hasManyWeapons = ws.length > 1;
-    panel.buttons.switchWeapon.g.setVisible(hasManyWeapons);
-    panel.buttons.switchWeapon.t.setVisible(hasManyWeapons);
-    panel.buttons.switchWeapon.hit.setVisible(hasManyWeapons);
-    panel.buttons.switchWeapon.setEnabled(hasManyWeapons);
-
-    // Buttons visible/enabled
-    const btnKeys = Object.keys(panel.buttons || {});
-    for (const k of btnKeys) {
-      const b = panel.buttons[k];
-      if (!b) continue;
-      // show all by default (except extra disabled slot is always visible but disabled)
-      if (k === 'extra') {
-        b.g.setVisible(true); b.t.setVisible(true); b.hit.setVisible(true);
-        b.setEnabled(false);
-      } else if (k === 'switchWeapon') {
-        // already handled
-      } else {
-        b.g.setVisible(true); b.t.setVisible(true); b.hit.setVisible(true);
-        b.setEnabled(true);
-      }
+    // Status icons
+    const icons = getUnitStatusIcons(unit, 10);
+    for (let i = 0; i < panel.statusSlots.length; i++) {
+      const slot = panel.statusSlots[i];
+      slot.txt.setText(icons[i] || '');
     }
 
-    // Highlight current modes on buttons
-    panel.buttons.attack.setActive(scene.unitCommandMode === 'attack');
-    panel.buttons.move.setActive(!scene.unitCommandMode);
-    panel.buttons.defence.setActive(!!unit?.status?.defending);
+    // Action bar states / visibility
+    // Defence active state (if unit.status.defending exists)
+    const defending = !!(unit.status && unit.status.defending);
+    panel.buttons.defence.setActive(defending);
 
-    // Ability buttons in the action row (up to 2)
-    const actives = Array.isArray(unit?.activeAbilities) ? unit.activeAbilities : [];
-    const a1 = actives[0] || null;
-    const a2 = actives[1] || null;
+    // Heal / Ambush (toggle hooks can be wired later)
+    panel.buttons.heal.setActive(false);
+    panel.buttons.ambush.setActive(false);
 
-    const applyAbilityButton = (btn, abilityId) => {
-      if (!btn) return;
+    // Build shown only for mobile base (or any unit with canBuild flag)
+    const canBuild = (String(unit.type || '').toLowerCase().includes('mobile_base')) || !!unit.canBuild;
+    panel.buttons.build.setVisible(canBuild);
 
-      if (!abilityId) {
-        btn.setLabel('—');
-        btn.setEnabled(false);
-        btn.setActive(false);
-        return;
-      }
+    // Switch weapon shown only if >1 weapon
+    const ws = Array.isArray(unit.weapons) ? unit.weapons : [];
+    panel.buttons.switchWeapon.setVisible(ws.length > 1);
 
-      const def = getAbilityDef(abilityId);
-      const label = def?.icon ? `${def.icon} ${def.name}` : (def?.name || abilityId);
+    // Turn always visible
+    panel.buttons.turn.setVisible(true);
 
-      btn.setLabel(label);
-      btn.setEnabled(true);
+    // End turn always visible
+    panel.buttons.endTurn.setVisible(true);
 
-      // set active if we are in this ability mode
-      const mode = String(scene.unitCommandMode || '');
-      btn.setActive(mode === `ability:${abilityId}`);
+    // Dismiss visible for non-enemy (you can change rule)
+    const isEnemy = !!(unit.isEnemy || unit.controller === 'ai');
+    panel.buttons.dismiss.setVisible(!isEnemy);
 
-      // replace click behavior
-      btn.hit.removeAllListeners('pointerdown');
-      btn.hit.on('pointerdown', () => {
-        const caster = scene.selectedUnit;
-        if (!caster) return;
-
-        // leave attack mode
-        scene.attackController?.exit?.('ability_btn');
-        clearCombatPreview(scene);
-
-        // enter ability targeting
-        const ctrl = scene.abilityController || (scene.abilityController = new AbilityController(scene));
-        ctrl.enter(caster, abilityId);
-
-        // mark mode (AbilityController may also set this, but we keep it consistent)
-        scene.unitCommandMode = `ability:${abilityId}`;
-
-        scene.refreshUnitActionPanel?.();
-      });
-    };
-
-    applyAbilityButton(panel.buttons.ability1, a1);
-    applyAbilityButton(panel.buttons.ability2, a2);
-
-    // Turn picker visibility
-    const tpOpen = !!scene.unitPanelState.turnPickerOpen;
-    panel.turnPicker.label.setVisible(tpOpen);
-    for (const b of panel.turnPicker.buttons) {
-      b.g.setVisible(tpOpen);
-      b.t.setVisible(tpOpen);
-      b.hit.setVisible(tpOpen);
-      b.setEnabled(tpOpen);
+    // Facing picker
+    const fpOpen = !!scene.unitPanelState.facingPickerOpen;
+    panel.facing.label.setVisible(fpOpen);
+    for (const b of panel.facing.buttons) {
+      b.g.setVisible(fpOpen);
+      b.hit.setVisible(fpOpen);
+      b.t.setVisible(fpOpen);
+      if (fpOpen) b.hit.setInteractive({ useHandCursor: true });
+      else b.hit.disableInteractive();
     }
   };
 }
