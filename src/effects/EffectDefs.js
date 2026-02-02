@@ -20,7 +20,7 @@
 //   kind: "hex"|"unit",
 //   q, r,                   // only for hex effects
 //   sourceUnitId, sourceFaction,
-//   duration: 3,            // remaining turns
+//   duration: 3,            // remaining turns (0 => infinite)
 //   stacks: 1,
 //   params: {...}           // merged base params + instance params
 // }
@@ -63,7 +63,7 @@ export const MOD_STATS = Object.freeze({
   VISION: 'vision',               // +N
   MP_MAX: 'mpMax',                // +N
   AP_MAX: 'apMax',                // +N
-  RANGE: 'range',                 // +N weapon range (adds to both min/max in engine, or max only)
+  RANGE: 'range',                 // +N weapon range
   DAMAGE_DEALT_PCT: 'damageDealtPct',   // +% dealt
   DAMAGE_TAKEN_PCT: 'damageTakenPct',   // +% taken
 });
@@ -87,7 +87,7 @@ export const TICK_ACTIONS = Object.freeze({
  * @property {'turnStart'|'turnEnd'} phase      - when it ticks
  * @property {'dot'|'regen'} type               - action type
  * @property {number} amount                    - N
- * @property {string} [damageType]              - for DOT: physical|thermal|toxin|cryo|energy|corrosion
+ * @property {string} [damageType]              - for DOT: physical|thermal|toxic|cryo|radiation|energy|corrosion
  * @property {boolean} [affectsAllOnHex]        - for hex effects: apply to all units on hex (default true)
  */
 
@@ -98,7 +98,7 @@ export const TICK_ACTIONS = Object.freeze({
  * @property {string} name
  * @property {string} icon                       - UI hint (emoji for now)
  * @property {string} description
- * @property {number} baseDuration               - default duration in turns
+ * @property {number} baseDuration               - default duration in turns (0 => infinite)
  * @property {'refresh'|'stack'|'ignore'} stacking
  * @property {number} [maxStacks]
  * @property {object} [baseParams]
@@ -116,8 +116,12 @@ export const EFFECT_IDS = Object.freeze({
   PASSIVE_KEEN_SIGHT: 'PASSIVE_KEEN_SIGHT',
   PASSIVE_SERVO_BOOST: 'PASSIVE_SERVO_BOOST',
   PASSIVE_RANGE_TUNING: 'PASSIVE_RANGE_TUNING',
-  PASSIVE_TOXIN_FILTERS: 'PASSIVE_TOXIN_FILTERS',
+  PASSIVE_TOXIC_FILTERS: 'PASSIVE_TOXIC_FILTERS',
   PASSIVE_CORROSION_COATING: 'PASSIVE_CORROSION_COATING',
+
+  // Status (temporary) examples
+  BLEEDING: 'BLEEDING',
+  FROZEN: 'FROZEN',
 
   POISONED: 'POISONED',
   BURNING: 'BURNING',
@@ -167,7 +171,7 @@ export const EFFECTS = Object.freeze({
     ],
   },
 
-  // PASSIVES (modeled as infinite-duration unit effects; engine/runtime should treat baseDuration<=0 as infinite)
+  // PASSIVES (modeled as infinite-duration unit effects; engine/runtime treats baseDuration<=0 as infinite)
   [EFFECT_IDS.PASSIVE_THICK_PLATING]: {
     id: EFFECT_IDS.PASSIVE_THICK_PLATING,
     kind: EFFECT_KINDS.UNIT,
@@ -228,20 +232,18 @@ export const EFFECTS = Object.freeze({
     ],
   },
 
-  [EFFECT_IDS.PASSIVE_TOXIN_FILTERS]: {
-    id: EFFECT_IDS.PASSIVE_TOXIN_FILTERS,
+  [EFFECT_IDS.PASSIVE_TOXIC_FILTERS]: {
+    id: EFFECT_IDS.PASSIVE_TOXIC_FILTERS,
     kind: EFFECT_KINDS.UNIT,
-    name: 'Toxin Filters',
+    name: 'Toxic Filters',
     icon: '🧪',
-    description: 'Reduce toxin damage taken (handled in CombatResolver via derived stat hook).',
+    description: 'Reduce toxic damage taken (handled in CombatResolver via derived stat hook).',
     baseDuration: 0,
     stacking: STACKING.IGNORE,
     maxStacks: 1,
-    baseParams: { toxinTakenPct: -25 },
+    baseParams: { toxicTakenPct: -25 },
     modifiers: [
-      // We keep this as a generic "damage taken pct" for now.
-      // If you later want per-type, extend modifiers with `damageType`.
-      { stat: MOD_STATS.DAMAGE_TAKEN_PCT, op: 'add', value: -25, damageType: 'toxin' },
+      { stat: MOD_STATS.DAMAGE_TAKEN_PCT, op: 'add', value: -25, damageType: 'toxic' },
     ],
   },
 
@@ -255,8 +257,39 @@ export const EFFECTS = Object.freeze({
     stacking: STACKING.IGNORE,
     maxStacks: 1,
     baseParams: { corrosionOnHit: true },
-    // No direct modifiers; this is a hook read by attack pipeline.
     modifiers: [],
+  },
+
+  // === TEMP STATUSES (for your UI row; these will occupy status slots) ===
+
+  [EFFECT_IDS.BLEEDING]: {
+    id: EFFECT_IDS.BLEEDING,
+    kind: EFFECT_KINDS.UNIT,
+    name: 'Bleeding',
+    icon: '💥',
+    description: 'Takes physical damage each turn.',
+    baseDuration: 2,
+    stacking: STACKING.REFRESH,
+    maxStacks: 1,
+    baseParams: { dot: 1, damageType: 'physical' },
+    ticks: [
+      { phase: TICK_PHASE.TURN_END, type: TICK_ACTIONS.DOT, amount: 1, damageType: 'physical' },
+    ],
+  },
+
+  [EFFECT_IDS.FROZEN]: {
+    id: EFFECT_IDS.FROZEN,
+    kind: EFFECT_KINDS.UNIT,
+    name: 'Frozen',
+    icon: '❄️',
+    description: 'Reduced movement while active.',
+    baseDuration: 1,
+    stacking: STACKING.REFRESH,
+    maxStacks: 1,
+    baseParams: { mpDebuff: 1 },
+    modifiers: [
+      { stat: MOD_STATS.MP_MAX, op: 'add', value: -1 },
+    ],
   },
 
   // Example unit DOTs (can also be applied from hex fields)
@@ -265,13 +298,13 @@ export const EFFECTS = Object.freeze({
     kind: EFFECT_KINDS.UNIT,
     name: 'Poisoned',
     icon: '☣️',
-    description: 'Takes toxin damage each turn.',
+    description: 'Takes toxic damage each turn.',
     baseDuration: 3,
     stacking: STACKING.REFRESH,
     maxStacks: 1,
-    baseParams: { dot: 2, damageType: 'toxin' },
+    baseParams: { dot: 2, damageType: 'toxic' },
     ticks: [
-      { phase: TICK_PHASE.TURN_END, type: TICK_ACTIONS.DOT, amount: 2, damageType: 'toxin' },
+      { phase: TICK_PHASE.TURN_END, type: TICK_ACTIONS.DOT, amount: 2, damageType: 'toxic' },
     ],
   },
 
@@ -335,9 +368,6 @@ export const EFFECTS = Object.freeze({
     stacking: STACKING.REFRESH,
     maxStacks: 1,
     baseParams: { visionDebuff: 2 },
-    // For hex effects, modifiers are not directly applied; instead we apply a unit effect on enter/tick.
-    // The engine will interpret this by applying `SMOKED` to units standing in it.
-    baseParams2: null,
     hexVisual: { hint: 'smoke' },
   },
 
@@ -350,9 +380,9 @@ export const EFFECTS = Object.freeze({
     baseDuration: 3,
     stacking: STACKING.REFRESH,
     maxStacks: 1,
-    baseParams: { dot: 2, damageType: 'toxin' },
+    baseParams: { dot: 2, damageType: 'toxic' },
     ticks: [
-      { phase: TICK_PHASE.TURN_END, type: TICK_ACTIONS.DOT, amount: 2, damageType: 'toxin', affectsAllOnHex: true },
+      { phase: TICK_PHASE.TURN_END, type: TICK_ACTIONS.DOT, amount: 2, damageType: 'toxic', affectsAllOnHex: true },
     ],
     hexVisual: { hint: 'miasma' },
   },
