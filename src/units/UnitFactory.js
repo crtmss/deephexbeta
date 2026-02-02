@@ -13,27 +13,76 @@ let _seq = 1;
  */
 
 /**
+ * @typedef {Record<string, number>} ResistMapRuntime
+ * Runtime resist map (percent points). Keys match DamageType in UnitDefs:
+ * physical, thermal, toxic, cryo, radiation, energy, corrosion
+ */
+
+/**
  * @typedef UnitState
  * @property {string} id
  * @property {string} type
  * @property {string|null} ownerId
  * @property {number|null} ownerSlot
  * @property {UnitController} controller
+ * @property {string} faction
  * @property {number} q
  * @property {number} r
  * @property {number} facing
+ *
+ * @property {number} level
+ *
  * @property {number} hp
  * @property {number} hpMax
+ *
  * @property {number} armorPoints
  * @property {'NONE'|'LIGHT'|'MEDIUM'|'HEAVY'} armorClass
+ *
  * @property {number} mp
  * @property {number} mpMax
  * @property {number} ap
  * @property {number} apMax
+ *
+ * @property {number} vision
+ * @property {number} visionMax
+ *
+ * @property {number} groupSize
+ * @property {number} groupAlive
+ *
+ * @property {number} morale
+ * @property {number} moraleMax
+ *
+ * @property {ResistMapRuntime} resists
+ *
  * @property {string[]} weapons
  * @property {number} activeWeaponIndex
+ *
+ * @property {string[]} activeAbilities
+ * @property {string[]} passiveAbilities
+ *
+ * @property {any[]} effects
+ * @property {any[]} statuses
+ *
  * @property {{defending?: boolean}} status
  */
+
+/**
+ * Fill any missing resist keys with 0.
+ * @param {any} input
+ * @returns {ResistMapRuntime}
+ */
+function normalizeResists(input) {
+  const src = (input && typeof input === 'object') ? input : {};
+  return {
+    physical: Number.isFinite(src.physical) ? src.physical : 0,
+    thermal: Number.isFinite(src.thermal) ? src.thermal : 0,
+    toxic: Number.isFinite(src.toxic) ? src.toxic : 0,
+    cryo: Number.isFinite(src.cryo) ? src.cryo : 0,
+    radiation: Number.isFinite(src.radiation) ? src.radiation : 0,
+    energy: Number.isFinite(src.energy) ? src.energy : 0,
+    corrosion: Number.isFinite(src.corrosion) ? src.corrosion : 0,
+  };
+}
 
 /**
  * Create a pure runtime state object.
@@ -42,6 +91,7 @@ let _seq = 1;
  * @param {string|null} [opts.ownerId]
  * @param {number|null} [opts.ownerSlot]
  * @param {'player'|'ai'} [opts.controller]
+ * @param {string} [opts.faction]
  * @param {number} opts.q
  * @param {number} opts.r
  * @param {number} [opts.facing]
@@ -55,6 +105,13 @@ export function createUnitState(opts) {
   const activeAbilities = Array.isArray(def.activeAbilities) ? def.activeAbilities.slice() : [];
   const passiveAbilities = Array.isArray(def.passiveAbilities) ? def.passiveAbilities.slice() : [];
 
+  const groupSize = Number.isFinite(def.groupSize) ? def.groupSize : 1;
+  const moraleMax = Number.isFinite(def.moraleMax) ? def.moraleMax : 0;
+
+  const visionMax = Number.isFinite(def.visionMax)
+    ? def.visionMax
+    : (Number.isFinite(def.vision) ? def.vision : 4);
+
   return {
     id,
     type: def.id,
@@ -62,22 +119,39 @@ export function createUnitState(opts) {
     ownerSlot: opts.ownerSlot ?? null,
     controller: opts.controller || 'player',
     faction: opts.faction ?? (opts.controller === 'ai' ? 'raiders' : `player${opts.ownerSlot ?? 0}`),
+
     q: opts.q,
     r: opts.r,
     facing: Number.isFinite(opts.facing) ? opts.facing : 0,
+
+    // Meta progression
+    level: 1,
+
     // Core stats
     hpMax: def.hpMax,
     hp: def.hpMax,
     armorPoints: def.armorPoints,
     armorClass: def.armorClass,
+
     mpMax: def.mpMax,
     mp: def.mpMax,
     apMax: def.apMax,
     ap: def.apMax,
 
     // Vision (used by fog-of-war and ability range in future)
-    visionMax: Number.isFinite(def.visionMax) ? def.visionMax : (Number.isFinite(def.vision) ? def.vision : 4),
-    vision: Number.isFinite(def.visionMax) ? def.visionMax : (Number.isFinite(def.vision) ? def.vision : 4),
+    visionMax,
+    vision: visionMax,
+
+    // Squad stats
+    groupSize,
+    groupAlive: groupSize,
+
+    // Morale
+    moraleMax,
+    morale: moraleMax, // currently 0 for all (per your rules)
+
+    // Resists
+    resists: normalizeResists(def.resists),
 
     // Weapons + abilities
     weapons,
@@ -86,8 +160,13 @@ export function createUnitState(opts) {
     activeAbilities,
     passiveAbilities,
 
-    // Effect instances live here (EffectEngine ensures shape)
+    // Effects array is managed by EffectEngine; keep it on unit for runtime.
     effects: [],
+
+    // Statuses (buff/debuff icons in UI). Engine will enforce max 10 later.
+    statuses: [],
+
+    // Lightweight flags used by UI/actions (legacy safe)
     status: {},
   };
 }
@@ -106,17 +185,23 @@ export function createUnitState(opts) {
 export function applyUnitStateToPhaserUnit(phaserUnit, state) {
   if (!phaserUnit || !state) return;
 
-  // Canonical
+  // Canonical identity
   phaserUnit.unitId = state.id;
   phaserUnit.unitType = state.type;
   phaserUnit.ownerId = state.ownerId;
   phaserUnit.ownerSlot = state.ownerSlot;
   phaserUnit.controller = state.controller;
   phaserUnit.faction = state.faction;
+
   // Mirror id for systems that look at `unit.id`
   if (!phaserUnit.id) phaserUnit.id = state.id;
+
   phaserUnit.facing = state.facing;
 
+  // Progression
+  phaserUnit.level = state.level;
+
+  // Core stats
   phaserUnit.hp = state.hp;
   phaserUnit.maxHp = state.hpMax;
   phaserUnit.armorPoints = state.armorPoints;
@@ -130,6 +215,18 @@ export function applyUnitStateToPhaserUnit(phaserUnit, state) {
   phaserUnit.vision = state.vision;
   phaserUnit.visionMax = state.visionMax;
 
+  // Squad stats
+  phaserUnit.groupSize = state.groupSize;
+  phaserUnit.groupAlive = state.groupAlive;
+
+  // Morale
+  phaserUnit.moraleMax = state.moraleMax;
+  phaserUnit.morale = state.morale;
+
+  // Resists
+  phaserUnit.resists = state.resists;
+
+  // Weapons + abilities
   phaserUnit.weapons = state.weapons;
   phaserUnit.activeWeaponIndex = state.activeWeaponIndex;
 
@@ -139,6 +236,10 @@ export function applyUnitStateToPhaserUnit(phaserUnit, state) {
   // Effects array is managed by EffectEngine; keep it on unit for runtime.
   if (!Array.isArray(phaserUnit.effects)) phaserUnit.effects = state.effects || [];
 
+  // Status list (buff/debuff icons)
+  if (!Array.isArray(phaserUnit.statuses)) phaserUnit.statuses = state.statuses || [];
+
+  // Legacy lightweight flags object
   phaserUnit.status = state.status;
 
   // Legacy compatibility
