@@ -1,96 +1,32 @@
 // src/scenes/WorldSceneUnitPanel.js
 //
-// Stage C: Unit action panel UI (bottom-center).
+// New Unit Panel (v2) — aligned to your target UX.
+// - No Build menu.
+// - No Active/Passive "folder" pages.
+// - Passives are displayed as STATUS EFFECTS (from EffectEngine / unit.effects).
+// - Actives are buttons on the same row as Defence/Attack/etc.
+// - Weapon tooltip removed.
+// - Facing (Turn picker) kept, but controlled from this panel.
 //
-// This module is designed to be additive and not break existing menus.
-// It plugs into WorldSceneMenus.setupWorldMenus() and adds:
-//   scene.openUnitActionPanel(unit)
-//   scene.closeUnitActionPanel()
-//   scene.refreshUnitActionPanel()
+// NOTE:
+// - Portraits are intentionally NOT implemented yet (you asked to postpone).
+// - Status icons are shown using EffectDefs.icon (emoji for now).
+// - Later we will replace buttons with UI icons from UI.rar and add pressed states.
 //
-// Controls:
-//  - Move: clears attack mode (movement remains click-to-move as before)
-//  - Attack: highlights attackable hexes (via AttackController)
-//  - Defence: calls applyDefence(unit)
-//  - Build: (Mobile Base only) placeholder for now (later via Build ability)
-//  - Hide: no-op placeholder
-//  - Turn: opens direction picker (free)
-//
-// NEW (Abilities v1):
-//  - Active Abilities folder: shows up to 2 cast buttons for unit's active abilities
-//  - Passive Abilities folder: shows passive icons (emoji) + names
-//  - Clicking an active ability enters targeting mode via AbilityController.
-//
-// ---------------------------------------------------------------------------
-// __COMBAT_DEBUG__ (auto-instrumentation)
-// Toggle in devtools: window.__COMBAT_DEBUG_ENABLED__ = true/false
-// ---------------------------------------------------------------------------
-const __DBG_ENABLED__ = () => (typeof window !== 'undefined' ? (window.__COMBAT_DEBUG_ENABLED__ ?? true) : true);
-function __dbg_ts() { try { return new Date().toISOString().slice(11, 23); } catch (_) { return ''; } }
-function __dbg(tag, data) { if (!__DBG_ENABLED__()) return; try { console.log('[' + tag + '] ' + __dbg_ts(), data); } catch (_) {} }
-function __dbg_group(tag, title, data) {
-  if (!__DBG_ENABLED__()) return;
-  try { console.groupCollapsed('[' + tag + '] ' + __dbg_ts() + ' ' + title); if (data !== undefined) console.log(data); } catch (_) {}
-}
-function __dbg_group_end() { if (!__DBG_ENABLED__()) return; try { console.groupEnd(); } catch (_) {} }
-
-// -----------------------------------------------------------------------------
-// Attack debug helpers
-// -----------------------------------------------------------------------------
-function hexDistanceAxial(q1, r1, q2, r2) {
-  const dq = q2 - q1;
-  const dr = r2 - r1;
-  const ds = -dq - dr;
-  return (Math.abs(dq) + Math.abs(dr) + Math.abs(ds)) / 2;
-}
-
-function getActiveWeaponId(unit) {
-  const weapons = unit?.weapons || [];
-  if (!weapons.length) return null;
-  const idx = Number.isFinite(unit.activeWeaponIndex) ? unit.activeWeaponIndex : 0;
-  return weapons[idx] || weapons[0] || null;
-}
-
-function getWeaponRange(weapon) {
-  const rangeMin = Number.isFinite(weapon?.rangeMin) ? weapon.rangeMin : 1;
-  const rangeMax = Number.isFinite(weapon?.rangeMax)
-    ? weapon.rangeMax
-    : (Number.isFinite(weapon?.range) ? weapon.range : 1);
-  return { rangeMin, rangeMax };
-}
-
-function countEnemiesInRange(scene, attacker, rangeMin, rangeMax) {
-  const all = []
-    .concat(scene.units || [])
-    .concat(scene.players || [])
-    .concat(scene.enemies || [])
-    .concat(scene.haulers || []);
-  let n = 0;
-  for (const u of all) {
-    if (!u || u.isDead) continue;
-    if (u === attacker) continue;
-
-    // Enemy check (player vs enemy or different owner)
-    if (attacker.isEnemy && u.isEnemy) continue;
-    if (attacker.isPlayer && u.isPlayer) continue;
-
-    const d = hexDistanceAxial(attacker.q, attacker.r, u.q, u.r);
-    if (d >= rangeMin && d <= rangeMax) n++;
-  }
-  return n;
-}
+// Compatibility:
+// - Keeps scene.openUnitActionPanel(unit), scene.closeUnitActionPanel(), scene.refreshUnitActionPanel()
+// - Keeps scene.openHexInspectPanel(q,r) for WorldSceneHistory.js
 
 import { applyDefence } from '../units/UnitActions.js';
 import { updateCombatPreview, clearCombatPreview } from './WorldSceneCombatPreview.js';
 import { getWeaponDef } from '../units/WeaponDefs.js';
 import { AttackController } from '../combat/AttackController.js';
 
-// NEW: Abilities
-import { getUnitDef } from '../units/UnitDefs.js';
+// Actives as buttons in the same row
 import { getAbilityDef } from '../abilities/AbilityDefs.js';
 import { AbilityController } from '../abilities/AbilityController.js';
 
-// NEW: Status icons from EffectDefs
+// Status effects (passives, DOTs, debuffs etc.)
 import { getEffectDef } from '../effects/EffectDefs.js';
 
 const PANEL_DEPTH = 4200;
@@ -113,159 +49,16 @@ function fmt(n) {
   return String(Math.round(n));
 }
 
-function weaponTooltipText(unit) {
+function asInt(n, fallback = 0) {
+  const x = Number(n);
+  return Number.isFinite(x) ? Math.trunc(x) : fallback;
+}
+
+function getActiveWeaponId(unit) {
   const weapons = Array.isArray(unit?.weapons) ? unit.weapons : [];
+  if (!weapons.length) return null;
   const idx = Number.isFinite(unit?.activeWeaponIndex) ? unit.activeWeaponIndex : 0;
-  const weaponId = weapons[idx] || weapons[0] || 'lmg';
-  const w = getWeaponDef(weaponId);
-
-  // Short, readable tooltip.
-  const range = `${w.rangeMin}-${w.rangeMax}`;
-  const ac = w.armorClassMult || {};
-  const lines = [
-    `${w.name} (${w.id})`,
-    `Damage: ${w.baseDamage}`,
-    `Range: ${range}`,
-    `Penetration vs armor:`,
-    `  LIGHT:  x${ac.LIGHT ?? 1}`,
-    `  MEDIUM: x${ac.MEDIUM ?? 1}`,
-    `  HEAVY:  x${ac.HEAVY ?? 1}`,
-  ];
-
-  if (w.distanceCurve?.dist1 || w.distanceCurve?.dist2) {
-    lines.push(`Distance curve:`);
-    if (Number.isFinite(w.distanceCurve?.dist1)) lines.push(`  dist=1: x${w.distanceCurve.dist1}`);
-    if (Number.isFinite(w.distanceCurve?.dist2)) lines.push(`  dist=2: x${w.distanceCurve.dist2}`);
-  }
-
-  return lines.join('\n');
-}
-
-/* =========================================================
-   ABILITIES HELPERS
-   ========================================================= */
-
-function getAbilitiesForUnit(unit) {
-  if (!unit) return { actives: [], passives: [] };
-
-  // prefer runtime fields if present
-  const act = Array.isArray(unit.activeAbilities) ? unit.activeAbilities : null;
-  const pas = Array.isArray(unit.passiveAbilities) ? unit.passiveAbilities : null;
-  if (act || pas) {
-    return {
-      actives: act || [],
-      passives: pas || [],
-    };
-  }
-
-  // fallback to defs by type
-  const def = getUnitDef(unit.type);
-  return {
-    actives: Array.isArray(def.activeAbilities) ? def.activeAbilities : [],
-    passives: Array.isArray(def.passiveAbilities) ? def.passiveAbilities : [],
-  };
-}
-
-function summarizeAbility(abilityId) {
-  const a = getAbilityDef(abilityId);
-  if (!a) return { title: abilityId, body: 'Missing def' };
-
-  const icon = a.icon ? `${a.icon} ` : '';
-  if (a.kind === 'active') {
-    const ad = a.active || {};
-    const rm = Number.isFinite(ad.rangeMin) ? ad.rangeMin : 0;
-    const rx = Number.isFinite(ad.rangeMax) ? ad.rangeMax : rm;
-    const tgt = ad.target || 'self';
-    const ap = Number.isFinite(ad.apCost) ? ad.apCost : 1;
-    const aoe = Number.isFinite(ad.aoeRadius) ? ad.aoeRadius : 0;
-    const extra = aoe > 0 ? `, AOE:${aoe}` : '';
-    return {
-      title: `${icon}${a.name}`,
-      body: `Type: ACTIVE\nAP: ${ap}\nTarget: ${tgt}\nRange: ${rm}-${rx}${extra}\n\n${a.desc || ''}`.trim(),
-    };
-  }
-
-  return {
-    title: `${icon}${a.name}`,
-    body: `Type: PASSIVE\n\n${a.desc || ''}`.trim(),
-  };
-}
-
-/* =========================================================
-   HEX INSPECT (tile info inside the unit panel)
-   ========================================================= */
-
-function getTileAt(scene, q, r) {
-  return (scene.mapData || []).find(t => t && t.q === q && t.r === r) || null;
-}
-
-function summarizeHex(scene, q, r) {
-  const t = getTileAt(scene, q, r);
-  if (!t) {
-    return {
-      title: `Hex (${q}, ${r})`,
-      lines: [`Tile not found.`],
-    };
-  }
-
-  const bits = [];
-
-  const terrain = t.type || 'unknown';
-  const ground = t.groundType || '—';
-  const elev =
-    Number.isFinite(t.visualElevation) ? t.visualElevation :
-    (Number.isFinite(t.elevation) ? t.elevation :
-    (Number.isFinite(t.baseElevation) ? t.baseElevation : 0));
-
-  bits.push(`Terrain: ${terrain}   Ground: ${ground}`);
-  bits.push(`Elevation: ${fmt(elev)}   Underwater: ${t.isUnderWater ? 'YES' : 'NO'}`);
-
-  // Roads / forest
-  const flags = [];
-  if (t.hasRoad) flags.push('Road');
-  if (t.hasForest) flags.push('Forest');
-
-  // POIs
-  if (t.hasSettlement) flags.push(`Settlement${t.settlementName ? ` (${t.settlementName})` : ''}`);
-  if (t.hasRuin) flags.push('Ruin');
-  if (t.hasRaiderCamp) flags.push('Raider camp');
-  if (t.hasRoadsideCamp) flags.push('Roadside camp');
-  if (t.hasWatchtower) flags.push('Watchtower');
-  if (t.hasMinePOI) flags.push('Mine');
-  if (t.hasShrine) flags.push('Shrine');
-
-  if (t.hasCrashSite) flags.push('Crash site');
-  if (t.hasWreck) flags.push('Wreck');
-  if (t.hasVehicle) flags.push('Vehicle');
-
-  if (flags.length) bits.push(`Features: ${flags.join(', ')}`);
-  else bits.push(`Features: —`);
-
-  // Resources on this hex (scene.resources entries)
-  const res = (scene.resources || []).filter(o => o && o.q === q && o.r === r);
-  if (res.length) {
-    const names = res.map(o => o.name || o.type || o.kind || 'resource');
-    bits.push(`Resources: ${names.slice(0, 5).join(', ')}${names.length > 5 ? ` +${names.length - 5}` : ''}`);
-  } else {
-    bits.push(`Resources: —`);
-  }
-
-  // mapInfo objects (lore POIs list)
-  const objs = (scene.mapInfo?.objects || []).filter(o => o && o.q === q && o.r === r);
-  if (objs.length) {
-    const names = objs.map(o => o.name || o.type || 'object');
-    bits.push(`Map objects: ${names.slice(0, 4).join(', ')}${names.length > 4 ? ` +${names.length - 4}` : ''}`);
-  }
-
-  return { title: `Hex (${q}, ${r})`, lines: bits };
-}
-
-function isHexInspect(obj) {
-  return !!(obj && obj.__hexInspect && Number.isFinite(obj.q) && Number.isFinite(obj.r));
-}
-
-function makeHexInspectObj(q, r) {
-  return { __hexInspect: true, q, r };
+  return weapons[idx] || weapons[0] || null;
 }
 
 function setFacing(scene, unit, dirIndex) {
@@ -278,8 +71,65 @@ function setFacing(scene, unit, dirIndex) {
   }
 }
 
+function isHexInspect(obj) {
+  return !!(obj && obj.__hexInspect && Number.isFinite(obj.q) && Number.isFinite(obj.r));
+}
+
+function makeHexInspectObj(q, r) {
+  return { __hexInspect: true, q, r };
+}
+
+function getTileAt(scene, q, r) {
+  return (scene.mapData || []).find(t => t && t.q === q && t.r === r) || null;
+}
+
+function summarizeHex(scene, q, r) {
+  const t = getTileAt(scene, q, r);
+  if (!t) return { title: `Hex (${q}, ${r})`, lines: ['Tile not found.'] };
+
+  const terrain = t.type || 'unknown';
+  const ground = t.groundType || '—';
+  const elev =
+    Number.isFinite(t.visualElevation) ? t.visualElevation :
+    (Number.isFinite(t.elevation) ? t.elevation :
+    (Number.isFinite(t.baseElevation) ? t.baseElevation : 0));
+
+  const flags = [];
+  if (t.hasRoad) flags.push('Road');
+  if (t.hasForest) flags.push('Forest');
+  if (t.hasSettlement) flags.push(`Settlement${t.settlementName ? ` (${t.settlementName})` : ''}`);
+  if (t.hasRuin) flags.push('Ruin');
+  if (t.hasRaiderCamp) flags.push('Raider camp');
+  if (t.hasRoadsideCamp) flags.push('Roadside camp');
+  if (t.hasWatchtower) flags.push('Watchtower');
+  if (t.hasMinePOI) flags.push('Mine');
+  if (t.hasShrine) flags.push('Shrine');
+
+  const lines = [];
+  lines.push(`Terrain: ${terrain}   Ground: ${ground}`);
+  lines.push(`Elevation: ${fmt(elev)}   Underwater: ${t.isUnderWater ? 'YES' : 'NO'}`);
+  lines.push(`Features: ${flags.length ? flags.join(', ') : '—'}`);
+
+  const res = (scene.resources || []).filter(o => o && o.q === q && o.r === r);
+  if (res.length) {
+    const names = res.map(o => o.name || o.type || o.kind || 'resource');
+    lines.push(`Resources: ${names.slice(0, 5).join(', ')}${names.length > 5 ? ` +${names.length - 5}` : ''}`);
+  } else {
+    lines.push(`Resources: —`);
+  }
+
+  const objs = (scene.mapInfo?.objects || []).filter(o => o && o.q === q && o.r === r);
+  if (objs.length) {
+    const names = objs.map(o => o.name || o.type || 'object');
+    lines.push(`Map objects: ${names.slice(0, 4).join(', ')}${names.length > 4 ? ` +${names.length - 4}` : ''}`);
+  }
+
+  return { title: `Hex (${q}, ${r})`, lines };
+}
+
 /**
- * Create a styled text button inside a fixed container.
+ * Simple button (text for now; later replaced by icon buttons).
+ * Supports enabled/disabled and "active" visual mode (pressed).
  */
 function makeTextButton(scene, container, x, y, w, h, label, onClick) {
   const g = scene.add.graphics();
@@ -295,90 +145,146 @@ function makeTextButton(scene, container, x, y, w, h, label, onClick) {
   });
   t.setOrigin(0.5, 0.5);
 
-  const draw = (hover) => {
-    g.clear();
-    g.fillStyle(hover ? 0x2a3b66 : 0x1a2240, 0.92);
-    g.fillRoundedRect(x, y, w, h, 8);
-    g.lineStyle(2, hover ? 0x86d6ff : 0x4aa6d8, 0.85);
-    g.strokeRoundedRect(x, y, w, h, 8);
+  const state = {
+    enabled: true,
+    active: false,
+    label,
   };
-  draw(false);
+
+  const draw = () => {
+    g.clear();
+
+    const fill = state.enabled
+      ? (state.active ? 0x335b88 : 0x1a2240)
+      : 0x101522;
+
+    const alpha = state.enabled ? 0.92 : 0.55;
+    const stroke = state.enabled ? (state.active ? 0x9de6ff : 0x4aa6d8) : 0x2b3a4a;
+
+    g.fillStyle(fill, alpha);
+    g.fillRoundedRect(x, y, w, h, 8);
+    g.lineStyle(2, stroke, 0.85);
+    g.strokeRoundedRect(x, y, w, h, 8);
+
+    t.setColor(state.enabled ? '#e8f6ff' : '#7f93a3');
+  };
+  draw();
 
   hit.setPosition(x, y);
   t.setPosition(x + w / 2, y + h / 2);
 
   container.add([g, hit, t]);
 
+  const setEnabled = (v) => {
+    state.enabled = !!v;
+    if (state.enabled) hit.setInteractive({ useHandCursor: true });
+    else hit.disableInteractive();
+    draw();
+  };
+
+  const setActive = (v) => {
+    state.active = !!v;
+    draw();
+  };
+
+  const setLabel = (txt) => {
+    state.label = String(txt ?? '');
+    t.setText(state.label);
+    draw();
+  };
+
   hit.setInteractive({ useHandCursor: true });
-  hit.on('pointerover', () => draw(true));
-  hit.on('pointerout', () => draw(false));
-  hit.on('pointerdown', () => onClick?.());
+  hit.on('pointerdown', () => {
+    if (!state.enabled) return;
+    onClick?.();
+  });
 
-  return { g, hit, t, draw };
-}
-
-/* =========================================================
-   NEW: UI helpers for stats/resists/statuses
-   ========================================================= */
-
-function getResistsRow(unit) {
-  const r = (unit?.resists && typeof unit.resists === 'object') ? unit.resists : {};
-  const v = (k) => (Number.isFinite(r?.[k]) ? r[k] : 0);
-
-  // compact labels to fit line
-  // physical thermal toxic cryo radiation energy corrosion
-  return (
-    `RES: ` +
-    `PHY ${fmt(v('physical'))}  ` +
-    `THR ${fmt(v('thermal'))}  ` +
-    `TOX ${fmt(v('toxic'))}  ` +
-    `CRY ${fmt(v('cryo'))}  ` +
-    `RAD ${fmt(v('radiation'))}  ` +
-    `ENG ${fmt(v('energy'))}  ` +
-    `COR ${fmt(v('corrosion'))}`
-  );
-}
-
-function getStatusesRow(unit) {
-  const list = Array.isArray(unit?.statuses) ? unit.statuses : [];
-  if (!list.length) return `STATUS: —`;
-
-  const icons = [];
-  for (let i = 0; i < Math.min(10, list.length); i++) {
-    const s = list[i];
-    const defId = s?.defId || s;
-    const ed = getEffectDef(defId);
-    icons.push(ed?.icon || '•');
-  }
-
-  const extra = list.length > 10 ? ` +${list.length - 10}` : '';
-  return `STATUS: ${icons.join(' ')}${extra}`;
+  return { g, hit, t, setEnabled, setActive, setLabel, state };
 }
 
 /**
- * Attach unit panel to scene.
- * Called once from WorldSceneMenus.setupWorldMenus(scene).
+ * Reads status effects from unit.effects and returns up to 10 icons.
+ * Uses EffectDefs.icon (emoji for now).
+ */
+function getStatusIcons(unit, maxIcons = 10) {
+  const out = [];
+  const list = Array.isArray(unit?.effects) ? unit.effects : [];
+  for (const inst of list) {
+    if (!inst || inst.disabled) continue;
+    const def = getEffectDef(inst.defId);
+    if (!def) continue;
+    const ic = def.icon || '•';
+    out.push(ic);
+    if (out.length >= maxIcons) break;
+  }
+  return out;
+}
+
+/**
+ * Extract resists from unit.resists (or unit.resistances), normalize keys.
+ * Damage types required by your spec:
+ * physical, thermal, toxic, cryo, radiation, energy, corrosion
+ */
+function getResists(unit) {
+  const raw =
+    (unit && typeof unit.resists === 'object' && unit.resists) ? unit.resists :
+    (unit && typeof unit.resistances === 'object' && unit.resistances) ? unit.resistances :
+    null;
+
+  const r = (k) => (raw && Number.isFinite(raw[k])) ? raw[k] : 0;
+
+  // Accept toxin/toxic alias
+  const tox = Number.isFinite(raw?.toxic) ? raw.toxic : (Number.isFinite(raw?.toxin) ? raw.toxin : 0);
+
+  return {
+    physical: r('physical'),
+    thermal: r('thermal'),
+    toxic: tox,
+    cryo: r('cryo'),
+    radiation: r('radiation'),
+    energy: r('energy'),
+    corrosion: r('corrosion'),
+  };
+}
+
+function getUnitLevel(unit) {
+  // for now: always 1 per your instruction
+  // later: we’ll implement level-up on kills
+  return 1;
+}
+
+function getGroup(unit) {
+  // new stat: size of squad
+  // fallback 1 for heavy units
+  return Number.isFinite(unit?.group) ? asInt(unit.group, 1) : 1;
+}
+
+function getMorale(unit) {
+  // new stat: morale (for now always 0)
+  return Number.isFinite(unit?.morale) ? asInt(unit.morale, 0) : 0;
+}
+
+/**
+ * Unit panel setup
  */
 export function setupUnitActionPanel(scene) {
   if (scene.unitActionPanel) return;
 
   // Panel state
   scene.unitPanelState = {
-    page: 'root', // 'root' | 'active' | 'passive'
     turnPickerOpen: false,
   };
 
-  // Container dims
-  const W = 600;
-  const H = 170;
+  // Container dims (tuned for new layout)
+  const W = 760;
+  const H = 190;
 
-  // Root container
   const container = scene.add.container(0, 0).setDepth(PANEL_DEPTH);
   container.visible = false;
 
-  // Background (semi-transparent)
+  // Background
   const bg = scene.add.graphics();
-  bg.fillStyle(0x0b0f1a, 0.82);
+  bg.fillStyle(0x0b0f1a, 0.86);
   bg.fillRoundedRect(0, 0, W, H, 14);
 
   // Bezel
@@ -386,190 +292,127 @@ export function setupUnitActionPanel(scene) {
   bezel.lineStyle(2, 0x4aa6d8, 0.65);
   bezel.strokeRoundedRect(0, 0, W, H, 14);
 
-  // Input blocker so clicks don't leak to world
+  // Input blocker
   const blocker = scene.add.rectangle(0, 0, W, H, 0x000000, 0);
   blocker.setOrigin(0, 0);
   blocker.setInteractive();
 
   container.add([bg, bezel, blocker]);
 
-  // Left info section
-  const titleText = scene.add.text(16, 12, 'Unit', {
-    fontSize: '16px',
+  // Left portrait placeholder (no portrait yet)
+  const portraitBox = scene.add.graphics();
+  portraitBox.fillStyle(0x111827, 0.9);
+  portraitBox.fillRoundedRect(14, 14, 92, 92, 10);
+  portraitBox.lineStyle(2, 0x294a63, 0.9);
+  portraitBox.strokeRoundedRect(14, 14, 92, 92, 10);
+
+  const portraitHint = scene.add.text(14 + 46, 14 + 46, '—', {
+    fontSize: '22px',
+    color: '#5d7687',
+    fontFamily: 'monospace',
+  });
+  portraitHint.setOrigin(0.5, 0.5);
+
+  // Header (Level + Name)
+  const headerText = scene.add.text(120, 14, 'LVL 1 — Unit', {
+    fontSize: '18px',
     color: '#e8f6ff',
     fontStyle: 'bold',
   });
 
-  const statsText = scene.add.text(16, 40, '', {
+  // Row 1: AP/MP/Group/HP/Morale
+  const coreStatsText = scene.add.text(120, 42, '', {
     fontSize: '13px',
     color: '#cfefff',
     fontFamily: 'monospace',
   });
 
-  // Weapon area
-  const weaponLabel = scene.add.text(16, 126, 'Weapon:', {
+  // Row 2: Resists
+  const resistText = scene.add.text(120, 66, '', {
     fontSize: '13px',
     color: '#9be4ff',
     fontFamily: 'monospace',
   });
 
-  const weaponText = scene.add.text(80, 126, '', {
+  // Row 3: Status icons (up to 10)
+  const statusText = scene.add.text(120, 92, '', {
+    fontSize: '18px',
+    color: '#e8f6ff',
+    fontFamily: 'monospace',
+  });
+
+  // Weapon line (no tooltip)
+  const weaponLabel = scene.add.text(120, 122, 'Weapon:', {
+    fontSize: '13px',
+    color: '#9be4ff',
+    fontFamily: 'monospace',
+  });
+
+  const weaponText = scene.add.text(184, 122, '—', {
     fontSize: '13px',
     color: '#e8f6ff',
     fontFamily: 'monospace',
   });
 
-  // Tooltip for weapon
-  const tooltip = {
-    box: scene.add.graphics().setDepth(PANEL_DEPTH + 100),
-    text: scene.add.text(0, 0, '', {
-      fontSize: '12px',
-      color: '#e8f6ff',
-      fontFamily: 'monospace',
-      backgroundColor: 'rgba(0,0,0,0)',
-    }).setDepth(PANEL_DEPTH + 101),
-    visible: false,
-    show(msg, x, y) {
-      this.text.setText(msg);
-      this.text.setPosition(x, y);
-      const pad = 6;
-      const b = this.text.getBounds();
-      this.box.clear();
-      this.box.fillStyle(0x000000, 0.85);
-      this.box.fillRoundedRect(b.x - pad, b.y - pad, b.width + pad * 2, b.height + pad * 2, 8);
-      this.visible = true;
-      this.box.setVisible(true);
-      this.text.setVisible(true);
-    },
-    hide() {
-      this.visible = false;
-      this.box.setVisible(false);
-      this.text.setVisible(false);
-    },
-  };
-  tooltip.hide();
-
-  weaponText.setInteractive({ useHandCursor: true });
-  weaponText.on('pointerover', () => {
-    const u = scene.selectedUnit;
-    if (!u) return;
-    tooltip.show(weaponTooltipText(u), scene.input.activePointer.x + 14, scene.input.activePointer.y + 14);
-  });
-  weaponText.on('pointerout', () => tooltip.hide());
-
-  // Buttons (right side)
-  const btnW = 92;
+  // Right-side action bar (buttons)
+  const btnW = 94;
   const btnH = 34;
   const btnPad = 8;
-  const colX = W - (btnW * 3 + btnPad * 2) - 16;
-  const rowY = 18;
+
+  // Right edge alignment
+  const rightX = W - 14 - (btnW * 3 + btnPad * 2);
+  const topY = 14;
 
   const buttons = {};
 
-  // Root action buttons
-  buttons.move = makeTextButton(scene, container, colX + (btnW + btnPad) * 0, rowY + (btnH + btnPad) * 0, btnW, btnH, 'Move', () => {
+  // Row 1 actions
+  buttons.move = makeTextButton(scene, container, rightX + (btnW + btnPad) * 0, topY + (btnH + btnPad) * 0, btnW, btnH, 'Move', () => {
     scene.unitCommandMode = null;
     scene.attackController?.exit?.('move');
     scene.abilityController?.exit?.('move');
     clearCombatPreview(scene);
-    console.log('[UNITS] Move selected (click-to-move)');
+    scene.refreshUnitActionPanel?.();
   });
 
-  buttons.defence = makeTextButton(scene, container, colX + (btnW + btnPad) * 1, rowY + (btnH + btnPad) * 0, btnW, btnH, 'Defence', () => {
+  buttons.attack = makeTextButton(scene, container, rightX + (btnW + btnPad) * 1, topY + (btnH + btnPad) * 0, btnW, btnH, 'Attack', () => {
     const u = scene.selectedUnit;
     if (!u) return;
 
-    // any mode off
+    // leave any ability targeting
+    scene.abilityController?.exit?.('attack_btn');
+
+    const ac = scene.attackController || (scene.attackController = new AttackController(scene));
+    ac.enter(u);
+
+    updateCombatPreview(scene);
+    scene.refreshUnitActionPanel?.();
+  });
+
+  buttons.defence = makeTextButton(scene, container, rightX + (btnW + btnPad) * 2, topY + (btnH + btnPad) * 0, btnW, btnH, 'Defence', () => {
+    const u = scene.selectedUnit;
+    if (!u) return;
+
+    // leave modes
     scene.attackController?.exit?.('defence');
     scene.abilityController?.exit?.('defence');
     scene.unitCommandMode = null;
     clearCombatPreview(scene);
 
-    const res = applyDefence(u);
-    console.log('[DEFENCE]', { ok: res.ok, reason: res.reason, heal: res.heal, tempArmorBonus: res.tempArmorBonus, unitId: u.id, q: u.q, r: u.r });
+    applyDefence(u);
     scene.refreshUnitActionPanel?.();
   });
 
-  buttons.attack = makeTextButton(scene, container, colX + (btnW + btnPad) * 2, rowY + (btnH + btnPad) * 0, btnW, btnH, 'Attack', () => {
-    __dbg('PLAYER:AttackBtn', { selectedUnit: { id: scene.selectedUnit?.unitId ?? scene.selectedUnit?.id, type: scene.selectedUnit?.type, q: scene.selectedUnit?.q, r: scene.selectedUnit?.r, ap: scene.selectedUnit?.ap, faction: scene.selectedUnit?.faction, weapons: scene.selectedUnit?.weapons, activeWeaponIndex: scene.selectedUnit?.activeWeaponIndex } });
+  // Row 2 actions (2 ability slots + Turn)
+  buttons.ability1 = makeTextButton(scene, container, rightX + (btnW + btnPad) * 0, topY + (btnH + btnPad) * 1, btnW, btnH, '—', () => {});
+  buttons.ability2 = makeTextButton(scene, container, rightX + (btnW + btnPad) * 1, topY + (btnH + btnPad) * 1, btnW, btnH, '—', () => {});
 
-    const u = scene.selectedUnit;
-    if (!u) {
-      console.warn('[ATTACK] Clicked Attack but no selectedUnit');
-      return;
-    }
-
-    // turn off ability mode
-    scene.abilityController?.exit?.('attack_btn');
-
-    const wid = getActiveWeaponId(u);
-    const wdef = wid ? getWeaponDef(wid) : null;
-    const { rangeMin, rangeMax } = getWeaponRange(wdef);
-
-    // Enter targeting mode via AttackController
-    const ac = scene.attackController || (scene.attackController = new AttackController(scene));
-    ac.enter(u);
-
-    updateCombatPreview(scene);
-
-    __dbg('PLAYER:AttackTargets', {
-      unitId: u.id,
-      weaponId: wid,
-      rangeMin,
-      rangeMax,
-      attackable: scene.attackableHexes?.size ?? 0
-    });
-    scene.refreshUnitActionPanel?.();
-  });
-
-  // Build (Mobile Base only)
-  buttons.build = makeTextButton(scene, container, colX + (btnW + btnPad) * 0, rowY + (btnH + btnPad) * 1, btnW, btnH, 'Build', () => {
-    const u = scene.selectedUnit;
-    if (!u) return;
-
-    // later: enter AbilityController with Build ability / open build grid inside unit panel
-    scene.attackController?.exit?.('build');
-    scene.abilityController?.exit?.('build');
-    scene.unitCommandMode = null;
-    clearCombatPreview(scene);
-
-    console.log('[BUILD] Clicked Build (placeholder)', { unitId: u.id, type: u.type });
-  });
-
-  buttons.hide = makeTextButton(scene, container, colX + (btnW + btnPad) * 1, rowY + (btnH + btnPad) * 1, btnW, btnH, 'Hide', () => {
-    console.log('[UNITS] Hide (placeholder)');
-  });
-
-  buttons.turn = makeTextButton(scene, container, colX + (btnW + btnPad) * 2, rowY + (btnH + btnPad) * 1, btnW, btnH, 'Turn', () => {
+  buttons.turn = makeTextButton(scene, container, rightX + (btnW + btnPad) * 2, topY + (btnH + btnPad) * 1, btnW, btnH, 'Turn', () => {
     scene.unitPanelState.turnPickerOpen = !scene.unitPanelState.turnPickerOpen;
     scene.refreshUnitActionPanel?.();
   });
 
-  // Folder buttons
-  buttons.activeFolder = makeTextButton(scene, container, colX + (btnW + btnPad) * 0, rowY + (btnH + btnPad) * 2, btnW * 1 + btnPad, btnH, 'Active\nAbilities', () => {
-    scene.attackController?.exit?.('open_active_folder');
-    scene.abilityController?.exit?.('open_active_folder');
-    scene.unitCommandMode = null;
-    clearCombatPreview(scene);
-
-    scene.unitPanelState.page = 'active';
-    scene.unitPanelState.turnPickerOpen = false;
-    scene.refreshUnitActionPanel?.();
-  });
-
-  buttons.passiveFolder = makeTextButton(scene, container, colX + (btnW + btnPad) * 2 - (btnW * 1 + btnPad), rowY + (btnH + btnPad) * 2, btnW * 1 + btnPad, btnH, 'Passive\nAbilities', () => {
-    scene.attackController?.exit?.('open_passive_folder');
-    scene.abilityController?.exit?.('open_passive_folder');
-    scene.unitCommandMode = null;
-    clearCombatPreview(scene);
-
-    scene.unitPanelState.page = 'passive';
-    scene.unitPanelState.turnPickerOpen = false;
-    scene.refreshUnitActionPanel?.();
-  });
-
-  // Switch weapon
-  buttons.switchWeapon = makeTextButton(scene, container, 16, 146, 140, 22, 'Switch Weapon', () => {
+  // Row 3 actions: Switch weapon + placeholders (future: Heal / End Turn etc.)
+  buttons.switchWeapon = makeTextButton(scene, container, rightX + (btnW + btnPad) * 0, topY + (btnH + btnPad) * 2, btnW * 2 + btnPad, btnH, 'Switch Weapon', () => {
     const u = scene.selectedUnit;
     const ws = Array.isArray(u?.weapons) ? u.weapons : [];
     if (!u || ws.length <= 1) return;
@@ -577,69 +420,37 @@ export function setupUnitActionPanel(scene) {
     const idx = Number.isFinite(u.activeWeaponIndex) ? u.activeWeaponIndex : 0;
     u.activeWeaponIndex = (idx + 1) % ws.length;
 
-    __dbg('PLAYER:WeaponSwitch', {
-      unitId: u?.unitId ?? u?.id,
-      activeWeaponIndex: u.activeWeaponIndex,
-      weaponId: (u.weapons || [])[u.activeWeaponIndex]
-    });
-
+    // refresh attack highlights if in attack mode
     if (scene.unitCommandMode === 'attack') {
       scene.attackController?.enter?.(u);
       updateCombatPreview(scene);
     }
-    if (String(scene.unitCommandMode || '').startsWith('ability:')) {
-      scene.abilityController?.recompute?.();
-    }
 
     scene.refreshUnitActionPanel?.();
   });
 
-  // Subpage content
-  const pageTitle = scene.add.text(colX, 18, '', {
-    fontSize: '16px',
-    color: '#e8f6ff',
-    fontStyle: 'bold',
+  buttons.extra = makeTextButton(scene, container, rightX + (btnW + btnPad) * 2, topY + (btnH + btnPad) * 2, btnW, btnH, '—', () => {
+    // reserved slot (future: Heal / End Turn / Build etc.)
   });
-  const pageBody = scene.add.text(colX, 46, '', {
-    fontSize: '13px',
-    color: '#cfefff',
-    fontFamily: 'monospace',
-    wordWrap: { width: btnW * 3 + btnPad * 2 },
-  });
+  buttons.extra.setEnabled(false);
 
-  // Back button (subpages)
-  const backBtn = makeTextButton(scene, container, colX, 120, 92, 34, 'Back', () => {
-    scene.unitPanelState.page = 'root';
-    scene.unitPanelState.turnPickerOpen = false;
-    scene.refreshUnitActionPanel?.();
-  });
-
-  // NEW: Active ability cast buttons (2 slots)
-  const abilBtnW = btnW * 3 + btnPad * 2;
-  buttons.abilityA = makeTextButton(scene, container, colX, 80, abilBtnW, 34, '—', () => {});
-  buttons.abilityB = makeTextButton(scene, container, colX, 118, abilBtnW, 34, '—', () => {});
-
-  // NEW: Passive ability icons (up to 4 shown as text blocks)
-  const passiveLine1 = scene.add.text(colX, 78, '', { fontSize: '14px', color: '#cfefff', fontFamily: 'monospace' });
-  const passiveLine2 = scene.add.text(colX, 100, '', { fontSize: '14px', color: '#cfefff', fontFamily: 'monospace' });
-  const passiveLine3 = scene.add.text(colX, 122, '', { fontSize: '14px', color: '#cfefff', fontFamily: 'monospace' });
-  const passiveLine4 = scene.add.text(colX, 144, '', { fontSize: '14px', color: '#cfefff', fontFamily: 'monospace' });
-
-  // Turn picker (6 small buttons)
-  const tp = {
-    buttons: [],
-    label: scene.add.text(200, 124, 'Facing:', {
+  // Turn picker (6 buttons)
+  const turnPicker = {
+    label: scene.add.text(120, 150, 'Facing:', {
       fontSize: '13px',
       color: '#9be4ff',
       fontFamily: 'monospace',
     }),
+    buttons: [],
   };
-  const tpX = 260;
-  const tpY = 118;
-  const smallW = 42;
+
+  const tpX = 184;
+  const tpY = 142;
+  const smallW = 44;
   const smallH = 34;
   const smallPad = 6;
   const arrowLabels = ['→', '↘', '↙', '←', '↖', '↗'];
+
   for (let i = 0; i < 6; i++) {
     const bx = tpX + (smallW + smallPad) * i;
     const by = tpY;
@@ -650,42 +461,21 @@ export function setupUnitActionPanel(scene) {
       scene.unitPanelState.turnPickerOpen = false;
       scene.refreshUnitActionPanel?.();
     });
-    tp.buttons.push(b);
+    turnPicker.buttons.push(b);
   }
 
-  // Add UI content above bg/bezel/blocker
+  // Add UI elements
   container.add([
-    titleText,
-    statsText,
+    portraitBox,
+    portraitHint,
+    headerText,
+    coreStatsText,
+    resistText,
+    statusText,
     weaponLabel,
     weaponText,
-    pageTitle,
-    pageBody,
-    backBtn.g, backBtn.t, backBtn.hit,
-    tp.label,
-    passiveLine1, passiveLine2, passiveLine3, passiveLine4,
+    turnPicker.label,
   ]);
-
-  // Store UI handles
-  scene.unitActionPanel = {
-    container,
-    bg,
-    bezel,
-    blocker,
-    titleText,
-    statsText,
-    weaponText,
-    weaponLabel,
-    tooltip,
-    buttons,
-    pageTitle,
-    pageBody,
-    backBtn,
-    turnPicker: tp,
-    passiveLines: [passiveLine1, passiveLine2, passiveLine3, passiveLine4],
-    W,
-    H,
-  };
 
   // Positioning
   const position = () => {
@@ -696,28 +486,46 @@ export function setupUnitActionPanel(scene) {
   position();
   scene.scale.on('resize', position);
 
-  // Public API
+  // Store handles
+  scene.unitActionPanel = {
+    container,
+    bg,
+    bezel,
+    blocker,
+    portraitBox,
+    portraitHint,
+    headerText,
+    coreStatsText,
+    resistText,
+    statusText,
+    weaponLabel,
+    weaponText,
+    buttons,
+    turnPicker,
+    W,
+    H,
+  };
+
+  // API
   scene.openUnitActionPanel = function (unit) {
     if (!scene.unitActionPanel) return;
-    scene.unitPanelState.page = 'root';
     scene.unitPanelState.turnPickerOpen = false;
     scene.unitActionPanel.container.visible = true;
     scene.refreshUnitActionPanel?.(unit);
     scene.children.bringToTop(scene.unitActionPanel.container);
   };
 
-  // NEW: open hex inspector inside the same panel (no buttons)
   scene.openHexInspectPanel = function (q, r) {
     if (!scene.unitActionPanel) return;
     if (!Number.isFinite(q) || !Number.isFinite(r)) return;
 
     scene.selectedHex = { q, r };
 
+    // Clear modes
     scene.unitCommandMode = null;
     scene.clearPathPreview?.();
 
     const obj = makeHexInspectObj(q, r);
-    scene.unitPanelState.page = 'root';
     scene.unitPanelState.turnPickerOpen = false;
     scene.unitActionPanel.container.visible = true;
     scene.refreshUnitActionPanel?.(obj);
@@ -726,18 +534,16 @@ export function setupUnitActionPanel(scene) {
 
   scene.closeUnitActionPanel = function () {
     if (!scene.unitActionPanel) return;
-    scene.unitPanelState.page = 'root';
     scene.unitPanelState.turnPickerOpen = false;
-    scene.unitActionPanel.tooltip?.hide?.();
     scene.unitActionPanel.container.visible = false;
   };
 
+  // Renders unit OR hex-inspect
   scene.refreshUnitActionPanel = function (unitMaybe) {
     const panel = scene.unitActionPanel;
     if (!panel) return;
 
     const unit = unitMaybe || scene.selectedUnit;
-    const hexMode = isHexInspect(unit);
 
     // Hide if nothing selected
     if (!unit) {
@@ -745,77 +551,60 @@ export function setupUnitActionPanel(scene) {
       return;
     }
 
-    // =========================================================
+    // =============================
     // HEX INSPECT MODE
-    // =========================================================
-    if (hexMode) {
+    // =============================
+    if (isHexInspect(unit)) {
       const q = unit.q;
       const r = unit.r;
 
       const hx = summarizeHex(scene, q, r);
-      panel.titleText.setText(hx.title);
-      panel.statsText.setText(hx.lines.join('\n'));
+      panel.headerText.setText(hx.title);
 
+      // Show hex info in core text; hide other rows
+      panel.coreStatsText.setText(hx.lines.join('\n'));
+      panel.resistText.setText('');
+      panel.statusText.setText('');
       panel.weaponLabel.setVisible(false);
       panel.weaponText.setVisible(false);
 
-      const sw = panel.buttons.switchWeapon;
-      if (sw) {
-        sw.g.setVisible(false);
-        sw.t.setVisible(false);
-        sw.hit.setVisible(false);
-        if (sw.hit?.input) sw.hit.disableInteractive();
-        if (sw.t?.input) sw.t.disableInteractive();
-      }
+      // Hide portrait placeholders (optional: keep visible, but meaningless)
+      panel.portraitHint.setText('⬡');
 
+      // Hide all buttons
       for (const k of Object.keys(panel.buttons || {})) {
         const b = panel.buttons[k];
         if (!b) continue;
         b.g.setVisible(false);
         b.t.setVisible(false);
         b.hit.setVisible(false);
-        if (b.hit?.input) b.hit.disableInteractive();
-        if (b.t?.input) b.t.disableInteractive();
+        b.setEnabled(false);
       }
 
-      for (const ln of (panel.passiveLines || [])) ln.setVisible(false);
-
-      panel.pageTitle.setVisible(false);
-      panel.pageBody.setVisible(false);
-      panel.backBtn.g.setVisible(false);
-      panel.backBtn.t.setVisible(false);
-      panel.backBtn.hit.setVisible(false);
-      if (panel.backBtn.hit?.input) panel.backBtn.hit.disableInteractive();
-
-      panel.turnPicker?.label?.setVisible(false);
-      if (panel.turnPicker?.buttons?.length) {
-        for (const b of panel.turnPicker.buttons) {
-          b.g.setVisible(false);
-          b.t.setVisible(false);
-          b.hit.setVisible(false);
-          if (b.hit?.input) b.hit.disableInteractive();
-          if (b.t?.input) b.t.disableInteractive();
-        }
+      // Hide turn picker
+      panel.turnPicker.label.setVisible(false);
+      for (const b of panel.turnPicker.buttons) {
+        b.g.setVisible(false);
+        b.t.setVisible(false);
+        b.hit.setVisible(false);
+        b.setEnabled(false);
       }
 
       return;
     }
 
-    // =========================================================
-    // UNIT MODE (updated stats layout)
-    // =========================================================
-
+    // =============================
+    // UNIT MODE
+    // =============================
     panel.weaponLabel.setVisible(true);
     panel.weaponText.setVisible(true);
 
-    const def = getUnitDef(unit.type);
-    const displayName = unit.unitName || def?.name || unit.type || 'Unit';
-    const level = Number.isFinite(unit.level) ? unit.level : 1;
+    // Title: LVL + name
+    const lvl = getUnitLevel(unit);
+    const nm = unit.unitName || unit.name || unit.type || 'Unit';
+    panel.headerText.setText(`LVL ${lvl} — ${nm}`);
 
-    // Title: LVL + NAME (top line)
-    panel.titleText.setText(`LVL ${fmt(level)} — ${displayName}`);
-
-    // Core values
+    // Core stats row
     const hp = Number.isFinite(unit.hp) ? unit.hp : 0;
     const hpMax = Number.isFinite(unit.maxHp) ? unit.maxHp : (Number.isFinite(unit.hpMax) ? unit.hpMax : 0);
 
@@ -825,229 +614,115 @@ export function setupUnitActionPanel(scene) {
     const ap = Number.isFinite(unit.ap) ? unit.ap : 0;
     const apMax = Number.isFinite(unit.apMax) ? unit.apMax : 1;
 
-    const groupSize = Number.isFinite(unit.groupSize) ? unit.groupSize : (Number.isFinite(def?.groupSize) ? def.groupSize : 1);
-    const groupAlive = Number.isFinite(unit.groupAlive) ? unit.groupAlive : groupSize;
+    const group = getGroup(unit);
+    const morale = getMorale(unit);
 
-    const morale = Number.isFinite(unit.morale) ? unit.morale : 0;
-    const moraleMax = Number.isFinite(unit.moraleMax) ? unit.moraleMax : 0;
+    panel.coreStatsText.setText(
+      `AP ${fmt(ap)}/${fmt(apMax)}    MP ${fmt(mp)}/${fmt(mpMax)}    GROUP ${fmt(group)}    HP ${fmt(hp)}/${fmt(hpMax)}    MORALE ${fmt(morale)}`
+    );
 
-    // Rows:
-    const row1 =
-      `AP ${fmt(ap)}/${fmt(apMax)}   ` +
-      `MP ${fmt(mp)}/${fmt(mpMax)}   ` +
-      `GRP ${fmt(groupAlive)}/${fmt(groupSize)}   ` +
-      `HP ${fmt(hp)}/${fmt(hpMax)}   ` +
-      `MOR ${fmt(morale)}/${fmt(moraleMax)}`;
+    // Resist row
+    const rs = getResists(unit);
+    panel.resistText.setText(
+      `RESISTS: PHY ${fmt(rs.physical)}  THR ${fmt(rs.thermal)}  TOX ${fmt(rs.toxic)}  CRYO ${fmt(rs.cryo)}  RAD ${fmt(rs.radiation)}  ENG ${fmt(rs.energy)}  CORR ${fmt(rs.corrosion)}`
+    );
 
-    const row2 = getResistsRow(unit);
-    const row3 = getStatusesRow(unit);
+    // Status row (up to 10 icons)
+    const icons = getStatusIcons(unit, 10);
+    panel.statusText.setText(icons.length ? icons.join(' ') : '');
 
-    panel.statsText.setText([row1, row2, row3].join('\n'));
-
-    // Weapon text
-    const weapons = Array.isArray(unit.weapons) ? unit.weapons : [];
-    const idx = Number.isFinite(unit.activeWeaponIndex) ? unit.activeWeaponIndex : 0;
-    const weaponId = weapons[idx] || weapons[0] || 'lmg';
-    const w = getWeaponDef(weaponId);
-    panel.weaponText.setText(`${w.name} (${weaponId})`);
+    // Weapon label
+    const wid = getActiveWeaponId(unit);
+    const w = wid ? getWeaponDef(wid) : null;
+    panel.weaponText.setText(w ? `${w.name} (${wid})` : '—');
 
     // Switch weapon button visibility
-    const sw = panel.buttons.switchWeapon;
-    const hasMany = weapons.length > 1;
-    sw.g.setVisible(hasMany);
-    sw.t.setVisible(hasMany);
-    sw.hit.setVisible(hasMany);
-    if (sw.hit.input) {
-      hasMany ? sw.hit.setInteractive({ useHandCursor: true }) : sw.hit.disableInteractive();
-    }
-    if (sw.t.input) {
-      hasMany ? sw.t.setInteractive({ useHandCursor: true }) : sw.t.disableInteractive();
-    }
+    const ws = Array.isArray(unit?.weapons) ? unit.weapons : [];
+    const hasManyWeapons = ws.length > 1;
+    panel.buttons.switchWeapon.g.setVisible(hasManyWeapons);
+    panel.buttons.switchWeapon.t.setVisible(hasManyWeapons);
+    panel.buttons.switchWeapon.hit.setVisible(hasManyWeapons);
+    panel.buttons.switchWeapon.setEnabled(hasManyWeapons);
 
-    // Page visibility
-    const page = scene.unitPanelState.page;
-    const isRoot = page === 'root';
-
-    // Root buttons visible?
-    // (Build will be toggled separately per-unit)
-    const rootButtons = ['move', 'defence', 'attack', 'build', 'hide', 'turn', 'activeFolder', 'passiveFolder'];
-    for (const k of rootButtons) {
+    // Buttons visible/enabled
+    const btnKeys = Object.keys(panel.buttons || {});
+    for (const k of btnKeys) {
       const b = panel.buttons[k];
       if (!b) continue;
-      b.g.setVisible(isRoot);
-      b.t.setVisible(isRoot);
-      b.hit.setVisible(isRoot);
-      if (b.hit.input) {
-        isRoot ? b.hit.setInteractive({ useHandCursor: true }) : b.hit.disableInteractive();
-      }
-      if (b.t.input) {
-        isRoot ? b.t.setInteractive({ useHandCursor: true }) : b.t.disableInteractive();
-      }
-    }
-
-    // Build button: ONLY Mobile Base
-    // (your rule: button appears only for Mobile Base; later we'll gate by "Build ability")
-    const isMobileBase = String(unit.type || '').toLowerCase() === 'mobile_base';
-    const bb = panel.buttons.build;
-    if (bb) {
-      const vis = isRoot && isMobileBase;
-      bb.g.setVisible(vis);
-      bb.t.setVisible(vis);
-      bb.hit.setVisible(vis);
-      if (bb.hit.input) {
-        vis ? bb.hit.setInteractive({ useHandCursor: true }) : bb.hit.disableInteractive();
-      }
-      if (bb.t.input) {
-        vis ? bb.t.setInteractive({ useHandCursor: true }) : bb.t.disableInteractive();
-      }
-    }
-
-    // Subpage text + back
-    panel.pageTitle.setVisible(!isRoot);
-    panel.pageBody.setVisible(!isRoot);
-    panel.backBtn.g.setVisible(!isRoot);
-    panel.backBtn.t.setVisible(!isRoot);
-    panel.backBtn.hit.setVisible(!isRoot);
-    if (panel.backBtn.hit.input) {
-      (!isRoot) ? panel.backBtn.hit.setInteractive({ useHandCursor: true }) : panel.backBtn.hit.disableInteractive();
-    }
-    if (panel.backBtn.t.input) {
-      (!isRoot) ? panel.backBtn.t.setInteractive({ useHandCursor: true }) : panel.backBtn.t.disableInteractive();
-    }
-
-    // Ability buttons + passive lines default hide
-    const abA = panel.buttons.abilityA;
-    const abB = panel.buttons.abilityB;
-    if (abA) { abA.g.setVisible(false); abA.t.setVisible(false); abA.hit.setVisible(false); abA.hit.disableInteractive(); }
-    if (abB) { abB.g.setVisible(false); abB.t.setVisible(false); abB.hit.setVisible(false); abB.hit.disableInteractive(); }
-    for (const ln of (panel.passiveLines || [])) ln.setVisible(false);
-
-    if (!isRoot) {
-      if (page === 'active') {
-        panel.pageTitle.setText('Active abilities');
-        const { actives } = getAbilitiesForUnit(unit);
-
-        const a1 = actives[0] || null;
-        const a2 = actives[1] || null;
-
-        const makeLabel = (id) => {
-          if (!id) return '—';
-          const d = getAbilityDef(id);
-          if (!d) return id;
-          const ic = d.icon ? `${d.icon} ` : '';
-          return `${ic}${d.name}`;
-        };
-
-        const lines = [];
-        if (!actives.length) lines.push('No active abilities.');
-        else {
-          for (let i = 0; i < Math.min(2, actives.length); i++) {
-            const s = summarizeAbility(actives[i]);
-            lines.push(`${i + 1}) ${s.title}`);
-          }
-          lines.push('');
-          lines.push('Click an ability → highlighted targets');
-          lines.push('Then click a highlighted hex to cast.');
-        }
-        panel.pageBody.setText(lines.join('\n'));
-
-        if (abA) {
-          abA.t.setText(makeLabel(a1));
-          abA.g.setVisible(true); abA.t.setVisible(true); abA.hit.setVisible(true);
-          if (a1) {
-            abA.hit.setInteractive({ useHandCursor: true });
-            abA.hit.removeAllListeners('pointerdown');
-            abA.hit.on('pointerdown', () => {
-              const caster = scene.selectedUnit;
-              if (!caster) return;
-
-              scene.attackController?.exit?.('ability_btn');
-              clearCombatPreview(scene);
-
-              const d = getAbilityDef(a1);
-              __dbg('PLAYER:AbilityBtn', { unitId: caster.id, abilityId: a1, name: d?.name, ap: caster.ap, q: caster.q, r: caster.r });
-
-              const ctrl = scene.abilityController || (scene.abilityController = new AbilityController(scene));
-              ctrl.enter(caster, a1);
-              scene.refreshUnitActionPanel?.();
-            });
-          } else {
-            abA.hit.disableInteractive();
-          }
-        }
-
-        if (abB) {
-          abB.t.setText(makeLabel(a2));
-          abB.g.setVisible(true); abB.t.setVisible(true); abB.hit.setVisible(true);
-          if (a2) {
-            abB.hit.setInteractive({ useHandCursor: true });
-            abB.hit.removeAllListeners('pointerdown');
-            abB.hit.on('pointerdown', () => {
-              const caster = scene.selectedUnit;
-              if (!caster) return;
-
-              scene.attackController?.exit?.('ability_btn');
-              clearCombatPreview(scene);
-
-              const d = getAbilityDef(a2);
-              __dbg('PLAYER:AbilityBtn', { unitId: caster.id, abilityId: a2, name: d?.name, ap: caster.ap, q: caster.q, r: caster.r });
-
-              const ctrl = scene.abilityController || (scene.abilityController = new AbilityController(scene));
-              ctrl.enter(caster, a2);
-              scene.refreshUnitActionPanel?.();
-            });
-          } else {
-            abB.hit.disableInteractive();
-          }
-        }
+      // show all by default (except extra disabled slot is always visible but disabled)
+      if (k === 'extra') {
+        b.g.setVisible(true); b.t.setVisible(true); b.hit.setVisible(true);
+        b.setEnabled(false);
+      } else if (k === 'switchWeapon') {
+        // already handled
       } else {
-        panel.pageTitle.setText('Passive abilities');
-        const { passives } = getAbilitiesForUnit(unit);
-
-        const lines = [];
-        if (!passives.length) {
-          lines.push('No passive abilities.');
-        } else {
-          for (let i = 0; i < Math.min(4, passives.length); i++) {
-            const d = getAbilityDef(passives[i]);
-            const ic = d?.icon ? `${d.icon} ` : '';
-            lines.push(`${ic}${d?.name || passives[i]}`);
-          }
-        }
-        panel.pageBody.setText(
-          passives.length
-            ? 'Passives are always-on.\n(Their effects will be applied by EffectEngine each turn.)'
-            : '—'
-        );
-
-        const out = [];
-        for (let i = 0; i < Math.min(4, passives.length); i++) {
-          const d = getAbilityDef(passives[i]);
-          const ic = d?.icon ? `${d.icon} ` : '';
-          out.push(`${ic}${d?.name || passives[i]}`);
-        }
-        for (let i = 0; i < (panel.passiveLines || []).length; i++) {
-          const ln = panel.passiveLines[i];
-          if (!ln) continue;
-          ln.setVisible(true);
-          ln.setText(out[i] || '');
-        }
+        b.g.setVisible(true); b.t.setVisible(true); b.hit.setVisible(true);
+        b.setEnabled(true);
       }
     }
+
+    // Highlight current modes on buttons
+    panel.buttons.attack.setActive(scene.unitCommandMode === 'attack');
+    panel.buttons.move.setActive(!scene.unitCommandMode);
+    panel.buttons.defence.setActive(!!unit?.status?.defending);
+
+    // Ability buttons in the action row (up to 2)
+    const actives = Array.isArray(unit?.activeAbilities) ? unit.activeAbilities : [];
+    const a1 = actives[0] || null;
+    const a2 = actives[1] || null;
+
+    const applyAbilityButton = (btn, abilityId) => {
+      if (!btn) return;
+
+      if (!abilityId) {
+        btn.setLabel('—');
+        btn.setEnabled(false);
+        btn.setActive(false);
+        return;
+      }
+
+      const def = getAbilityDef(abilityId);
+      const label = def?.icon ? `${def.icon} ${def.name}` : (def?.name || abilityId);
+
+      btn.setLabel(label);
+      btn.setEnabled(true);
+
+      // set active if we are in this ability mode
+      const mode = String(scene.unitCommandMode || '');
+      btn.setActive(mode === `ability:${abilityId}`);
+
+      // replace click behavior
+      btn.hit.removeAllListeners('pointerdown');
+      btn.hit.on('pointerdown', () => {
+        const caster = scene.selectedUnit;
+        if (!caster) return;
+
+        // leave attack mode
+        scene.attackController?.exit?.('ability_btn');
+        clearCombatPreview(scene);
+
+        // enter ability targeting
+        const ctrl = scene.abilityController || (scene.abilityController = new AbilityController(scene));
+        ctrl.enter(caster, abilityId);
+
+        // mark mode (AbilityController may also set this, but we keep it consistent)
+        scene.unitCommandMode = `ability:${abilityId}`;
+
+        scene.refreshUnitActionPanel?.();
+      });
+    };
+
+    applyAbilityButton(panel.buttons.ability1, a1);
+    applyAbilityButton(panel.buttons.ability2, a2);
 
     // Turn picker visibility
-    const tpOpen = !!scene.unitPanelState.turnPickerOpen && isRoot;
+    const tpOpen = !!scene.unitPanelState.turnPickerOpen;
     panel.turnPicker.label.setVisible(tpOpen);
     for (const b of panel.turnPicker.buttons) {
       b.g.setVisible(tpOpen);
       b.t.setVisible(tpOpen);
       b.hit.setVisible(tpOpen);
-      if (b.hit.input) {
-        tpOpen ? b.hit.setInteractive({ useHandCursor: true }) : b.hit.disableInteractive();
-      }
-      if (b.t.input) {
-        tpOpen ? b.t.setInteractive({ useHandCursor: true }) : b.t.disableInteractive();
-      }
+      b.setEnabled(tpOpen);
     }
   };
 }
