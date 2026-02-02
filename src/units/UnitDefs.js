@@ -4,6 +4,7 @@
 //
 // Stage A scope (extended for scalability):
 //  - Canonical stats: HP, Armor (points + class), MP, AP, Vision
+//  - Squad stats: Group size, Morale (for future)
 //  - Weapons list (2 switchable weapons supported by runtime via activeWeaponIndex)
 //  - Active/Passive abilities (up to 2 each in UI, but defs support any length)
 //  - Base resistances by damage type (optional; defaults to 0)
@@ -16,12 +17,14 @@
 
 /**
  * Damage types supported by the game (extend later if needed).
- * @typedef {'physical'|'thermal'|'toxin'|'cryo'|'energy'|'corrosion'} DamageType
+ * NOTE: updated to match your planned UI row:
+ * physical, thermal, toxic, cryo, radiation, energy, corrosion
+ * @typedef {'physical'|'thermal'|'toxic'|'cryo'|'radiation'|'energy'|'corrosion'} DamageType
  */
 
 /**
  * @typedef {Partial<Record<DamageType, number>>} ResistMap
- * Values are in percent points, e.g. { toxin: 25 } means -25% toxin damage taken.
+ * Values are in percent points, e.g. { toxic: 25 } means -25% toxic damage taken.
  * (How exactly this is applied is handled in CombatResolver/EffectEngine integration.)
  */
 
@@ -35,6 +38,8 @@
  * @property {number} mpMax
  * @property {number} apMax
  * @property {number} visionMax
+ * @property {number} groupSize     // size of squad (infantry 4-5, heavy units 1)
+ * @property {number} moraleMax     // for future; currently 0 for all units
  * @property {string[]} weapons
  * @property {string[]} [activeAbilities]   // ability ids from src/abilities/AbilityDefs.js
  * @property {string[]} [passiveAbilities]  // ability ids from src/abilities/AbilityDefs.js
@@ -45,8 +50,9 @@
 const BASE_RESISTS = /** @type {ResistMap} */ ({
   physical: 0,
   thermal: 0,
-  toxin: 0,
+  toxic: 0,
   cryo: 0,
+  radiation: 0,
   energy: 0,
   corrosion: 0,
 });
@@ -71,6 +77,9 @@ export const UNIT_DEFS = /** @type {Record<string, UnitDef>} */ ({
     apMax: 1,
     visionMax: 4,
 
+    groupSize: 1,
+    moraleMax: 0,
+
     weapons: ['hmg', 'hmg'],
 
     // For UI + early testing of ability pipeline.
@@ -94,6 +103,9 @@ export const UNIT_DEFS = /** @type {Record<string, UnitDef>} */ ({
     apMax: 1,
     visionMax: 4,
 
+    groupSize: 1,
+    moraleMax: 0,
+
     weapons: ['lmg'],
 
     activeAbilities: [],
@@ -114,6 +126,9 @@ export const UNIT_DEFS = /** @type {Record<string, UnitDef>} */ ({
     mpMax: 3,
     apMax: 1,
     visionMax: 4,
+
+    groupSize: 4,
+    moraleMax: 0,
 
     weapons: ['smg', 'cutter'],
 
@@ -137,6 +152,9 @@ export const UNIT_DEFS = /** @type {Record<string, UnitDef>} */ ({
     mpMax: 3,
     apMax: 1,
     visionMax: 4,
+
+    groupSize: 4,
+    moraleMax: 0,
 
     weapons: ['smg', 'cutter'],
 
