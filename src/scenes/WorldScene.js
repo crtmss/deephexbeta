@@ -103,6 +103,41 @@ export const STATUS_ICON_KEYS = [
   'CorrosiveArmorDissolution',
 ];
 
+// Some filenames in the repo differ from the logical effect ids (typos / legacy naming).
+// Map logical effect id -> actual PNG filename (without path).
+const STATUS_ICON_FILE_MAP = {
+  PhysicalBleeding: 'PhyscalBleeding.png',
+  PhysicalArmorbreach: 'PhyscalArmorbreach.png',
+  PhysicalWeakspot: 'PhyscalWeakspot.png',
+
+  ThermalVolatileIgnition: 'ThermalVolatileIgnition.png',
+  ThermalHeatStress: 'ThermalHeatStress.png',
+  ThermalBurning: 'ThermalBurning.png',
+
+  ToxicIntoxication: 'ToxicIntoxication.png',
+  ToxicInterference: 'ToxicInterference.png',
+  ToxicToxiccloud: 'ToxicToxiccloud.png',
+
+  CryoBrittle: 'CryoBrittle.png',
+  CryoShatter: 'CryoShatter.png',
+  CryoDeepfreeze: 'CryoDeepfreeze.png',
+
+  RadiationRadiationsickness: 'RadiationRadiationsickness.png',
+  RadiationIonization: 'RadiationIonization.png',
+  RadiationIrradiated: 'RadiationIrradiated.png',
+
+  // Repo file name: EnergyElectricution.png (legacy typo)
+  EnergyElectrocution: 'EnergyElectricution.png',
+  EnergySystemdamage: 'EnergySystemdamage.png',
+  EnergyShock: 'EnergyShock.png',
+
+  // Repo file names use "Corrosion..." prefix (legacy)
+  CorrosiveCorrosivebial: 'CorrosionCorrosivebial.png',
+  CorrosiveDeterioration: 'CorrosionDeterioration.png',
+  CorrosiveArmorDissolution: 'CorrosionArmorDissolution.png',
+};
+
+
 function unitHasEffect(unit, effectId) {
   const arr = Array.isArray(unit?.effects) ? unit.effects : [];
   if (!arr.length) return false;
@@ -465,9 +500,11 @@ export default class WorldScene extends Phaser.Scene {
     // Expected path in repo: /assets/statuses/<Key>.png
     // (If you later change extension, adjust here.)
     try {
+      const base = 'assets/ui/unit_panel/statuses/';
       for (const k of STATUS_ICON_KEYS) {
         if (this.textures && this.textures.exists && this.textures.exists(k)) continue;
-        this.load.image(k, `assets/statuses/${k}.png`);
+        const file = STATUS_ICON_FILE_MAP[k] || `${k}.png`;
+        this.load.image(k, `${base}${file}`);
       }
     } catch (e) {
       console.warn('[PRELOAD] status icons failed:', e);
