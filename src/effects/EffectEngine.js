@@ -16,13 +16,17 @@
 // Additional new helpers (hooks you should wire):
 //  notifyAbilityUsed(sceneOrCtx, caster, abilityId)
 //  notifyUnitMovedStep(sceneOrCtx, unit)
+//  notifyUnitDied(ctx, unit, sceneLike)
 //  modifyIncomingDamage(attacker, defender, baseDamage, damageType) -> { damage, breakdown }
 //  consumeNextHitHooks(attacker, defender, damageType, ctx) -> { bonusDamage, consumed }
+//
+// IMPORTANT:
+// - This file MUST export computeEffectModifiers because CombatResolver imports it.
 //
 // Notes:
 // - Unit effect instance: { id, defId, kind:'unit', sourceUnitId, sourceFaction, duration, stacks, params }
 // - Hex effect instance: { id, defId, kind:'hex', q,r, ... }
-// - duration <= 0 treated as infinite
+// - duration <= 0 treated as infinite ONLY if def.baseDuration <= 0
 //
 
 import {
@@ -60,6 +64,11 @@ function safeArr(x) {
 
 function nowTurn(ctx) {
   return Number.isFinite(ctx?.turnNumber) ? ctx.turnNumber : null;
+}
+
+function isInfiniteDef(def) {
+  // Convention: baseDuration <= 0 means infinite
+  return !!(def && Number.isFinite(def.baseDuration) && def.baseDuration <= 0);
 }
 
 /* =========================================================================
@@ -214,12 +223,24 @@ export function placeHexEffect(lobbyState, q, r, effectId, opts = {}) {
    ========================================================================= */
 
 function collectActiveUnitEffectDefs(unit) {
+  // IMPORTANT FIX:
+  // duration <= 0 is NOT automatically expired; it can represent infinite.
+  // Expiration rules are handled in cleanupExpiredUnitEffects().
   const out = [];
   for (const inst of safeArr(unit?.effects)) {
     if (!inst) continue;
-    if (Number.isFinite(inst.duration) && inst.duration <= 0) continue; // 0 treated as infinite? We treat <=0 as infinite for now in cleanup; keep active here.
+
     const def = getEffectDef(inst.defId);
     if (!def) continue;
+
+    const infinite = isInfiniteDef(def);
+    const hasDuration = Number.isFinite(inst.duration);
+
+    // active if:
+    // - infinite def (baseDuration<=0) regardless of inst.duration
+    // - OR finite duration and duration > 0
+    if (!infinite && hasDuration && inst.duration <= 0) continue;
+
     out.push({ def, inst });
   }
   return out;
@@ -271,6 +292,35 @@ export function getUnitModifierTotals(unit) {
   return totals;
 }
 
+/**
+ * ✅ REQUIRED EXPORT FOR CombatResolver.js
+ * Provide a simple, stable "stat totals" map that CombatResolver / StatResolver can consume.
+ *
+ * Returns object keyed by MOD_STATS values where it makes sense.
+ * (We keep a conservative set here; extend when needed.)
+ */
+export function computeEffectModifiers(unit) {
+  const t = getUnitModifierTotals(unit);
+
+  // Normalize to a generic structure. Keep fields predictable.
+  return {
+    [MOD_STATS.ARMOR]: t.armorDelta || 0,
+    [MOD_STATS.RANGE]: t.rangeDelta || 0,
+
+    // Optional (if your MOD_STATS defines these)
+    ...(MOD_STATS.HEALING_RECEIVED_PCT ? { [MOD_STATS.HEALING_RECEIVED_PCT]: t.healingReceivedPct || 0 } : {}),
+
+    // Keep flags too (Combat/Ability pipelines often need these)
+    cannotHeal: !!t.cannotHeal,
+    cannotUseAbilities: !!t.cannotUseAbilities,
+
+    // Detailed breakdown by damage type (if CombatResolver wants it later)
+    damageTakenPctByType: { ...(t.damageTakenPctByType || {}) },
+    damageTakenFlatByType: { ...(t.damageTakenFlatByType || {}) },
+    damageDealtPctByType: { ...(t.damageDealtPctByType || {}) },
+  };
+}
+
 export function canUnitBeHealed(unit) {
   const t = getUnitModifierTotals(unit);
   return !t.cannotHeal;
@@ -312,6 +362,21 @@ function applyRegen(unit, amount, ctx, inst) {
   const totals = getUnitModifierTotals(unit);
   const pct = totals.healingReceivedPct || 0;
   const effHeal = Math.max(0, Math.round(heal * (1 + pct / 100)));
+
+  // cannot heal gate
+  if (totals.cannotHeal) {
+    return {
+      kind: 'effect_heal_blocked',
+      phase: ctx?.phase,
+      turn: nowTurn(ctx),
+      unitId: unit.id ?? unit.unitId ?? null,
+      defId: inst?.defId,
+      amount: 0,
+      hpBefore: hp,
+      hpAfter: hp,
+      reason: 'cannotHeal',
+    };
+  }
 
   unit.hp = Math.min(maxHp, hp + effHeal);
 
@@ -438,7 +503,13 @@ export function decrementUnitEffectDurations(unit) {
 
   for (const inst of unit.effects) {
     if (!inst) continue;
-    // baseDuration <= 0 treated as infinite => keep duration <=0 untouched
+
+    const def = getEffectDef(inst.defId);
+    const infinite = isInfiniteDef(def);
+
+    // Infinite never decrements
+    if (infinite) continue;
+
     if (!Number.isFinite(inst.duration)) continue;
     if (inst.duration <= 0) continue;
     inst.duration = inst.duration - 1;
@@ -449,13 +520,12 @@ export function cleanupExpiredUnitEffects(unit) {
   if (!unit || !Array.isArray(unit.effects)) return;
   unit.effects = unit.effects.filter(inst => {
     if (!inst) return false;
-    if (!Number.isFinite(inst.duration)) return true;
-    // duration <=0: keep if it was "infinite" (we treat 0 as infinite) BUT
-    // for turn-based durations, it will hit 0 and should expire.
-    // So we need a rule: "infinite" is represented as duration===0 AND def.baseDuration===0.
+
     const def = getEffectDef(inst.defId);
-    const isInfinite = (def && Number.isFinite(def.baseDuration) && def.baseDuration <= 0);
-    if (isInfinite) return true;
+    const infinite = isInfiniteDef(def);
+    if (infinite) return true;
+
+    if (!Number.isFinite(inst.duration)) return true;
     return inst.duration > 0;
   });
 }
@@ -468,6 +538,11 @@ export function decrementHexEffectDurations(lobbyState) {
     const list = safeArr(lobbyState.hexEffects[key]);
     for (const inst of list) {
       if (!inst) continue;
+
+      const def = getEffectDef(inst.defId);
+      const infinite = isInfiniteDef(def);
+      if (infinite) continue;
+
       if (!Number.isFinite(inst.duration)) continue;
       if (inst.duration <= 0) continue;
       inst.duration = inst.duration - 1;
@@ -483,9 +558,11 @@ export function cleanupExpiredHexEffects(lobbyState) {
     const list = safeArr(lobbyState.hexEffects[key]);
     const kept = list.filter(inst => {
       if (!inst) return false;
+
       const def = getEffectDef(inst.defId);
-      const isInfinite = (def && Number.isFinite(def.baseDuration) && def.baseDuration <= 0);
-      if (isInfinite) return true;
+      const infinite = isInfiniteDef(def);
+      if (infinite) return true;
+
       if (!Number.isFinite(inst.duration)) return true;
       return inst.duration > 0;
     });
@@ -517,7 +594,7 @@ export function ensurePassiveEffects(unit, getAbilityDefFn) {
 
     for (const eId of effs) {
       if (!eId) continue;
-      // baseDuration 0 => infinite
+      // baseDuration <=0 => infinite (handled by engine)
       addUnitEffect(unit, eId, { duration: 0, stacks: 1 });
     }
   }
@@ -672,7 +749,7 @@ export function consumeNextHitHooks(attacker, defender, damageType, ctx = {}) {
     const hook = p.nextHitBonus;
     if (!hook) continue;
 
-    // Only apply if hook.damageType matches incoming damageType OR hook.damageType is physical and we treat unknown as physical
+    // Only apply if hook.damageType matches incoming damageType
     const dt = String(damageType || DAMAGE_TYPES.PHYSICAL);
     if (hook.damageType && String(hook.damageType) !== dt) continue;
 
@@ -704,6 +781,9 @@ export default {
   cleanupExpiredHexEffects,
   ensurePassiveEffects,
   hexKey,
+
+  // required by CombatResolver imports
+  computeEffectModifiers,
 
   // new helpers
   getUnitModifierTotals,
