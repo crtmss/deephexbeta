@@ -3,41 +3,14 @@
 // Data-driven effect definitions for BOTH unit effects and hex effects.
 // No Phaser imports.
 //
-// Goals:
-// - Unified structure for buffs/debuffs/DoT/regen and hex hazards (fire, smoke, miasma).
-// - Scales to many effects without adding special-case functions.
-// - Effects are interpreted by EffectEngine (tick/derive/expire) and by scene runtime
-//   (authoritative events in multiplayer).
+// This version is generated to match the "status effects" table.
+// Icon keys are expected to be loaded as textures with the SAME key as effect id,
+// e.g. `PhysicalBleeding`, `ThermalBurning`, etc.
 //
-// Terminology:
-// - "Unit effect" lives on a unit: unit.effects[] (instances).
-// - "Hex effect" lives on a hex: state.hexEffects["q,r"] = [instances].
-//
-// Effect instance shape (engine/runtime should use this):
-// {
-//   id: "inst_abc123",      // unique instance id
-//   defId: "MIASMA_HEX",    // EffectDefs id
-//   kind: "hex"|"unit",
-//   q, r,                   // only for hex effects
-//   sourceUnitId, sourceFaction,
-//   duration: 3,            // remaining turns (0 => infinite)
-//   stacks: 1,
-//   params: {...}           // merged base params + instance params
-// }
-//
-// Stacking policy:
-// - 'refresh' : reapplying resets duration to max, stacks unchanged unless provided
-// - 'stack'   : stacks++ (or set), duration refresh
-// - 'ignore'  : if already present, do nothing
-//
-// Modifiers:
-// - Applied while effect is active (derived stats).
-// - Each modifier is an atom that StatResolver/EffectEngine understands.
-//
-// Ticks:
-// - Executed at specific turn phases. We support 'turnStart' and 'turnEnd' now.
-// - Tick actions yield *events* (damage/heal/stat change logs) but engine can also
-//   apply directly in single-player. For multiplayer you should generate events.
+// Engine responsibilities (EffectEngine):
+// - stacking, durations, ticks (turnStart/turnEnd)
+// - modifiers: armor/range/mp/ap and per-damage-type taken/dealt deltas
+// - hooks: onAbilityUse, onMoveStep, onDeath, nextHitBonus, cannotHeal, cannotUseAbilities
 //
 
 export const EFFECT_KINDS = Object.freeze({
@@ -57,38 +30,54 @@ export const TICK_PHASE = Object.freeze({
   TURN_END: 'turnEnd',
 });
 
-// Supported modifier stats (keep stable, add more later)
+// Damage types used by statuses table
+export const DAMAGE_TYPES = Object.freeze({
+  PHYSICAL: 'physical',
+  THERMAL: 'thermal',
+  TOXIC: 'toxic',
+  CRYO: 'cryo',
+  RADIATION: 'radiation',
+  ENERGY: 'energy',
+  CORROSIVE: 'corrosive',
+});
+
+// Supported modifier stats (expandable)
 export const MOD_STATS = Object.freeze({
-  ARMOR: 'armor',                 // +N armor points (effective)
-  VISION: 'vision',               // +N
-  MP_MAX: 'mpMax',                // +N
-  AP_MAX: 'apMax',                // +N
-  RANGE: 'range',                 // +N weapon range
-  DAMAGE_DEALT_PCT: 'damageDealtPct',   // +% dealt
-  DAMAGE_TAKEN_PCT: 'damageTakenPct',   // +% taken
+  ARMOR: 'armor',                       // +N armor points (effective)
+  VISION: 'vision',                     // +N vision
+  MP_DELTA: 'mpDelta',                  // add directly to current MP at phase (hook)
+  AP_DELTA: 'apDelta',                  // add directly to current AP at phase (hook)
+  RANGE: 'range',                       // +N range (max range) unless engine decides otherwise
+  DAMAGE_DEALT_PCT: 'damageDealtPct',   // +% dealt (per damage type optional)
+  DAMAGE_TAKEN_PCT: 'damageTakenPct',   // +% taken (per damage type optional)
+  DAMAGE_TAKEN_FLAT: 'damageTakenFlat', // +N flat taken (per damage type optional)
+  HEALING_RECEIVED_PCT: 'healingReceivedPct', // +% healing received (negative => reduced)
 });
 
 // Supported tick action types
 export const TICK_ACTIONS = Object.freeze({
-  DOT: 'dot',     // damage over time
-  REGEN: 'regen', // heal over time
+  DOT: 'dot',           // damage over time
+  REGEN: 'regen',       // heal over time
+  STAT_DELTA: 'statDelta', // immediate MP/AP adjust at phase (Deep freeze)
 });
 
 /**
  * @typedef {object} ModifierDef
- * @property {string} stat                      - one of MOD_STATS
- * @property {'add'} op                         - only 'add' for now
- * @property {number} value                     - N (or percent points for pct stats)
- * @property {string} [damageType]              - optional: affects only certain damage types (future hook)
+ * @property {string} stat
+ * @property {'add'} op
+ * @property {number} value
+ * @property {string} [damageType]              - optional: limits to a damage type
+ * @property {object} [when]                    - optional conditions (engine-side)
  */
 
 /**
  * @typedef {object} TickDef
- * @property {'turnStart'|'turnEnd'} phase      - when it ticks
- * @property {'dot'|'regen'} type               - action type
- * @property {number} amount                    - N
- * @property {string} [damageType]              - for DOT: physical|thermal|toxic|cryo|radiation|energy|corrosion
- * @property {boolean} [affectsAllOnHex]        - for hex effects: apply to all units on hex (default true)
+ * @property {'turnStart'|'turnEnd'} phase
+ * @property {'dot'|'regen'|'statDelta'} type
+ * @property {number} [amount]                  - dot/regen
+ * @property {string} [damageType]              - dot: one of DAMAGE_TYPES
+ * @property {number} [mpDelta]                 - statDelta
+ * @property {number} [apDelta]                 - statDelta
  */
 
 /**
@@ -96,311 +85,408 @@ export const TICK_ACTIONS = Object.freeze({
  * @property {string} id
  * @property {'unit'|'hex'} kind
  * @property {string} name
- * @property {string} icon                       - UI hint (emoji for now)
+ * @property {string} icon                       - texture key hint (same as id)
  * @property {string} description
- * @property {number} baseDuration               - default duration in turns (0 => infinite)
+ * @property {number} baseDuration               - duration in turns (0 => infinite)
  * @property {'refresh'|'stack'|'ignore'} stacking
  * @property {number} [maxStacks]
- * @property {object} [baseParams]
- * @property {ModifierDef[]} [modifiers]         - applied while active
- * @property {TickDef[]} [ticks]                 - periodic actions
- * @property {object} [hexVisual]                - purely visual hint for scenes (optional)
+ * @property {object} [baseParams]               - behavior hooks for engine
+ * @property {ModifierDef[]} [modifiers]
+ * @property {TickDef[]} [ticks]
  */
 
 export const EFFECT_IDS = Object.freeze({
-  // ===== UNIT BUFFS/DEBUFFS =====
-  FORTIFY_ARMOR: 'FORTIFY_ARMOR',
-  OVERCLOCK_STATS: 'OVERCLOCK_STATS',
+  // ===== Physical
+  PhysicalBleeding: 'PhysicalBleeding',
+  PhysicalArmorbreach: 'PhysicalArmorbreach',
+  PhysicalWeakspot: 'PhysicalWeakspot',
 
-  PASSIVE_THICK_PLATING: 'PASSIVE_THICK_PLATING',
-  PASSIVE_KEEN_SIGHT: 'PASSIVE_KEEN_SIGHT',
-  PASSIVE_SERVO_BOOST: 'PASSIVE_SERVO_BOOST',
-  PASSIVE_RANGE_TUNING: 'PASSIVE_RANGE_TUNING',
-  PASSIVE_TOXIC_FILTERS: 'PASSIVE_TOXIC_FILTERS',
-  PASSIVE_CORROSION_COATING: 'PASSIVE_CORROSION_COATING',
+  // ===== Thermal
+  ThermalVolatileIgnition: 'ThermalVolatileIgnition',
+  ThermalHeatStress: 'ThermalHeatStress',
+  ThermalBurning: 'ThermalBurning',
 
-  // Status (temporary) examples
-  BLEEDING: 'BLEEDING',
-  FROZEN: 'FROZEN',
+  // ===== Toxic
+  ToxicIntoxication: 'ToxicIntoxication',
+  ToxicInterference: 'ToxicInterference',
+  ToxicToxiccloud: 'ToxicToxiccloud',
 
-  POISONED: 'POISONED',
-  BURNING: 'BURNING',
-  SMOKED: 'SMOKED',
+  // ===== Cryo
+  CryoBrittle: 'CryoBrittle',
+  CryoShatter: 'CryoShatter',
+  CryoDeepfreeze: 'CryoDeepfreeze',
 
-  // ===== HEX FIELDS =====
-  REGEN_FIELD_HEX: 'REGEN_FIELD_HEX',
-  SMOKE_HEX: 'SMOKE_HEX',
-  MIASMA_HEX: 'MIASMA_HEX',
-  FIRE_HEX: 'FIRE_HEX',
+  // ===== Radiation
+  RadiationRadiationsickness: 'RadiationRadiationsickness',
+  RadiationIonization: 'RadiationIonization',
+  RadiationIrradiated: 'RadiationIrradiated',
+
+  // ===== Energy
+  EnergyElectrocution: 'EnergyElectrocution',
+  EnergySystemdamage: 'EnergySystemdamage',
+  EnergyShock: 'EnergyShock',
+
+  // ===== Corrosive
+  CorrosiveCorrosivebial: 'CorrosiveCorrosivebial',
+  CorrosiveDeterioration: 'CorrosiveDeterioration',
+  CorrosiveArmorDissolution: 'CorrosiveArmorDissolution',
+
+  // Table references this as separate status
+  MutantStress: 'MutantStress',
 });
+
+/** Helper: short description builder */
+function desc(lines) {
+  return Array.isArray(lines) ? lines.join(' ') : String(lines || '');
+}
 
 /** @type {Record<string, EffectDef>} */
 export const EFFECTS = Object.freeze({
   /* =========================================================================
-     UNIT EFFECTS
+     UNIT STATUS EFFECTS (from table)
      ========================================================================= */
 
-  [EFFECT_IDS.FORTIFY_ARMOR]: {
-    id: EFFECT_IDS.FORTIFY_ARMOR,
-    kind: EFFECT_KINDS.UNIT,
-    name: 'Fortified',
-    icon: '🛡️',
-    description: 'Temporary armor bonus.',
-    baseDuration: 2,
-    stacking: STACKING.REFRESH,
-    maxStacks: 1,
-    baseParams: { armorBonus: 2 },
-    modifiers: [
-      { stat: MOD_STATS.ARMOR, op: 'add', value: 2 },
-    ],
-  },
+  // -------------------------
+  // Physical
+  // -------------------------
 
-  [EFFECT_IDS.OVERCLOCK_STATS]: {
-    id: EFFECT_IDS.OVERCLOCK_STATS,
-    kind: EFFECT_KINDS.UNIT,
-    name: 'Overclocked',
-    icon: '⚡',
-    description: '+MP and +AP this turn.',
-    baseDuration: 1,
-    stacking: STACKING.REFRESH,
-    maxStacks: 1,
-    baseParams: { mpBonus: 1, apBonus: 1 },
-    modifiers: [
-      { stat: MOD_STATS.MP_MAX, op: 'add', value: 1 },
-      { stat: MOD_STATS.AP_MAX, op: 'add', value: 1 },
-    ],
-  },
-
-  // PASSIVES (modeled as infinite-duration unit effects; engine/runtime treats baseDuration<=0 as infinite)
-  [EFFECT_IDS.PASSIVE_THICK_PLATING]: {
-    id: EFFECT_IDS.PASSIVE_THICK_PLATING,
-    kind: EFFECT_KINDS.UNIT,
-    name: 'Thick Plating',
-    icon: '🧱',
-    description: 'Permanent armor bonus.',
-    baseDuration: 0, // 0 => infinite in engine
-    stacking: STACKING.IGNORE,
-    maxStacks: 1,
-    baseParams: { armorBonus: 1 },
-    modifiers: [
-      { stat: MOD_STATS.ARMOR, op: 'add', value: 1 },
-    ],
-  },
-
-  [EFFECT_IDS.PASSIVE_KEEN_SIGHT]: {
-    id: EFFECT_IDS.PASSIVE_KEEN_SIGHT,
-    kind: EFFECT_KINDS.UNIT,
-    name: 'Keen Sight',
-    icon: '👁️',
-    description: 'Permanent +vision.',
-    baseDuration: 0,
-    stacking: STACKING.IGNORE,
-    maxStacks: 1,
-    baseParams: { visionBonus: 1 },
-    modifiers: [
-      { stat: MOD_STATS.VISION, op: 'add', value: 1 },
-    ],
-  },
-
-  [EFFECT_IDS.PASSIVE_SERVO_BOOST]: {
-    id: EFFECT_IDS.PASSIVE_SERVO_BOOST,
-    kind: EFFECT_KINDS.UNIT,
-    name: 'Servo Boost',
-    icon: '🦾',
-    description: 'Permanent +MP.',
-    baseDuration: 0,
-    stacking: STACKING.IGNORE,
-    maxStacks: 1,
-    baseParams: { mpBonus: 1 },
-    modifiers: [
-      { stat: MOD_STATS.MP_MAX, op: 'add', value: 1 },
-    ],
-  },
-
-  [EFFECT_IDS.PASSIVE_RANGE_TUNING]: {
-    id: EFFECT_IDS.PASSIVE_RANGE_TUNING,
-    kind: EFFECT_KINDS.UNIT,
-    name: 'Range Tuning',
-    icon: '🎯',
-    description: 'Permanent +weapon range.',
-    baseDuration: 0,
-    stacking: STACKING.IGNORE,
-    maxStacks: 1,
-    baseParams: { rangeBonus: 1 },
-    modifiers: [
-      { stat: MOD_STATS.RANGE, op: 'add', value: 1 },
-    ],
-  },
-
-  [EFFECT_IDS.PASSIVE_TOXIC_FILTERS]: {
-    id: EFFECT_IDS.PASSIVE_TOXIC_FILTERS,
-    kind: EFFECT_KINDS.UNIT,
-    name: 'Toxic Filters',
-    icon: '🧪',
-    description: 'Reduce toxic damage taken (handled in CombatResolver via derived stat hook).',
-    baseDuration: 0,
-    stacking: STACKING.IGNORE,
-    maxStacks: 1,
-    baseParams: { toxicTakenPct: -25 },
-    modifiers: [
-      { stat: MOD_STATS.DAMAGE_TAKEN_PCT, op: 'add', value: -25, damageType: 'toxic' },
-    ],
-  },
-
-  [EFFECT_IDS.PASSIVE_CORROSION_COATING]: {
-    id: EFFECT_IDS.PASSIVE_CORROSION_COATING,
-    kind: EFFECT_KINDS.UNIT,
-    name: 'Corrosion Coating',
-    icon: '🧫',
-    description: 'Attacks may apply corrosion debuff (future hook).',
-    baseDuration: 0,
-    stacking: STACKING.IGNORE,
-    maxStacks: 1,
-    baseParams: { corrosionOnHit: true },
-    modifiers: [],
-  },
-
-  // === TEMP STATUSES (for your UI row; these will occupy status slots) ===
-
-  [EFFECT_IDS.BLEEDING]: {
-    id: EFFECT_IDS.BLEEDING,
+  [EFFECT_IDS.PhysicalBleeding]: {
+    id: EFFECT_IDS.PhysicalBleeding,
     kind: EFFECT_KINDS.UNIT,
     name: 'Bleeding',
-    icon: '💥',
-    description: 'Takes physical damage each turn.',
+    icon: EFFECT_IDS.PhysicalBleeding,
+    description: desc(['At the start of the turn unit takes Physical damage.']),
     baseDuration: 2,
     stacking: STACKING.REFRESH,
     maxStacks: 1,
-    baseParams: { dot: 1, damageType: 'physical' },
+    baseParams: { damageType: DAMAGE_TYPES.PHYSICAL },
     ticks: [
-      { phase: TICK_PHASE.TURN_END, type: TICK_ACTIONS.DOT, amount: 1, damageType: 'physical' },
+      { phase: TICK_PHASE.TURN_START, type: TICK_ACTIONS.DOT, amount: 2, damageType: DAMAGE_TYPES.PHYSICAL },
     ],
   },
 
-  [EFFECT_IDS.FROZEN]: {
-    id: EFFECT_IDS.FROZEN,
+  [EFFECT_IDS.PhysicalArmorbreach]: {
+    id: EFFECT_IDS.PhysicalArmorbreach,
     kind: EFFECT_KINDS.UNIT,
-    name: 'Frozen',
-    icon: '❄️',
-    description: 'Reduced movement while active.',
+    name: 'Armor breach',
+    icon: EFFECT_IDS.PhysicalArmorbreach,
+    description: desc(['Reduces unit armor points.']),
+    baseDuration: 2,
+    stacking: STACKING.REFRESH,
+    maxStacks: 1,
+    modifiers: [
+      { stat: MOD_STATS.ARMOR, op: 'add', value: -2 },
+    ],
+  },
+
+  [EFFECT_IDS.PhysicalWeakspot]: {
+    id: EFFECT_IDS.PhysicalWeakspot,
+    kind: EFFECT_KINDS.UNIT,
+    name: 'Weak spot',
+    icon: EFFECT_IDS.PhysicalWeakspot,
+    description: desc(['Increases Physical damage taken.']),
+    baseDuration: 2,
+    stacking: STACKING.REFRESH,
+    maxStacks: 1,
+    modifiers: [
+      { stat: MOD_STATS.DAMAGE_TAKEN_FLAT, op: 'add', value: 1, damageType: DAMAGE_TYPES.PHYSICAL },
+    ],
+  },
+
+  // -------------------------
+  // Thermal
+  // -------------------------
+
+  [EFFECT_IDS.ThermalVolatileIgnition]: {
+    id: EFFECT_IDS.ThermalVolatileIgnition,
+    kind: EFFECT_KINDS.UNIT,
+    name: 'Volatile Ignition',
+    icon: EFFECT_IDS.ThermalVolatileIgnition,
+    description: desc(['If unit uses an ability, it takes Thermal damage.']),
+    baseDuration: 2,
+    stacking: STACKING.REFRESH,
+    maxStacks: 1,
+    baseParams: {
+      onAbilityUse: { type: 'damage', amount: 4, damageType: DAMAGE_TYPES.THERMAL },
+    },
+  },
+
+  [EFFECT_IDS.ThermalHeatStress]: {
+    id: EFFECT_IDS.ThermalHeatStress,
+    kind: EFFECT_KINDS.UNIT,
+    name: 'Heat Stress',
+    icon: EFFECT_IDS.ThermalHeatStress,
+    description: desc(['Increases Thermal damage taken by % .']),
+    baseDuration: 2,
+    stacking: STACKING.REFRESH,
+    maxStacks: 1,
+    modifiers: [
+      { stat: MOD_STATS.DAMAGE_TAKEN_PCT, op: 'add', value: 15, damageType: DAMAGE_TYPES.THERMAL },
+    ],
+  },
+
+  [EFFECT_IDS.ThermalBurning]: {
+    id: EFFECT_IDS.ThermalBurning,
+    kind: EFFECT_KINDS.UNIT,
+    name: 'Burning',
+    icon: EFFECT_IDS.ThermalBurning,
+    description: desc(['At the start of the turn unit takes Thermal damage.']),
+    baseDuration: 2,
+    stacking: STACKING.REFRESH,
+    maxStacks: 1,
+    baseParams: { damageType: DAMAGE_TYPES.THERMAL },
+    ticks: [
+      { phase: TICK_PHASE.TURN_START, type: TICK_ACTIONS.DOT, amount: 2, damageType: DAMAGE_TYPES.THERMAL },
+    ],
+  },
+
+  // -------------------------
+  // Toxic
+  // -------------------------
+
+  [EFFECT_IDS.ToxicIntoxication]: {
+    id: EFFECT_IDS.ToxicIntoxication,
+    kind: EFFECT_KINDS.UNIT,
+    name: 'Intoxication',
+    icon: EFFECT_IDS.ToxicIntoxication,
+    description: desc(['At the start of the turn unit takes Toxic damage.']),
+    baseDuration: 2,
+    stacking: STACKING.REFRESH,
+    maxStacks: 1,
+    baseParams: { damageType: DAMAGE_TYPES.TOXIC },
+    ticks: [
+      { phase: TICK_PHASE.TURN_START, type: TICK_ACTIONS.DOT, amount: 2, damageType: DAMAGE_TYPES.TOXIC },
+    ],
+  },
+
+  [EFFECT_IDS.ToxicInterference]: {
+    id: EFFECT_IDS.ToxicInterference,
+    kind: EFFECT_KINDS.UNIT,
+    name: 'Interference',
+    icon: EFFECT_IDS.ToxicInterference,
+    description: desc(['Reduces attack range (does not work for melee).']),
+    baseDuration: 2,
+    stacking: STACKING.REFRESH,
+    maxStacks: 1,
+    baseParams: { rangeNotForMelee: true },
+    modifiers: [
+      { stat: MOD_STATS.RANGE, op: 'add', value: -1, when: { notMelee: true } },
+    ],
+  },
+
+  [EFFECT_IDS.ToxicToxiccloud]: {
+    id: EFFECT_IDS.ToxicToxiccloud,
+    kind: EFFECT_KINDS.UNIT,
+    name: 'Toxic cloud',
+    icon: EFFECT_IDS.ToxicToxiccloud,
+    description: desc(['Unit cannot be healed or repaired.']),
     baseDuration: 1,
     stacking: STACKING.REFRESH,
     maxStacks: 1,
-    baseParams: { mpDebuff: 1 },
+    baseParams: { cannotHeal: true },
+  },
+
+  // -------------------------
+  // Cryo
+  // -------------------------
+
+  [EFFECT_IDS.CryoBrittle]: {
+    id: EFFECT_IDS.CryoBrittle,
+    kind: EFFECT_KINDS.UNIT,
+    name: 'Brittle',
+    icon: EFFECT_IDS.CryoBrittle,
+    description: desc(['Increases Cryo damage taken by %.']),
+    baseDuration: 2,
+    stacking: STACKING.REFRESH,
+    maxStacks: 1,
     modifiers: [
-      { stat: MOD_STATS.MP_MAX, op: 'add', value: -1 },
+      { stat: MOD_STATS.DAMAGE_TAKEN_PCT, op: 'add', value: 15, damageType: DAMAGE_TYPES.CRYO },
     ],
   },
 
-  // Example unit DOTs (can also be applied from hex fields)
-  [EFFECT_IDS.POISONED]: {
-    id: EFFECT_IDS.POISONED,
+  [EFFECT_IDS.CryoShatter]: {
+    id: EFFECT_IDS.CryoShatter,
     kind: EFFECT_KINDS.UNIT,
-    name: 'Poisoned',
-    icon: '☣️',
-    description: 'Takes toxic damage each turn.',
-    baseDuration: 3,
-    stacking: STACKING.REFRESH,
-    maxStacks: 1,
-    baseParams: { dot: 2, damageType: 'toxic' },
-    ticks: [
-      { phase: TICK_PHASE.TURN_END, type: TICK_ACTIONS.DOT, amount: 2, damageType: 'toxic' },
-    ],
-  },
-
-  [EFFECT_IDS.BURNING]: {
-    id: EFFECT_IDS.BURNING,
-    kind: EFFECT_KINDS.UNIT,
-    name: 'Burning',
-    icon: '🔥',
-    description: 'Takes thermal damage each turn.',
+    name: 'Shatter',
+    icon: EFFECT_IDS.CryoShatter,
+    description: desc(['Next physical hit deals bonus Physical damage, then debuff disappears.']),
     baseDuration: 2,
     stacking: STACKING.REFRESH,
     maxStacks: 1,
-    baseParams: { dot: 2, damageType: 'thermal' },
+    baseParams: {
+      nextHitBonus: { amount: 4, damageType: DAMAGE_TYPES.PHYSICAL, consume: true },
+    },
+  },
+
+  [EFFECT_IDS.CryoDeepfreeze]: {
+    id: EFFECT_IDS.CryoDeepfreeze,
+    kind: EFFECT_KINDS.UNIT,
+    name: 'Deep freeze',
+    icon: EFFECT_IDS.CryoDeepfreeze,
+    description: desc(['Decreases MP and AP by 1.']),
+    baseDuration: 1,
+    stacking: STACKING.REFRESH,
+    maxStacks: 1,
     ticks: [
-      { phase: TICK_PHASE.TURN_END, type: TICK_ACTIONS.DOT, amount: 2, damageType: 'thermal' },
+      { phase: TICK_PHASE.TURN_START, type: TICK_ACTIONS.STAT_DELTA, mpDelta: -1, apDelta: -1 },
     ],
   },
 
-  [EFFECT_IDS.SMOKED]: {
-    id: EFFECT_IDS.SMOKED,
+  // -------------------------
+  // Radiation
+  // -------------------------
+
+  [EFFECT_IDS.RadiationRadiationsickness]: {
+    id: EFFECT_IDS.RadiationRadiationsickness,
     kind: EFFECT_KINDS.UNIT,
-    name: 'Smoked',
-    icon: '🌫️',
-    description: 'Reduced vision while active.',
+    name: 'Radiation sickness',
+    icon: EFFECT_IDS.RadiationRadiationsickness,
+    description: desc(['Healing received is reduced by %.']),
     baseDuration: 2,
     stacking: STACKING.REFRESH,
     maxStacks: 1,
-    baseParams: { visionDebuff: 2 },
     modifiers: [
-      { stat: MOD_STATS.VISION, op: 'add', value: -2 },
+      { stat: MOD_STATS.HEALING_RECEIVED_PCT, op: 'add', value: -50 },
     ],
   },
 
-  /* =========================================================================
-     HEX EFFECTS
-     ========================================================================= */
-
-  [EFFECT_IDS.REGEN_FIELD_HEX]: {
-    id: EFFECT_IDS.REGEN_FIELD_HEX,
-    kind: EFFECT_KINDS.HEX,
-    name: 'Regen Field',
-    icon: '💠',
-    description: 'Units on this hex regenerate HP each turn.',
-    baseDuration: 3,
-    stacking: STACKING.REFRESH,
-    maxStacks: 1,
-    baseParams: { healPerTurn: 2 },
-    ticks: [
-      { phase: TICK_PHASE.TURN_END, type: TICK_ACTIONS.REGEN, amount: 2, affectsAllOnHex: true },
-    ],
-    hexVisual: { hint: 'regen' },
-  },
-
-  [EFFECT_IDS.SMOKE_HEX]: {
-    id: EFFECT_IDS.SMOKE_HEX,
-    kind: EFFECT_KINDS.HEX,
-    name: 'Smoke',
-    icon: '🌫️',
-    description: 'Units on this hex suffer reduced vision.',
+  [EFFECT_IDS.RadiationIonization]: {
+    id: EFFECT_IDS.RadiationIonization,
+    kind: EFFECT_KINDS.UNIT,
+    name: 'Ionization',
+    icon: EFFECT_IDS.RadiationIonization,
+    description: desc(['At the start of the turn unit takes Radiation damage.']),
     baseDuration: 2,
     stacking: STACKING.REFRESH,
     maxStacks: 1,
-    baseParams: { visionDebuff: 2 },
-    hexVisual: { hint: 'smoke' },
-  },
-
-  [EFFECT_IDS.MIASMA_HEX]: {
-    id: EFFECT_IDS.MIASMA_HEX,
-    kind: EFFECT_KINDS.HEX,
-    name: 'Miasma',
-    icon: '☣️',
-    description: 'Toxic cloud that damages units each turn.',
-    baseDuration: 3,
-    stacking: STACKING.REFRESH,
-    maxStacks: 1,
-    baseParams: { dot: 2, damageType: 'toxic' },
+    baseParams: { damageType: DAMAGE_TYPES.RADIATION },
     ticks: [
-      { phase: TICK_PHASE.TURN_END, type: TICK_ACTIONS.DOT, amount: 2, damageType: 'toxic', affectsAllOnHex: true },
+      { phase: TICK_PHASE.TURN_START, type: TICK_ACTIONS.DOT, amount: 2, damageType: DAMAGE_TYPES.RADIATION },
     ],
-    hexVisual: { hint: 'miasma' },
   },
 
-  [EFFECT_IDS.FIRE_HEX]: {
-    id: EFFECT_IDS.FIRE_HEX,
-    kind: EFFECT_KINDS.HEX,
-    name: 'Fire',
-    icon: '🔥',
-    description: 'Burning ground damages units each turn.',
+  [EFFECT_IDS.RadiationIrradiated]: {
+    id: EFFECT_IDS.RadiationIrradiated,
+    kind: EFFECT_KINDS.UNIT,
+    name: 'Irradiated',
+    icon: EFFECT_IDS.RadiationIrradiated,
+    description: desc(['On death, apply "Mutant stress" and "Irradiated" to adjacent units.']),
     baseDuration: 2,
     stacking: STACKING.REFRESH,
     maxStacks: 1,
-    baseParams: { dot: 2, damageType: 'thermal' },
-    ticks: [
-      { phase: TICK_PHASE.TURN_END, type: TICK_ACTIONS.DOT, amount: 2, damageType: 'thermal', affectsAllOnHex: true },
+    baseParams: {
+      onDeathApplyAdjacent: [
+        { effectId: EFFECT_IDS.MutantStress, duration: 2, stacks: 1 },
+        { effectId: EFFECT_IDS.RadiationIrradiated, duration: 2, stacks: 1 },
+      ],
+    },
+  },
+
+  // -------------------------
+  // Energy
+  // -------------------------
+
+  [EFFECT_IDS.EnergyElectrocution]: {
+    id: EFFECT_IDS.EnergyElectrocution,
+    kind: EFFECT_KINDS.UNIT,
+    name: 'Electrocution',
+    icon: EFFECT_IDS.EnergyElectrocution,
+    description: desc(['Increases Thermal damage taken by %.']),
+    baseDuration: 2,
+    stacking: STACKING.REFRESH,
+    maxStacks: 1,
+    modifiers: [
+      { stat: MOD_STATS.DAMAGE_TAKEN_PCT, op: 'add', value: 15, damageType: DAMAGE_TYPES.THERMAL },
     ],
-    hexVisual: { hint: 'fire' },
+  },
+
+  [EFFECT_IDS.EnergySystemdamage]: {
+    id: EFFECT_IDS.EnergySystemdamage,
+    kind: EFFECT_KINDS.UNIT,
+    name: 'System damage',
+    icon: EFFECT_IDS.EnergySystemdamage,
+    description: desc(['At the start of the turn unit takes Energy damage.']),
+    baseDuration: 2,
+    stacking: STACKING.REFRESH,
+    maxStacks: 1,
+    baseParams: { damageType: DAMAGE_TYPES.ENERGY },
+    ticks: [
+      { phase: TICK_PHASE.TURN_START, type: TICK_ACTIONS.DOT, amount: 2, damageType: DAMAGE_TYPES.ENERGY },
+    ],
+  },
+
+  [EFFECT_IDS.EnergyShock]: {
+    id: EFFECT_IDS.EnergyShock,
+    kind: EFFECT_KINDS.UNIT,
+    name: 'Shock',
+    icon: EFFECT_IDS.EnergyShock,
+    description: desc(['Unit cannot use abilities.']),
+    baseDuration: 1,
+    stacking: STACKING.REFRESH,
+    maxStacks: 1,
+    baseParams: { cannotUseAbilities: true },
+  },
+
+  // -------------------------
+  // Corrosive
+  // -------------------------
+
+  [EFFECT_IDS.CorrosiveCorrosivebial]: {
+    id: EFFECT_IDS.CorrosiveCorrosivebial,
+    kind: EFFECT_KINDS.UNIT,
+    name: 'Corrosive bial',
+    icon: EFFECT_IDS.CorrosiveCorrosivebial,
+    description: desc(['When the unit moves, it takes Corrosive damage.']),
+    baseDuration: 1,
+    stacking: STACKING.REFRESH,
+    maxStacks: 1,
+    baseParams: {
+      onMoveStep: { type: 'damage', amount: 2, damageType: DAMAGE_TYPES.CORROSIVE },
+    },
+  },
+
+  [EFFECT_IDS.CorrosiveDeterioration]: {
+    id: EFFECT_IDS.CorrosiveDeterioration,
+    kind: EFFECT_KINDS.UNIT,
+    name: 'Deterioration',
+    icon: EFFECT_IDS.CorrosiveDeterioration,
+    description: desc(['Increases Corrosive damage taken by %.']),
+    baseDuration: 2,
+    stacking: STACKING.REFRESH,
+    maxStacks: 1,
+    modifiers: [
+      { stat: MOD_STATS.DAMAGE_TAKEN_PCT, op: 'add', value: 15, damageType: DAMAGE_TYPES.CORROSIVE },
+    ],
+  },
+
+  [EFFECT_IDS.CorrosiveArmorDissolution]: {
+    id: EFFECT_IDS.CorrosiveArmorDissolution,
+    kind: EFFECT_KINDS.UNIT,
+    name: 'Armor Dissolution',
+    icon: EFFECT_IDS.CorrosiveArmorDissolution,
+    description: desc(['Reduces unit armor points.']),
+    baseDuration: 2,
+    stacking: STACKING.REFRESH,
+    maxStacks: 1,
+    modifiers: [
+      { stat: MOD_STATS.ARMOR, op: 'add', value: -2 },
+    ],
+  },
+
+  // -------------------------
+  // Extra referenced by table (Irradiated spread)
+  // -------------------------
+
+  [EFFECT_IDS.MutantStress]: {
+    id: EFFECT_IDS.MutantStress,
+    kind: EFFECT_KINDS.UNIT,
+    name: 'Mutant stress',
+    icon: EFFECT_IDS.RadiationIrradiated, // if you add a dedicated icon later, change this key
+    description: desc(['(Placeholder) Stress status applied by Irradiated on death.']),
+    baseDuration: 2,
+    stacking: STACKING.REFRESH,
+    maxStacks: 1,
+    baseParams: { placeholder: true },
   },
 });
 
@@ -439,4 +525,5 @@ export default {
   TICK_PHASE,
   MOD_STATS,
   TICK_ACTIONS,
+  DAMAGE_TYPES,
 };
