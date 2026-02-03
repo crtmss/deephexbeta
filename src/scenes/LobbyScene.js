@@ -131,12 +131,12 @@ const factionKey = (f) => `lobbybg_${String(f || '').toLowerCase()}`;
 
 // Vite/ESM-friendly asset URLs (these must match src/assets/art/)
 const FACTION_BG_URLS = {
-  Admiralty: new URL('../assets/art/Admiralty.png', import.meta.url).href,
-  Cannibals: new URL('../assets/art/Cannibals.png', import.meta.url).href,
-  Collective: new URL('../assets/art/Collective.png', import.meta.url).href,
-  Fabricators: new URL('../assets/art/Fabricators.png', import.meta.url).href,
-  Mutants: new URL('../assets/art/Mutants.png', import.meta.url).href,
-  Transcendent: new URL('../assets/art/Transcendent.png', import.meta.url).href,
+  Admiralty: `assets/art/Admiralty.png`,
+  Cannibals: `assets/art/Cannibals.png`,
+  Collective: `assets/art/Collective.png`,
+  Fabricators: `assets/art/Fabricators.png`,
+  Mutants: `assets/art/Mutants.png`,
+  Transcendent: `assets/art/Transcendent.png`,
 };
 
 export default class LobbyScene extends Phaser.Scene {
