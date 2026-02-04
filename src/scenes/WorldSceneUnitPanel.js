@@ -707,6 +707,6 @@ export function setupUnitActionPanel(scene) {
   };
 }
 
-export default {
+export {
   setupUnitActionPanel,
 };
