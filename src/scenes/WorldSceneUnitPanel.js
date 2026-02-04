@@ -131,15 +131,47 @@ class IconButton {
    Status icons (from unit.effects)
    ========================================================= */
 
-function getUnitStatusIcons(unit, limit = 10) {
+function normalizeEffectIdToIconKey(scene, defId) {
+  const idRaw = String(defId || '').trim();
+  if (!idRaw) return null;
+  // Most common: EffectDefs id matches preload key exactly (e.g. PhysicalBleeding)
+  if (scene?.textures?.exists?.(idRaw)) return idRaw;
+
+  // Accept uppercase snake ids (e.g. PHYSICAL_BLEEDING) by converting to CamelCase
+  if (idRaw.includes('_')) {
+    const parts = idRaw.split('_').filter(Boolean);
+    const camel = parts.map(p => p ? (p[0] + p.slice(1).toLowerCase()) : '').join('');
+    if (camel && scene?.textures?.exists?.(camel)) return camel;
+  }
+
+  // Accept lowercased ids (rare)
+  const cap = idRaw[0] ? (idRaw[0].toUpperCase() + idRaw.slice(1)) : idRaw;
+  if (cap && scene?.textures?.exists?.(cap)) return cap;
+
+  return null;
+}
+
+function getUnitStatusIcons(scene, unit, limit = 10) {
   const out = [];
   const list = Array.isArray(unit?.effects) ? unit.effects : [];
   for (const inst of list) {
     if (!inst || inst.disabled) continue;
-    const def = getEffectDef(inst.defId);
-    if (!def) continue;
-    const icon = def.icon || '•';
-    out.push(icon);
+    const defId = inst.defId || inst.id || null;
+    if (!defId) continue;
+
+    // Prefer EffectDefs-provided iconKey if present, otherwise use defId directly
+    const def = getEffectDef(defId);
+    const prefer = def?.iconKey || def?.icon || defId;
+    const key = normalizeEffectIdToIconKey(scene, prefer) || normalizeEffectIdToIconKey(scene, defId);
+    if (!key) continue;
+
+    out.push({
+      key,
+      defId: String(defId),
+      stacks: Number.isFinite(inst.stacks) ? inst.stacks : 1,
+      duration: Number.isFinite(inst.duration) ? inst.duration : null,
+    });
+
     if (out.length >= limit) break;
   }
   return out;
@@ -195,6 +227,16 @@ export function setupUnitActionPanel(scene) {
 
   const container = scene.add.container(0, 0).setDepth(PANEL_DEPTH);
   container.visible = false;
+
+  // Ensure we have a tiny transparent texture for placeholder images
+  if (!scene.textures.exists('__transparent')) {
+    const tg = scene.add.graphics();
+    tg.fillStyle(0xffffff, 0);
+    tg.fillRect(0, 0, 2, 2);
+    tg.generateTexture('__transparent', 2, 2);
+    tg.destroy();
+  }
+
 
   // Background
   const bg = scene.add.graphics();
@@ -312,15 +354,22 @@ export function setupUnitActionPanel(scene) {
     box.lineStyle(1, 0x2f5f7b, 0.55);
     box.strokeRoundedRect(x, statusY, 26, 26, 6);
 
-    const txt = scene.add.text(x + 13, statusY + 13, '', {
-      fontSize: '16px',
+    const icon = scene.add.image(x + 13, statusY + 13, '__transparent')
+      .setOrigin(0.5, 0.5);
+    // Fit icon into the 26x26 slot with a bit of padding
+    icon.setDisplaySize(20, 20);
+    icon.setAlpha(1);
+    icon.visible = false;
+
+    const stackTxt = scene.add.text(x + 24, statusY + 20, '', {
+      fontSize: '11px',
       color: '#e8f6ff',
       fontFamily: 'monospace',
-    }).setOrigin(0.5, 0.5);
+    }).setOrigin(1, 1);
+    stackTxt.visible = false;
 
-    container.add([box, txt]);
-    statusSlots.push({ box, txt });
-  }
+    container.add([box, icon, stackTxt]);
+    statusSlots.push({ box, icon, stackTxt });
 
   // Right action bar (icons)
   const actionY = 154;
@@ -588,12 +637,35 @@ export function setupUnitActionPanel(scene) {
     panel.resTexts[5].setText(fmt(res.energy));
     panel.resTexts[6].setText(fmt(res.corrosion));
 
-    // Status icons
-    const icons = getUnitStatusIcons(unit, 10);
+
+    // Status icons (from unit.effects). Preloaded in WorldScene.preload() under keys like 'PhysicalBleeding'.
+    const icons = getUnitStatusIcons(scene, unit, panel.statusSlots.length);
     for (let i = 0; i < panel.statusSlots.length; i++) {
       const slot = panel.statusSlots[i];
-      slot.txt.setText(icons[i] || '');
+      const icon = icons[i] || null;
+      if (!icon) {
+        slot.icon.visible = false;
+        slot.stackTxt.visible = false;
+        continue;
+      }
+
+      try {
+        slot.icon.setTexture(icon.key);
+        slot.icon.visible = true;
+      } catch (_e) {
+        slot.icon.visible = false;
+      }
+
+      const showStacks = (Number.isFinite(icon.stacks) && icon.stacks > 1);
+      if (showStacks) {
+        slot.stackTxt.setText(String(icon.stacks));
+        slot.stackTxt.visible = true;
+      } else {
+        slot.stackTxt.setText('');
+        slot.stackTxt.visible = false;
+      }
     }
+
 
     // Action bar states / visibility
     // Defence active state (if unit.status.defending exists)
