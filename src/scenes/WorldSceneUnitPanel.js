@@ -706,7 +706,3 @@ export function setupUnitActionPanel(scene) {
     }
   };
 }
-
-export {
-  setupUnitActionPanel,
-};
