@@ -98,9 +98,9 @@ export const STATUS_ICON_KEYS = [
   'EnergySystemdamage',
   'EnergyShock',
   // Corrosive
-  'CorrosiveCorrosivebial',
-  'CorrosiveDeterioration',
-  'CorrosiveArmorDissolution',
+  'CorrosionCorrosivebial',
+  'CorrosionDeterioration',
+  'CorrosionArmorDissolution',
 ];
 
 function unitHasEffect(unit, effectId) {
