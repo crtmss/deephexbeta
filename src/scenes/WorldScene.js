@@ -396,7 +396,7 @@ function applyEliminationArenaMap(scene) {
     const dx = q - cx;
     const dy = r - cy;
     // Euclidean works fine for a "round" arena in axial coords
-    return Math.sqrt(dx*dx + dy*dy) <= radius;
+    return Math.sqrt(dx * dx + dy * dy) <= radius;
   };
 
   for (const t of scene.mapData) {
@@ -465,12 +465,44 @@ export default class WorldScene extends Phaser.Scene {
     // Expected path in repo: /assets/ui/unit_panel/statuses/<Key>.png
     // (If you later change extension, adjust here.)
     try {
+      const loadIfMissing = (key, url) => {
+        if (this.textures && this.textures.exists && this.textures.exists(key)) return;
+        this.load.image(key, url);
+      };
+
+      // ✅ Status icons
       for (const k of STATUS_ICON_KEYS) {
-        if (this.textures && this.textures.exists && this.textures.exists(k)) continue;
-        this.load.image(k, `assets/ui/unit_panel/statuses/${k}.png`);
+        loadIfMissing(k, `assets/ui/unit_panel/statuses/${k}.png`);
       }
+
+      // ✅ Unit panel action buttons (assets/ui/unit_panel/buttons)
+      // Keys MUST match what WorldSceneUnitPanel.js expects: ui_action_*
+      const btnBase = 'assets/ui/unit_panel/buttons/';
+      loadIfMissing('ui_action_defence', '  '.trim() && `${btnBase}Defence.png`);
+      loadIfMissing('ui_action_defence_a', `${btnBase}DefenceA.png`);
+
+      loadIfMissing('ui_action_heal', `${btnBase}Heal.png`);
+      loadIfMissing('ui_action_heal_a', `${btnBase}HealA.png`);
+
+      loadIfMissing('ui_action_ambush', `${btnBase}Ambush.png`);
+      loadIfMissing('ui_action_ambush_a', `${btnBase}AmbushA.png`);
+
+      loadIfMissing('ui_action_build', `${btnBase}Build.png`);
+      loadIfMissing('ui_action_build_a', `${btnBase}BuildA.png`);
+
+      loadIfMissing('ui_action_switch', `${btnBase}Switch.png`);
+      loadIfMissing('ui_action_switch_a', `${btnBase}SwitchA.png`);
+
+      loadIfMissing('ui_action_turn', `${btnBase}Turn.png`);
+      loadIfMissing('ui_action_turn_a', `${btnBase}TurnA.png`);
+
+      loadIfMissing('ui_action_endturn', `${btnBase}EndTurn.png`);
+      loadIfMissing('ui_action_endturn_a', `${btnBase}EndTurnA.png`);
+
+      loadIfMissing('ui_action_dismiss', `${btnBase}Dismiss.png`);
+      loadIfMissing('ui_action_dismiss_a', `${btnBase}DismissA.png`);
     } catch (e) {
-      console.warn('[PRELOAD] status icons failed:', e);
+      console.warn('[PRELOAD] icons preload failed:', e);
     }
   }
 
