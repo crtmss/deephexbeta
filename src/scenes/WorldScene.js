@@ -68,40 +68,8 @@ import {
 import { TICK_PHASE } from '../effects/EffectDefs.js';
 import { ensureUnitCombatFields, canSpendAp, spendAp } from '../units/UnitActions.js';
 
-/* ========================================================================
-   Status icons (preload keys must match filenames in /assets/statuses)
-   ======================================================================== */
-
-export const STATUS_ICON_KEYS = [
-  // Physical
-  'PhysicalBleeding',
-  'PhysicalArmorbreach',
-  'PhysicalWeakspot',
-  // Thermal
-  'ThermalVolatileIgnition',
-  'ThermalHeatStress',
-  'ThermalBurning',
-  // Toxic
-  'ToxicIntoxication',
-  'ToxicInterference',
-  'ToxicToxiccloud',
-  // Cryo
-  'CryoBrittle',
-  'CryoShatter',
-  'CryoDeepfreeze',
-  // Radiation
-  'RadiationRadiationsickness',
-  'RadiationIonization',
-  'RadiationIrradiated',
-  // Energy
-  'EnergyElectrocution',
-  'EnergySystemdamage',
-  'EnergyShock',
-  // Corrosive
-  'CorrosionCorrosivebial',
-  'CorrosionDeterioration',
-  'CorrosionArmorDissolution',
-];
+// ✅ NEW: preload split-out
+import { preloadWorldSceneAssets, STATUS_ICON_KEYS } from './WorldScenePreload.js';
 
 function unitHasEffect(unit, effectId) {
   const arr = Array.isArray(unit?.effects) ? unit.effects : [];
@@ -461,49 +429,11 @@ export default class WorldScene extends Phaser.Scene {
   }
 
   preload() {
-    // Preload status effect icons (for the unit panel status row)
-    // Expected path in repo: /assets/ui/unit_panel/statuses/<Key>.png
-    // (If you later change extension, adjust here.)
-    try {
-      const loadIfMissing = (key, url) => {
-        if (this.textures && this.textures.exists && this.textures.exists(key)) return;
-        this.load.image(key, url);
-      };
-
-      // ✅ Status icons
-      for (const k of STATUS_ICON_KEYS) {
-        loadIfMissing(k, `assets/ui/unit_panel/statuses/${k}.png`);
-      }
-
-      // ✅ Unit panel action buttons (assets/ui/unit_panel/buttons)
-      // Keys MUST match what WorldSceneUnitPanel.js expects: ui_action_*
-      const btnBase = 'assets/ui/unit_panel/buttons/';
-      loadIfMissing('ui_action_defence', '  '.trim() && `${btnBase}Defence.png`);
-      loadIfMissing('ui_action_defence_a', `${btnBase}DefenceA.png`);
-
-      loadIfMissing('ui_action_heal', `${btnBase}Heal.png`);
-      loadIfMissing('ui_action_heal_a', `${btnBase}HealA.png`);
-
-      loadIfMissing('ui_action_ambush', `${btnBase}Ambush.png`);
-      loadIfMissing('ui_action_ambush_a', `${btnBase}AmbushA.png`);
-
-      loadIfMissing('ui_action_build', `${btnBase}Build.png`);
-      loadIfMissing('ui_action_build_a', `${btnBase}BuildA.png`);
-
-      loadIfMissing('ui_action_switch', `${btnBase}Switch.png`);
-      loadIfMissing('ui_action_switch_a', `${btnBase}SwitchA.png`);
-
-      loadIfMissing('ui_action_turn', `${btnBase}Turn.png`);
-      loadIfMissing('ui_action_turn_a', `${btnBase}TurnA.png`);
-
-      loadIfMissing('ui_action_endturn', `${btnBase}EndTurn.png`);
-      loadIfMissing('ui_action_endturn_a', `${btnBase}EndTurnA.png`);
-
-      loadIfMissing('ui_action_dismiss', `${btnBase}Dismiss.png`);
-      loadIfMissing('ui_action_dismiss_a', `${btnBase}DismissA.png`);
-    } catch (e) {
-      console.warn('[PRELOAD] icons preload failed:', e);
-    }
+    // ✅ All WorldScene preloads live in WorldScenePreload.js now.
+    // This includes:
+    // - unit panel action button icons (assets/ui/unit_panel/buttons/)
+    // - status effect icons (assets/ui/unit_panel/statuses/)
+    preloadWorldSceneAssets(this);
   }
 
   /**
