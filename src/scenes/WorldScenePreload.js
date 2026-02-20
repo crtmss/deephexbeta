@@ -6,6 +6,8 @@
 // NOTE:
 // - Status icons live in: assets/ui/unit_panel/statuses/
 // - Action button icons live in: assets/ui/unit_panel/buttons/
+// - Stat icons live in: assets/ui/unit_panel/stats/
+// - Resist icons live in: assets/ui/unit_panel/resists/
 //
 // This module exports a single function that WorldScene.preload() calls.
 
@@ -100,6 +102,32 @@ export const ACTION_BUTTON_ICON_MAP_ALT = {
   ui_action_dismissA: 'DismissA.png',
 };
 
+// ================================
+// Unit panel stat + resist icons
+// ================================
+
+// Keys are referenced by WorldSceneUnitPanel.js
+export const STAT_ICON_MAP = {
+  ui_stat_lvl: 'Level.png',
+  ui_stat_ap: 'AP.png',
+  ui_stat_mp: 'MP.png',
+  ui_stat_group: 'Group.png',
+  ui_stat_hp: 'HP.png',
+  ui_stat_morale: 'Morale.png',
+};
+
+// Keys are referenced by WorldSceneUnitPanel.js
+export const RESIST_ICON_MAP = {
+  ui_dmg_physical: 'Physical.png',
+  ui_dmg_thermal: 'Thermal.png',
+  ui_dmg_toxic: 'Toxic.png',
+  ui_dmg_cryo: 'Cryo.png',
+  ui_dmg_radiation: 'Radiation.png',
+  ui_dmg_energy: 'Energy.png',
+  // UI code uses "corrosion" key; asset filename is "Corrosive.png"
+  ui_dmg_corrosion: 'Corrosive.png',
+};
+
 function safeLoadImage(scene, key, url) {
   if (!scene?.load?.image) return;
   if (!key || typeof key !== 'string') return;
@@ -116,6 +144,22 @@ function safeLoadImage(scene, key, url) {
  * @param {Phaser.Scene} scene
  */
 export function preloadWorldSceneAssets(scene) {
+  // 0) Unit panel stat + resist icons
+  // (Used by WorldSceneUnitPanel.js.)
+  try {
+    const baseStats = 'assets/ui/unit_panel/stats/';
+    for (const [key, file] of Object.entries(STAT_ICON_MAP)) {
+      safeLoadImage(scene, key, baseStats + file);
+    }
+
+    const baseRes = 'assets/ui/unit_panel/resists/';
+    for (const [key, file] of Object.entries(RESIST_ICON_MAP)) {
+      safeLoadImage(scene, key, baseRes + file);
+    }
+  } catch (e) {
+    console.warn('[PRELOAD] stat/resist icons failed:', e);
+  }
+
   // 1) Action buttons
   try {
     const baseBtn = 'assets/ui/unit_panel/buttons/';
