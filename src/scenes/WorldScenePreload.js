@@ -1,22 +1,10 @@
 // src/scenes/WorldScenePreload.js
-//
-// Centralized preloading for WorldScene (unit panel icons, status icons, etc.)
-// Keep ALL preload paths here so WorldScene.js stays lean.
-//
-// NOTE:
-// - Status icons live in: assets/ui/unit_panel/statuses/
-// - Action button icons live in: assets/ui/unit_panel/buttons/
-// - Stat icons live in: assets/ui/unit_panel/stats/
-// - Resist icons live in: assets/ui/unit_panel/resists/
-//
-// This module exports a single function that WorldScene.preload() calls.
+// Centralized preload for WorldScene UI assets.
+// (Extracted from WorldScene.js to keep the scene file smaller.)
 
- /* eslint-disable no-console */
+/* eslint-disable no-console */
 
-// ================================
-// Status icon keys used by effects
-// ================================
-
+// Status icons used by the unit panel (Effect id -> texture key)
 export const STATUS_ICON_KEYS = [
   // Physical
   'PhysicalBleeding',
@@ -42,148 +30,148 @@ export const STATUS_ICON_KEYS = [
   'EnergyElectrocution',
   'EnergySystemdamage',
   'EnergyShock',
-  // Corrosive (repo uses "Corrosion..." filenames/keys in some places)
+  // Corrosive (repo uses legacy "Corrosion" naming for some)
   'CorrosionCorrosivebial',
   'CorrosionDeterioration',
   'CorrosionArmorDissolution',
 ];
 
-// Some filenames in repo differ from logical ids (legacy typos / naming).
-// Map logical key -> actual filename (WITH extension).
-// If your repo already has perfect matching names, you can leave this empty.
-// I keep it here because you previously had 404s for status icons.
-export const STATUS_ICON_FILE_MAP = {
-  // Common legacy typo set (seen earlier in repo variants)
+// Some filenames differ from logical ids (legacy typos)
+const STATUS_ICON_FILE_MAP = {
   PhysicalBleeding: 'PhyscalBleeding.png',
   PhysicalArmorbreach: 'PhyscalArmorbreach.png',
   PhysicalWeakspot: 'PhyscalWeakspot.png',
 
-  // Repo typo: EnergyElectricution.png (missing 'o')
+  // Repo file name: EnergyElectricution.png (legacy typo)
   EnergyElectrocution: 'EnergyElectricution.png',
-
-  // Some repos use Corrosion* file prefix for corrosive icons
-  CorrosionCorrosivebial: 'CorrosionCorrosivebial.png',
-  CorrosionDeterioration: 'CorrosionDeterioration.png',
-  CorrosionArmorDissolution: 'CorrosionArmorDissolution.png',
 };
 
-// ================================
-// Unit panel action button icons
-// ================================
-//
-// IMPORTANT:
-// Your error: "URL Error in File: ui_action_defence from:" happens when a preload call
-// is made with empty/undefined URL. This mapping makes URLs explicit and stable.
-//
-// The actual PNGs are in: assets/ui/unit_panel/buttons/
-// and (per your repo) are named like: Defence.png, Heal.png, Ambush.png, etc.
+// Unit panel (grid sprite) + stats + resists
+export const UNIT_PANEL_BG_KEY = 'ui_unit_panel_bg';
 
-export const ACTION_BUTTON_ICON_MAP = {
-  ui_action_defence: 'Defence.png',
-  ui_action_heal: 'Heal.png',
-  ui_action_ambush: 'Ambush.png',
-  ui_action_build: 'Build.png',
-  ui_action_switch: 'Switch.png',
-  ui_action_turn: 'Turn.png',
-  ui_action_endturn: 'EndTurn.png',
-  ui_action_dismiss: 'Dismiss.png',
+export const UI_STAT_KEYS = {
+  ap: 'ui_stat_ap',
+  mp: 'ui_stat_mp',
+  gr: 'ui_stat_gr',
+  hp: 'ui_stat_hp',
+  mo: 'ui_stat_mo',
+  faction: 'ui_stat_faction',
+  lvl: 'ui_stat_lvl',
+  weapon: 'ui_stat_weapon',
+  sideWeapon: 'ui_stat_sideweapon',
 };
 
-// Optional “active/toggled” variants if you use them later.
-// If files exist, you can preload them too. If not, harmless.
-export const ACTION_BUTTON_ICON_MAP_ALT = {
-  ui_action_defenceA: 'DefenceA.png',
-  ui_action_healA: 'HealA.png',
-  ui_action_ambushA: 'AmbushA.png',
-  ui_action_buildA: 'BuildA.png',
-  ui_action_switchA: 'SwitchA.png',
-  ui_action_turnA: 'TurnA.png',
-  ui_action_endturnA: 'EndTurnA.png',
-  ui_action_dismissA: 'DismissA.png',
+export const UI_RESIST_KEYS = {
+  physical: 'ui_resist_physical',
+  thermal: 'ui_resist_thermal',
+  toxic: 'ui_resist_toxic',
+  cryo: 'ui_resist_cryo',
+  radiation: 'ui_resist_radiation',
+  energy: 'ui_resist_energy',
+  corrosion: 'ui_resist_corrosion',
 };
 
-// ================================
-// Unit panel stat + resist icons
-// ================================
-
-// Keys are referenced by WorldSceneUnitPanel.js
-export const STAT_ICON_MAP = {
-  ui_stat_lvl: 'Level.png',
-  ui_stat_ap: 'AP.png',
-  ui_stat_mp: 'MP.png',
-  ui_stat_group: 'Group.png',
-  ui_stat_hp: 'HP.png',
-  ui_stat_morale: 'Morale.png',
+// Action button keys are already used elsewhere; we keep them here for completeness.
+export const UI_ACTION_KEYS = {
+  defence: 'ui_action_defence',
+  heal: 'ui_action_heal',
+  ambush: 'ui_action_ambush',
+  build: 'ui_action_build',
+  switch: 'ui_action_switch',
+  turn: 'ui_action_turn',
+  endturn: 'ui_action_endturn',
+  dismiss: 'ui_action_dismiss',
 };
 
-// Keys are referenced by WorldSceneUnitPanel.js
-export const RESIST_ICON_MAP = {
-  ui_dmg_physical: 'Physical.png',
-  ui_dmg_thermal: 'Thermal.png',
-  ui_dmg_toxic: 'Toxic.png',
-  ui_dmg_cryo: 'Cryo.png',
-  ui_dmg_radiation: 'Radiation.png',
-  ui_dmg_energy: 'Energy.png',
-  // UI code uses "corrosion" key; asset filename is "Corrosive.png"
-  ui_dmg_corrosion: 'Corrosive.png',
-};
+export function preloadWorldSceneUI(scene) {
+  if (!scene || !scene.load) return;
 
-function safeLoadImage(scene, key, url) {
-  if (!scene?.load?.image) return;
-  if (!key || typeof key !== 'string') return;
-  if (!url || typeof url !== 'string') return;
-
-  // Avoid double-load if texture already exists
-  if (scene.textures?.exists?.(key)) return;
-
-  scene.load.image(key, url);
-}
-
-/**
- * Call from WorldScene.preload().
- * @param {Phaser.Scene} scene
- */
-export function preloadWorldSceneAssets(scene) {
-  // 0) Unit panel stat + resist icons
-  // (Used by WorldSceneUnitPanel.js.)
+  // --- Unit panel background sprite ---
   try {
-    const baseStats = 'assets/ui/unit_panel/stats/';
-    for (const [key, file] of Object.entries(STAT_ICON_MAP)) {
-      safeLoadImage(scene, key, baseStats + file);
-    }
-
-    const baseRes = 'assets/ui/unit_panel/resists/';
-    for (const [key, file] of Object.entries(RESIST_ICON_MAP)) {
-      safeLoadImage(scene, key, baseRes + file);
+    if (!scene.textures?.exists?.(UNIT_PANEL_BG_KEY)) {
+      scene.load.image(UNIT_PANEL_BG_KEY, 'assets/ui/unit_panel/UnitPanel.png');
     }
   } catch (e) {
-    console.warn('[PRELOAD] stat/resist icons failed:', e);
+    console.warn('[PRELOAD] UnitPanel background failed:', e);
   }
 
-  // 1) Action buttons
-  try {
-    const baseBtn = 'assets/ui/unit_panel/buttons/';
+  // --- Stats icons ---
+  const statsBase = 'assets/ui/unit_panel/stats/';
+  const statsFiles = {
+    [UI_STAT_KEYS.ap]: 'AP.png',
+    [UI_STAT_KEYS.mp]: 'MP.png',
+    [UI_STAT_KEYS.gr]: 'Group.png',
+    [UI_STAT_KEYS.hp]: 'HP.png',
+    [UI_STAT_KEYS.mo]: 'Morale.png',
+    [UI_STAT_KEYS.faction]: 'Faction.png',
+    [UI_STAT_KEYS.lvl]: 'LVL.png',
+    [UI_STAT_KEYS.weapon]: 'Weapon.png',
+    [UI_STAT_KEYS.sideWeapon]: 'SideWeapon.png',
+  };
 
-    for (const [key, file] of Object.entries(ACTION_BUTTON_ICON_MAP)) {
-      safeLoadImage(scene, key, baseBtn + file);
-    }
-    for (const [key, file] of Object.entries(ACTION_BUTTON_ICON_MAP_ALT)) {
-      // optional – only loads if texture missing; 404 is OK, but if you want no 404 spam, remove this loop
-      safeLoadImage(scene, key, baseBtn + file);
+  try {
+    for (const [key, file] of Object.entries(statsFiles)) {
+      if (scene.textures?.exists?.(key)) continue;
+      scene.load.image(key, `${statsBase}${file}`);
     }
   } catch (e) {
-    console.warn('[PRELOAD] action button icons failed:', e);
+    console.warn('[PRELOAD] stats icons failed:', e);
   }
 
-  // 2) Status icons
-  try {
-    const baseStatus = 'assets/ui/unit_panel/statuses/';
+  // --- Resist icons ---
+  const resBase = 'assets/ui/unit_panel/resists/';
+  const resFiles = {
+    [UI_RESIST_KEYS.physical]: 'Physical.png',
+    [UI_RESIST_KEYS.thermal]: 'Thermal.png',
+    [UI_RESIST_KEYS.toxic]: 'Toxic.png',
+    [UI_RESIST_KEYS.cryo]: 'Cryo.png',
+    [UI_RESIST_KEYS.radiation]: 'Radiation.png',
+    [UI_RESIST_KEYS.energy]: 'Energy.png',
+    [UI_RESIST_KEYS.corrosion]: 'Corrosion.png',
+  };
 
+  try {
+    for (const [key, file] of Object.entries(resFiles)) {
+      if (scene.textures?.exists?.(key)) continue;
+      scene.load.image(key, `${resBase}${file}`);
+    }
+  } catch (e) {
+    console.warn('[PRELOAD] resist icons failed:', e);
+  }
+
+  // --- Status icons (effects) ---
+  try {
+    const base = 'assets/ui/unit_panel/statuses/';
     for (const k of STATUS_ICON_KEYS) {
+      if (scene.textures?.exists?.(k)) continue;
       const file = STATUS_ICON_FILE_MAP[k] || `${k}.png`;
-      safeLoadImage(scene, k, baseStatus + file);
+      scene.load.image(k, `${base}${file}`);
     }
   } catch (e) {
     console.warn('[PRELOAD] status icons failed:', e);
+  }
+
+  // --- Action button icons ---
+  // NOTE: These are used as image keys in the panel.
+  // If you already preload them elsewhere, Phaser will just ignore duplicates.
+  try {
+    const base = 'assets/ui/unit_panel/buttons/';
+    const files = {
+      [UI_ACTION_KEYS.defence]: 'Defence.png',
+      [UI_ACTION_KEYS.heal]: 'Heal.png',
+      [UI_ACTION_KEYS.ambush]: 'Ambush.png',
+      [UI_ACTION_KEYS.build]: 'Build.png',
+      [UI_ACTION_KEYS.switch]: 'Switch.png',
+      [UI_ACTION_KEYS.turn]: 'Turn.png',
+      [UI_ACTION_KEYS.endturn]: 'EndTurn.png',
+      [UI_ACTION_KEYS.dismiss]: 'Dismiss.png',
+    };
+
+    for (const [key, file] of Object.entries(files)) {
+      if (scene.textures?.exists?.(key)) continue;
+      scene.load.image(key, `${base}${file}`);
+    }
+  } catch (e) {
+    console.warn('[PRELOAD] action icons failed:', e);
   }
 }
