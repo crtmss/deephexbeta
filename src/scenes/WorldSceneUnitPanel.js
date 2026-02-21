@@ -1,754 +1,533 @@
 // src/scenes/WorldSceneUnitPanel.js
+// Unit panel UI (sprite-based).
+// Uses a pre-rendered background sprite: assets/ui/unit_panel/UnitPanel.png
+// All interactive/icon elements are positioned into the grid.
 //
-// Unit panel UI (bottom-center).
-//
-// Milestone scope:
-//  - Build menu (top-left) is removed elsewhere; building is initiated from unit panel.
-//  - Show unit header + core stats (AP/MP/Group/HP/Morale) + resistances row.
-//  - Show up to 10 status effect icons (from unit.effects -> EffectDefs.icon).
-//  - Action buttons are ICONS (from assets/ui/*). Actives are not in folders anymore.
-//
-// Notes:
-//  - No weapon tooltip.
-//  - No active/passive abilities pages.
-//  - Direction picker (facing) remains; it will be opened from the Turn icon.
-//
-// Textures expected (loaded in WorldScene.preload):
-//  Stats:  ui_stat_lvl ui_stat_ap ui_stat_mp ui_stat_group ui_stat_hp ui_stat_morale
-//  Dmg:    ui_dmg_physical ui_dmg_thermal ui_dmg_toxic ui_dmg_cryo ui_dmg_radiation ui_dmg_energy ui_dmg_corrosion
-//  Actions ui_action_defence/ui_action_defence_a ui_action_heal/ui_action_heal_a ui_action_ambush/ui_action_ambush_a
-//          ui_action_build/ui_action_build_a ui_action_switch/ui_action_switch_a ui_action_turn/ui_action_turn_a
-//          ui_action_endturn/ui_action_endturn_a ui_action_dismiss/ui_action_dismiss_a
+// This module is ES-module safe and is imported by WorldScene.
 
-import { applyDefence } from '../units/UnitActions.js';
-import { getEffectDef } from '../effects/EffectDefs.js';
+/* eslint-disable no-console */
 
-const PANEL_DEPTH = 4200;
+import {
+  UNIT_PANEL_BG_KEY,
+  UI_ACTION_KEYS,
+  UI_STAT_KEYS,
+  UI_RESIST_KEYS,
+} from './WorldScenePreload.js';
 
-// Facing angles (same as before)
-const DIR_ANGLES = [
-  0,
-  -Math.PI / 3,
-  -2 * Math.PI / 3,
-  Math.PI,
-  2 * Math.PI / 3,
-  Math.PI / 3,
-];
+/* ==========================================================================
+   Data helpers (keep compatible with legacy unit fields)
+   ========================================================================== */
 
-function clamp(n, a, b) {
-  return Math.max(a, Math.min(b, n));
-}
-function fmt(n) {
-  if (!Number.isFinite(n)) return '0';
-  return String(Math.round(n));
+function safeNum(v, fallback = 0) {
+  return Number.isFinite(v) ? v : fallback;
 }
 
-function getActiveWeaponId(unit) {
-  const weapons = Array.isArray(unit?.weapons) ? unit.weapons : [];
-  if (!weapons.length) return null;
-  const idx = Number.isFinite(unit.activeWeaponIndex) ? unit.activeWeaponIndex : 0;
-  return weapons[idx] || weapons[0] || null;
+function getUnitDisplayName(unit) {
+  return unit?.displayName || unit?.unitName || unit?.name || 'Unit';
 }
 
-/* =========================================================
-   IconButton (image-based)
-   ========================================================= */
-
-class IconButton {
-  /**
-   * @param {Phaser.Scene} scene
-   * @param {Phaser.GameObjects.Container} container
-   * @param {number} x
-   * @param {number} y
-   * @param {string} keyNormal
-   * @param {string} keyActive
-   * @param {Function} onClick
-   */
-  constructor(scene, container, x, y, keyNormal, keyActive, onClick) {
-    this.scene = scene;
-    this.container = container;
-    this.keyNormal = keyNormal;
-    this.keyActive = keyActive || keyNormal;
-    this.onClick = onClick;
-
-    // background hit area (invisible but makes clicking easy)
-    this.hit = scene.add.rectangle(x, y, 44, 44, 0x000000, 0);
-    this.hit.setOrigin(0, 0);
-
-    // button icon
-    this.icon = scene.add.image(x + 22, y + 22, keyNormal);
-    this.icon.setOrigin(0.5, 0.5);
-
-    // scale down if the PNG is large
-    const target = 34;
-    const w = this.icon.width || 1;
-    const h = this.icon.height || 1;
-    const s = Math.min(target / w, target / h);
-    this.icon.setScale(s);
-
-    container.add([this.hit, this.icon]);
-
-    this.hit.setInteractive({ useHandCursor: true });
-    this.hit.on('pointerdown', () => this.onClick?.());
-
-    this._active = false;
-    this._enabled = true;
-  }
-
-  setActive(on) {
-    this._active = !!on;
-    const key = this._active ? this.keyActive : this.keyNormal;
-    if (this.scene.textures.exists(key)) this.icon.setTexture(key);
-    return this;
-  }
-
-  setEnabled(on) {
-    this._enabled = !!on;
-    if (this._enabled) this.hit.setInteractive({ useHandCursor: true });
-    else this.hit.disableInteractive();
-    this.icon.setAlpha(this._enabled ? 1.0 : 0.35);
-    return this;
-  }
-
-  setVisible(on) {
-    const v = !!on;
-    this.hit.setVisible(v);
-    this.icon.setVisible(v);
-    if (!v) {
-      // avoid catching clicks when hidden
-      this.hit.disableInteractive();
-    }
-    return this;
-  }
-
-  destroy() {
-    try { this.hit?.destroy(); } catch (_) {}
-    try { this.icon?.destroy(); } catch (_) {}
-  }
+function getFactionName(unit) {
+  return unit?.faction || unit?.ownerName || unit?.playerName || unit?.owner || '';
 }
 
-/* =========================================================
-   Status icons (from unit.effects)
-   ========================================================= */
+function getTier(unit) {
+  return safeNum(unit?.tier, safeNum(unit?.level, safeNum(unit?.lvl, 1)));
+}
 
-function getUnitStatusIcons(unit, scene, limit = 10) {
-  // Returns a list of { key, stacks } where key is a Phaser texture key.
-  // We prefer "logical" keys that WorldScene.preload loads (e.g. PhysicalBleeding).
+function getAp(unit) {
+  return safeNum(unit?.ap, safeNum(unit?.AP, 0));
+}
+function getApMax(unit) {
+  return safeNum(unit?.apMax, safeNum(unit?.APMax, getAp(unit)));
+}
+
+function getMp(unit) {
+  if (Number.isFinite(unit?.mp)) return unit.mp;
+  if (Number.isFinite(unit?.movementPoints)) return unit.movementPoints;
+  return safeNum(unit?.MP, 0);
+}
+function getMpMax(unit) {
+  if (Number.isFinite(unit?.mpMax)) return unit.mpMax;
+  if (Number.isFinite(unit?.movementPointsMax)) return unit.movementPointsMax;
+  return safeNum(unit?.MPMax, getMp(unit));
+}
+
+function getGr(unit) {
+  return safeNum(unit?.gr, safeNum(unit?.GR, safeNum(unit?.guard, safeNum(unit?.group, 0))));
+}
+
+function getHp(unit) {
+  return safeNum(unit?.hp, safeNum(unit?.HP, 0));
+}
+function getHpMax(unit) {
+  return safeNum(unit?.maxHp, safeNum(unit?.hpMax, safeNum(unit?.HPMax, getHp(unit))));
+}
+
+function getMo(unit) {
+  return safeNum(unit?.mo, safeNum(unit?.MO, safeNum(unit?.morale, 0)));
+}
+
+function isEnemy(unit) {
+  return !!(unit?.isEnemy || unit?.controller === 'ai');
+}
+
+function effectKeyFromInst(inst) {
+  const raw = (inst && (inst.defId || inst.effectId || inst.id)) ? String(inst.defId || inst.effectId || inst.id) : '';
+  return raw.trim();
+}
+
+function buildEffectIconList(scene, unit) {
+  const effects = Array.isArray(unit?.effects) ? unit.effects : [];
   const out = [];
-  const list = Array.isArray(unit?.effects) ? unit.effects : [];
-  if (!list.length) return out;
 
-  const normalize = (s) => String(s || '').trim();
-
-  // Legacy / typo mapping (logical id -> canonical texture key)
-  const CANON = {
-    // Physical (repo had "Physcal..." typos in filenames; but we load textures under canonical keys)
-    PhyscalBleeding: 'PhysicalBleeding',
-    PhyscalArmorbreach: 'PhysicalArmorbreach',
-    PhyscalWeakspot: 'PhysicalWeakspot',
-
-    // Energy legacy typo
-    EnergyElectricution: 'EnergyElectrocution',
-
-    // Corrosion vs Corrosive legacy
-    CorrosionCorrosivebial: 'CorrosiveCorrosivebial',
-    CorrosionDeterioration: 'CorrosiveDeterioration',
-    CorrosionArmorDissolution: 'CorrosiveArmorDissolution',
-  };
-
-  const candidatesFor = (rawId) => {
-    const id = normalize(rawId);
-    if (!id) return [];
-    const canon = CANON[id] || id;
-
-    // Common variants we might see in effect defs / instances
-    const stripUnderscore = canon.replace(/_/g, '');
-    const titleCase = stripUnderscore.replace(/^\w/, c => c.toUpperCase());
-
-    return [
-      canon,
-      stripUnderscore,
-      titleCase,
-      canon.toLowerCase(),
-      canon.toUpperCase(),
-    ];
-  };
-
-  for (const inst of list) {
+  for (const inst of effects) {
     if (!inst) continue;
-
-    const raw = normalize(inst.defId || inst.effectId || inst.id);
-    if (!raw) continue;
-
-    let key = null;
-
-    // 1) If EffectDefs defines an explicit iconKey, prefer it.
-    try {
-      const def = getEffectDef(raw);
-      const iconKey = def?.iconKey || def?.iconTextureKey || null;
-      if (iconKey) {
-        for (const c of candidatesFor(iconKey)) {
-          if (scene?.textures?.exists?.(c)) { key = c; break; }
-        }
-      }
-    } catch (_e) {}
-
-    // 2) Try raw defId variants.
-    if (!key) {
-      for (const c of candidatesFor(raw)) {
-        if (scene?.textures?.exists?.(c)) { key = c; break; }
-      }
-    }
-
-    // 3) Last resort: try def.id from EffectDefs
-    if (!key) {
-      try {
-        const def = getEffectDef(raw);
-        const id2 = normalize(def?.id || def?.defId);
-        for (const c of candidatesFor(id2)) {
-          if (scene?.textures?.exists?.(c)) { key = c; break; }
-        }
-      } catch (_e) {}
-    }
-
+    const key = effectKeyFromInst(inst);
     if (!key) continue;
 
-    out.push({ key, stacks: Number.isFinite(inst.stacks) ? inst.stacks : 1 });
-    if (out.length >= limit) break;
+    // Prefer exact
+    if (scene?.textures?.exists?.(key)) {
+      out.push({ key, stacks: safeNum(inst.stacks, 1) });
+      continue;
+    }
+
+    // Try case tweaks
+    const candidates = [
+      key,
+      key.toLowerCase(),
+      key.toUpperCase(),
+      key.replace(/_/g, ''),
+      key.replace(/_/g, '').replace(/^\w/, c => c.toUpperCase()),
+    ];
+
+    let found = null;
+    for (const c of candidates) {
+      if (c && scene?.textures?.exists?.(c)) { found = c; break; }
+    }
+    if (found) out.push({ key: found, stacks: safeNum(inst.stacks, 1) });
   }
 
   return out;
 }
 
-/* =========================================================
-   Resist row (temporary default)
-   ========================================================= */
+function getArmorResists(unit) {
+  // Normalize to 3 rows (N/H/B) and 7 damage types.
+  const r = unit?.resists || unit?.resistances || null;
 
-function getResists(unit) {
-  // Requested temporary rule:
-  // - physical shows "4 armor"
-  // - everything else 0
-  // If you later add real per-type resists, set unit.resists = { physical:4, thermal:..., ... }
-  const r = (unit && typeof unit.resists === 'object' && unit.resists) ? unit.resists : null;
-  return {
-    physical: Number.isFinite(r?.physical) ? r.physical : 4,
-    thermal: Number.isFinite(r?.thermal) ? r.thermal : 0,
-    toxic: Number.isFinite(r?.toxic) ? r.toxic : 0,
-    cryo: Number.isFinite(r?.cryo) ? r.cryo : 0,
-    radiation: Number.isFinite(r?.radiation) ? r.radiation : 0,
-    energy: Number.isFinite(r?.energy) ? r.energy : 0,
-    corrosion: Number.isFinite(r?.corrosion) ? r.corrosion : 0,
-  };
-}
-
-/* =========================================================
-   Facing setter
-   ========================================================= */
-
-function setFacing(scene, unit, dirIndex) {
-  if (!scene || !unit) return;
-  const d = clamp(dirIndex | 0, 0, 5);
-  unit.facing = d;
-  unit.facingAngle = DIR_ANGLES[d] ?? 0;
-  if (typeof unit.rotation === 'number') unit.rotation = unit.facingAngle;
-}
-
-/* =========================================================
-   Panel setup
-   ========================================================= */
-
-export function setupUnitActionPanel(scene) {
-  if (scene.unitActionPanel) return;
-
-  // Panel state
-  scene.unitPanelState = {
-    facingPickerOpen: false,
+  const base = {
+    normal: { physical: 0, thermal: 0, toxic: 0, cryo: 0, radiation: 0, energy: 0, corrosion: 0 },
+    heavy:  { physical: 0, thermal: 0, toxic: 0, cryo: 0, radiation: 0, energy: 0, corrosion: 0 },
+    both:   { physical: 0, thermal: 0, toxic: 0, cryo: 0, radiation: 0, energy: 0, corrosion: 0 },
   };
 
-  const W = 740;
-  const H = 210;
+  if (!r || typeof r !== 'object') return base;
 
-  const container = scene.add.container(0, 0).setDepth(PANEL_DEPTH);
-  container.visible = false;
-
-  // Background
-  const bg = scene.add.graphics();
-  bg.fillStyle(0x0b0f1a, 0.82);
-  bg.fillRoundedRect(0, 0, W, H, 14);
-
-  const bezel = scene.add.graphics();
-  bezel.lineStyle(2, 0x4aa6d8, 0.65);
-  bezel.strokeRoundedRect(0, 0, W, H, 14);
-
-  // Input blocker so clicks don't leak to world
-  const blocker = scene.add.rectangle(0, 0, W, H, 0x000000, 0);
-  blocker.setOrigin(0, 0);
-  blocker.setInteractive();
-
-  container.add([bg, bezel, blocker]);
-
-  // Left portrait placeholder (future)
-  const portraitBox = scene.add.graphics();
-  portraitBox.fillStyle(0x05070f, 0.65);
-  portraitBox.fillRoundedRect(14, 14, 86, 86, 10);
-  portraitBox.lineStyle(1, 0x2f5f7b, 0.65);
-  portraitBox.strokeRoundedRect(14, 14, 86, 86, 10);
-  container.add(portraitBox);
-
-  // Header: LVL icon + level + name
-  const headerY = 18;
-  const headerX = 112;
-
-  const lvlIcon = scene.add.image(headerX, headerY + 8, 'ui_stat_lvl').setOrigin(0, 0.5);
-  lvlIcon.setScale(0.6);
-
-  const lvlText = scene.add.text(headerX + 26, headerY, '1', {
-    fontSize: '16px',
-    color: '#e8f6ff',
-    fontFamily: 'monospace',
-    fontStyle: 'bold',
-  });
-
-  const nameText = scene.add.text(headerX + 56, headerY, 'Unit', {
-    fontSize: '18px',
-    color: '#e8f6ff',
-    fontFamily: 'monospace',
-    fontStyle: 'bold',
-  });
-
-  container.add([lvlIcon, lvlText, nameText]);
-
-  // Stats row (AP/MP/Group/HP/Morale)
-  const statsY = 52;
-  const statGap = 116;
-
-  const statBlocks = [
-    { key: 'ui_stat_ap', label: 'AP', x: headerX + 0 },
-    { key: 'ui_stat_mp', label: 'MP', x: headerX + statGap * 1 },
-    { key: 'ui_stat_group', label: 'GR', x: headerX + statGap * 2 },
-    { key: 'ui_stat_hp', label: 'HP', x: headerX + statGap * 3 },
-    { key: 'ui_stat_morale', label: 'MO', x: headerX + statGap * 4 },
-  ];
-
-  const statIcons = [];
-  const statTexts = [];
-  for (const b of statBlocks) {
-    const ic = scene.add.image(b.x, statsY, b.key).setOrigin(0, 0.5);
-    ic.setScale(0.62);
-    const tx = scene.add.text(b.x + 26, statsY - 10, `${b.label}: 0`, {
-      fontSize: '13px',
-      color: '#cfefff',
-      fontFamily: 'monospace',
-    });
-    statIcons.push(ic);
-    statTexts.push(tx);
-    container.add([ic, tx]);
+  for (const armorKey of ['normal', 'heavy', 'both']) {
+    const src = r[armorKey];
+    if (src && typeof src === 'object') {
+      for (const dt of Object.keys(base[armorKey])) {
+        if (Number.isFinite(src[dt])) base[armorKey][dt] = src[dt];
+        else if (Number.isFinite(src[dt?.toUpperCase?.()])) base[armorKey][dt] = src[dt.toUpperCase()];
+      }
+    }
   }
 
-  // Resists row (damage type icons + numbers)
-  const resY = 86;
-  const resBlocks = [
-    { key: 'ui_dmg_physical', id: 'physical', x: headerX + 0 },
-    { key: 'ui_dmg_thermal', id: 'thermal', x: headerX + 74 },
-    { key: 'ui_dmg_toxic', id: 'toxic', x: headerX + 148 },
-    { key: 'ui_dmg_cryo', id: 'cryo', x: headerX + 222 },
-    { key: 'ui_dmg_radiation', id: 'radiation', x: headerX + 296 },
-    { key: 'ui_dmg_energy', id: 'energy', x: headerX + 370 },
-    { key: 'ui_dmg_corrosion', id: 'corrosion', x: headerX + 444 },
-  ];
+  return base;
+}
 
-  const resIcons = [];
-  const resTexts = [];
-  for (const b of resBlocks) {
-    const ic = scene.add.image(b.x, resY, b.key).setOrigin(0, 0.5);
-    ic.setScale(0.58);
-    const tx = scene.add.text(b.x + 24, resY - 10, '0', {
-      fontSize: '13px',
-      color: '#cfefff',
-      fontFamily: 'monospace',
-    });
-    resIcons.push(ic);
-    resTexts.push(tx);
-    container.add([ic, tx]);
-  }
+/* ==========================================================================
+   UI helpers
+   ========================================================================== */
 
-// Status effect icons row
-const statusY = 122;
-const statusX = 16;
-
-const statusSlots = [];
-const SLOT = 28;
-const PAD = 6;
-const MAX = 10;
-
-const statusLabel = scene.add.text(statusX, statusY - 18, 'STATUS', {
-  fontFamily: 'monospace',
-  fontSize: '12px',
-  color: '#9be4ff',
-}).setScrollFactor(0);
-container.add(statusLabel);
-
-for (let i = 0; i < MAX; i++) {
-  const x = statusX + i * (SLOT + PAD);
-  const y = statusY;
-
-  const slotBg = scene.add.graphics().setScrollFactor(0);
-  slotBg.fillStyle(0x0a1a28, 0.85);
-  slotBg.fillRoundedRect(x, y, SLOT, SLOT, 6);
-  slotBg.lineStyle(2, 0x6fe3ff, 0.55);
-  slotBg.strokeRoundedRect(x, y, SLOT, SLOT, 6);
-
-  const icon = scene.add.image(x + SLOT / 2, y + SLOT / 2, '__missing__')
-    .setOrigin(0.5)
-    .setScrollFactor(0);
-  icon.visible = false;
-
-  const stacksTxt = scene.add.text(x + SLOT - 4, y + SLOT - 14, '', {
+function makeLabel(scene, x, y, text, style = {}) {
+  return scene.add.text(x, y, text, {
     fontFamily: 'monospace',
     fontSize: '12px',
     color: '#ffffff',
-    fontStyle: 'bold',
-  }).setOrigin(1, 0).setScrollFactor(0);
-  stacksTxt.visible = false;
-
-  container.add(slotBg);
-  container.add(icon);
-  container.add(stacksTxt);
-
-  statusSlots.push({ slotBg, icon, stacksTxt });
+    ...style,
+  }).setOrigin(0, 0);
 }
 
+function makeIcon(scene, x, y, key, size = 16) {
+  const img = scene.add.image(x, y, key)
+    .setOrigin(0, 0)
+    .setDisplaySize(size, size);
+  return img;
+}
 
-  // Right action bar (icons)
-  const actionY = 154;
-  const actionX0 = W - 16 - (8 * 46); // 8 buttons * 46 spacing
-  const actionStep = 46;
+function makeHitRect(scene, x, y, w, h, onClick) {
+  const hit = scene.add.rectangle(x, y, w, h, 0x000000, 0)
+    .setOrigin(0, 0)
+    .setInteractive({ useHandCursor: true });
+  hit.on('pointerdown', (pointer, lx, ly, event) => {
+    event?.stopPropagation?.();
+    try { onClick?.(); } catch (e) { console.warn('[UnitPanel] click handler error', e); }
+  });
+  return hit;
+}
 
-  const buttons = {};
+function bringToTopSafe(scene, obj) {
+  try { scene.children.bringToTop(obj); } catch (_) {}
+}
 
-  const make = (k, keyN, keyA, onClick) => {
-    const b = new IconButton(scene, container, actionX0 + actionStep * k, actionY, keyN, keyA, onClick);
-    buttons[k] = b;
-    return b;
-  };
+/* ==========================================================================
+   Main setup
+   ========================================================================== */
 
-  // We keep references by name too (more convenient)
-  const btn = {};
+export function setupUnitActionPanel(scene) {
+  if (!scene) return;
+  if (scene.__unitPanelInitialized) return;
+  scene.__unitPanelInitialized = true;
 
-  // Defence
-  btn.defence = new IconButton(scene, container, actionX0 + actionStep * 0, actionY,
-    'ui_action_defence', 'ui_action_defence_a',
-    () => {
-      const u = scene.selectedUnit;
-      if (!u) return;
-      // any command modes should be off in the new UI
-      scene.unitCommandMode = null;
+  // Background sprite is 601x281; we keep native scale for pixel-perfect alignment.
+  const BG_W = 601;
+  const BG_H = 281;
 
-      const res = applyDefence(u);
-      console.log('[DEFENCE]', { ok: res.ok, reason: res.reason, heal: res.heal, tempArmorBonus: res.tempArmorBonus, unitId: u.id, q: u.q, r: u.r });
-      scene.refreshUnitActionPanel?.();
-    }
-  );
+  // Place panel at bottom-left with padding.
+  const PAD = 12;
+  const originX = PAD;
+  const originY = Math.max(PAD, scene.scale.height - BG_H - PAD);
 
-  // Heal (placeholder for your future heal action)
-  btn.heal = new IconButton(scene, container, actionX0 + actionStep * 1, actionY,
-    'ui_action_heal', 'ui_action_heal_a',
-    () => {
-      const u = scene.selectedUnit;
-      if (!u) return;
-      console.log('[HEAL] placeholder', { unitId: u.id });
-      // TODO: hook real heal action here (separate from defence)
-      scene.refreshUnitActionPanel?.();
-    }
-  );
+  const panel = scene.add.container(originX, originY)
+    .setDepth(4200)
+    .setScrollFactor(0);
+  panel.visible = false;
 
-  // Ambush (placeholder)
-  btn.ambush = new IconButton(scene, container, actionX0 + actionStep * 2, actionY,
-    'ui_action_ambush', 'ui_action_ambush_a',
-    () => {
-      const u = scene.selectedUnit;
-      if (!u) return;
-      console.log('[AMBUSH] placeholder', { unitId: u.id });
-      // TODO: hook ambush logic here
-      scene.refreshUnitActionPanel?.();
-    }
-  );
+  // BG sprite (grid)
+  const bg = scene.add.image(0, 0, UNIT_PANEL_BG_KEY)
+    .setOrigin(0, 0)
+    .setScrollFactor(0);
 
-  // Build (placeholder; show only for certain units)
-  btn.build = new IconButton(scene, container, actionX0 + actionStep * 3, actionY,
-    'ui_action_build', 'ui_action_build_a',
-    () => {
-      const u = scene.selectedUnit;
-      if (!u) return;
-      console.log('[BUILD] placeholder', { unitId: u.id, type: u.type });
-      // TODO: open build picker UI for mobile base
-      scene.refreshUnitActionPanel?.();
-    }
-  );
+  panel.add(bg);
 
-  // Switch weapon
-  btn.switchWeapon = new IconButton(scene, container, actionX0 + actionStep * 4, actionY,
-    'ui_action_switch', 'ui_action_switch_a',
-    () => {
-      const u = scene.selectedUnit;
-      const ws = Array.isArray(u?.weapons) ? u.weapons : [];
-      if (!u || ws.length <= 1) return;
+  // --- Layout grid anchors (based on UnitPanel.png lines) ---
+  const X0 = 0;
+  const X1 = 200;
+  const X2 = 600; // right edge line is at 600 (image width 601 includes border)
 
-      const idx = Number.isFinite(u.activeWeaponIndex) ? u.activeWeaponIndex : 0;
-      u.activeWeaponIndex = (idx + 1) % ws.length;
+  const Y0 = 0;
+  const Y1 = 40;
+  const Y2 = 80;
+  const Y3 = 120;
+  const Y4 = 200;
+  const Y5 = 280;
 
-      console.log('[WEAPON] switched', { unitId: u.id ?? u.unitId, activeWeaponIndex: u.activeWeaponIndex, weaponId: getActiveWeaponId(u) });
-      scene.refreshUnitActionPanel?.();
-    }
-  );
-
-  // Turn (opens facing picker)
-  btn.turn = new IconButton(scene, container, actionX0 + actionStep * 5, actionY,
-    'ui_action_turn', 'ui_action_turn_a',
-    () => {
-      scene.unitPanelState.facingPickerOpen = !scene.unitPanelState.facingPickerOpen;
-      scene.refreshUnitActionPanel?.();
-    }
-  );
-
-  // End turn
-  btn.endTurn = new IconButton(scene, container, actionX0 + actionStep * 6, actionY,
-    'ui_action_endturn', 'ui_action_endturn_a',
-    () => {
-      if (typeof scene.endTurn === 'function') scene.endTurn();
-    }
-  );
-
-  // Dismiss (placeholder)
-  btn.dismiss = new IconButton(scene, container, actionX0 + actionStep * 7, actionY,
-    'ui_action_dismiss', 'ui_action_dismiss_a',
-    () => {
-      const u = scene.selectedUnit;
-      if (!u) return;
-      console.log('[DISMISS] placeholder', { unitId: u.id, type: u.type });
-      // TODO: implement dismiss (remove unit) if you want it
-      scene.refreshUnitActionPanel?.();
-    }
-  );
-
-  // Facing picker buttons (6 small icons/text)
-  const facing = {
-    label: scene.add.text(actionX0, actionY - 30, 'Facing:', {
-      fontSize: '13px',
-      color: '#9be4ff',
-      fontFamily: 'monospace',
-    }),
-    buttons: [],
-  };
-
-  const fpX0 = actionX0 + 70;
-  const fpY = actionY - 36;
-  const smallW = 34;
-  const smallH = 26;
-  const smallPad = 6;
-  const arrowLabels = ['→', '↘', '↙', '←', '↖', '↗'];
-
-  for (let i = 0; i < 6; i++) {
-    const x = fpX0 + i * (smallW + smallPad);
-
-    const g = scene.add.graphics();
-    const hit = scene.add.rectangle(x, fpY, smallW, smallH, 0x000000, 0).setOrigin(0, 0);
-    const t = scene.add.text(x + smallW / 2, fpY + smallH / 2, arrowLabels[i], {
-      fontSize: '15px',
-      color: '#e8f6ff',
-      fontFamily: 'monospace',
-    }).setOrigin(0.5, 0.5);
-
-    const draw = (hover) => {
-      g.clear();
-      g.fillStyle(hover ? 0x2a3b66 : 0x1a2240, 0.92);
-      g.fillRoundedRect(x, fpY, smallW, smallH, 6);
-      g.lineStyle(2, hover ? 0x86d6ff : 0x4aa6d8, 0.85);
-      g.strokeRoundedRect(x, fpY, smallW, smallH, 6);
+  // Helper to compute cell center for right grid (5 columns x 2 rows)
+  function cellCenter(col, row) {
+    const cellW = 80;
+    const cellH = 80;
+    const x = X1 + col * cellW;
+    const y = (row === 0) ? Y3 : Y4;
+    return {
+      cx: x + cellW / 2,
+      cy: y + cellH / 2,
+      x0: x,
+      y0: y,
+      w: cellW,
+      h: cellH,
     };
-    draw(false);
-
-    hit.setInteractive({ useHandCursor: true });
-    hit.on('pointerover', () => draw(true));
-    hit.on('pointerout', () => draw(false));
-    hit.on('pointerdown', () => {
-      const u = scene.selectedUnit;
-      if (!u) return;
-      setFacing(scene, u, i);
-      scene.unitPanelState.facingPickerOpen = false;
-      scene.refreshUnitActionPanel?.();
-    });
-
-    container.add([g, hit, t]);
-    facing.buttons.push({ g, hit, t, draw });
   }
 
-  // hide facing by default
-  facing.label.setVisible(false);
-  for (const b of facing.buttons) {
-    b.g.setVisible(false);
-    b.hit.setVisible(false);
-    b.t.setVisible(false);
-    b.hit.disableInteractive();
+  // --- Header texts (top-left area) ---
+  const nameText = makeLabel(scene, 10, 8, 'Unit', { fontSize: '14px', fontStyle: 'bold' });
+  const factionText = makeLabel(scene, 10, 24, 'FACTION', { fontSize: '11px', color: '#cfefff' });
+  const lvlIcon = makeIcon(scene, 150, 10, UI_STAT_KEYS.lvl, 14);
+  const lvlText = makeLabel(scene, 168, 10, '1', { fontSize: '12px' });
+
+  panel.add([nameText, factionText, lvlIcon, lvlText]);
+
+  // --- Stats row (right, Y1..Y2) : AP / MP / GR / HP / MO ---
+  const statKeys = [
+    { id: 'ap', key: UI_STAT_KEYS.ap },
+    { id: 'mp', key: UI_STAT_KEYS.mp },
+    { id: 'gr', key: UI_STAT_KEYS.gr },
+    { id: 'hp', key: UI_STAT_KEYS.hp },
+    { id: 'mo', key: UI_STAT_KEYS.mo },
+  ];
+
+  const statUI = {};
+  for (let i = 0; i < statKeys.length; i++) {
+    const baseX = X1 + i * 80;
+    const icon = makeIcon(scene, baseX + 8, Y1 + 12, statKeys[i].key, 16);
+    const text = makeLabel(scene, baseX + 28, Y1 + 12, '0', { fontSize: '12px' });
+    panel.add([icon, text]);
+    statUI[statKeys[i].id] = { icon, text };
   }
-  container.add(facing.label);
 
-  // Positioning
-  const position = () => {
-    const cx = scene.scale.width / 2;
-    const y = scene.scale.height - H - 14;
-    container.setPosition(Math.round(cx - W / 2), Math.round(y));
-  };
-  position();
-  scene.scale.on('resize', position);
+  // --- Resists row (right, Y2..Y3) : 7 icons + numbers in 40px slots ---
+  const resistOrder = [
+    { id: 'physical', key: UI_RESIST_KEYS.physical },
+    { id: 'thermal', key: UI_RESIST_KEYS.thermal },
+    { id: 'toxic', key: UI_RESIST_KEYS.toxic },
+    { id: 'cryo', key: UI_RESIST_KEYS.cryo },
+    { id: 'radiation', key: UI_RESIST_KEYS.radiation },
+    { id: 'energy', key: UI_RESIST_KEYS.energy },
+    { id: 'corrosion', key: UI_RESIST_KEYS.corrosion },
+  ];
 
-  // Store UI handles
-  scene.unitActionPanel = {
-    container,
+  const resistUI = [];
+  for (let i = 0; i < resistOrder.length; i++) {
+    const baseX = X1 + i * 40;
+    const icon = makeIcon(scene, baseX + 12, Y2 + 10, resistOrder[i].key, 16);
+    const text = makeLabel(scene, baseX + 12, Y2 + 26, '0', { fontSize: '11px', color: '#ffffff' });
+    panel.add([icon, text]);
+    resistUI.push({ id: resistOrder[i].id, icon, text });
+  }
+
+  // --- Status icons (left, Y2..Y3) : 10 small slots ---
+  const maxStatus = 10;
+  const statusSlots = [];
+  const statusStartX = 10;
+  const statusY = Y2 + 10;
+  const statusSize = 16;
+  const statusGap = 4;
+  for (let i = 0; i < maxStatus; i++) {
+    const x = statusStartX + i * (statusSize + statusGap);
+    const icon = scene.add.image(x, statusY, '__missing__')
+      .setOrigin(0, 0)
+      .setDisplaySize(statusSize, statusSize);
+    icon.visible = false;
+
+    const stacks = makeLabel(scene, x + statusSize, statusY, '', {
+      fontSize: '10px',
+      color: '#ffffff',
+      fontStyle: 'bold',
+    }).setOrigin(1, 0);
+    stacks.visible = false;
+
+    panel.add([icon, stacks]);
+    statusSlots.push({ icon, stacks });
+  }
+
+  // --- Action buttons (right big grid): 5 cols x 2 rows ---
+  // Matches the original intended layout in your reference screenshot.
+  const ACTIONS = [
+    // row 0 (Y3..Y4)
+    { id: 'defence', label: 'DEFENCE', key: UI_ACTION_KEYS.defence, col: 0, row: 0 },
+    { id: 'ambush',  label: 'AMBUSH',  key: UI_ACTION_KEYS.ambush,  col: 1, row: 0 },
+    { id: 'end',     label: 'ENDTURN', key: UI_ACTION_KEYS.endturn, col: 2, row: 0 },
+    { id: 'heal',    label: 'HEAL',    key: UI_ACTION_KEYS.heal,    col: 3, row: 0 },
+    { id: 'turn',    label: 'TURN',    key: UI_ACTION_KEYS.turn,    col: 4, row: 0 },
+
+    // row 1 (Y4..Y5)
+    { id: 'dismiss', label: 'DISMISS', key: UI_ACTION_KEYS.dismiss, col: 0, row: 1 },
+    { id: 'switch',  label: 'SWITCH',  key: UI_ACTION_KEYS.switch,  col: 1, row: 1 },
+    { id: 'build',   label: 'BUILD',   key: UI_ACTION_KEYS.build,   col: 2, row: 1 },
+    { id: 'active1', label: 'ACTIVE1', key: null,                  col: 3, row: 1 },
+    { id: 'active2', label: 'ACTIVE2', key: null,                  col: 4, row: 1 },
+  ];
+
+  const actionButtons = [];
+  for (const a of ACTIONS) {
+    const c = cellCenter(a.col, a.row);
+
+    const iconSize = 28;
+    const iconKey = a.key || '__missing__';
+    const icon = scene.add.image(c.cx, c.cy - 8, iconKey)
+      .setOrigin(0.5)
+      .setDisplaySize(iconSize, iconSize);
+
+    // If there is no texture for this key, we hide it and show only label.
+    const label = makeLabel(scene, c.cx, c.y0 + c.h - 18, a.label, {
+      fontSize: '10px',
+      color: '#ffffff',
+    }).setOrigin(0.5, 0);
+
+    const hit = makeHitRect(scene, c.x0 + 2, c.y0 + 2, c.w - 4, c.h - 4, () => onAction(a.id));
+
+    panel.add([icon, label, hit]);
+    actionButtons.push({ ...a, icon, label, hit, bounds: c, enabled: true });
+  }
+
+  // Optional overlay to absorb clicks behind the panel
+  const overlay = scene.add.rectangle(0, 0, scene.scale.width, scene.scale.height, 0x000000, 0.001)
+    .setOrigin(0, 0)
+    .setScrollFactor(0)
+    .setDepth(4190);
+  overlay.visible = false;
+  overlay.setInteractive({ useHandCursor: false });
+  overlay.on('pointerdown', (pointer, lx, ly, event) => event?.stopPropagation?.());
+
+  scene.unitPanel = {
+    panel,
     bg,
-    bezel,
-    blocker,
-    portraitBox,
-    lvlIcon,
-    lvlText,
+    overlay,
+    selectedUnit: null,
+
     nameText,
-    statIcons,
-    statTexts,
-    resIcons,
-    resTexts,
+    factionText,
+    lvlText,
+    statUI,
+    resistUI,
     statusSlots,
-    buttons: btn,
-    facing,
-    W,
-    H,
+    actionButtons,
   };
 
-  // Public API
-  scene.openUnitActionPanel = function (unit) {
-    if (!scene.unitActionPanel) return;
-    scene.unitPanelState.facingPickerOpen = false;
-    scene.unitActionPanel.container.visible = true;
-    scene.refreshUnitActionPanel?.(unit);
-    scene.children.bringToTop(scene.unitActionPanel.container);
+  function onAction(actionId) {
+    const u = scene.unitPanel?.selectedUnit || scene.selectedUnit || null;
+    if (!u) return;
+
+    switch (actionId) {
+      case 'defence':
+        scene.events?.emit?.('unit_action_defence', { unit: u });
+        scene.onUnitDefence?.(u);
+        break;
+      case 'heal':
+        scene.events?.emit?.('unit_action_heal', { unit: u });
+        scene.onUnitHeal?.(u);
+        break;
+      case 'ambush':
+        scene.events?.emit?.('unit_action_ambush', { unit: u });
+        scene.onUnitAmbush?.(u);
+        break;
+      case 'build':
+        scene.events?.emit?.('unit_action_build', { unit: u });
+        scene.onUnitBuild?.(u);
+        break;
+      case 'turn':
+        scene.events?.emit?.('unit_action_turn', { unit: u });
+        scene.onUnitTurn?.(u);
+        break;
+      case 'end':
+        scene.endTurn?.();
+        break;
+      case 'dismiss':
+        scene.setSelectedUnit?.(null);
+        break;
+      case 'active1':
+        scene.events?.emit?.('unit_action_active1', { unit: u });
+        scene.onUnitActive1?.(u);
+        break;
+      case 'active2':
+        scene.events?.emit?.('unit_action_active2', { unit: u });
+        scene.onUnitActive2?.(u);
+        break;
+      default:
+        break;
+    }
+
+    scene.refreshUnitActionPanel?.();
+  }
+
+  /* ------------------------------------------------------------------------
+     Public scene methods (used by WorldScene)
+     ------------------------------------------------------------------------ */
+
+  scene.openUnitActionPanel = function openUnitActionPanel(unit) {
+    if (!scene.unitPanel) return;
+    scene.unitPanel.selectedUnit = unit || null;
+    scene.unitPanel.panel.visible = !!unit;
+    scene.unitPanel.overlay.visible = !!unit;
+    scene.refreshUnitActionPanel?.();
+    bringToTopSafe(scene, scene.unitPanel.panel);
   };
 
-  scene.closeUnitActionPanel = function () {
-    if (!scene.unitActionPanel) return;
-    scene.unitPanelState.facingPickerOpen = false;
-    scene.unitActionPanel.container.visible = false;
+  scene.closeUnitActionPanel = function closeUnitActionPanel() {
+    if (!scene.unitPanel) return;
+    scene.unitPanel.selectedUnit = null;
+    scene.unitPanel.panel.visible = false;
+    scene.unitPanel.overlay.visible = false;
   };
 
-  scene.refreshUnitActionPanel = function (unitMaybe) {
-    const panel = scene.unitActionPanel;
-    if (!panel) return;
+  scene.refreshUnitActionPanel = function refreshUnitActionPanel() {
+    const p = scene.unitPanel;
+    if (!p) return;
 
-    const unit = unitMaybe || scene.selectedUnit;
+    const u = p.selectedUnit || scene.selectedUnit || null;
 
-    if (!unit) {
-      scene.closeUnitActionPanel?.();
+    if (!u) {
+      p.panel.visible = false;
+      p.overlay.visible = false;
       return;
     }
 
+    p.panel.visible = true;
+    p.overlay.visible = true;
+
     // Header
-    const level = Number.isFinite(unit.level) ? unit.level : 1;
-    panel.lvlText.setText(String(level));
+    p.nameText.setText(getUnitDisplayName(u).toUpperCase());
+    const fac = getFactionName(u);
+    p.factionText.setText((fac ? fac : 'FACTION').toUpperCase());
+    p.lvlText.setText(String(getTier(u)));
 
-    const nm = unit.unitName || unit.type || 'Unit';
-    panel.nameText.setText(nm);
+    // Stats
+    p.statUI.ap.text.setText(`${getAp(u)}/${getApMax(u)}`);
+    p.statUI.mp.text.setText(`${getMp(u)}/${getMpMax(u)}`);
+    p.statUI.gr.text.setText(String(getGr(u)));
+    p.statUI.hp.text.setText(String(getHp(u)));
+    p.statUI.mo.text.setText(String(getMo(u)));
 
-    // Core stats
-    const ap = Number.isFinite(unit.ap) ? unit.ap : 0;
-    const apMax = Number.isFinite(unit.apMax) ? unit.apMax : 1;
+    // Resists (show BOTH row by default; you can swap to normal/heavy later)
+    const res = getArmorResists(u);
+    const row = res.both || res.normal || res.heavy;
+    for (const r of p.resistUI) {
+      const v = safeNum(row?.[r.id], 0);
+      r.text.setText(String(v));
+    }
 
-    const mp = Number.isFinite(unit.mp) ? unit.mp : (Number.isFinite(unit.movementPoints) ? unit.movementPoints : 0);
-    const mpMax = Number.isFinite(unit.mpMax) ? unit.mpMax : (Number.isFinite(unit.maxMovementPoints) ? unit.maxMovementPoints : 0);
+    // Status icons
+    const effList = buildEffectIconList(scene, u).slice(0, p.statusSlots.length);
+    for (let i = 0; i < p.statusSlots.length; i++) {
+      const slot = p.statusSlots[i];
+      const info = effList[i] || null;
+      if (!info || !scene.textures?.exists?.(info.key)) {
+        slot.icon.visible = false;
+        slot.stacks.visible = false;
+        continue;
+      }
+      slot.icon.setTexture(info.key);
+      slot.icon.visible = true;
 
-    const grp = Number.isFinite(unit.groupSize) ? unit.groupSize : (Number.isFinite(unit.stack) ? unit.stack : 1);
-    const hp = Number.isFinite(unit.hp) ? unit.hp : 0;
-    const hpMax = Number.isFinite(unit.maxHp) ? unit.maxHp : (Number.isFinite(unit.hpMax) ? unit.hpMax : 0);
-    const morale = Number.isFinite(unit.morale) ? unit.morale : 0;
+      const stacks = safeNum(info.stacks, 1);
+      if (stacks > 1) {
+        slot.stacks.setText(String(stacks));
+        slot.stacks.visible = true;
+      } else {
+        slot.stacks.visible = false;
+      }
+    }
 
-    // statTexts order matches statBlocks: AP, MP, GR, HP, MO
-    panel.statTexts[0].setText(`AP: ${fmt(ap)}/${fmt(apMax)}`);
-    panel.statTexts[1].setText(`MP: ${fmt(mp)}/${fmt(mpMax)}`);
-    panel.statTexts[2].setText(`GR: ${fmt(grp)}`);
-    panel.statTexts[3].setText(`HP: ${fmt(hp)}/${fmt(hpMax)}`);
-    panel.statTexts[4].setText(`MO: ${fmt(morale)}`);
+    // Action enable/disable
+    const enemy = isEnemy(u);
+    for (const b of p.actionButtons) {
+      let enabled = !enemy;
 
-    // Resists
-    const res = getResists(unit);
-    panel.resTexts[0].setText(fmt(res.physical));
-    panel.resTexts[1].setText(fmt(res.thermal));
-    panel.resTexts[2].setText(fmt(res.toxic));
-    panel.resTexts[3].setText(fmt(res.cryo));
-    panel.resTexts[4].setText(fmt(res.radiation));
-    panel.resTexts[5].setText(fmt(res.energy));
-    panel.resTexts[6].setText(fmt(res.corrosion));
+      if (b.id === 'build') {
+        const allowBuild = !!u.canBuild || /base/i.test(getUnitDisplayName(u)) || u.unitType === 'mobile_base';
+        enabled = enabled && allowBuild;
+      }
 
-// Status icons (uses preloaded textures, see WorldScene.preload)
-const icons = getUnitStatusIcons(unit, scene, 10);
-for (let i = 0; i < panel.statusSlots.length; i++) {
-  const slot = panel.statusSlots[i];
-  const info = icons[i] || null;
+      // Active buttons: only if unit defines abilities list (optional)
+      if (b.id === 'active1') {
+        enabled = enabled && !!(u.abilities?.[0] || u.active1);
+      }
+      if (b.id === 'active2') {
+        enabled = enabled && !!(u.abilities?.[1] || u.active2);
+      }
 
-  if (!info || !scene.textures?.exists?.(info.key)) {
-    slot.icon.visible = false;
-    slot.stacksTxt.visible = false;
-    continue;
-  }
+      b.enabled = enabled;
 
-  slot.icon.setTexture(info.key);
-  slot.icon.setDisplaySize(20, 20);
-  slot.icon.visible = true;
+      // Interactivity
+      if (enabled) {
+        if (!b.hit.input) b.hit.setInteractive({ useHandCursor: true });
+        b.hit.setAlpha(1);
+      } else {
+        if (b.hit.input) b.hit.disableInteractive();
+        b.hit.setAlpha(0.35);
+      }
 
-  const stacks = Number.isFinite(info.stacks) ? info.stacks : 1;
-  if (stacks > 1) {
-    slot.stacksTxt.setText(String(stacks));
-    slot.stacksTxt.visible = true;
-  } else {
-    slot.stacksTxt.visible = false;
-  }
-}
-
-
-    // Action bar states / visibility
-    // Defence active state (if unit.status.defending exists)
-    const defending = !!(unit.status && unit.status.defending);
-    panel.buttons.defence.setActive(defending);
-
-    // Heal / Ambush (toggle hooks can be wired later)
-    panel.buttons.heal.setActive(false);
-    panel.buttons.ambush.setActive(false);
-
-    // Build shown only for mobile base (or any unit with canBuild flag)
-    const canBuild = (String(unit.type || '').toLowerCase().includes('mobile_base')) || !!unit.canBuild;
-    panel.buttons.build.setVisible(canBuild);
-
-    // Switch weapon shown only if >1 weapon
-    const ws = Array.isArray(unit.weapons) ? unit.weapons : [];
-    panel.buttons.switchWeapon.setVisible(ws.length > 1);
-
-    // Turn always visible
-    panel.buttons.turn.setVisible(true);
-
-    // End turn always visible
-    panel.buttons.endTurn.setVisible(true);
-
-    // Dismiss visible for non-enemy (you can change rule)
-    const isEnemy = !!(unit.isEnemy || unit.controller === 'ai');
-    panel.buttons.dismiss.setVisible(!isEnemy);
-
-    // Facing picker
-    const fpOpen = !!scene.unitPanelState.facingPickerOpen;
-    panel.facing.label.setVisible(fpOpen);
-    for (const b of panel.facing.buttons) {
-      b.g.setVisible(fpOpen);
-      b.hit.setVisible(fpOpen);
-      b.t.setVisible(fpOpen);
-      if (fpOpen) b.hit.setInteractive({ useHandCursor: true });
-      else b.hit.disableInteractive();
+      // Icon visibility
+      const key = b.key;
+      const iconOk = !!key && scene.textures?.exists?.(key);
+      b.icon.visible = iconOk;
+      // If no icon, label is still shown.
     }
   };
+
+  // No-op hex inspect hook so WorldSceneHistory doesn't crash if not implemented elsewhere
+  if (typeof scene.openHexInspectPanel !== 'function') {
+    scene.openHexInspectPanel = function openHexInspectPanel() {};
+  }
 }
 
 export default {
