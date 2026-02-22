@@ -69,7 +69,7 @@ import { TICK_PHASE } from '../effects/EffectDefs.js';
 import { ensureUnitCombatFields, canSpendAp, spendAp } from '../units/UnitActions.js';
 
 // ✅ NEW: preload split-out
-import { preloadWorldSceneAssets, STATUS_ICON_KEYS } from './WorldScenePreload.js';
+import { preloadWorldSceneUI, STATUS_ICON_KEYS } from './WorldScenePreload.js';
 
 function unitHasEffect(unit, effectId) {
   const arr = Array.isArray(unit?.effects) ? unit.effects : [];
@@ -433,7 +433,7 @@ export default class WorldScene extends Phaser.Scene {
     // This includes:
     // - unit panel action button icons (assets/ui/unit_panel/buttons/)
     // - status effect icons (assets/ui/unit_panel/statuses/)
-    preloadWorldSceneAssets(this);
+    preloadWorldSceneUI(this);
   }
 
   /**
