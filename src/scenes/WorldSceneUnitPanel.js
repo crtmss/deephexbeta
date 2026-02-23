@@ -260,7 +260,7 @@ export function setupUnitActionPanel(scene) {
   const panelH = 281;
 
   // ✅ 2x smaller than previous 1.25
-  const scale = 0.625;
+  const scale = 0.85;
 
   const margin = 10;
   const originX = margin;
