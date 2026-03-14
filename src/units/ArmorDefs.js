@@ -3,12 +3,10 @@
 // Armor class + armor points rules.
 //
 // Rule: each armor point reduces incoming damage by 5%.
-// Additionally, weapons have effectiveness multipliers against armor classes.
+// Additionally, weapons may have effectiveness multipliers against armor classes.
 //
-// NOTE:
-// - NORMAL was added for the new faction roster. For now it is treated as the
-//   baseline humanoid / light-vehicle armor class between NONE and HEAVY.
-// - Older defs that still use LIGHT / MEDIUM remain fully supported.
+// NORMAL was added for the new roster. It is the default human / infantry armor class
+// used by many of the new units. Legacy LIGHT / MEDIUM / HEAVY remain supported.
 
 export const ARMOR_CLASSES = /** @type {const} */ ({
   NONE: 'NONE',
