@@ -2,50 +2,20 @@
 //
 // Data-driven definitions for ACTIVE and PASSIVE abilities.
 //
-// IMPORTANT DESIGN GOALS
-// - Pure data + small helpers. No Phaser imports.
-// - Scales to 50+ units and many abilities/effects.
-// - Abilities do NOT directly mutate game state here.
-//   They describe targeting + costs + what effects/actions should happen.
-//   The runtime (scene/host) will interpret these defs and produce authoritative events.
-//
-// Conventions (used by UI + host resolver):
-// - Active ability: has `active` block
-// - Passive ability: has `passive` block
-// - `icon` is a UI hint (emoji for now; later you can switch to sprite keys)
-//
-// Targeting:
-// - 'self'       : affects caster only
-// - 'unit'       : select a unit (enemy/ally) within range
-// - 'hex'        : select a hex within range
-// - 'hex_aoe'    : select a center hex; affects an area (radius from params)
-//
-// Action model (future-proof):
-// - `applyUnitEffects`: list of effects to apply to a unit (self or target)
-// - `placeHexEffects` : list of effects to place on a hex (target hex or aoe)
-// Each entry references `effectId` from EffectDefs and carries optional payload.
-//
-// Logging:
-// - Runtime should log: cast begin → validate → targets count → apply/placed → tick/expire.
-//   This file intentionally does NOT console.log.
+// IMPORTANT FOR THIS STEP:
+// - The unit roster is integrated first.
+// - Many of the new active abilities below are safe placeholders so the roster
+//   can be wired into the runtime immediately.
+// - Their final targeting / effects / costs should be refined when the
+//   dedicated active-abilities table is provided.
 
-export const ABILITY_IDS = Object.freeze({
-  // ===== ACTIVE =====
-  FORTIFY: 'fortify',
-  REGEN_FIELD: 'regen_field',
-  OVERCLOCK: 'overclock',
-  SMOKE_SCREEN: 'smoke_screen',
-  MIASMA_BOMB: 'miasma_bomb',
-  FIRE_PATCH: 'fire_patch',
-
-  // ===== PASSIVE =====
-  THICK_PLATING: 'thick_plating',
-  KEEN_SIGHT: 'keen_sight',
-  SERVO_BOOST: 'servo_boost',
-  RANGE_TUNING: 'range_tuning',
-  TOXIN_FILTERS: 'toxin_filters',
-  CORROSION_COATING: 'corrosion_coating',
-});
+const mkId = (s) => String(s || '')
+  .trim()
+  .toLowerCase()
+  .replace(/&/g, ' and ')
+  .replace(/['’.]/g, '')
+  .replace(/[^a-z0-9]+/g, '_')
+  .replace(/^_+|_+$/g, '');
 
 /**
  * @typedef {'self'|'unit'|'hex'|'hex_aoe'} AbilityTarget
@@ -53,11 +23,11 @@ export const ABILITY_IDS = Object.freeze({
 
 /**
  * @typedef {object} AbilityEffectSpec
- * @property {string} effectId         - EffectDefs id
- * @property {'self'|'target'} applyTo - where to apply (for unit effects)
- * @property {number} [duration]       - override duration (turns)
- * @property {number} [stacks]         - override stacks
- * @property {object} [params]         - arbitrary effect params
+ * @property {string} effectId
+ * @property {'self'|'target'} applyTo
+ * @property {number} [duration]
+ * @property {number} [stacks]
+ * @property {object} [params]
  */
 
 /**
@@ -75,16 +45,16 @@ export const ABILITY_IDS = Object.freeze({
  * @property {number} apCost
  * @property {number} rangeMin
  * @property {number} rangeMax
- * @property {number} [cooldown]       - optional cooldown in turns
- * @property {boolean} [requiresLos]   - line of sight (optional, default false)
- * @property {number} [aoeRadius]      - for hex_aoe
+ * @property {number} [cooldown]
+ * @property {boolean} [requiresLos]
+ * @property {number} [aoeRadius]
  * @property {AbilityEffectSpec[]} [applyUnitEffects]
  * @property {HexEffectSpec[]} [placeHexEffects]
  */
 
 /**
  * @typedef {object} PassiveAbilityDef
- * @property {string} effectId         - EffectDefs id to keep active while unit exists
+ * @property {string} effectId
  * @property {object} [params]
  */
 
@@ -94,244 +64,188 @@ export const ABILITY_IDS = Object.freeze({
  * @property {'active'|'passive'} kind
  * @property {string} name
  * @property {string} description
- * @property {string} icon             - UI hint (emoji for now)
+ * @property {string} icon
  * @property {ActiveAbilityDef} [active]
  * @property {PassiveAbilityDef} [passive]
  */
 
+function iconForAbility(name) {
+  const n = String(name || '').toLowerCase();
+  if (/(smoke|veil|cloak|camouflage)/.test(n)) return '🌫️';
+  if (/(grenade|shell|flare|battery|mine)/.test(n)) return '💥';
+  if (/(repair|refit|calibrate|drone|fortify|trance|surge|defensive)/.test(n)) return '🛡️';
+  if (/(mind|disrupt|induce)/.test(n)) return '🧠';
+  if (/(mark|control|ritual)/.test(n)) return '🔮';
+  if (/(flame|fire|toxic|genebroth|larva|serum)/.test(n)) return '🧪';
+  if (/(board|evacuate|load|unload|mounted|dismount)/.test(n)) return '🚚';
+  return '✨';
+}
+
+function inferTarget(name) {
+  const n = String(name || '').toLowerCase();
+  if (/(grenade|shell|flare|mine|trench)/.test(n)) return 'hex';
+  if (/(smoke shell|missile battery)/.test(n)) return 'hex_aoe';
+  if (/(mind control|push|slam|repair|disrupt|mark|bite|tendril|ram|larva|flamethrower)/.test(n)) return 'unit';
+  if (/(board|evacuate|load transport|unload transport|get mounted|dismount)/.test(n)) return 'self';
+  if (/(fortify|invoke veil|induce perception|calibrate|emergency refit|adrenal surge|evolution serum|cloak|battle trance|defensive drone|camouflage)/.test(n)) return 'self';
+  return 'self';
+}
+
+function inferRanges(target, name) {
+  const n = String(name || '').toLowerCase();
+  if (target === 'self') return { rangeMin: 0, rangeMax: 0 };
+  if (target === 'unit') {
+    if (/(mind control|repair|disrupt|mark)/.test(n)) return { rangeMin: 1, rangeMax: 3 };
+    return { rangeMin: 1, rangeMax: 1 };
+  }
+  if (target === 'hex_aoe') return { rangeMin: 1, rangeMax: 3, aoeRadius: 1 };
+  return { rangeMin: 1, rangeMax: 3 };
+}
+
+function createPlaceholderActive(name, overrides = {}) {
+  const id = mkId(name);
+  const target = overrides.target || inferTarget(name);
+  const ranges = inferRanges(target, name);
+  return {
+    id,
+    kind: 'active',
+    name,
+    icon: overrides.icon || iconForAbility(name),
+    description: overrides.description || `Placeholder definition for ${name}. Will be refined from the active-abilities table.`,
+    active: {
+      target,
+      apCost: overrides.apCost ?? 1,
+      cooldown: overrides.cooldown ?? 0,
+      requiresLos: overrides.requiresLos ?? false,
+      ...ranges,
+      ...(overrides.active || {}),
+    },
+  };
+}
+
+function createPassive(id, name, description, icon, effectId, params = {}) {
+  return {
+    id,
+    kind: 'passive',
+    name,
+    icon,
+    description,
+    passive: { effectId, params },
+  };
+}
+
+const abilityNames = [
+  'Induce perception',
+  'Invoke Veil',
+  'Veil Push',
+  'Load transport',
+  'Unload transport',
+  'Fortify',
+  'Shield slam',
+  'Mind Control',
+  'Emergency refit',
+  'Blast grenade',
+  'Flamethrower',
+  'Board',
+  'Evacuate',
+  'Calibrate',
+  'Field Repair',
+  'Smoke shell',
+  'Crippling bite',
+  'Genebroth vial',
+  'Adrenal surge',
+  'Genebroth discharge',
+  'Grasping tendril',
+  'Evolution serum',
+  'Smoke grenade',
+  'Defensive drone',
+  'Disrupt',
+  'Cloak',
+  'Battle ram',
+  'Piercing shot',
+  'Flare',
+  'Incendinary grenade',
+  'Trench',
+  'Lay mine',
+  'Missile battery',
+  'Get mounted',
+  'Camouflage',
+  'Ritual mark',
+  'Battle trance',
+  'Inject larva',
+  'Dismount',
+];
+
+export const ABILITY_IDS = Object.freeze(abilityNames.reduce((acc, name) => {
+  acc[mkId(name).toUpperCase()] = mkId(name);
+  return acc;
+}, {
+  FORTIFY: 'fortify',
+  REGEN_FIELD: 'regen_field',
+  OVERCLOCK: 'overclock',
+  SMOKE_SCREEN: 'smoke_screen',
+  MIASMA_BOMB: 'miasma_bomb',
+  FIRE_PATCH: 'fire_patch',
+  THICK_PLATING: 'thick_plating',
+  KEEN_SIGHT: 'keen_sight',
+  SERVO_BOOST: 'servo_boost',
+  RANGE_TUNING: 'range_tuning',
+  TOXIN_FILTERS: 'toxin_filters',
+  CORROSION_COATING: 'corrosion_coating',
+}));
+
 /** @type {Record<string, AbilityDef>} */
-export const ABILITIES = Object.freeze({
-  /* =========================================================================
-     ACTIVE abilities
-     ========================================================================= */
-
-  [ABILITY_IDS.FORTIFY]: {
-    id: ABILITY_IDS.FORTIFY,
-    kind: 'active',
-    name: 'Fortify',
+const abilities = {
+  fortify: createPlaceholderActive('Fortify', {
     icon: '🛡️',
-    description: 'Spend AP to gain temporary armor for a few turns.',
-    active: {
-      target: 'self',
-      apCost: 1,
-      rangeMin: 0,
-      rangeMax: 0,
-      cooldown: 0,
-      applyUnitEffects: [
-        {
-          effectId: 'FORTIFY_ARMOR', // EffectDefs.js (to be added)
-          applyTo: 'self',
-          duration: 2,
-          stacks: 1,
-          params: { armorBonus: 2 },
-        },
-      ],
-    },
-  },
-
-  [ABILITY_IDS.REGEN_FIELD]: {
-    id: ABILITY_IDS.REGEN_FIELD,
-    kind: 'active',
-    name: 'Regen Field',
+    description: 'Placeholder: defensive self-buff. Final effect data will be added later.',
+  }),
+  regen_field: createPlaceholderActive('Regen Field', {
+    target: 'hex',
     icon: '💠',
-    description: 'Place a regenerative field on a hex for several turns.',
-    active: {
-      target: 'hex',
-      apCost: 1,
-      rangeMin: 1,
-      rangeMax: 3,
-      requiresLos: false,
-      placeHexEffects: [
-        {
-          effectId: 'REGEN_FIELD_HEX', // EffectDefs.js
-          placeOn: 'targetHex',
-          duration: 3,
-          stacks: 1,
-          params: { healPerTurn: 2 },
-        },
-      ],
-    },
-  },
-
-  [ABILITY_IDS.OVERCLOCK]: {
-    id: ABILITY_IDS.OVERCLOCK,
-    kind: 'active',
-    name: 'Overclock',
+    description: 'Legacy placeholder for a regenerative field.',
+  }),
+  overclock: createPlaceholderActive('Overclock', {
     icon: '⚡',
-    description: 'Gain +MP/+AP this turn at a cost (optional heat, later).',
-    active: {
-      target: 'self',
-      apCost: 1,
-      rangeMin: 0,
-      rangeMax: 0,
-      applyUnitEffects: [
-        {
-          effectId: 'OVERCLOCK_STATS', // EffectDefs.js
-          applyTo: 'self',
-          duration: 1,
-          stacks: 1,
-          params: { mpBonus: 1, apBonus: 1 },
-        },
-      ],
-    },
-  },
-
-  [ABILITY_IDS.SMOKE_SCREEN]: {
-    id: ABILITY_IDS.SMOKE_SCREEN,
-    kind: 'active',
-    name: 'Smoke Screen',
+    description: 'Legacy placeholder for a temporary self-overclock.',
+  }),
+  smoke_screen: createPlaceholderActive('Smoke Screen', {
+    target: 'hex_aoe',
     icon: '🌫️',
-    description: 'Place smoke that reduces vision on affected hexes.',
-    active: {
-      target: 'hex_aoe',
-      apCost: 1,
-      rangeMin: 1,
-      rangeMax: 3,
-      aoeRadius: 1,
-      placeHexEffects: [
-        {
-          effectId: 'SMOKE_HEX', // EffectDefs.js
-          placeOn: 'aoe',
-          duration: 2,
-          stacks: 1,
-          params: { visionDebuff: 2 },
-        },
-      ],
-    },
-  },
-
-  [ABILITY_IDS.MIASMA_BOMB]: {
-    id: ABILITY_IDS.MIASMA_BOMB,
-    kind: 'active',
-    name: 'Miasma Bomb',
+    description: 'Legacy placeholder for a smoke area ability.',
+  }),
+  miasma_bomb: createPlaceholderActive('Miasma Bomb', {
+    target: 'hex_aoe',
     icon: '☣️',
-    description: 'Place toxic miasma; units inside take toxin damage over time.',
-    active: {
-      target: 'hex_aoe',
-      apCost: 1,
-      rangeMin: 1,
-      rangeMax: 3,
-      aoeRadius: 1,
-      placeHexEffects: [
-        {
-          effectId: 'MIASMA_HEX', // EffectDefs.js
-          placeOn: 'aoe',
-          duration: 3,
-          stacks: 1,
-          params: { dot: 2, damageType: 'toxin' },
-        },
-      ],
-    },
-  },
-
-  [ABILITY_IDS.FIRE_PATCH]: {
-    id: ABILITY_IDS.FIRE_PATCH,
-    kind: 'active',
-    name: 'Fire Patch',
+    description: 'Legacy placeholder for a toxic area ability.',
+  }),
+  fire_patch: createPlaceholderActive('Fire Patch', {
+    target: 'hex_aoe',
     icon: '🔥',
-    description: 'Ignite hexes; units on fire hex take thermal damage over time.',
-    active: {
-      target: 'hex_aoe',
-      apCost: 1,
-      rangeMin: 1,
-      rangeMax: 3,
-      aoeRadius: 1,
-      placeHexEffects: [
-        {
-          effectId: 'FIRE_HEX', // EffectDefs.js
-          placeOn: 'aoe',
-          duration: 2,
-          stacks: 1,
-          params: { dot: 2, damageType: 'thermal' },
-        },
-      ],
-    },
-  },
+    description: 'Legacy placeholder for a fire area ability.',
+  }),
+  thick_plating: createPassive('thick_plating', 'Thick Plating', 'Permanent bonus armor.', '🧱', 'PASSIVE_THICK_PLATING', { armorBonus: 1 }),
+  keen_sight: createPassive('keen_sight', 'Keen Sight', 'Permanent +vision.', '👁️', 'PASSIVE_KEEN_SIGHT', { visionBonus: 1 }),
+  servo_boost: createPassive('servo_boost', 'Servo Boost', 'Permanent +MP.', '🦾', 'PASSIVE_SERVO_BOOST', { mpBonus: 1 }),
+  range_tuning: createPassive('range_tuning', 'Range Tuning', 'Permanent +weapon range.', '🎯', 'PASSIVE_RANGE_TUNING', { rangeBonus: 1 }),
+  toxin_filters: createPassive('toxin_filters', 'Toxin Filters', 'Reduces toxin damage taken.', '🧪', 'PASSIVE_TOXIN_FILTERS', { toxinTakenPct: -25 }),
+  corrosion_coating: createPassive('corrosion_coating', 'Corrosion Coating', 'Future hook for corrosion on hit.', '🧫', 'PASSIVE_CORROSION_COATING', { corrosionOnHit: true }),
+};
 
-  /* =========================================================================
-     PASSIVE abilities
-     ========================================================================= */
+for (const name of abilityNames) {
+  const id = mkId(name);
+  if (!abilities[id]) abilities[id] = createPlaceholderActive(name);
+}
 
-  [ABILITY_IDS.THICK_PLATING]: {
-    id: ABILITY_IDS.THICK_PLATING,
-    kind: 'passive',
-    name: 'Thick Plating',
-    icon: '🧱',
-    description: 'Permanent bonus armor.',
-    passive: {
-      effectId: 'PASSIVE_THICK_PLATING', // EffectDefs.js
-      params: { armorBonus: 1 },
-    },
-  },
-
-  [ABILITY_IDS.KEEN_SIGHT]: {
-    id: ABILITY_IDS.KEEN_SIGHT,
-    kind: 'passive',
-    name: 'Keen Sight',
-    icon: '👁️',
-    description: 'Permanent +vision.',
-    passive: {
-      effectId: 'PASSIVE_KEEN_SIGHT',
-      params: { visionBonus: 1 },
-    },
-  },
-
-  [ABILITY_IDS.SERVO_BOOST]: {
-    id: ABILITY_IDS.SERVO_BOOST,
-    kind: 'passive',
-    name: 'Servo Boost',
-    icon: '🦾',
-    description: 'Permanent +MP.',
-    passive: {
-      effectId: 'PASSIVE_SERVO_BOOST',
-      params: { mpBonus: 1 },
-    },
-  },
-
-  [ABILITY_IDS.RANGE_TUNING]: {
-    id: ABILITY_IDS.RANGE_TUNING,
-    kind: 'passive',
-    name: 'Range Tuning',
-    icon: '🎯',
-    description: 'Permanent +weapon range.',
-    passive: {
-      effectId: 'PASSIVE_RANGE_TUNING',
-      params: { rangeBonus: 1 },
-    },
-  },
-
-  [ABILITY_IDS.TOXIN_FILTERS]: {
-    id: ABILITY_IDS.TOXIN_FILTERS,
-    kind: 'passive',
-    name: 'Toxin Filters',
-    icon: '🧪',
-    description: 'Reduces toxin damage taken.',
-    passive: {
-      effectId: 'PASSIVE_TOXIN_FILTERS',
-      params: { toxinTakenPct: -25 },
-    },
-  },
-
-  [ABILITY_IDS.CORROSION_COATING]: {
-    id: ABILITY_IDS.CORROSION_COATING,
-    kind: 'passive',
-    name: 'Corrosion Coating',
-    icon: '🧫',
-    description: 'Your attacks apply a small corrosion debuff (future hook).',
-    passive: {
-      effectId: 'PASSIVE_CORROSION_COATING',
-      params: { corrosionOnHit: true },
-    },
-  },
-});
+export const ABILITIES = Object.freeze(abilities);
 
 /**
  * Returns ability definition by id.
- * Falls back to a safe default (Fortify) if unknown.
+ * Falls back to a safe inert self-target placeholder if unknown.
  */
 export function getAbilityDef(id) {
   const key = String(id || '').trim().toLowerCase();
-  return ABILITIES[key] || ABILITIES[ABILITY_IDS.FORTIFY];
+  return ABILITIES[key] || createPlaceholderActive(String(id || 'Unknown ability'));
 }
 
 export function listAbilityIds() {
@@ -348,6 +262,10 @@ export function isPassiveAbility(id) {
   return a?.kind === 'passive';
 }
 
+export function makeAbilityId(name) {
+  return mkId(name);
+}
+
 export default {
   ABILITY_IDS,
   ABILITIES,
@@ -355,4 +273,5 @@ export default {
   listAbilityIds,
   isActiveAbility,
   isPassiveAbility,
+  makeAbilityId,
 };
