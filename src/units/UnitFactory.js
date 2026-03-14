@@ -34,6 +34,7 @@ let _seq = 1;
  *
  * @property {number} hp
  * @property {number} hpMax
+ * @property {string|null} [hpSource]
  *
  * @property {number} armorPoints
  * @property {'NONE'|'LIGHT'|'MEDIUM'|'HEAVY'} armorClass
@@ -108,6 +109,12 @@ export function createUnitState(opts) {
   const groupSize = Number.isFinite(def.groupSize) ? def.groupSize : 1;
   const moraleMax = Number.isFinite(def.moraleMax) ? def.moraleMax : 0;
 
+  const resolvedHpMax = Number.isFinite(opts.hpMaxOverride)
+    ? Number(opts.hpMaxOverride)
+    : (Number.isFinite(def.hpMax)
+      ? Number(def.hpMax)
+      : Number(def?.meta?.variableHp?.defaultHpMax) || 1);
+
   const visionMax = Number.isFinite(def.visionMax)
     ? def.visionMax
     : (Number.isFinite(def.vision) ? def.vision : 4);
@@ -128,8 +135,9 @@ export function createUnitState(opts) {
     level: 1,
 
     // Core stats
-    hpMax: def.hpMax,
-    hp: def.hpMax,
+    hpMax: resolvedHpMax,
+    hp: resolvedHpMax,
+    hpSource: (def?.meta?.variableHp?.source ?? null),
     armorPoints: def.armorPoints,
     armorClass: def.armorClass,
 
@@ -148,7 +156,7 @@ export function createUnitState(opts) {
 
     // Morale
     moraleMax,
-    morale: moraleMax, // currently 0 for all (per your rules)
+    morale: moraleMax,
 
     // Resists
     resists: normalizeResists(def.resists),
@@ -193,17 +201,14 @@ export function applyUnitStateToPhaserUnit(phaserUnit, state) {
   phaserUnit.controller = state.controller;
   phaserUnit.faction = state.faction;
 
-  // Mirror id for systems that look at `unit.id`
   if (!phaserUnit.id) phaserUnit.id = state.id;
 
   phaserUnit.facing = state.facing;
-
-  // Progression
   phaserUnit.level = state.level;
 
-  // Core stats
   phaserUnit.hp = state.hp;
   phaserUnit.maxHp = state.hpMax;
+  phaserUnit.hpSource = state.hpSource ?? null;
   phaserUnit.armorPoints = state.armorPoints;
   phaserUnit.armorClass = state.armorClass;
 
@@ -215,34 +220,25 @@ export function applyUnitStateToPhaserUnit(phaserUnit, state) {
   phaserUnit.vision = state.vision;
   phaserUnit.visionMax = state.visionMax;
 
-  // Squad stats
   phaserUnit.groupSize = state.groupSize;
   phaserUnit.groupAlive = state.groupAlive;
 
-  // Morale
   phaserUnit.moraleMax = state.moraleMax;
   phaserUnit.morale = state.morale;
 
-  // Resists
   phaserUnit.resists = state.resists;
 
-  // Weapons + abilities
   phaserUnit.weapons = state.weapons;
   phaserUnit.activeWeaponIndex = state.activeWeaponIndex;
 
   phaserUnit.activeAbilities = state.activeAbilities;
   phaserUnit.passiveAbilities = state.passiveAbilities;
 
-  // Effects array is managed by EffectEngine; keep it on unit for runtime.
   if (!Array.isArray(phaserUnit.effects)) phaserUnit.effects = state.effects || [];
-
-  // Status list (buff/debuff icons)
   if (!Array.isArray(phaserUnit.statuses)) phaserUnit.statuses = state.statuses || [];
 
-  // Legacy lightweight flags object
   phaserUnit.status = state.status;
 
-  // Legacy compatibility
   phaserUnit.movementPoints = state.mp;
   phaserUnit.maxMovementPoints = state.mpMax;
 }
@@ -260,3 +256,9 @@ export function syncLegacyMovementFields(phaserUnit) {
     phaserUnit.maxMovementPoints = phaserUnit.mpMax;
   }
 }
+
+export default {
+  createUnitState,
+  applyUnitStateToPhaserUnit,
+  syncLegacyMovementFields,
+};
