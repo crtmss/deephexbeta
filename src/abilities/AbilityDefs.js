@@ -2,92 +2,80 @@
 //
 // Data-driven definitions for ACTIVE and PASSIVE abilities.
 //
-// IMPORTANT FOR THIS STEP:
-// - The unit roster is integrated first.
-// - Many of the new active abilities below are safe placeholders so the roster
-//   can be wired into the runtime immediately.
-// - Their final targeting / effects / costs should be refined when the
-//   dedicated active-abilities table is provided.
+// In this stage the project already has the new roster, but the final active-ability
+// spreadsheet has not been integrated yet. To keep the runtime stable, every new
+// ability name from UnitDefs is registered here as a safe placeholder definition.
+//
+// When the dedicated active-abilities table arrives, these placeholder defs can be
+// replaced one by one without changing unit ids or unit references.
 
 const mkId = (s) => String(s || '')
   .trim()
   .toLowerCase()
   .replace(/&/g, ' and ')
-  .replace(/['’.]/g, '')
+  .replace(/["'’.]/g, '')
   .replace(/[^a-z0-9]+/g, '_')
   .replace(/^_+|_+$/g, '');
 
-/**
- * @typedef {'self'|'unit'|'hex'|'hex_aoe'} AbilityTarget
- */
+export const ABILITY_IDS = Object.freeze({
+  FORTIFY: 'fortify',
+  REGEN_FIELD: 'regen_field',
+  OVERCLOCK: 'overclock',
+  SMOKE_SCREEN: 'smoke_screen',
+  MIASMA_BOMB: 'miasma_bomb',
+  FIRE_PATCH: 'fire_patch',
 
-/**
- * @typedef {object} AbilityEffectSpec
- * @property {string} effectId
- * @property {'self'|'target'} applyTo
- * @property {number} [duration]
- * @property {number} [stacks]
- * @property {object} [params]
- */
+  THICK_PLATING: 'thick_plating',
+  KEEN_SIGHT: 'keen_sight',
+  SERVO_BOOST: 'servo_boost',
+  RANGE_TUNING: 'range_tuning',
+  TOXIN_FILTERS: 'toxin_filters',
+  CORROSION_COATING: 'corrosion_coating',
 
-/**
- * @typedef {object} HexEffectSpec
- * @property {string} effectId
- * @property {'targetHex'|'aoe'} placeOn
- * @property {number} [duration]
- * @property {number} [stacks]
- * @property {object} [params]
- */
-
-/**
- * @typedef {object} ActiveAbilityDef
- * @property {AbilityTarget} target
- * @property {number} apCost
- * @property {number} rangeMin
- * @property {number} rangeMax
- * @property {number} [cooldown]
- * @property {boolean} [requiresLos]
- * @property {number} [aoeRadius]
- * @property {AbilityEffectSpec[]} [applyUnitEffects]
- * @property {HexEffectSpec[]} [placeHexEffects]
- */
-
-/**
- * @typedef {object} PassiveAbilityDef
- * @property {string} effectId
- * @property {object} [params]
- */
-
-/**
- * @typedef {object} AbilityDef
- * @property {string} id
- * @property {'active'|'passive'} kind
- * @property {string} name
- * @property {string} description
- * @property {string} icon
- * @property {ActiveAbilityDef} [active]
- * @property {PassiveAbilityDef} [passive]
- */
-
-function iconForAbility(name) {
-  const n = String(name || '').toLowerCase();
-  if (/(smoke|veil|cloak|camouflage)/.test(n)) return '🌫️';
-  if (/(grenade|shell|flare|battery|mine)/.test(n)) return '💥';
-  if (/(repair|refit|calibrate|drone|fortify|trance|surge|defensive)/.test(n)) return '🛡️';
-  if (/(mind|disrupt|induce)/.test(n)) return '🧠';
-  if (/(mark|control|ritual)/.test(n)) return '🔮';
-  if (/(flame|fire|toxic|genebroth|larva|serum)/.test(n)) return '🧪';
-  if (/(board|evacuate|load|unload|mounted|dismount)/.test(n)) return '🚚';
-  return '✨';
-}
+  INDUCE_PERCEPTION: 'induce_perception',
+  INVOKE_VEIL: 'invoke_veil',
+  VEIL_PUSH: 'veil_push',
+  LOAD_TRANSPORT: 'load_transport',
+  UNLOAD_TRANSPORT: 'unload_transport',
+  SHIELD_SLAM: 'shield_slam',
+  MIND_CONTROL: 'mind_control',
+  EMERGENCY_REFIT: 'emergency_refit',
+  BLAST_GRENADE: 'blast_grenade',
+  FLAMETHROWER: 'flamethrower',
+  BOARD: 'board',
+  EVACUATE: 'evacuate',
+  CALIBRATE: 'calibrate',
+  FIELD_REPAIR: 'field_repair',
+  SMOKE_SHELL: 'smoke_shell',
+  CRIPPLING_BITE: 'crippling_bite',
+  GENEBROTH_VIAL: 'genebroth_vial',
+  ADRENAL_SURGE: 'adrenal_surge',
+  GENEBROTH_DISCHARGE: 'genebroth_discharge',
+  GRASPING_TENDRIL: 'grasping_tendril',
+  EVOLUTION_SERUM: 'evolution_serum',
+  SMOKE_GRENADE: 'smoke_grenade',
+  DEFENSIVE_DRONE: 'defensive_drone',
+  DISRUPT: 'disrupt',
+  CLOAK: 'cloak',
+  BATTLE_RAM: 'battle_ram',
+  PIERCING_SHOT: 'piercing_shot',
+  FLARE: 'flare',
+  INCENDINARY_GRENADE: 'incendinary_grenade',
+  TRENCH: 'trench',
+  LAY_MINE: 'lay_mine',
+  MISSILE_BATTERY: 'missile_battery',
+  GET_MOUNTED: 'get_mounted',
+  CAMOUFLAGE: 'camouflage',
+  RITUAL_MARK: 'ritual_mark',
+  BATTLE_TRANCE: 'battle_trance',
+  INJECT_LARVA: 'inject_larva',
+  DISMOUNT: 'dismount',
+});
 
 function inferTarget(name) {
   const n = String(name || '').toLowerCase();
-  if (/(grenade|shell|flare|mine|trench)/.test(n)) return 'hex';
-  if (/(smoke shell|missile battery)/.test(n)) return 'hex_aoe';
-  if (/(mind control|push|slam|repair|disrupt|mark|bite|tendril|ram|larva|flamethrower)/.test(n)) return 'unit';
-  if (/(board|evacuate|load transport|unload transport|get mounted|dismount)/.test(n)) return 'self';
-  if (/(fortify|invoke veil|induce perception|calibrate|emergency refit|adrenal surge|evolution serum|cloak|battle trance|defensive drone|camouflage)/.test(n)) return 'self';
+  if (/(grenade|shell|flare|mine|trench|battery)/.test(n)) return 'hex';
+  if (/(push|slam|control|repair|bite|tendril|ram|larva|flamethrower|disrupt|mark)/.test(n)) return 'unit';
   return 'self';
 }
 
@@ -95,29 +83,40 @@ function inferRanges(target, name) {
   const n = String(name || '').toLowerCase();
   if (target === 'self') return { rangeMin: 0, rangeMax: 0 };
   if (target === 'unit') {
-    if (/(mind control|repair|disrupt|mark)/.test(n)) return { rangeMin: 1, rangeMax: 3 };
+    if (/(mind control|field repair|disrupt|ritual mark)/.test(n)) return { rangeMin: 1, rangeMax: 3 };
     return { rangeMin: 1, rangeMax: 1 };
   }
-  if (target === 'hex_aoe') return { rangeMin: 1, rangeMax: 3, aoeRadius: 1 };
+  if (/(smoke shell|missile battery)/.test(n)) return { rangeMin: 1, rangeMax: 3, aoeRadius: 1 };
   return { rangeMin: 1, rangeMax: 3 };
+}
+
+function iconForAbility(name) {
+  const n = String(name || '').toLowerCase();
+  if (/(smoke|veil|cloak|camouflage)/.test(n)) return '🌫️';
+  if (/(grenade|shell|battery|mine|flare)/.test(n)) return '💥';
+  if (/(repair|refit|drone|fortify|trance|surge|calibrate)/.test(n)) return '🛡️';
+  if (/(mind|induce|disrupt)/.test(n)) return '🧠';
+  if (/(mark|ritual|control)/.test(n)) return '🔮';
+  if (/(toxic|serum|genebroth|larva|flame)/.test(n)) return '🧪';
+  if (/(board|evacuate|load|unload|mounted|dismount)/.test(n)) return '🚚';
+  return '✨';
 }
 
 function createPlaceholderActive(name, overrides = {}) {
   const id = mkId(name);
   const target = overrides.target || inferTarget(name);
-  const ranges = inferRanges(target, name);
   return {
     id,
     kind: 'active',
     name,
+    description: overrides.description || `Placeholder definition for ${name}. Final behavior will be added from the active-abilities table.`,
     icon: overrides.icon || iconForAbility(name),
-    description: overrides.description || `Placeholder definition for ${name}. Will be refined from the active-abilities table.`,
     active: {
       target,
       apCost: overrides.apCost ?? 1,
       cooldown: overrides.cooldown ?? 0,
       requiresLos: overrides.requiresLos ?? false,
-      ...ranges,
+      ...inferRanges(target, name),
       ...(overrides.active || {}),
     },
   };
@@ -128,121 +127,46 @@ function createPassive(id, name, description, icon, effectId, params = {}) {
     id,
     kind: 'passive',
     name,
-    icon,
     description,
+    icon,
     passive: { effectId, params },
   };
 }
 
-const abilityNames = [
-  'Induce perception',
-  'Invoke Veil',
-  'Veil Push',
-  'Load transport',
-  'Unload transport',
-  'Fortify',
-  'Shield slam',
-  'Mind Control',
-  'Emergency refit',
-  'Blast grenade',
-  'Flamethrower',
-  'Board',
-  'Evacuate',
-  'Calibrate',
-  'Field Repair',
-  'Smoke shell',
-  'Crippling bite',
-  'Genebroth vial',
-  'Adrenal surge',
-  'Genebroth discharge',
-  'Grasping tendril',
-  'Evolution serum',
-  'Smoke grenade',
-  'Defensive drone',
-  'Disrupt',
-  'Cloak',
-  'Battle ram',
-  'Piercing shot',
-  'Flare',
-  'Incendinary grenade',
-  'Trench',
-  'Lay mine',
-  'Missile battery',
-  'Get mounted',
-  'Camouflage',
-  'Ritual mark',
-  'Battle trance',
-  'Inject larva',
-  'Dismount',
+const placeholderNames = [
+  'Induce perception', 'Invoke Veil', 'Veil Push', 'Load transport', 'Unload transport',
+  'Shield slam', 'Mind Control', 'Emergency refit', 'Blast grenade', 'Flamethrower',
+  'Board', 'Evacuate', 'Calibrate', 'Field Repair', 'Smoke shell', 'Crippling bite',
+  'Genebroth vial', 'Adrenal surge', 'Genebroth discharge', 'Grasping tendril',
+  'Evolution serum', 'Smoke grenade', 'Defensive drone', 'Disrupt', 'Cloak',
+  'Battle ram', 'Piercing shot', 'Flare', 'Incendinary grenade', 'Trench',
+  'Lay mine', 'Missile battery', 'Get mounted', 'Camouflage', 'Ritual mark',
+  'Battle trance', 'Inject larva', 'Dismount',
 ];
 
-export const ABILITY_IDS = Object.freeze(abilityNames.reduce((acc, name) => {
-  acc[mkId(name).toUpperCase()] = mkId(name);
-  return acc;
-}, {
-  FORTIFY: 'fortify',
-  REGEN_FIELD: 'regen_field',
-  OVERCLOCK: 'overclock',
-  SMOKE_SCREEN: 'smoke_screen',
-  MIASMA_BOMB: 'miasma_bomb',
-  FIRE_PATCH: 'fire_patch',
-  THICK_PLATING: 'thick_plating',
-  KEEN_SIGHT: 'keen_sight',
-  SERVO_BOOST: 'servo_boost',
-  RANGE_TUNING: 'range_tuning',
-  TOXIN_FILTERS: 'toxin_filters',
-  CORROSION_COATING: 'corrosion_coating',
-}));
-
-/** @type {Record<string, AbilityDef>} */
 const abilities = {
-  fortify: createPlaceholderActive('Fortify', {
-    icon: '🛡️',
-    description: 'Placeholder: defensive self-buff. Final effect data will be added later.',
-  }),
-  regen_field: createPlaceholderActive('Regen Field', {
-    target: 'hex',
-    icon: '💠',
-    description: 'Legacy placeholder for a regenerative field.',
-  }),
-  overclock: createPlaceholderActive('Overclock', {
-    icon: '⚡',
-    description: 'Legacy placeholder for a temporary self-overclock.',
-  }),
-  smoke_screen: createPlaceholderActive('Smoke Screen', {
-    target: 'hex_aoe',
-    icon: '🌫️',
-    description: 'Legacy placeholder for a smoke area ability.',
-  }),
-  miasma_bomb: createPlaceholderActive('Miasma Bomb', {
-    target: 'hex_aoe',
-    icon: '☣️',
-    description: 'Legacy placeholder for a toxic area ability.',
-  }),
-  fire_patch: createPlaceholderActive('Fire Patch', {
-    target: 'hex_aoe',
-    icon: '🔥',
-    description: 'Legacy placeholder for a fire area ability.',
-  }),
-  thick_plating: createPassive('thick_plating', 'Thick Plating', 'Permanent bonus armor.', '🧱', 'PASSIVE_THICK_PLATING', { armorBonus: 1 }),
-  keen_sight: createPassive('keen_sight', 'Keen Sight', 'Permanent +vision.', '👁️', 'PASSIVE_KEEN_SIGHT', { visionBonus: 1 }),
-  servo_boost: createPassive('servo_boost', 'Servo Boost', 'Permanent +MP.', '🦾', 'PASSIVE_SERVO_BOOST', { mpBonus: 1 }),
-  range_tuning: createPassive('range_tuning', 'Range Tuning', 'Permanent +weapon range.', '🎯', 'PASSIVE_RANGE_TUNING', { rangeBonus: 1 }),
-  toxin_filters: createPassive('toxin_filters', 'Toxin Filters', 'Reduces toxin damage taken.', '🧪', 'PASSIVE_TOXIN_FILTERS', { toxinTakenPct: -25 }),
-  corrosion_coating: createPassive('corrosion_coating', 'Corrosion Coating', 'Future hook for corrosion on hit.', '🧫', 'PASSIVE_CORROSION_COATING', { corrosionOnHit: true }),
+  [ABILITY_IDS.FORTIFY]: createPlaceholderActive('Fortify', { icon: '🛡️' }),
+  [ABILITY_IDS.REGEN_FIELD]: createPlaceholderActive('Regen Field', { target: 'hex', icon: '💠' }),
+  [ABILITY_IDS.OVERCLOCK]: createPlaceholderActive('Overclock', { icon: '⚡' }),
+  [ABILITY_IDS.SMOKE_SCREEN]: createPlaceholderActive('Smoke Screen', { target: 'hex', icon: '🌫️' }),
+  [ABILITY_IDS.MIASMA_BOMB]: createPlaceholderActive('Miasma Bomb', { target: 'hex', icon: '☣️' }),
+  [ABILITY_IDS.FIRE_PATCH]: createPlaceholderActive('Fire Patch', { target: 'hex', icon: '🔥' }),
+
+  [ABILITY_IDS.THICK_PLATING]: createPassive('thick_plating', 'Thick Plating', 'Permanent bonus armor.', '🧱', 'PASSIVE_THICK_PLATING', { armorBonus: 1 }),
+  [ABILITY_IDS.KEEN_SIGHT]: createPassive('keen_sight', 'Keen Sight', 'Permanent +vision.', '👁️', 'PASSIVE_KEEN_SIGHT', { visionBonus: 1 }),
+  [ABILITY_IDS.SERVO_BOOST]: createPassive('servo_boost', 'Servo Boost', 'Permanent +MP.', '🦾', 'PASSIVE_SERVO_BOOST', { mpBonus: 1 }),
+  [ABILITY_IDS.RANGE_TUNING]: createPassive('range_tuning', 'Range Tuning', 'Permanent +weapon range.', '🎯', 'PASSIVE_RANGE_TUNING', { rangeBonus: 1 }),
+  [ABILITY_IDS.TOXIN_FILTERS]: createPassive('toxin_filters', 'Toxin Filters', 'Reduces toxin damage taken.', '🧪', 'PASSIVE_TOXIN_FILTERS', { toxinTakenPct: -25 }),
+  [ABILITY_IDS.CORROSION_COATING]: createPassive('corrosion_coating', 'Corrosion Coating', 'Future hook for corrosion on hit.', '🧫', 'PASSIVE_CORROSION_COATING', { corrosionOnHit: true }),
 };
 
-for (const name of abilityNames) {
+for (const name of placeholderNames) {
   const id = mkId(name);
   if (!abilities[id]) abilities[id] = createPlaceholderActive(name);
 }
 
 export const ABILITIES = Object.freeze(abilities);
 
-/**
- * Returns ability definition by id.
- * Falls back to a safe inert self-target placeholder if unknown.
- */
 export function getAbilityDef(id) {
   const key = String(id || '').trim().toLowerCase();
   return ABILITIES[key] || createPlaceholderActive(String(id || 'Unknown ability'));
@@ -253,13 +177,11 @@ export function listAbilityIds() {
 }
 
 export function isActiveAbility(id) {
-  const a = getAbilityDef(id);
-  return a?.kind === 'active';
+  return getAbilityDef(id)?.kind === 'active';
 }
 
 export function isPassiveAbility(id) {
-  const a = getAbilityDef(id);
-  return a?.kind === 'passive';
+  return getAbilityDef(id)?.kind === 'passive';
 }
 
 export function makeAbilityId(name) {
