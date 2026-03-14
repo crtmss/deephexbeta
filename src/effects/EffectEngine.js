@@ -1,47 +1,16 @@
 // src/effects/EffectEngine.js
 //
-// Runtime interpreter for EffectDefs.js
-// - No Phaser imports.
-// - Deterministic-friendly: effects produce "events" you can broadcast in multiplayer.
-// - Backward compatible API with your current WorldScene imports.
-//
-// Public API kept compatible:
-//  ensureHexEffectsState, ensureUnitEffectsState,
-//  addUnitEffect, placeHexEffect,
-//  tickUnitEffects, tickHexEffects,
-//  decrementUnitEffectDurations, decrementHexEffectDurations,
-//  cleanupExpiredUnitEffects, cleanupExpiredHexEffects,
-//  ensurePassiveEffects, hexKey
-//
-// Additional new helpers (hooks you should wire):
-//  notifyAbilityUsed(sceneOrCtx, caster, abilityId)
-//  notifyUnitMovedStep(sceneOrCtx, unit)
-//  notifyUnitDied(ctx, unit, sceneLike)
-//  modifyIncomingDamage(attacker, defender, baseDamage, damageType) -> { damage, breakdown }
-//  consumeNextHitHooks(attacker, defender, damageType, ctx) -> { bonusDamage, consumed }
-//
-// IMPORTANT:
-// - This file MUST export computeEffectModifiers because CombatResolver imports it.
-//
-// Notes:
-// - Unit effect instance: { id, defId, kind:'unit', sourceUnitId, sourceFaction, duration, stacks, params }
-// - Hex effect instance: { id, defId, kind:'hex', q,r, ... }
-// - duration <= 0 treated as infinite ONLY if def.baseDuration <= 0
-//
+// Runtime interpreter for EffectDefs.js.
+// Pure logic layer; no Phaser imports.
 
 import {
   getEffectDef,
   EFFECT_KINDS,
   STACKING,
-  TICK_PHASE,
   TICK_ACTIONS,
   MOD_STATS,
   DAMAGE_TYPES,
 } from './EffectDefs.js';
-
-/* =========================================================================
-   Id + helpers
-   ========================================================================= */
 
 let __instCounter = 1;
 function genInstId(prefix = 'inst') {
@@ -67,25 +36,43 @@ function nowTurn(ctx) {
 }
 
 function isInfiniteDef(def) {
-  // Convention: baseDuration <= 0 means infinite
   return !!(def && Number.isFinite(def.baseDuration) && def.baseDuration <= 0);
 }
 
-/* =========================================================================
-   State ensure
-   ========================================================================= */
+function normalizeDamageType(dt) {
+  const key = String(dt || 'physical').toLowerCase();
+  return key === 'corrosive' ? 'corrosion' : key;
+}
+
+function hpMaxValue(unit) {
+  if (Number.isFinite(unit?.maxHp)) return unit.maxHp;
+  if (Number.isFinite(unit?.hpMax)) return unit.hpMax;
+  return Number.isFinite(unit?.hp) ? unit.hp : 0;
+}
+
+function setHpMaxValue(unit, v) {
+  if (!unit) return;
+  if ('maxHp' in unit || Number.isFinite(unit?.maxHp)) unit.maxHp = v;
+  if ('hpMax' in unit || Number.isFinite(unit?.hpMax)) unit.hpMax = v;
+}
+
+function ensureMetaBuckets(unit) {
+  if (!unit || typeof unit !== 'object') return;
+  if (!unit.__effectMeta || typeof unit.__effectMeta !== 'object') {
+    unit.__effectMeta = { tempHpByInst: {} };
+  }
+  if (!unit.status || typeof unit.status !== 'object') unit.status = {};
+}
 
 export function ensureHexEffectsState(lobbyState) {
   if (!lobbyState || typeof lobbyState !== 'object') return;
-  if (!lobbyState.hexEffects || typeof lobbyState.hexEffects !== 'object') {
-    lobbyState.hexEffects = {}; // key "q,r" -> [effectInstances]
-  }
-  if (!lobbyState.__hexEffCounter) lobbyState.__hexEffCounter = 1;
+  if (!lobbyState.hexEffects || typeof lobbyState.hexEffects !== 'object') lobbyState.hexEffects = {};
 }
 
 export function ensureUnitEffectsState(unit) {
   if (!unit || typeof unit !== 'object') return;
   if (!Array.isArray(unit.effects)) unit.effects = [];
+  ensureMetaBuckets(unit);
 }
 
 function ensureInstParams(def, inst) {
@@ -93,10 +80,6 @@ function ensureInstParams(def, inst) {
   const p = (inst && inst.params && typeof inst.params === 'object') ? inst.params : {};
   return { ...base, ...p };
 }
-
-/* =========================================================================
-   Find/remove helpers
-   ========================================================================= */
 
 function findUnitEffectIndex(unit, defId) {
   const arr = safeArr(unit?.effects);
@@ -111,9 +94,45 @@ function removeOneUnitEffectInstance(unit, idx) {
   return unit.effects.splice(idx, 1)[0] || null;
 }
 
-/* =========================================================================
-   Add/apply effects
-   ========================================================================= */
+function applyTempHpBonus(unit, inst, amount) {
+  ensureUnitEffectsState(unit);
+  const bonus = Math.max(0, Math.round(Number(amount) || 0));
+  if (!bonus) return;
+  const id = inst?.id;
+  if (!id) return;
+  if (unit.__effectMeta.tempHpByInst[id]) return;
+  unit.__effectMeta.tempHpByInst[id] = bonus;
+  const max0 = hpMaxValue(unit);
+  setHpMaxValue(unit, max0 + bonus);
+  unit.hp = Math.max(0, (Number(unit.hp) || 0) + bonus);
+}
+
+function removeTempHpBonus(unit, inst) {
+  if (!unit?.__effectMeta?.tempHpByInst) return;
+  const id = inst?.id;
+  if (!id) return;
+  const bonus = Number(unit.__effectMeta.tempHpByInst[id]) || 0;
+  if (!bonus) return;
+  delete unit.__effectMeta.tempHpByInst[id];
+  const max0 = hpMaxValue(unit);
+  const nextMax = Math.max(1, max0 - bonus);
+  setHpMaxValue(unit, nextMax);
+  unit.hp = Math.min(Number(unit.hp) || 0, nextMax);
+}
+
+function applyOnAddHooks(unit, def, inst) {
+  const p = ensureInstParams(def, inst);
+  if (Number.isFinite(p.tempHpBonus) && p.tempHpBonus > 0) {
+    applyTempHpBonus(unit, inst, p.tempHpBonus);
+  }
+}
+
+function applyOnRemoveHooks(unit, def, inst) {
+  const p = ensureInstParams(def, inst);
+  if (Number.isFinite(p.tempHpBonus) && p.tempHpBonus > 0) {
+    removeTempHpBonus(unit, inst);
+  }
+}
 
 export function addUnitEffect(unit, effectId, opts = {}) {
   if (!unit) return { ok: false, reason: 'no_unit' };
@@ -125,21 +144,17 @@ export function addUnitEffect(unit, effectId, opts = {}) {
 
   const duration = (Number.isFinite(opts.duration) ? opts.duration : def.baseDuration);
   const stacks = (Number.isFinite(opts.stacks) ? opts.stacks : 1);
-
   const existingIdx = findUnitEffectIndex(unit, defId);
 
-  // Stacking policy
   if (existingIdx >= 0) {
     const existing = unit.effects[existingIdx];
     if (def.stacking === STACKING.IGNORE) return { ok: true, applied: false, reason: 'ignored' };
-
     if (def.stacking === STACKING.REFRESH) {
       if (Number.isFinite(duration)) existing.duration = duration;
       if (Number.isFinite(opts.stacks)) existing.stacks = clampInt(stacks, 1, def.maxStacks || 99);
       existing.params = ensureInstParams(def, { params: opts.params || existing.params });
       return { ok: true, applied: true, refreshed: true, instance: existing };
     }
-
     if (def.stacking === STACKING.STACK) {
       const maxS = Number.isFinite(def.maxStacks) ? def.maxStacks : 99;
       existing.stacks = clampInt((existing.stacks || 1) + 1, 1, maxS);
@@ -161,6 +176,8 @@ export function addUnitEffect(unit, effectId, opts = {}) {
   };
 
   unit.effects.push(inst);
+  applyOnAddHooks(unit, def, inst);
+  syncUnitStatuses(unit);
   return { ok: true, applied: true, instance: inst };
 }
 
@@ -178,21 +195,18 @@ export function placeHexEffect(lobbyState, q, r, effectId, opts = {}) {
 
   const duration = (Number.isFinite(opts.duration) ? opts.duration : def.baseDuration);
   const stacks = (Number.isFinite(opts.stacks) ? opts.stacks : 1);
-
   const list = lobbyState.hexEffects[key];
   const existingIdx = list.findIndex(e => e && String(e.defId || '') === defId);
 
   if (existingIdx >= 0) {
     const existing = list[existingIdx];
     if (def.stacking === STACKING.IGNORE) return { ok: true, placed: false, reason: 'ignored' };
-
     if (def.stacking === STACKING.REFRESH) {
       existing.duration = duration;
       if (Number.isFinite(opts.stacks)) existing.stacks = clampInt(stacks, 1, def.maxStacks || 99);
       existing.params = ensureInstParams(def, { params: opts.params || existing.params });
       return { ok: true, placed: true, refreshed: true, instance: existing };
     }
-
     if (def.stacking === STACKING.STACK) {
       const maxS = Number.isFinite(def.maxStacks) ? def.maxStacks : 99;
       existing.stacks = clampInt((existing.stacks || 1) + 1, 1, maxS);
@@ -218,73 +232,70 @@ export function placeHexEffect(lobbyState, q, r, effectId, opts = {}) {
   return { ok: true, placed: true, instance: inst };
 }
 
-/* =========================================================================
-   Derived modifiers
-   ========================================================================= */
-
 function collectActiveUnitEffectDefs(unit) {
-  // IMPORTANT FIX:
-  // duration <= 0 is NOT automatically expired; it can represent infinite.
-  // Expiration rules are handled in cleanupExpiredUnitEffects().
   const out = [];
   for (const inst of safeArr(unit?.effects)) {
     if (!inst) continue;
-
     const def = getEffectDef(inst.defId);
     if (!def) continue;
-
     const infinite = isInfiniteDef(def);
     const hasDuration = Number.isFinite(inst.duration);
-
-    // active if:
-    // - infinite def (baseDuration<=0) regardless of inst.duration
-    // - OR finite duration and duration > 0
     if (!infinite && hasDuration && inst.duration <= 0) continue;
-
     out.push({ def, inst });
   }
   return out;
 }
 
 export function getUnitModifierTotals(unit) {
-  // Returns totals usable by combat/ability pipeline (does not mutate unit).
   const totals = {
     armorDelta: 0,
     rangeDelta: 0,
+    visionDelta: 0,
     healingReceivedPct: 0,
     cannotHeal: false,
     cannotUseAbilities: false,
+    cannotUseWeapons: false,
+    invisible: false,
+    revealed: false,
     damageTakenPctByType: {},
     damageTakenFlatByType: {},
     damageDealtPctByType: {},
+    resistDeltaByType: {},
   };
 
   const pairs = collectActiveUnitEffectDefs(unit);
-
   for (const { def, inst } of pairs) {
     const p = ensureInstParams(def, inst);
-
     if (p.cannotHeal) totals.cannotHeal = true;
     if (p.cannotUseAbilities) totals.cannotUseAbilities = true;
+    if (p.cannotUseWeapons) totals.cannotUseWeapons = true;
+    if (p.invisible) totals.invisible = true;
+    if (p.revealed) totals.revealed = true;
 
-    const mods = safeArr(def.modifiers);
-    for (const m of mods) {
+    for (const m of safeArr(def.modifiers)) {
       if (!m || m.op !== 'add') continue;
       const stat = m.stat;
       const val = Number.isFinite(m.value) ? m.value : 0;
-
       if (stat === MOD_STATS.ARMOR) totals.armorDelta += val;
       else if (stat === MOD_STATS.RANGE) totals.rangeDelta += val;
+      else if (stat === MOD_STATS.VISION) totals.visionDelta += val;
       else if (stat === MOD_STATS.HEALING_RECEIVED_PCT) totals.healingReceivedPct += val;
       else if (stat === MOD_STATS.DAMAGE_TAKEN_PCT) {
-        const dt = m.damageType || 'all';
+        const dt = normalizeDamageType(m.damageType || 'all');
         totals.damageTakenPctByType[dt] = (totals.damageTakenPctByType[dt] || 0) + val;
       } else if (stat === MOD_STATS.DAMAGE_TAKEN_FLAT) {
-        const dt = m.damageType || 'all';
+        const dt = normalizeDamageType(m.damageType || 'all');
         totals.damageTakenFlatByType[dt] = (totals.damageTakenFlatByType[dt] || 0) + val;
       } else if (stat === MOD_STATS.DAMAGE_DEALT_PCT) {
-        const dt = m.damageType || 'all';
+        const dt = normalizeDamageType(m.damageType || 'all');
         totals.damageDealtPctByType[dt] = (totals.damageDealtPctByType[dt] || 0) + val;
+      } else if (stat === MOD_STATS.RESIST_ALL) {
+        for (const dt of ['physical', 'thermal', 'toxic', 'cryo', 'radiation', 'energy', 'corrosion']) {
+          totals.resistDeltaByType[dt] = (totals.resistDeltaByType[dt] || 0) + val;
+        }
+      } else if (stat === MOD_STATS.RESIST_BY_TYPE) {
+        const dt = normalizeDamageType(m.damageType || 'all');
+        totals.resistDeltaByType[dt] = (totals.resistDeltaByType[dt] || 0) + val;
       }
     }
   }
@@ -292,260 +303,203 @@ export function getUnitModifierTotals(unit) {
   return totals;
 }
 
-/**
- * ✅ REQUIRED EXPORT FOR CombatResolver.js
- * Provide a simple, stable "stat totals" map that CombatResolver / StatResolver can consume.
- *
- * Returns object keyed by MOD_STATS values where it makes sense.
- * (We keep a conservative set here; extend when needed.)
- */
 export function computeEffectModifiers(unit) {
   const t = getUnitModifierTotals(unit);
-
-  // Normalize to a generic structure. Keep fields predictable.
   return {
     [MOD_STATS.ARMOR]: t.armorDelta || 0,
     [MOD_STATS.RANGE]: t.rangeDelta || 0,
-
-    // Optional (if your MOD_STATS defines these)
-    ...(MOD_STATS.HEALING_RECEIVED_PCT ? { [MOD_STATS.HEALING_RECEIVED_PCT]: t.healingReceivedPct || 0 } : {}),
-
-    // Keep flags too (Combat/Ability pipelines often need these)
+    [MOD_STATS.VISION]: t.visionDelta || 0,
     cannotHeal: !!t.cannotHeal,
     cannotUseAbilities: !!t.cannotUseAbilities,
-
-    // Detailed breakdown by damage type (if CombatResolver wants it later)
+    cannotUseWeapons: !!t.cannotUseWeapons,
+    invisible: !!t.invisible,
+    revealed: !!t.revealed,
+    healingReceivedPct: t.healingReceivedPct || 0,
     damageTakenPctByType: { ...(t.damageTakenPctByType || {}) },
     damageTakenFlatByType: { ...(t.damageTakenFlatByType || {}) },
     damageDealtPctByType: { ...(t.damageDealtPctByType || {}) },
+    resistDeltaByType: { ...(t.resistDeltaByType || {}) },
   };
 }
 
+export function syncUnitStatuses(unit) {
+  if (!unit) return [];
+  ensureUnitEffectsState(unit);
+  const statuses = [];
+  for (const inst of safeArr(unit.effects)) {
+    const def = getEffectDef(inst?.defId);
+    if (!def) continue;
+    const infinite = isInfiniteDef(def);
+    if (!infinite && Number.isFinite(inst.duration) && inst.duration <= 0) continue;
+    statuses.push({
+      id: inst.id,
+      effectId: inst.defId,
+      icon: def.icon || inst.defId,
+      name: def.name || inst.defId,
+      duration: Number.isFinite(inst.duration) ? inst.duration : null,
+      stacks: Number.isFinite(inst.stacks) ? inst.stacks : 1,
+    });
+  }
+  unit.statuses = statuses.slice(0, 10);
+  return unit.statuses;
+}
+
 export function canUnitBeHealed(unit) {
-  const t = getUnitModifierTotals(unit);
-  return !t.cannotHeal;
+  return !getUnitModifierTotals(unit).cannotHeal;
 }
 
 export function canUnitUseAbilities(unit) {
-  const t = getUnitModifierTotals(unit);
-  return !t.cannotUseAbilities;
+  return !getUnitModifierTotals(unit).cannotUseAbilities;
 }
 
-/* =========================================================================
-   Ticking (turnStart/turnEnd)
-   ========================================================================= */
+export function canUnitUseWeapons(unit) {
+  return !getUnitModifierTotals(unit).cannotUseWeapons;
+}
 
 function applyDot(unit, amount, damageType, ctx, inst) {
   const hp = Number.isFinite(unit.hp) ? unit.hp : 0;
   const dmg = Math.max(0, Math.round(Number.isFinite(amount) ? amount : 0));
   unit.hp = Math.max(0, hp - dmg);
-
   return {
-    kind: 'effect_damage',
-    phase: ctx?.phase,
-    turn: nowTurn(ctx),
-    unitId: unit.id ?? unit.unitId ?? null,
-    defId: inst?.defId,
-    amount: dmg,
-    damageType: damageType || null,
-    hpBefore: hp,
-    hpAfter: unit.hp,
+    kind: 'effect_damage', phase: ctx?.phase, turn: nowTurn(ctx), unitId: unit.id ?? unit.unitId ?? null,
+    defId: inst?.defId, amount: dmg, damageType: normalizeDamageType(damageType), hpBefore: hp, hpAfter: unit.hp,
   };
 }
 
 function applyRegen(unit, amount, ctx, inst) {
   const hp = Number.isFinite(unit.hp) ? unit.hp : 0;
-  const maxHp = Number.isFinite(unit.maxHp) ? unit.maxHp : (Number.isFinite(unit.hpMax) ? unit.hpMax : hp);
+  const maxHp = hpMaxValue(unit);
   const heal = Math.max(0, Math.round(Number.isFinite(amount) ? amount : 0));
-
-  // Healing received modifiers
   const totals = getUnitModifierTotals(unit);
   const pct = totals.healingReceivedPct || 0;
   const effHeal = Math.max(0, Math.round(heal * (1 + pct / 100)));
-
-  // cannot heal gate
   if (totals.cannotHeal) {
-    return {
-      kind: 'effect_heal_blocked',
-      phase: ctx?.phase,
-      turn: nowTurn(ctx),
-      unitId: unit.id ?? unit.unitId ?? null,
-      defId: inst?.defId,
-      amount: 0,
-      hpBefore: hp,
-      hpAfter: hp,
-      reason: 'cannotHeal',
-    };
+    return { kind: 'effect_heal_blocked', phase: ctx?.phase, turn: nowTurn(ctx), unitId: unit.id ?? unit.unitId ?? null, defId: inst?.defId, amount: 0, hpBefore: hp, hpAfter: hp, reason: 'cannotHeal' };
   }
-
   unit.hp = Math.min(maxHp, hp + effHeal);
-
-  return {
-    kind: 'effect_heal',
-    phase: ctx?.phase,
-    turn: nowTurn(ctx),
-    unitId: unit.id ?? unit.unitId ?? null,
-    defId: inst?.defId,
-    amount: effHeal,
-    hpBefore: hp,
-    hpAfter: unit.hp,
-  };
+  return { kind: 'effect_heal', phase: ctx?.phase, turn: nowTurn(ctx), unitId: unit.id ?? unit.unitId ?? null, defId: inst?.defId, amount: effHeal, hpBefore: hp, hpAfter: unit.hp };
 }
 
 function applyStatDelta(unit, mpDelta, apDelta, ctx, inst) {
   const mp0 = Number.isFinite(unit.mp) ? unit.mp : (Number.isFinite(unit.movementPoints) ? unit.movementPoints : 0);
   const ap0 = Number.isFinite(unit.ap) ? unit.ap : 0;
-
   const mp1 = Math.max(0, mp0 + (Number.isFinite(mpDelta) ? mpDelta : 0));
   const ap1 = Math.max(0, ap0 + (Number.isFinite(apDelta) ? apDelta : 0));
-
   unit.mp = mp1;
   if (Number.isFinite(unit.movementPoints)) unit.movementPoints = mp1;
   unit.ap = ap1;
+  return { kind: 'effect_stat_delta', phase: ctx?.phase, turn: nowTurn(ctx), unitId: unit.id ?? unit.unitId ?? null, defId: inst?.defId, mpBefore: mp0, mpAfter: mp1, apBefore: ap0, apAfter: ap1 };
+}
 
-  return {
-    kind: 'effect_stat_delta',
-    phase: ctx?.phase,
-    turn: nowTurn(ctx),
-    unitId: unit.id ?? unit.unitId ?? null,
-    defId: inst?.defId,
-    mpBefore: mp0,
-    mpAfter: mp1,
-    apBefore: ap0,
-    apAfter: ap1,
-  };
+function transformUnitInPlace(unit, targetType, opts = {}) {
+  if (!unit || !targetType) return null;
+  const hpBefore = Number(unit.hp) || 0;
+  unit.unitType = targetType;
+  unit.type = targetType;
+  if (opts.copyHpToMax) {
+    setHpMaxValue(unit, Math.max(1, hpBefore));
+    unit.hp = Math.max(1, hpBefore);
+  }
+  unit.__pendingTransform = { targetType, hpBefore };
+  return { unitId: unit.id ?? unit.unitId ?? null, toType: targetType, hp: unit.hp, hpMax: hpMaxValue(unit) };
 }
 
 export function tickUnitEffects(unit, phase, ctx = {}) {
   if (!unit) return [];
   ensureUnitEffectsState(unit);
-
   const events = [];
   const pairs = collectActiveUnitEffectDefs(unit);
-
   const runCtx = { ...ctx, phase };
 
   for (const { def, inst } of pairs) {
-    const ticks = safeArr(def.ticks);
-    for (const t of ticks) {
-      if (!t || t.phase !== phase) continue;
+    const p = ensureInstParams(def, inst);
 
-      if (t.type === TICK_ACTIONS.DOT) {
-        events.push(applyDot(unit, t.amount, t.damageType, runCtx, inst));
-      } else if (t.type === TICK_ACTIONS.REGEN) {
-        events.push(applyRegen(unit, t.amount, runCtx, inst));
-      } else if (t.type === TICK_ACTIONS.STAT_DELTA) {
-        events.push(applyStatDelta(unit, t.mpDelta, t.apDelta, runCtx, inst));
-      }
+    if (phase === 'turnStart' && p.transformAtTurnStart?.unitType) {
+      const tr = transformUnitInPlace(unit, p.transformAtTurnStart.unitType, { copyHpToMax: !!p.transformAtTurnStart.copyHpToMax });
+      if (tr) events.push({ kind: 'effect_transform', phase, turn: nowTurn(ctx), defId: inst.defId, ...tr });
+      inst.duration = 0;
+      continue;
+    }
+
+    for (const t of safeArr(def.ticks)) {
+      if (!t || t.phase !== phase) continue;
+      if (t.type === TICK_ACTIONS.DOT) events.push(applyDot(unit, t.amount, t.damageType, runCtx, inst));
+      else if (t.type === TICK_ACTIONS.REGEN) events.push(applyRegen(unit, t.amount, runCtx, inst));
+      else if (t.type === TICK_ACTIONS.STAT_DELTA) events.push(applyStatDelta(unit, t.mpDelta, t.apDelta, runCtx, inst));
     }
   }
 
+  syncUnitStatuses(unit);
   return events;
 }
 
 export function tickHexEffects(lobbyState, allUnits, phase, ctx = {}) {
-  // This project currently uses unit statuses; hex effects are still supported.
   if (!lobbyState) return [];
   ensureHexEffectsState(lobbyState);
-
   const events = [];
   const runCtx = { ...ctx, phase };
-
   const units = safeArr(allUnits);
 
   for (const key of Object.keys(lobbyState.hexEffects || {})) {
     const list = safeArr(lobbyState.hexEffects[key]);
     if (!list.length) continue;
-
-    // parse key q,r
     const [qs, rs] = String(key).split(',');
     const q = Number(qs);
     const r = Number(rs);
 
     for (const inst of list) {
-      if (!inst) continue;
-      const def = getEffectDef(inst.defId);
+      const def = getEffectDef(inst?.defId);
       if (!def) continue;
-
-      const ticks = safeArr(def.ticks);
-      for (const t of ticks) {
+      for (const t of safeArr(def.ticks)) {
         if (!t || t.phase !== phase) continue;
-
-        const affectsAll = (t.affectsAllOnHex !== false);
-
-        if (t.type === TICK_ACTIONS.DOT || t.type === TICK_ACTIONS.REGEN) {
-          const targets = affectsAll
-            ? units.filter(u => u && u.q === q && u.r === r && !u.isDead)
-            : [];
-
-          for (const u of targets) {
-            ensureUnitEffectsState(u);
-            if (t.type === TICK_ACTIONS.DOT) {
-              events.push(applyDot(u, t.amount, t.damageType, runCtx, inst));
-            } else {
-              events.push(applyRegen(u, t.amount, runCtx, inst));
-            }
-          }
+        const targets = units.filter(u => u && u.q === q && u.r === r && !u.isDead);
+        for (const u of targets) {
+          ensureUnitEffectsState(u);
+          if (t.type === TICK_ACTIONS.DOT) events.push(applyDot(u, t.amount, t.damageType, runCtx, inst));
+          else if (t.type === TICK_ACTIONS.REGEN) events.push(applyRegen(u, t.amount, runCtx, inst));
         }
       }
     }
   }
-
   return events;
 }
 
-/* =========================================================================
-   Duration decrement + cleanup
-   ========================================================================= */
-
 export function decrementUnitEffectDurations(unit) {
   if (!unit || !Array.isArray(unit.effects)) return;
-
   for (const inst of unit.effects) {
-    if (!inst) continue;
-
-    const def = getEffectDef(inst.defId);
-    const infinite = isInfiniteDef(def);
-
-    // Infinite never decrements
-    if (infinite) continue;
-
-    if (!Number.isFinite(inst.duration)) continue;
+    const def = getEffectDef(inst?.defId);
+    if (isInfiniteDef(def)) continue;
+    if (!Number.isFinite(inst?.duration)) continue;
     if (inst.duration <= 0) continue;
-    inst.duration = inst.duration - 1;
+    inst.duration -= 1;
   }
 }
 
 export function cleanupExpiredUnitEffects(unit) {
   if (!unit || !Array.isArray(unit.effects)) return;
-  unit.effects = unit.effects.filter(inst => {
-    if (!inst) return false;
-
+  const kept = [];
+  for (const inst of unit.effects) {
+    if (!inst) continue;
     const def = getEffectDef(inst.defId);
     const infinite = isInfiniteDef(def);
-    if (infinite) return true;
-
-    if (!Number.isFinite(inst.duration)) return true;
-    return inst.duration > 0;
-  });
+    const keep = infinite || !Number.isFinite(inst.duration) || inst.duration > 0;
+    if (keep) kept.push(inst);
+    else applyOnRemoveHooks(unit, def, inst);
+  }
+  unit.effects = kept;
+  syncUnitStatuses(unit);
 }
 
 export function decrementHexEffectDurations(lobbyState) {
   if (!lobbyState) return;
   ensureHexEffectsState(lobbyState);
-
   for (const key of Object.keys(lobbyState.hexEffects || {})) {
-    const list = safeArr(lobbyState.hexEffects[key]);
-    for (const inst of list) {
-      if (!inst) continue;
-
-      const def = getEffectDef(inst.defId);
-      const infinite = isInfiniteDef(def);
-      if (infinite) continue;
-
-      if (!Number.isFinite(inst.duration)) continue;
+    for (const inst of safeArr(lobbyState.hexEffects[key])) {
+      const def = getEffectDef(inst?.defId);
+      if (isInfiniteDef(def)) continue;
+      if (!Number.isFinite(inst?.duration)) continue;
       if (inst.duration <= 0) continue;
-      inst.duration = inst.duration - 1;
+      inst.duration -= 1;
     }
   }
 }
@@ -553,218 +507,153 @@ export function decrementHexEffectDurations(lobbyState) {
 export function cleanupExpiredHexEffects(lobbyState) {
   if (!lobbyState) return;
   ensureHexEffectsState(lobbyState);
-
   for (const key of Object.keys(lobbyState.hexEffects || {})) {
-    const list = safeArr(lobbyState.hexEffects[key]);
-    const kept = list.filter(inst => {
-      if (!inst) return false;
-
-      const def = getEffectDef(inst.defId);
-      const infinite = isInfiniteDef(def);
-      if (infinite) return true;
-
-      if (!Number.isFinite(inst.duration)) return true;
-      return inst.duration > 0;
+    const kept = safeArr(lobbyState.hexEffects[key]).filter(inst => {
+      const def = getEffectDef(inst?.defId);
+      return isInfiniteDef(def) || !Number.isFinite(inst?.duration) || inst.duration > 0;
     });
-    lobbyState.hexEffects[key] = kept;
-    if (!kept.length) delete lobbyState.hexEffects[key];
+    if (kept.length) lobbyState.hexEffects[key] = kept;
+    else delete lobbyState.hexEffects[key];
   }
 }
-
-/* =========================================================================
-   Passive abilities -> effects (compat)
-   ========================================================================= */
 
 export function ensurePassiveEffects(unit, getAbilityDefFn) {
   if (!unit) return;
   ensureUnitEffectsState(unit);
-
-  // Convention in your code: unit.passives = ['someAbilityId', ...]
-  const passives = Array.isArray(unit.passives) ? unit.passives : [];
+  const passives = Array.isArray(unit.passives) ? unit.passives : (Array.isArray(unit.passiveAbilities) ? unit.passiveAbilities : []);
   if (!passives.length) return;
-
   for (const abilId of passives) {
     const a = (typeof getAbilityDefFn === 'function') ? getAbilityDefFn(abilId) : null;
     if (!a || a.kind !== 'passive') continue;
-
-    // Allow passive to define effect ids to apply
-    const effs = []
-      .concat(Array.isArray(a.passive?.applyEffects) ? a.passive.applyEffects : [])
-      .concat(a.passive?.effectId ? [a.passive.effectId] : []);
-
-    for (const eId of effs) {
-      if (!eId) continue;
-      // baseDuration <=0 => infinite (handled by engine)
-      addUnitEffect(unit, eId, { duration: 0, stacks: 1 });
-    }
+    const effs = [].concat(Array.isArray(a.passive?.applyEffects) ? a.passive.applyEffects : []).concat(a.passive?.effectId ? [a.passive.effectId] : []);
+    for (const eId of effs) addUnitEffect(unit, eId, { duration: 0, stacks: 1 });
   }
 }
-
-/* =========================================================================
-   Hook notifications (wire from WorldScene)
-   ========================================================================= */
 
 export function notifyAbilityUsed(ctx, caster, abilityId) {
   if (!caster) return [];
   ensureUnitEffectsState(caster);
-
   const events = [];
-  const pairs = collectActiveUnitEffectDefs(caster);
-
-  for (const { def, inst } of pairs) {
+  for (const { def, inst } of collectActiveUnitEffectDefs(caster)) {
     const p = ensureInstParams(def, inst);
     const hook = p.onAbilityUse;
-    if (!hook) continue;
-
-    if (hook.type === 'damage') {
-      events.push(applyDot(caster, hook.amount, hook.damageType, { ...ctx, phase: 'abilityUse' }, inst));
-    }
+    if (hook?.type === 'damage') events.push(applyDot(caster, hook.amount, hook.damageType, { ...ctx, phase: 'abilityUse' }, inst));
   }
-
   return events;
 }
 
 export function notifyUnitMovedStep(ctx, unit) {
   if (!unit) return [];
   ensureUnitEffectsState(unit);
-
   const events = [];
-  const pairs = collectActiveUnitEffectDefs(unit);
-
-  for (const { def, inst } of pairs) {
+  for (let i = unit.effects.length - 1; i >= 0; i--) {
+    const inst = unit.effects[i];
+    const def = getEffectDef(inst?.defId);
+    if (!def) continue;
     const p = ensureInstParams(def, inst);
     const hook = p.onMoveStep;
-    if (!hook) continue;
-
-    if (hook.type === 'damage') {
-      events.push(applyDot(unit, hook.amount, hook.damageType, { ...ctx, phase: 'moveStep' }, inst));
+    if (hook?.type === 'damage') events.push(applyDot(unit, hook.amount, hook.damageType, { ...ctx, phase: 'moveStep' }, inst));
+    if (p.breakOnMove || p.removeIfMoved) {
+      applyOnRemoveHooks(unit, def, inst);
+      removeOneUnitEffectInstance(unit, i);
+      events.push({ kind: 'effect_removed', reason: 'move', unitId: unit.id ?? unit.unitId ?? null, defId: inst.defId });
     }
   }
-
+  syncUnitStatuses(unit);
   return events;
 }
 
 export function notifyUnitDied(ctx, unit, sceneLike = null) {
-  // This is pure data; applying adjacent effects requires ability to find neighbors.
-  // If you pass sceneLike with getHexesInRadius + getUnitAtHex or a resolver, it will apply.
   if (!unit) return { events: [], applied: [] };
   ensureUnitEffectsState(unit);
-
   const events = [];
   const applied = [];
 
-  const pairs = collectActiveUnitEffectDefs(unit);
-  for (const { def, inst } of pairs) {
+  const getNeighbors = sceneLike?.getHexesInRadius
+    ? (q, r, radius = 1) => sceneLike.getHexesInRadius(q, r, radius).filter(h => !(h.q === q && h.r === r))
+    : null;
+  const getUnitAt = sceneLike?.getUnitAtHex
+    ? (q, r) => sceneLike.getUnitAtHex(q, r)
+    : null;
+
+  for (const { def, inst } of collectActiveUnitEffectDefs(unit)) {
     const p = ensureInstParams(def, inst);
-    const spec = p.onDeathApplyAdjacent;
-    if (!Array.isArray(spec) || !spec.length) continue;
 
-    // Need a resolver to find neighbors
-    const getNeighbors = sceneLike?.getHexesInRadius
-      ? (q, r) => sceneLike.getHexesInRadius(q, r, 1).filter(h => !(h.q === q && h.r === r))
-      : null;
-
-    const getUnitAt = sceneLike?.getUnitAtHex
-      ? (q, r) => sceneLike.getUnitAtHex(q, r)
-      : null;
-
-    if (!getNeighbors || !getUnitAt) continue;
-
-    const neigh = getNeighbors(unit.q, unit.r);
-    for (const h of neigh) {
-      const u2 = getUnitAt(h.q, h.r);
-      if (!u2 || u2.isDead) continue;
-      ensureUnitEffectsState(u2);
-
-      for (const s of spec) {
-        if (!s || !s.effectId) continue;
-        const res = addUnitEffect(u2, s.effectId, {
-          duration: s.duration,
-          stacks: s.stacks,
-          sourceUnitId: unit.id,
-          sourceFaction: unit.faction,
-        });
-        if (res?.ok && res?.applied) applied.push({ to: u2.id ?? u2.unitId, effectId: s.effectId });
+    if (Array.isArray(p.onDeathApplyAdjacent) && getNeighbors && getUnitAt) {
+      const neigh = getNeighbors(unit.q, unit.r, Number(p.onDeathRadius) || 1);
+      for (const h of neigh) {
+        const u2 = getUnitAt(h.q, h.r);
+        if (!u2 || u2.isDead) continue;
+        for (const s of p.onDeathApplyAdjacent) {
+          const res = addUnitEffect(u2, s.effectId, { duration: s.duration, stacks: s.stacks, sourceUnitId: unit.id, sourceFaction: unit.faction });
+          if (res?.ok && res?.applied) applied.push({ to: u2.id ?? u2.unitId, effectId: s.effectId });
+        }
       }
     }
 
-    events.push({
-      kind: 'effect_on_death',
-      turn: nowTurn(ctx),
-      unitId: unit.id ?? unit.unitId ?? null,
-      defId: inst.defId,
-      applied,
-    });
+    const allyBurst = p.onDeathAllyBurst;
+    if (allyBurst && getNeighbors && getUnitAt) {
+      const neigh = getNeighbors(unit.q, unit.r, Number(allyBurst.radius) || 1);
+      for (const h of neigh) {
+        const u2 = getUnitAt(h.q, h.r);
+        if (!u2 || u2.isDead) continue;
+        if (allyBurst.faction && String(u2.faction) !== String(allyBurst.faction)) continue;
+        const hp0 = Number(u2.hp) || 0;
+        const maxHp = hpMaxValue(u2);
+        const heal = Math.max(0, Number(allyBurst.heal) || 0);
+        const mp = Math.max(0, Number(allyBurst.mp) || 0);
+        u2.hp = Math.min(maxHp, hp0 + heal);
+        if (Number.isFinite(u2.mp)) u2.mp += mp;
+        if (Number.isFinite(u2.movementPoints)) u2.movementPoints = u2.mp;
+        applied.push({ to: u2.id ?? u2.unitId, kind: 'allyBurst', heal, mp });
+      }
+    }
+
+    if (p.onDeathSpawnUnit) {
+      events.push({ kind: 'effect_spawn_unit', turn: nowTurn(ctx), unitId: unit.id ?? unit.unitId ?? null, defId: inst.defId, q: unit.q, r: unit.r, spawn: { ...p.onDeathSpawnUnit } });
+    }
   }
 
   return { events, applied };
 }
 
-/* =========================================================================
-   Combat-related helpers
-   ========================================================================= */
-
 function pctToMult(pct) {
-  const p = Number.isFinite(pct) ? pct : 0;
-  return 1 + p / 100;
+  return 1 + (Number.isFinite(pct) ? pct : 0) / 100;
 }
 
 export function modifyIncomingDamage(attacker, defender, baseDamage, damageType) {
-  const dt = String(damageType || 'physical');
+  const dt = normalizeDamageType(damageType);
   const dmg0 = Math.max(0, Math.round(Number.isFinite(baseDamage) ? baseDamage : 0));
-
   const t = getUnitModifierTotals(defender);
-  const pct =
-    (t.damageTakenPctByType?.[dt] || 0) +
-    (t.damageTakenPctByType?.all || 0);
-
-  const flat =
-    (t.damageTakenFlatByType?.[dt] || 0) +
-    (t.damageTakenFlatByType?.all || 0);
-
+  const pct = (t.damageTakenPctByType?.[dt] || 0) + (t.damageTakenPctByType?.all || 0);
+  const flat = (t.damageTakenFlatByType?.[dt] || 0) + (t.damageTakenFlatByType?.all || 0);
   const afterPct = Math.round(dmg0 * pctToMult(pct));
   const dmg = Math.max(0, afterPct + flat);
-
-  return {
-    damage: dmg,
-    breakdown: { base: dmg0, pct, flat, afterPct },
-  };
+  return { damage: dmg, breakdown: { base: dmg0, pct, flat, afterPct } };
 }
 
 export function consumeNextHitHooks(attacker, defender, damageType, ctx = {}) {
-  // "Next hit bonus" is stored on DEFENDER (CryoShatter).
   if (!defender) return { bonusDamage: 0, consumed: false };
-
   ensureUnitEffectsState(defender);
-
   let bonus = 0;
   let consumed = false;
-
+  const dt = normalizeDamageType(damageType || DAMAGE_TYPES.PHYSICAL);
   for (let i = 0; i < defender.effects.length; i++) {
     const inst = defender.effects[i];
-    if (!inst) continue;
-    const def = getEffectDef(inst.defId);
+    const def = getEffectDef(inst?.defId);
     if (!def) continue;
-    const p = ensureInstParams(def, inst);
-    const hook = p.nextHitBonus;
+    const hook = ensureInstParams(def, inst).nextHitBonus;
     if (!hook) continue;
-
-    // Only apply if hook.damageType matches incoming damageType
-    const dt = String(damageType || DAMAGE_TYPES.PHYSICAL);
-    if (hook.damageType && String(hook.damageType) !== dt) continue;
-
-    const add = Math.max(0, Math.round(Number.isFinite(hook.amount) ? hook.amount : 0));
-    bonus += add;
-
+    if (hook.damageType && normalizeDamageType(hook.damageType) !== dt) continue;
+    bonus += Math.max(0, Math.round(Number(hook.amount) || 0));
     if (hook.consume) {
+      applyOnRemoveHooks(defender, def, inst);
       removeOneUnitEffectInstance(defender, i);
       consumed = true;
     }
-
-    // only one "next hit" hook should fire
     break;
   }
-
+  syncUnitStatuses(defender);
   return { bonusDamage: bonus, consumed };
 }
 
@@ -781,14 +670,12 @@ export default {
   cleanupExpiredHexEffects,
   ensurePassiveEffects,
   hexKey,
-
-  // required by CombatResolver imports
   computeEffectModifiers,
-
-  // new helpers
   getUnitModifierTotals,
+  syncUnitStatuses,
   canUnitBeHealed,
   canUnitUseAbilities,
+  canUnitUseWeapons,
   notifyAbilityUsed,
   notifyUnitMovedStep,
   notifyUnitDied,
