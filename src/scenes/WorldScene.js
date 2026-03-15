@@ -51,6 +51,8 @@ import { generateRuinLoreForTile } from './LoreGeneration.js';
 
 // Abilities + Effects runtime (data-driven)
 import { getAbilityDef } from '../abilities/AbilityDefs.js';
+import { resolveDirectDamage } from '../units/CombatResolver.js';
+import { getEffectDef, EFFECT_IDS } from '../effects/EffectDefs.js';
 import {
   ensureHexEffectsState,
   ensureUnitEffectsState,
@@ -591,64 +593,154 @@ export default class WorldScene extends Phaser.Scene {
     ensureUnitCombatFields(caster);
     ensureUnitEffectsState(caster);
 
-    // STATUS HOOK: Shock blocks active ability use
-    // (Effect id should match your EffectDefs; we accept both exact and icon-key forms.)
-    if (unitHasEffect(caster, 'EnergyShock') || unitHasEffect(caster, 'ENERGY_SHOCK')) {
+    if (unitHasEffect(caster, EFFECT_IDS.EnergyShock) || unitHasEffect(caster, 'ENERGY_SHOCK')) {
       this.traceAbility('fail:shocked', { abilityId, casterId: caster?.id });
       return { ok: false, reason: 'shocked' };
     }
 
     const apCost = Number.isFinite(a.active?.apCost) ? a.active.apCost : 1;
+    const mpCost = Number.isFinite(a.active?.mpCost) ? a.active.mpCost : 0;
     if (!canSpendAp(caster, apCost)) {
       this.traceAbility('fail:no_ap', { abilityId, casterId: caster?.id, ap: caster?.ap, apCost });
       return { ok: false, reason: 'no_ap' };
     }
+    if ((Number(caster.mp) || 0) < mpCost) {
+      this.traceAbility('fail:no_mp', { abilityId, casterId: caster?.id, mp: caster?.mp, mpCost });
+      return { ok: false, reason: 'no_mp' };
+    }
 
-    // Target resolution (minimal, no LoS for now)
     const resolved = this.resolveAbilityTarget(a, caster, target);
     if (!resolved.ok) {
       this.traceAbility('fail:bad_target', { abilityId, casterId: caster?.id, ...resolved });
       return resolved;
     }
 
-    // Spend AP
+    if (Array.isArray(a.active?.allowedTargetArmorClasses) && a.active.allowedTargetArmorClasses.length && resolved.targetUnit) {
+      if (!a.active.allowedTargetArmorClasses.includes(String(resolved.targetUnit.armorClass || '').toUpperCase())) {
+        return { ok: false, reason: 'bad_target_armor' };
+      }
+    }
+
     spendAp(caster, apCost);
+    if (mpCost) {
+      caster.mp = Math.max(0, (Number(caster.mp) || 0) - mpCost);
+      if (Number.isFinite(caster.movementPoints)) caster.movementPoints = caster.mp;
+    }
 
-    // STATUS HOOK: Volatile Ignition — taking thermal damage when using an ability
-    // Table: "If unit uses an ability, it take Thermal damage of 4"
-    if (unitHasEffect(caster, 'ThermalVolatileIgnition') || unitHasEffect(caster, 'THERMAL_VOLATILE_IGNITION')) {
+    if (unitHasEffect(caster, EFFECT_IDS.ThermalVolatileIgnition) || unitHasEffect(caster, 'THERMAL_VOLATILE_IGNITION')) {
       const before = Number.isFinite(caster.hp) ? caster.hp : 0;
-      const dmg = 4;
-      caster.hp = Math.max(0, before - dmg);
-      this.traceAbility('status:volatile_ignition', { casterId: caster?.id, hpBefore: before, hpAfter: caster.hp, dmg });
+      caster.hp = Math.max(0, before - 4);
+      this.traceAbility('status:volatile_ignition', { casterId: caster?.id, hpBefore: before, hpAfter: caster.hp, dmg: 4 });
     }
 
-    // Apply unit effects
     const applied = [];
-    const unitSpecs = Array.isArray(a.active?.applyUnitEffects) ? a.active.applyUnitEffects : [];
-    for (const spec of unitSpecs) {
-      const dest = (spec.applyTo === 'self') ? caster : resolved.targetUnit;
-      if (!dest) continue;
-      ensureUnitEffectsState(dest);
+    const placed = [];
+    const removedHex = [];
+    const healed = [];
+    const damaged = [];
+    const specials = [];
 
-      addUnitEffect(dest, spec.effectId, {
-        duration: spec.duration,
-        stacks: spec.stacks,
-        params: spec.params,
-        sourceUnitId: caster.id,
-        sourceFaction: caster.faction,
-      });
-      applied.push({ to: dest.id, effectId: spec.effectId });
+    const active = a.active || {};
+    const targetHex = resolved.targetHex || { q: caster.q, r: caster.r };
+    const targetUnit = resolved.targetUnit || null;
+
+    const unitsInRadius = (centerQ, centerR, radius = 0) => {
+      const hs = this.getHexesInRadius(centerQ, centerR, radius);
+      const out = [];
+      for (const h of hs) {
+        const u = this.getUnitAtHex ? this.getUnitAtHex(h.q, h.r) : getUnitAtHex(this, h.q, h.r);
+        if (u && !u.isDead) out.push(u);
+      }
+      return out;
+    };
+
+    const applyHeal = (unit, amount) => {
+      if (!unit || !amount) return;
+      ensureUnitCombatFields(unit);
+      const hp0 = Number(unit.hp) || 0;
+      const maxHp = Number(unit.maxHp) || hp0;
+      unit.hp = Math.min(maxHp, hp0 + amount);
+      healed.push({ unitId: unit.id, amount: unit.hp - hp0 });
+    };
+
+    const applyDamageMap = (unit, damageMap) => {
+      if (!unit || !damageMap) return;
+      ensureUnitCombatFields(unit);
+      const hp0 = Number(unit.hp) || 0;
+      const res = resolveDirectDamage(caster, unit, damageMap);
+      const dmg = Math.max(0, Number(res.finalDamage) || 0);
+      unit.hp = Math.max(0, hp0 - dmg);
+      damaged.push({ unitId: unit.id, amount: dmg, hpAfter: unit.hp, channels: res.breakdown?.channels || {} });
+      if (unit.hp <= 0) unit.isDead = true;
+    };
+
+    if (active.heal?.amount) {
+      const healTarget = active.heal.applyTo === 'self' ? caster : targetUnit;
+      applyHeal(healTarget, Number(active.heal.amount) || 0);
     }
 
-    // Place hex effects
-    const placed = [];
-    const hexSpecs = Array.isArray(a.active?.placeHexEffects) ? a.active.placeHexEffects : [];
-    for (const spec of hexSpecs) {
-      const centers = (spec.placeOn === 'aoe' && Number.isFinite(a.active?.aoeRadius))
-        ? this.getHexesInRadius(resolved.targetHex.q, resolved.targetHex.r, a.active.aoeRadius)
-        : [resolved.targetHex];
+    if (active.selfMpDelta) {
+      caster.mp = Math.max(0, (Number(caster.mp) || 0) + Number(active.selfMpDelta || 0));
+      if (Number.isFinite(caster.movementPoints)) caster.movementPoints = caster.mp;
+    }
+    if (active.selfApDelta) {
+      caster.ap = Math.max(0, (Number(caster.ap) || 0) + Number(active.selfApDelta || 0));
+    }
+    if (active.targetMpDelta && targetUnit) {
+      targetUnit.mp = Math.max(0, (Number(targetUnit.mp) || 0) + Number(active.targetMpDelta || 0));
+      if (Number.isFinite(targetUnit.movementPoints)) targetUnit.movementPoints = targetUnit.mp;
+    }
+    if (active.targetApDelta && targetUnit) {
+      targetUnit.ap = Math.max(0, (Number(targetUnit.ap) || 0) + Number(active.targetApDelta || 0));
+    }
 
+    if (active.damage) {
+      if (targetUnit) {
+        applyDamageMap(targetUnit, active.damage);
+      } else if (active.runtime?.applyToUnitsInRadius || Number.isFinite(active.aoeRadius)) {
+        const radius = active.runtime?.applyDamageInRadius ?? active.aoeRadius ?? 0;
+        for (const u of unitsInRadius(targetHex.q, targetHex.r, radius)) {
+          if (u === caster && active.target !== 'self') continue;
+          applyDamageMap(u, active.damage);
+        }
+      }
+    }
+
+    const unitSpecs = Array.isArray(active.applyUnitEffects) ? active.applyUnitEffects : [];
+    for (const spec of unitSpecs) {
+      let destinations = [];
+      if (spec.applyTo === 'self') destinations = [caster];
+      else if (active.runtime?.applyToUnitsInRadius || active.runtime?.applyToUnitsInRadiusFromCaster) {
+        const radius = active.runtime?.applyToUnitsInRadiusFromCaster || active.aoeRadius || 1;
+        const cq = active.runtime?.applyToUnitsInRadiusFromCaster ? caster.q : targetHex.q;
+        const cr = active.runtime?.applyToUnitsInRadiusFromCaster ? caster.r : targetHex.r;
+        destinations = unitsInRadius(cq, cr, radius);
+      } else if (active.runtime?.canTargetUnitOnHex && !targetUnit) {
+        const maybe = this.getUnitAtHex ? this.getUnitAtHex(targetHex.q, targetHex.r) : getUnitAtHex(this, targetHex.q, targetHex.r);
+        if (maybe) destinations = [maybe];
+      } else if (targetUnit) destinations = [targetUnit];
+
+      for (const dest of destinations) {
+        if (!dest) continue;
+        ensureUnitEffectsState(dest);
+        addUnitEffect(dest, spec.effectId, {
+          duration: spec.duration,
+          stacks: spec.stacks,
+          params: spec.params,
+          sourceUnitId: caster.id,
+          sourceFaction: caster.faction,
+        });
+        applied.push({ to: dest.id, effectId: spec.effectId });
+      }
+    }
+
+    const hexSpecs = Array.isArray(active.placeHexEffects) ? active.placeHexEffects : [];
+    for (const spec of hexSpecs) {
+      let centers = [targetHex];
+      if (spec.placeOn === 'aoe') {
+        const center = active.target === 'self' ? { q: caster.q, r: caster.r } : targetHex;
+        centers = this.getHexesInRadius(center.q, center.r, Number(active.aoeRadius) || 0);
+      }
       for (const h of centers) {
         placeHexEffect(this.lobbyState, h.q, h.r, spec.effectId, {
           duration: spec.duration,
@@ -661,15 +753,41 @@ export default class WorldScene extends Phaser.Scene {
       }
     }
 
-    this.traceAbility('cast', {
-      abilityId: a.id,
-      casterId: caster.id,
-      apAfter: caster.ap,
-      applied,
-      placed,
-    });
+    if (Array.isArray(active.removeHexEffects) && active.removeHexEffects.length) {
+      ensureHexEffectsState(this.lobbyState);
+      const hs = this.getHexesInRadius(targetHex.q, targetHex.r, Number(active.aoeRadius) || 0);
+      for (const h of hs) {
+        const key = hexKeyEff(h.q, h.r);
+        const list = Array.isArray(this.lobbyState?.hexEffects?.[key]) ? this.lobbyState.hexEffects[key] : [];
+        const kept = list.filter(inst => !active.removeHexEffects.includes(inst?.defId));
+        if (this.lobbyState.hexEffects[key]?.length !== kept.length) removedHex.push({ q: h.q, r: h.r });
+        if (kept.length) this.lobbyState.hexEffects[key] = kept;
+        else delete this.lobbyState.hexEffects[key];
+      }
+    }
 
-    return { ok: true, applied, placed };
+    if (Array.isArray(active.convertHexEffects) && active.convertHexEffects.length) {
+      ensureHexEffectsState(this.lobbyState);
+      const hs = this.getHexesInRadius(targetHex.q, targetHex.r, Number(active.aoeRadius) || 0);
+      for (const h of hs) {
+        const key = hexKeyEff(h.q, h.r);
+        const list = Array.isArray(this.lobbyState?.hexEffects?.[key]) ? this.lobbyState.hexEffects[key] : [];
+        for (const conv of active.convertHexEffects) {
+          const hasFrom = list.some(inst => inst?.defId === conv.from);
+          if (!hasFrom) continue;
+          this.lobbyState.hexEffects[key] = list.filter(inst => inst?.defId !== conv.from);
+          placeHexEffect(this.lobbyState, h.q, h.r, conv.to, { duration: conv.duration, sourceUnitId: caster.id, sourceFaction: caster.faction });
+          placed.push({ q: h.q, r: h.r, effectId: conv.to, convertedFrom: conv.from });
+        }
+      }
+    }
+
+    if (active.runtime?.action) {
+      specials.push({ action: active.runtime.action, data: active.runtime });
+    }
+
+    this.traceAbility('cast', { abilityId: a.id, casterId: caster.id, apAfter: caster.ap, mpAfter: caster.mp, applied, placed, removedHex, healed, damaged, specials });
+    return { ok: true, applied, placed, removedHex, healed, damaged, specials };
   }
 
   resolveAbilityTarget(abilityDef, caster, target) {
