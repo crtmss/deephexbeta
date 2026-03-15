@@ -499,6 +499,17 @@ function setMP(unit, val) {
   if (Number.isFinite(unit.movementPoints)) unit.movementPoints = v;
 }
 
+function getUnitOwnerName(scene, unit) {
+  if (!unit) return null;
+  if (typeof unit.playerName === 'string' && unit.playerName) return unit.playerName;
+  if (typeof unit.ownerName === 'string' && unit.ownerName) return unit.ownerName;
+  if (typeof unit.owner === 'string' && unit.owner) return unit.owner;
+  const n = (typeof unit.name === 'string' && unit.name) ? unit.name : null;
+  if (n && (n === scene?.turnOwner || n === scene?.playerName)) return n;
+  if (typeof scene?.playerName === 'string' && scene.playerName && unit?.isPlayer && !unit?.isEnemy) return scene.playerName;
+  return n;
+}
+
 /* ---------------- Auto-move helpers ---------------- */
 
 function cancelAutoMove(unit) {
@@ -685,7 +696,7 @@ export function setupWorldInputUI(scene) {
     if (!scene.selectedUnit) return;
     if (!isControllable(scene.selectedUnit)) return;
 
-    const ownerName = scene.selectedUnit.playerName || scene.selectedUnit.name;
+    const ownerName = getUnitOwnerName(scene, scene.selectedUnit);
     if (scene.turnOwner && ownerName !== scene.turnOwner) {
       return;
     }
@@ -738,7 +749,7 @@ export function setupWorldInputUI(scene) {
 
     const clickedUnit = getUnitAtHex(scene, q, r);
     if (scene.unitCommandMode === 'attack' && scene.selectedUnit && clickedUnit && isEnemy(clickedUnit)) {
-      const ownerName = scene.selectedUnit.playerName || scene.selectedUnit.name;
+      const ownerName = getUnitOwnerName(scene, scene.selectedUnit);
       if (scene.turnOwner && ownerName !== scene.turnOwner) return;
 
       const sent = trySendAttackIntent(scene, scene.selectedUnit, clickedUnit);
@@ -815,7 +826,7 @@ export function setupWorldInputUI(scene) {
         return;
       }
 
-      const ownerName = scene.selectedUnit.playerName || scene.selectedUnit.name;
+      const ownerName = getUnitOwnerName(scene, scene.selectedUnit);
       if (scene.turnOwner && ownerName !== scene.turnOwner) {
         return;
       }
@@ -903,7 +914,7 @@ export function setupWorldInputUI(scene) {
       return;
     }
 
-    const ownerName = scene.selectedUnit.playerName || scene.selectedUnit.name;
+    const ownerName = getUnitOwnerName(scene, scene.selectedUnit);
     if (scene.turnOwner && ownerName !== scene.turnOwner) {
       scene.clearPathPreview?.();
       return;
