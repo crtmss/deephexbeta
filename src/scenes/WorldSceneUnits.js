@@ -620,6 +620,62 @@ function findFreeClusterTiles(scene, originQ, originR, count) {
   return out;
 }
 
+function freeNeighborCount(scene, q, r) {
+  let n = 0;
+  for (const [dq, dr] of neighborsOddR(q, r)) {
+    const nq = q + dq;
+    const nr = r + dr;
+    if (nq < 0 || nr < 0 || nq >= (scene.mapWidth || 0) || nr >= (scene.mapHeight || 0)) continue;
+    if (!isBlockedForUnit(scene, nq, nr)) n += 1;
+  }
+  return n;
+}
+
+function pickBestSquadAnchor(scene, preferredTile, squadSize) {
+  const origin = preferredTile || null;
+  if (!origin) return null;
+
+  const candidates = [];
+  const seen = new Set();
+  const queue = [{ q: origin.q, r: origin.r, d: 0 }];
+  const maxRadius = 8;
+
+  while (queue.length) {
+    const cur = queue.shift();
+    const k = keyOf(cur.q, cur.r);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    if (cur.d > maxRadius) continue;
+
+    const tile = getTile(scene, cur.q, cur.r);
+    if (isLandTile(tile) && !isOccupied(scene, cur.q, cur.r)) {
+      const cluster = findFreeClusterTiles(scene, cur.q, cur.r, squadSize);
+      const clusterSize = cluster.length;
+      const openness = freeNeighborCount(scene, cur.q, cur.r);
+      candidates.push({ q: cur.q, r: cur.r, clusterSize, openness, d: cur.d });
+      if (clusterSize >= squadSize && openness >= 2 && cur.d <= 2) break;
+    }
+
+    for (const [dq, dr] of neighborsOddR(cur.q, cur.r)) {
+      const nq = cur.q + dq;
+      const nr = cur.r + dr;
+      if (nq < 0 || nr < 0 || nq >= (scene.mapWidth || 0) || nr >= (scene.mapHeight || 0)) continue;
+      const nk = keyOf(nq, nr);
+      if (!seen.has(nk)) queue.push({ q: nq, r: nr, d: cur.d + 1 });
+    }
+  }
+
+  if (!candidates.length) return origin;
+
+  candidates.sort((a, b) => {
+    if (b.clusterSize !== a.clusterSize) return b.clusterSize - a.clusterSize;
+    if (b.openness !== a.openness) return b.openness - a.openness;
+    return a.d - b.d;
+  });
+
+  return { q: candidates[0].q, r: candidates[0].r };
+}
+
 function createFactionTestUnit(scene, q, r, unitType, player, playerIndex) {
   const def = getUnitDef(unitType);
   const pos = scene.axialToWorld(q, r);
@@ -648,6 +704,8 @@ function createFactionTestUnit(scene, q, r, unitType, player, playerIndex) {
 
   unit.playerId = player?.id ?? null;
   unit.playerName = player?.name || 'Player';
+  unit.ownerName = unit.playerName;
+  unit.owner = unit.playerName;
   unit.name = unit.playerName;
   unit.playerIndex = playerIndex;
 
@@ -665,6 +723,10 @@ function createFactionTestUnit(scene, q, r, unitType, player, playerIndex) {
   unit.unitName = def.name;
   applyUnitStateToPhaserUnit(unit, st);
   unit.faction = st.faction;
+  unit.playerName = player?.name || unit.playerName || 'Player';
+  unit.ownerName = unit.playerName;
+  unit.owner = unit.playerName;
+  unit.name = unit.playerName;
   unit.facingAngle = 0;
   unit.isLocalPlayer = false;
 
@@ -678,7 +740,8 @@ function createFactionTestUnit(scene, q, r, unitType, player, playerIndex) {
 function spawnEliminationSquadForPlayer(scene, tile, player, playerIndex) {
   const factionName = player?.faction || 'Admiralty';
   const preset = getEliminationPresetForFaction(factionName);
-  const spots = findFreeClusterTiles(scene, tile.q, tile.r, preset.length);
+  const anchor = pickBestSquadAnchor(scene, tile, preset.length) || tile;
+  const spots = findFreeClusterTiles(scene, anchor.q, anchor.r, preset.length);
 
   if (spots.length < preset.length) {
     console.warn('[Units] Not enough free hexes for elimination squad', {
@@ -687,6 +750,7 @@ function spawnEliminationSquadForPlayer(scene, tile, player, playerIndex) {
       requested: preset.length,
       found: spots.length,
       origin: tile,
+      anchor,
     });
   }
 
