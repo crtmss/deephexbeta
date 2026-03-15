@@ -1,4 +1,4 @@
-  // src/abilities/AbilityDefs.js
+// src/abilities/AbilityDefs.js
 //
 // Data-driven definitions for ACTIVE and PASSIVE abilities.
 //
