@@ -1,7 +1,7 @@
 // src/units/CombatResolver.js
 //
 // Pure combat math. No Phaser imports.
-// Updated to consume effect-based damage taken / damage dealt / resist bonuses.
+// Supports composite damage (multiple damage channels in one hit) and effect modifiers.
 
 const __TRACE_ON__ = () => (typeof window !== 'undefined' ? (window.__COMBAT_TRACE__ ?? true) : true);
 function __t(tag, data) {
@@ -44,29 +44,55 @@ function getResistValue(defender, damageType) {
   return base + bonus;
 }
 
-function getWeaponDamageType(weaponDef) {
-  const dt = weaponDef?.damageType;
-  return normalizeDamageType(dt || 'physical');
+function resolveDamageMap(attacker, defender, damageMap, opts = {}) {
+  const map = damageMap && typeof damageMap === 'object' ? damageMap : { physical: 0 };
+  const groupSize = asInt(attacker?.groupSize, 1);
+  const groupAlive = asInt(attacker?.groupAlive, groupSize);
+  const groupMult = groupSize > 1 ? Math.max(0, Math.min(1, groupAlive / groupSize)) : 1;
+  const armorClass = defender?.armorClass || ARMOR_CLASSES.NONE;
+  const attackerMods = computeEffectModifiers(attacker);
+  const defenderMods = computeEffectModifiers(defender);
+  const baseArmorPts = Number.isFinite(defender?.armorPoints) ? defender.armorPoints : 0;
+  const tempArmor = Number.isFinite(defender?.tempArmorBonus) ? defender.tempArmorBonus : 0;
+  const effectArmor = Number.isFinite(defenderMods?.armor) ? defenderMods.armor : 0;
+  const armorPtsEffective = baseArmorPts + tempArmor + effectArmor;
+  const armorPointsMult = armorPointsMultiplier(armorPtsEffective);
+  const armorClassMult = Number.isFinite(opts.armorClassMult) ? opts.armorClassMult : 1;
+  const distanceMult = Number.isFinite(opts.distanceMult) ? opts.distanceMult : 1;
+
+  const channels = {};
+  let total = 0;
+  for (const [k, v] of Object.entries(map)) {
+    const dt = normalizeDamageType(k);
+    const base = Number(v) || 0;
+    if (base <= 0) continue;
+    const resistValue = getResistValue(defender, dt);
+    const resistMult = armorPointsMultiplier(resistValue);
+    const takenPct = (defenderMods?.damageTakenPctByType?.[dt] || 0) + (defenderMods?.damageTakenPctByType?.all || 0);
+    const dealtPct = (attackerMods?.damageDealtPctByType?.[dt] || 0) + (attackerMods?.damageDealtPctByType?.all || 0);
+    const effectTakenMult = 1 + takenPct / 100;
+    const effectDealtMult = 1 + dealtPct / 100;
+    const raw = base * groupMult * armorClassMult * distanceMult * armorPointsMult * resistMult * effectTakenMult * effectDealtMult;
+    const final = Math.max(0, Math.round(raw));
+    channels[dt] = { base, resistValue, resistMult, takenPct, dealtPct, final };
+    total += final;
+  }
+  return { totalDamage: total, channels, groupMult, armorPointsMult, armorClassMult, distanceMult, armorPtsEffective };
+}
+
+export function resolveDirectDamage(attacker, defender, damageMap) {
+  const r = resolveDamageMap(attacker, defender, damageMap || { physical: 0 });
+  return { finalDamage: r.totalDamage, breakdown: r };
 }
 
 export function resolveAttack(attacker, defender, weaponId) {
   try {
     const w = getWeaponDef(weaponId);
     if (!w) {
-      return {
-        distance: NaN, baseDamage: 0, groupMult: 1, armorClassMult: 1, distanceMult: 1,
-        armorPointsMult: 1, resistValue: 0, resistMult: 1, effectTakenMult: 1,
-        effectDealtMult: 1, finalDamage: 0, weaponId, damageType: 'physical',
-      };
+      return { distance: NaN, baseDamage: 0, finalDamage: 0, weaponId, damageType: 'physical', channels: {} };
     }
 
     const dist = hexDistance(attacker.q, attacker.r, defender.q, defender.r);
-    const damageType = getWeaponDamageType(w);
-
-    const groupSize = asInt(attacker?.groupSize, 1);
-    const groupAlive = asInt(attacker?.groupAlive, groupSize);
-    const groupMult = groupSize > 1 ? Math.max(0, Math.min(1, groupAlive / groupSize)) : 1;
-
     const armorClass = defender.armorClass || ARMOR_CLASSES.NONE;
     const acMultRaw = w.armorClassMult?.[armorClass];
     const armorClassMult = Number.isFinite(acMultRaw) ? acMultRaw : 1.0;
@@ -78,43 +104,27 @@ export function resolveAttack(attacker, defender, weaponId) {
       if (dist === 3 && Number.isFinite(w.distanceCurve.dist3)) distanceMult = w.distanceCurve.dist3;
     }
 
-    const defenderMods = computeEffectModifiers(defender);
-    const attackerMods = computeEffectModifiers(attacker);
-
-    const baseArmorPts = Number.isFinite(defender.armorPoints) ? defender.armorPoints : 0;
-    const tempArmor = Number.isFinite(defender.tempArmorBonus) ? defender.tempArmorBonus : 0;
-    const effectArmor = Number.isFinite(defenderMods?.armor) ? defenderMods.armor : 0;
-    const armorPtsEffective = baseArmorPts + tempArmor + effectArmor;
-    const armorPointsMult = armorPointsMultiplier(armorPtsEffective);
-
-    const resistValue = getResistValue(defender, damageType);
-    const resistMult = armorPointsMultiplier(resistValue);
-
-    const takenPct = (defenderMods?.damageTakenPctByType?.[damageType] || 0) + (defenderMods?.damageTakenPctByType?.all || 0);
-    const dealtPct = (attackerMods?.damageDealtPctByType?.[damageType] || 0) + (attackerMods?.damageDealtPctByType?.all || 0);
-    const effectTakenMult = 1 + takenPct / 100;
-    const effectDealtMult = 1 + dealtPct / 100;
-
+    const composite = resolveDamageMap(attacker, defender, w.damage || { [w.damageType || 'physical']: w.baseDamage || 0 }, { armorClassMult, distanceMult });
     const baseDamage = Number.isFinite(w.baseDamage) ? w.baseDamage : 0;
-    const raw = baseDamage * groupMult * armorClassMult * distanceMult * armorPointsMult * resistMult * effectTakenMult * effectDealtMult;
-    const finalDamage = Math.max(0, Math.round(raw));
 
-    __t('RESOLVE_OK', {
-      weaponId: w.id, dist, damageType, baseDamage, groupMult, armorClassMult, distanceMult,
-      armorPointsMult, resistValue, resistMult, effectTakenMult, effectDealtMult, finalDamage,
-    });
+    __t('RESOLVE_OK', { weaponId: w.id, dist, baseDamage, finalDamage: composite.totalDamage, channels: composite.channels });
 
     return {
-      distance: dist, baseDamage, groupMult, armorClassMult, distanceMult, armorPointsMult,
-      resistValue, resistMult, effectTakenMult, effectDealtMult, finalDamage, weaponId: w.id, damageType,
+      distance: dist,
+      baseDamage,
+      groupMult: composite.groupMult,
+      armorClassMult,
+      distanceMult,
+      armorPointsMult: composite.armorPointsMult,
+      finalDamage: composite.totalDamage,
+      weaponId: w.id,
+      damageType: w.damageType || 'physical',
+      damage: w.damage,
+      channels: composite.channels,
     };
   } catch (e) {
     __t('RESOLVE_EX', { weaponId, msg: String(e?.message || e) });
-    return {
-      distance: NaN, baseDamage: 0, groupMult: 1, armorClassMult: 1, distanceMult: 1,
-      armorPointsMult: 1, resistValue: 0, resistMult: 1, effectTakenMult: 1,
-      effectDealtMult: 1, finalDamage: 0, weaponId, damageType: 'physical',
-    };
+    return { distance: NaN, baseDamage: 0, finalDamage: 0, weaponId, damageType: 'physical', channels: {} };
   }
 }
 
