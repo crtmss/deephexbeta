@@ -207,14 +207,29 @@ import {
 import { ensureUnitCombatFields } from '../units/UnitActions.js';
 import { applyElectricityOnEndTurn } from './WorldSceneElectricity.js';
 
+function unitOwnerName(u) {
+  return (typeof u === 'string') ? u : (u?.playerName || u?.name || null);
+}
+
+function uniqueTurnOwners(players) {
+  const out = [];
+  const seen = new Set();
+  for (const p of (players || [])) {
+    const name = unitOwnerName(p);
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    out.push(name);
+  }
+  return out;
+}
+
 export function getNextPlayer(players, currentName) {
-  if (!players || players.length === 0) return null;
+  const owners = uniqueTurnOwners(players);
+  if (owners.length === 0) return null;
 
-  const norm = players.map(p => (typeof p === 'string' ? { name: p } : p));
-  const idx = norm.findIndex(p => p.name === currentName);
-
-  if (idx === -1) return norm[0].name;
-  return norm[(idx + 1) % norm.length].name;
+  const idx = owners.findIndex(name => name === currentName);
+  if (idx === -1) return owners[0];
+  return owners[(idx + 1) % owners.length];
 }
 
 export function resetUnitsForNewTurn(scene) {
@@ -339,18 +354,13 @@ export function endTurn(scene) {
 
   // 2) Advance to next owner FIRST (so that "resetUnitsForNewTurn" applies to the correct side)
   const playersArr = scene.players || [];
-  const idx = playersArr.findIndex(p =>
-    (typeof p === 'string' ? p : (p.playerName || p.name)) === scene.turnOwner
-  );
+  const turnOwners = uniqueTurnOwners(playersArr);
+  const idx = turnOwners.findIndex(name => name === scene.turnOwner);
 
   const nextIdx =
-    (idx === -1) ? 0 : ((idx + 1) % Math.max(1, playersArr.length));
+    (idx === -1) ? 0 : ((idx + 1) % Math.max(1, turnOwners.length));
 
-  const pNext = playersArr[nextIdx];
-  const nextOwner =
-    (typeof pNext === 'string')
-      ? pNext
-      : (pNext?.playerName || pNext?.name || scene.turnOwner);
+  const nextOwner = turnOwners[nextIdx] || scene.turnOwner;
 
   scene.turnOwner = nextOwner;
   scene.turnNumber += 1;
