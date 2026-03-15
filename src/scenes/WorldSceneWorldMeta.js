@@ -208,7 +208,8 @@ import { ensureUnitCombatFields } from '../units/UnitActions.js';
 import { applyElectricityOnEndTurn } from './WorldSceneElectricity.js';
 
 function unitOwnerName(u) {
-  return (typeof u === 'string') ? u : (u?.playerName || u?.name || null);
+  if (typeof u === 'string') return u;
+  return u?.playerName || u?.ownerName || u?.owner || u?.name || null;
 }
 
 function uniqueTurnOwners(players) {
