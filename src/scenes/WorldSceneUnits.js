@@ -550,6 +550,154 @@ function createTransporter(scene, q, r, owner) {
   return unit;
 }
 
+const ELIMINATION_FACTION_PRESETS = Object.freeze({
+  Admiralty: ['sharpshooter', 'line_infantry', 'combat_engineer', 'warden', 'tidewalker'],
+  Cannibals: ['burrower', 'hunter', 'shaman', 'berserk', 'broodlord'],
+  Collective: ['chorus_warrior', 'chant_weaver', 'spire', 'templar', 'oracle'],
+  Fabricators: ['bulwark', 'breacher', 'chariot', 'assembler', 'foundry_cannon'],
+  Mutants: ['mutant_hound', 'scavenger', 'herald', 'brute', 'gene_alternator'],
+  Transcendent: ['operative', 'adept', 'phantom', 'knight', 'wyrm'],
+});
+
+function normalizeLobbyFactionName(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  if (raw === 'chain admiralty' || raw === 'admiralty') return 'Admiralty';
+  if (raw === 'fleshbound clans' || raw === 'cannibals') return 'Cannibals';
+  if (raw === 'the collective' || raw === 'collective') return 'Collective';
+  if (raw === 'fabricators') return 'Fabricators';
+  if (raw === 'afterborn' || raw === 'mutants') return 'Mutants';
+  if (raw === 'transcendent') return 'Transcendent';
+  return 'Admiralty';
+}
+
+function getEliminationPresetForFaction(factionName) {
+  const key = normalizeLobbyFactionName(factionName);
+  return (ELIMINATION_FACTION_PRESETS[key] || ELIMINATION_FACTION_PRESETS.Admiralty).slice();
+}
+
+function iconTextForUnitType(unitType, def) {
+  const explicit = {
+    chorus_warrior: 'CW', chant_weaver: 'CH', spire: 'SP', templar: 'TP', oracle: 'OR',
+    bulwark: 'BW', breacher: 'BR', chariot: 'CH', assembler: 'AS', foundry_cannon: 'FC',
+    mutant_hound: 'MH', scavenger: 'SC', herald: 'HR', brute: 'BT', gene_alternator: 'GA',
+    operative: 'OP', adept: 'AD', phantom: 'PH', knight: 'KN', wyrm: 'WY',
+    sharpshooter: 'SS', line_infantry: 'LI', combat_engineer: 'CE', warden: 'WD', tidewalker: 'TW',
+    burrower: 'BU', hunter: 'HU', shaman: 'SH', berserk: 'BZ', broodlord: 'BL',
+  };
+  if (explicit[unitType]) return explicit[unitType];
+
+  const src = String(def?.name || unitType || '').trim();
+  const words = src.split(/\s+/).filter(Boolean);
+  if (words.length >= 2) return `${words[0][0] || ''}${words[1][0] || ''}`.toUpperCase();
+  return src.slice(0, 2).toUpperCase() || 'U';
+}
+
+function findFreeClusterTiles(scene, originQ, originR, count) {
+  const out = [];
+  const seen = new Set();
+  const queue = [{ q: originQ, r: originR, d: 0 }];
+
+  while (queue.length && out.length < count) {
+    const cur = queue.shift();
+    const k = keyOf(cur.q, cur.r);
+    if (seen.has(k)) continue;
+    seen.add(k);
+
+    if (cur.q >= 0 && cur.r >= 0 && cur.q < (scene.mapWidth || 0) && cur.r < (scene.mapHeight || 0)) {
+      if (!isBlockedForUnit(scene, cur.q, cur.r)) out.push({ q: cur.q, r: cur.r });
+
+      const neigh = neighborsOddR(cur.q, cur.r)
+        .map(([dq, dr]) => ({ q: cur.q + dq, r: cur.r + dr, d: cur.d + 1 }))
+        .filter(n => n.q >= 0 && n.r >= 0 && n.q < (scene.mapWidth || 0) && n.r < (scene.mapHeight || 0))
+        .sort((a, b) => a.d - b.d || a.r - b.r || a.q - b.q);
+      for (const n of neigh) {
+        const nk = keyOf(n.q, n.r);
+        if (!seen.has(nk)) queue.push(n);
+      }
+    }
+  }
+
+  return out;
+}
+
+function createFactionTestUnit(scene, q, r, unitType, player, playerIndex) {
+  const def = getUnitDef(unitType);
+  const pos = scene.axialToWorld(q, r);
+  const size = (typeof scene.hexSize === 'number') ? scene.hexSize : 22;
+  const s = Math.max(22, Math.round(size * 1.15));
+  const ownerKey = normalizeOwnerKey(playerIndex, 0);
+
+  const { cont } = createDirectionalUnitBadge(
+    scene,
+    pos.x,
+    pos.y,
+    ownerKey,
+    iconTextForUnitType(unitType, def),
+    s,
+    UNIT_Z.player
+  );
+
+  const unit = cont;
+  unit.q = q;
+  unit.r = r;
+  unit.type = def.id;
+  unit.unitType = def.id;
+  unit.isPlayer = true;
+  unit.isEnemy = false;
+  unit.controller = 'player';
+
+  unit.playerId = player?.id ?? null;
+  unit.playerName = player?.name || 'Player';
+  unit.name = unit.playerName;
+  unit.playerIndex = playerIndex;
+
+  const st = createUnitState({
+    type: def.id,
+    ownerId: unit.playerId,
+    ownerSlot: playerIndex,
+    controller: 'player',
+    faction: def.faction || normalizeLobbyFactionName(player?.faction),
+    q,
+    r,
+    facing: 0,
+  });
+
+  unit.unitName = def.name;
+  applyUnitStateToPhaserUnit(unit, st);
+  unit.faction = st.faction;
+  unit.facingAngle = 0;
+  unit.isLocalPlayer = false;
+
+  if (!unit.id && !unit.unitId) {
+    unit.id = `u_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+  }
+
+  return unit;
+}
+
+function spawnEliminationSquadForPlayer(scene, tile, player, playerIndex) {
+  const factionName = player?.faction || 'Admiralty';
+  const preset = getEliminationPresetForFaction(factionName);
+  const spots = findFreeClusterTiles(scene, tile.q, tile.r, preset.length);
+
+  if (spots.length < preset.length) {
+    console.warn('[Units] Not enough free hexes for elimination squad', {
+      player: player?.name,
+      faction: factionName,
+      requested: preset.length,
+      found: spots.length,
+      origin: tile,
+    });
+  }
+
+  const spawned = [];
+  for (let i = 0; i < Math.min(preset.length, spots.length); i++) {
+    const unit = createFactionTestUnit(scene, spots[i].q, spots[i].r, preset[i], player, playerIndex);
+    spawned.push(unit);
+  }
+  return spawned;
+}
+
 /* =========================================================
    Raider Camp (spawned at game start by host)
    ========================================================= */
@@ -776,14 +924,19 @@ export async function spawnUnitsAndEnemies() {
       tile.q = fallback.q; tile.r = fallback.r;
     }
 
-    const unit = createMobileBase(scene, tile, player, color, idx);
+    const spawnedUnits = (scene.isEliminationMission || scene.missionType === 'elimination')
+      ? spawnEliminationSquadForPlayer(scene, tile, player, idx)
+      : [createMobileBase(scene, tile, player, color, idx)];
 
-    unit.isLocalPlayer =
-      (localPlayerId && player.id === localPlayerId) ||
-      (!localPlayerId && player.name === localName);
+    for (const unit of spawnedUnits) {
+      if (!unit) continue;
+      unit.isLocalPlayer =
+        (localPlayerId && player.id === localPlayerId) ||
+        (!localPlayerId && player.name === localName);
 
-    scene.units.push(unit);
-    scene.players.push(unit);
+      scene.units.push(unit);
+      scene.players.push(unit);
+    }
   });
 
   
