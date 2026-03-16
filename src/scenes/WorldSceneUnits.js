@@ -974,32 +974,45 @@ export async function spawnUnitsAndEnemies() {
     else aiSlots.push({ player, idx });
   });
 
-  connectedPlayers.forEach(({ player, idx }) => {
-    const tile = spawnTiles[idx] || spawnTiles[spawnTiles.length - 1];
-    const color = PLAYER_COLORS[idx % PLAYER_COLORS.length];
+connectedPlayers.forEach(({ player, idx }) => {
+  const tile = spawnTiles[idx] || spawnTiles[spawnTiles.length - 1];
+  const color = PLAYER_COLORS[idx % PLAYER_COLORS.length];
 
-    // hard safety
-    if (!isLandTile(tile)) {
-      console.warn('[Units] Picked spawn tile is not land, searching neighbor/fallback…', tile);
-      const fallback = (scene.mapData || []).find(isLandTile);
-      if (!fallback) return;
-      tile.q = fallback.q; tile.r = fallback.r;
-    }
+  // hard safety
+  if (!isLandTile(tile)) {
+    console.warn('[Units] Picked spawn tile is not land, searching neighbor/fallback…', tile);
+    const fallback = (scene.mapData || []).find(isLandTile);
+    if (!fallback) return;
+    tile.q = fallback.q;
+    tile.r = fallback.r;
+  }
 
-    const spawnedUnits = (scene.isEliminationMission || scene.missionType === 'elimination')
-      ? spawnEliminationSquadForPlayer(scene, tile, player, idx)
-      : [createMobileBase(scene, tile, player, color, idx)];
+  const spawnedUnits = (scene.isEliminationMission || scene.missionType === 'elimination')
+    ? spawnEliminationSquadForPlayer(scene, tile, player, idx)
+    : [createMobileBase(scene, tile, player, color, idx)];
 
-    for (const unit of spawnedUnits) {
-      if (!unit) continue;
-      unit.isLocalPlayer =
-        (localPlayerId && player.id === localPlayerId) ||
-        (!localPlayerId && player.name === localName);
+  let representative = null;
 
-      scene.units.push(unit);
-      scene.players.push(unit);
-    }
-  });
+  for (const unit of spawnedUnits) {
+    if (!unit) continue;
+
+    unit.isLocalPlayer =
+      (localPlayerId && player.id === localPlayerId) ||
+      (!localPlayerId && player.name === localName);
+
+    stampLegacyPlayerOwnership(unit, player, idx);
+
+    scene.units.push(unit);
+
+    // scene.players должен содержать 1 representative per player,
+    // иначе ломается часть старой turn/move логики.
+    if (!representative) representative = unit;
+  }
+
+  if (representative) {
+    scene.players.push(representative);
+  }
+});
 
   
 
