@@ -385,68 +385,6 @@ function createMobileBase(scene, spawnTile, player, _color, playerIndex) {
 }
 
 /**
- * Creates a Transporter.
- *
- * ✅ NEW: Uses directional badge, icon 📦, icon stays upright.
- */
-function createTransporter(scene, q, r, ownerLike) {
-  const pos = scene.axialToWorld(q, r);
-
-  const size = (typeof scene.hexSize === 'number') ? scene.hexSize : 22;
-  const s = Math.max(24, Math.round(size * 1.20));
-
-  const ownerSlot = Number.isFinite(ownerLike?.playerIndex)
-    ? ownerLike.playerIndex
-    : (Number.isFinite(ownerLike?.ownerSlot) ? ownerLike.ownerSlot : 0);
-
-  const { cont } = createDirectionalUnitBadge(
-    scene,
-    pos.x,
-    pos.y,
-    ownerSlot,
-    '📦',
-    s,
-    UNIT_Z.player
-  );
-
-  const unit = cont;
-
-  unit.q = q;
-  unit.r = r;
-
-  unit.type = 'transporter';
-  unit.isPlayer = true;
-  unit.isEnemy = false;
-
-  unit.playerId = ownerLike?.playerId || null;
-  unit.playerName = ownerLike?.playerName || ownerLike?.name || 'Player';
-  unit.name = unit.playerName;
-  unit.playerIndex = ownerSlot;
-
-  const def = getUnitDef('transporter');
-  const st = createUnitState({
-    type: 'transporter',
-    ownerId: unit.playerId,
-    ownerSlot,
-    controller: 'player',
-    faction: `player${ownerSlot}`,
-    q, r,
-    facing: 0,
-  });
-  unit.unitName = def.name;
-  applyUnitStateToPhaserUnit(unit, st);
-  unit.faction = st.faction;
-
-  unit.facingAngle = 0;
-
-  if (!unit.id && !unit.unitId) {
-    unit.id = `tr_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
-  }
-
-  return unit;
-}
-
-/**
  * Creates a Raider.
  * If controller='ai', unit is enemy.
  *
@@ -498,76 +436,139 @@ function createRaider(scene, q, r, opts = {}) {
     unit.playerIndex = Number.isFinite(opts.ownerSlot) ? opts.ownerSlot : 0;
   }
 
+  const def = getUnitDef('raider');
   const st = createUnitState({
     type: 'raider',
-    ownerId: unit.playerId ?? null,
-    ownerSlot: (controller === 'ai') ? null : unit.playerIndex,
-    controller,
-    faction: (controller === 'ai') ? String(opts.aiFaction || ownerKey || 'ai0') : `player${unit.playerIndex || 0}`,
+    ownerId: unit.playerId,
+    ownerSlot: unit.playerIndex,
+    controller: controller,
+    faction: (controller === 'ai') ? 'raiders' : `player${opts.ownerSlot ?? 0}` ,
     q,
     r,
     facing: 0,
   });
-
-  unit.unitName = getUnitDef('raider').name;
+  unit.unitName = def.name;
   applyUnitStateToPhaserUnit(unit, st);
   unit.faction = st.faction;
 
   unit.facingAngle = 0;
 
-  // Keep stable id
+  if (controller === 'ai') {
+    unit.controller = 'ai';
+    unit.aiProfile = 'aggressive';
+    unit._ownerKey = ownerKey;
+  } else {
+    unit._ownerKey = ownerKey;
+  }
+
+  // Ensure stable id for respawn tracking
   if (!unit.id && !unit.unitId) {
-    unit.id = `${controller === 'ai' ? 'er' : 'r'}_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+    unit.id = `u_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
   }
 
   return unit;
-}
-
-export function updateUnitOrientation(scene, unit, fromQ, fromR, toQ, toR) {
-  if (!unit) return;
-
-  const from = scene.axialToWorld(fromQ, fromR);
-  const to = scene.axialToWorld(toQ, toR);
-
-  const dx = to.x - from.x;
-  const dy = to.y - from.y;
-
-  // Angle of motion in screen space
-  let angle = Math.atan2(dy, dx);
-
-  // If your dash frame artwork points RIGHT by default, no offset is needed.
-  // If you later discover it points UP, set ROTATION_OFFSET = Math.PI / 2, etc.
-  const ROTATION_OFFSET = 0;
-
-  const finalAngle = angle + ROTATION_OFFSET;
-
-  // Rotate background only; icon stays upright.
-  if (unit._dirBg) {
-    unit._dirBg.rotation = finalAngle;
-  } else {
-    // fallback if someone passes the old badge/graphics container
-    unit.rotation = finalAngle;
-  }
-
-  unit.facingAngle = finalAngle;
 }
 
 /**
- * Create enemy raider near camp.
- * Uses AI ownerKey ai0 so it has its own distinct tint.
+ * Creates a simple enemy unit.
+ * (kept for compatibility, but we no longer spawn these globally)
  */
-function spawnEnemyRaiderAt(scene, q, r, ownerKey = 'ai0') {
-  const unit = createRaider(scene, q, r, {
+function createEnemyUnit(scene, spawnTile) {
+  const u = createRaider(scene, spawnTile.q, spawnTile.r, {
     controller: 'ai',
-    ownerKey,
-    aiFaction: ownerKey,
-    name: ownerKey,
+    ownerKey: 'ai0',
   });
+  u.type = 'enemy_raider';
+  u.isEnemy = true;
+  u.isPlayer = false;
+  u.controller = 'ai';
+  u.aiProfile = 'aggressive';
+  return u;
+}
 
-  scene.enemies.push(unit);
-  scene.units.push(unit);
+/**
+ * Exported helper for AI respawn system (Raider Camp).
+ */
+export function spawnEnemyRaiderAt(scene, q, r) {
+  // If you later add a second AI faction, pass ownerKey:'ai1' from camp logic.
+  const u = createRaider(scene, q, r, { controller: 'ai', ownerKey: 'ai0' });
+  u.type = 'enemy_raider';
+  u.isEnemy = true;
+  u.isPlayer = false;
+  u.controller = 'ai';
+  u.aiProfile = 'camp_raider';
+
+  scene.units = scene.units || [];
+  scene.enemies = scene.enemies || [];
+  scene.units.push(u);
+  scene.enemies.push(u);
+
+  return u;
+}
+
+/**
+ * Creates a player-controlled Transporter.
+ * Now uses a directional badge (icon 🚚), icon does not rotate.
+ */
+function createTransporter(scene, q, r, owner) {
+  const pos = scene.axialToWorld(q, r);
+  const size = (typeof scene.hexSize === 'number') ? scene.hexSize : 22;
+  const s = Math.max(22, Math.round(size * 1.10));
+
+  const slot = owner?.playerIndex ?? owner?.ownerSlot ?? 0;
+  const ownerKey = normalizeOwnerKey(slot, 0);
+
+  const { cont } = createDirectionalUnitBadge(
+    scene,
+    pos.x,
+    pos.y,
+    ownerKey,
+    '🚚',
+    s,
+    UNIT_Z.player
+  );
+
+  const unit = cont;
+
+  unit.q = q;
+  unit.r = r;
+  unit.type = 'transporter';
+  unit.isPlayer = true;
+  unit.isEnemy = false;
+
+  unit.playerId = owner?.playerId ?? owner?.ownerId ?? null;
+  unit.playerName = owner?.playerName ?? owner?.name ?? 'Player';
+  unit.name = unit.playerName;
+  unit.playerIndex = slot;
+
+  const def = getUnitDef('transporter');
+  const st = createUnitState({
+    type: 'transporter',
+    ownerId: unit.playerId,
+    ownerSlot: slot,
+    controller: 'player',
+    faction: `player${slot}`,
+    q,
+    r,
+    facing: 0,
+  });
+  unit.unitName = def.name;
+  applyUnitStateToPhaserUnit(unit, st);
+  unit.faction = st.faction;
+
+  unit.facingAngle = 0;
+
+  // Stable ID
+  if (!unit.id && !unit.unitId) {
+    unit.id = `t_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+  }
+
   return unit;
 }
+
+/* ======================================================================
+   NEW: Elimination roster spawns
+   ====================================================================== */
 
 const ELIMINATION_FACTION_PRESETS = Object.freeze({
   Admiralty: ['sharpshooter', 'line_infantry', 'combat_engineer', 'warden', 'tidewalker'],
@@ -851,9 +852,6 @@ function createRaiderCamp(scene, q, r) {
   scene.raiderCamp = camp;
   return camp;
 }
-// ==============================
-// WorldSceneUnits.js (PART 2/2)
-// ==============================
 
 function pickRandomFreeLandTile(scene) {
   const land = (scene.mapData || []).filter(isLandTile);
@@ -1021,10 +1019,12 @@ export async function spawnUnitsAndEnemies() {
 
       scene.units.push(unit);
 
-      // FIX:
-      // In the current project movement / selection / turn logic still expects
-      // controllable player units to be present in scene.players.
-      // For Elimination each spawned squad member must therefore also be registered there.
+      // IMPORTANT:
+      // The current project still relies on scene.players as the authoritative
+      // collection of player-controlled pieces for selection / movement / turns.
+      // In Elimination every spawned squad member must therefore be registered
+      // in scene.players as well, otherwise path preview may work but the move
+      // commit can fail for non-representative units.
       scene.players.push(unit);
     }
   });
@@ -1168,78 +1168,143 @@ export function buildRaiderAtSelectedUnit() {
 }
 
 /* =========================================================
-   AI / Raiders helpers used by WorldScene
+   Raider Camp AI
    ========================================================= */
 
-export function findNearestPlayerUnit(scene, fromQ, fromR) {
-  const allPlayers = []
-    .concat(scene.players || [])
-    .concat(scene.units || [])
-    .filter(u => u && !u.isDead && !u.isEnemy && u.controller !== 'ai');
+/**
+ * Host-only AI turn for Raider Camp / enemy raiders.
+ * - Camp detects intruders in radius 4
+ * - Up to 4 raiders can exist for the camp
+ * - If a raider dies, respawn after 5 turns
+ */
+export function applyEnemyAIOnEndTurn(scene) {
+  if (!scene || !scene.isHost) return;
 
-  if (!allPlayers.length) return null;
-
-  let best = null;
-  let bestD = Infinity;
-
-  for (const u of allPlayers) {
-    const d = axialDistance(fromQ, fromR, u.q, u.r);
-    if (d < bestD) {
-      bestD = d;
-      best = u;
-    }
-  }
-
-  return best;
-}
-
-export function isInsideRaiderCampRadius(scene, q, r) {
-  const camp = scene.raiderCamp;
-  if (!camp) return false;
-  return axialDistance(q, r, camp.q, camp.r) <= camp.radius;
-}
-
-export function queueRaiderRespawn(scene, dueTurn) {
-  if (!scene.raiderCamp) return;
-  scene.raiderCamp.respawnQueue.push({ dueTurn });
-}
-
-export function processQueuedRaiderRespawns(scene, currentTurn) {
-  const camp = scene.raiderCamp;
+  const camp = scene.raiderCamp || null;
   if (!camp) return;
 
-  const ready = [];
-  const pending = [];
+  const enemies = (scene.enemies || []).filter(u => u && !u.isDead && u.aiProfile === 'camp_raider');
 
-  for (const item of camp.respawnQueue) {
-    if ((item?.dueTurn ?? Infinity) <= currentTurn) ready.push(item);
-    else pending.push(item);
+  // Process respawns due this turn
+  camp.respawnQueue = camp.respawnQueue || [];
+  if (camp.respawnQueue.length > 0) {
+    const stillPending = [];
+    for (const job of camp.respawnQueue) {
+      if ((job?.dueTurn ?? Infinity) <= (scene.turnNumber || 0)) {
+        // Try spawn
+        const spot = findFreeNeighbor(scene, camp.q, camp.r) || pickRandomFreeLandTile(scene);
+        if (spot) {
+          const u = spawnEnemyRaiderAt(scene, spot.q, spot.r);
+          u.homeQ = camp.q;
+          u.homeR = camp.r;
+          u.aiProfile = 'camp_raider';
+          console.log(`[CAMP] Respawned Raider at (${spot.q},${spot.r})`);
+        } else {
+          stillPending.push(job); // retry later
+        }
+      } else {
+        stillPending.push(job);
+      }
+    }
+    camp.respawnQueue = stillPending;
   }
 
-  camp.respawnQueue = pending;
+  // If nothing to do, stop
+  if (!enemies.length) return;
 
-  for (const _item of ready) {
-    const spawn = findFreeNeighbor(scene, camp.q, camp.r) || pickRandomFreeLandTile(scene);
-    if (!spawn) continue;
+  // Find nearest player intruder within radius
+  const playerUnits = (scene.units || []).filter(u => u && !u.isDead && !u.isEnemy);
+  let intruders = playerUnits.filter(u => axialDistance(camp.q, camp.r, u.q, u.r) <= camp.radius);
 
-    const u = spawnEnemyRaiderAt(scene, spawn.q, spawn.r);
-    u.homeQ = camp.q;
-    u.homeR = camp.r;
-    u.aiProfile = 'camp_raider';
+  // If there are intruders, set alert target to closest
+  if (intruders.length > 0) {
+    intruders.sort((a, b) => axialDistance(camp.q, camp.r, a.q, a.r) - axialDistance(camp.q, camp.r, b.q, b.r));
+    camp.alertTargetId = intruders[0].id || intruders[0].unitId || null;
+  } else {
+    camp.alertTargetId = null;
   }
+
+  const target = camp.alertTargetId
+    ? playerUnits.find(u => (u.id || u.unitId) === camp.alertTargetId)
+    : null;
+
+  for (const enemy of enemies) {
+    if (!enemy || enemy.isDead) continue;
+
+    // Attack if adjacent
+    const adjacentTarget = playerUnits.find(p => axialDistance(enemy.q, enemy.r, p.q, p.r) <= 1);
+    if (adjacentTarget) {
+      // Delegate to existing AI combat code if scene has it
+      if (typeof scene.enemyAttackUnit === 'function') {
+        scene.enemyAttackUnit(enemy, adjacentTarget);
+      }
+      continue;
+    }
+
+    // Chase alert target inside camp radius, otherwise patrol toward home
+    let goal = null;
+
+    if (target && axialDistance(camp.q, camp.r, target.q, target.r) <= camp.radius) {
+      goal = { q: target.q, r: target.r };
+    } else {
+      // idle near camp
+      const fallback = findFreeNeighbor(scene, camp.q, camp.r);
+      if (fallback) goal = fallback;
+    }
+
+    if (!goal) continue;
+
+    if (typeof scene.moveEnemyUnitToward === 'function') {
+      scene.moveEnemyUnitToward(enemy, goal.q, goal.r);
+    }
+  }
+}
+
+/**
+ * Rotate unit visual according to move vector.
+ * Background rotates, icon stays upright.
+ */
+export function updateUnitOrientation(scene, unit, fromQ, fromR, toQ, toR) {
+  if (!unit) return;
+
+  const from = scene.axialToWorld(fromQ, fromR);
+  const to = scene.axialToWorld(toQ, toR);
+
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  let angle = Math.atan2(dy, dx);
+
+  // DashFrameForUnits points right by default
+  const ROTATION_OFFSET = 0;
+  const finalAngle = angle + ROTATION_OFFSET;
+
+  if (unit._dirBg) {
+    unit._dirBg.rotation = finalAngle;
+  } else {
+    unit.rotation = finalAngle;
+  }
+
+  unit.facingAngle = finalAngle;
 }
 
 /* =========================================================
-   Convenience default export
+   Net sync placeholder
    ========================================================= */
 
+/**
+ * Kept for compatibility with older scene bootstraps.
+ * In current builds, realtime sync is handled elsewhere.
+ */
+export async function subscribeToGameUpdates(_scene, _roomCode) {
+  return null;
+}
+
 export default {
+  spawnEnemyRaiderAt,
   spawnUnitsAndEnemies,
-  updateUnitOrientation,
   buildTransporterAtSelectedUnit,
   buildRaiderAtSelectedUnit,
-  findNearestPlayerUnit,
-  isInsideRaiderCampRadius,
-  queueRaiderRespawn,
-  processQueuedRaiderRespawns,
+  applyEnemyAIOnEndTurn,
+  updateUnitOrientation,
+  subscribeToGameUpdates,
 };
