@@ -967,3 +967,9 @@ export function setupUnitActionPanel(scene) {
   scene.actionPanel = scene.add.container(20, scene.scale.height - 220).setScrollFactor(0).setDepth(9999);
   refreshUnitActionPanel(scene);
 }
+
+export function setupWorldInputUI(scene) {
+  setupTurnUI(scene);
+  setupUnitActionPanel(scene);
+  setupPlayerControls(scene);
+}
