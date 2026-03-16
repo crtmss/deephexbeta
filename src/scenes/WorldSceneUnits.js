@@ -575,6 +575,40 @@ function getEliminationPresetForFaction(factionName) {
   return (ELIMINATION_FACTION_PRESETS[key] || ELIMINATION_FACTION_PRESETS.Admiralty).slice();
 }
 
+function stampLegacyPlayerOwnership(unit, player, playerIndex) {
+  if (!unit) return unit;
+
+  const ownerName = player?.name || unit.playerName || unit.ownerName || unit.name || 'Player';
+
+  unit.playerId = player?.id ?? unit.playerId ?? null;
+  unit.playerIndex = playerIndex ?? unit.playerIndex ?? unit.ownerSlot ?? 0;
+  unit.ownerSlot = unit.playerIndex;
+
+  unit.playerName = ownerName;
+  unit.ownerName = ownerName;
+  unit.owner = ownerName;
+  unit.name = ownerName;
+
+  unit.controller = unit.controller || 'player';
+  unit.isPlayer = true;
+  unit.isEnemy = false;
+
+  if (Number.isFinite(unit.mp) && !Number.isFinite(unit.movementPoints)) {
+    unit.movementPoints = unit.mp;
+  }
+
+  if (Number.isFinite(unit.mpMax)) {
+    if (!Number.isFinite(unit.maxMovementPoints)) {
+      unit.maxMovementPoints = unit.mpMax;
+    }
+    if (!Number.isFinite(unit.movementPointsMax)) {
+      unit.movementPointsMax = unit.mpMax;
+    }
+  }
+
+  return unit;
+}
+
 function iconTextForUnitType(unitType, def) {
   const explicit = {
     chorus_warrior: 'CW', chant_weaver: 'CH', spire: 'SP', templar: 'TP', oracle: 'OR',
@@ -584,6 +618,7 @@ function iconTextForUnitType(unitType, def) {
     sharpshooter: 'SS', line_infantry: 'LI', combat_engineer: 'CE', warden: 'WD', tidewalker: 'TW',
     burrower: 'BU', hunter: 'HU', shaman: 'SH', berserk: 'BZ', broodlord: 'BL',
   };
+
   if (explicit[unitType]) return explicit[unitType];
 
   const src = String(def?.name || unitType || '').trim();
@@ -603,13 +638,26 @@ function findFreeClusterTiles(scene, originQ, originR, count) {
     if (seen.has(k)) continue;
     seen.add(k);
 
-    if (cur.q >= 0 && cur.r >= 0 && cur.q < (scene.mapWidth || 0) && cur.r < (scene.mapHeight || 0)) {
-      if (!isBlockedForUnit(scene, cur.q, cur.r)) out.push({ q: cur.q, r: cur.r });
+    if (
+      cur.q >= 0 &&
+      cur.r >= 0 &&
+      cur.q < (scene.mapWidth || 0) &&
+      cur.r < (scene.mapHeight || 0)
+    ) {
+      if (!isBlockedForUnit(scene, cur.q, cur.r)) {
+        out.push({ q: cur.q, r: cur.r });
+      }
 
       const neigh = neighborsOddR(cur.q, cur.r)
         .map(([dq, dr]) => ({ q: cur.q + dq, r: cur.r + dr, d: cur.d + 1 }))
-        .filter(n => n.q >= 0 && n.r >= 0 && n.q < (scene.mapWidth || 0) && n.r < (scene.mapHeight || 0))
+        .filter(n =>
+          n.q >= 0 &&
+          n.r >= 0 &&
+          n.q < (scene.mapWidth || 0) &&
+          n.r < (scene.mapHeight || 0)
+        )
         .sort((a, b) => a.d - b.d || a.r - b.r || a.q - b.q);
+
       for (const n of neigh) {
         const nk = keyOf(n.q, n.r);
         if (!seen.has(nk)) queue.push(n);
@@ -618,62 +666,6 @@ function findFreeClusterTiles(scene, originQ, originR, count) {
   }
 
   return out;
-}
-
-function freeNeighborCount(scene, q, r) {
-  let n = 0;
-  for (const [dq, dr] of neighborsOddR(q, r)) {
-    const nq = q + dq;
-    const nr = r + dr;
-    if (nq < 0 || nr < 0 || nq >= (scene.mapWidth || 0) || nr >= (scene.mapHeight || 0)) continue;
-    if (!isBlockedForUnit(scene, nq, nr)) n += 1;
-  }
-  return n;
-}
-
-function pickBestSquadAnchor(scene, preferredTile, squadSize) {
-  const origin = preferredTile || null;
-  if (!origin) return null;
-
-  const candidates = [];
-  const seen = new Set();
-  const queue = [{ q: origin.q, r: origin.r, d: 0 }];
-  const maxRadius = 8;
-
-  while (queue.length) {
-    const cur = queue.shift();
-    const k = keyOf(cur.q, cur.r);
-    if (seen.has(k)) continue;
-    seen.add(k);
-    if (cur.d > maxRadius) continue;
-
-    const tile = getTile(scene, cur.q, cur.r);
-    if (isLandTile(tile) && !isOccupied(scene, cur.q, cur.r)) {
-      const cluster = findFreeClusterTiles(scene, cur.q, cur.r, squadSize);
-      const clusterSize = cluster.length;
-      const openness = freeNeighborCount(scene, cur.q, cur.r);
-      candidates.push({ q: cur.q, r: cur.r, clusterSize, openness, d: cur.d });
-      if (clusterSize >= squadSize && openness >= 2 && cur.d <= 2) break;
-    }
-
-    for (const [dq, dr] of neighborsOddR(cur.q, cur.r)) {
-      const nq = cur.q + dq;
-      const nr = cur.r + dr;
-      if (nq < 0 || nr < 0 || nq >= (scene.mapWidth || 0) || nr >= (scene.mapHeight || 0)) continue;
-      const nk = keyOf(nq, nr);
-      if (!seen.has(nk)) queue.push({ q: nq, r: nr, d: cur.d + 1 });
-    }
-  }
-
-  if (!candidates.length) return origin;
-
-  candidates.sort((a, b) => {
-    if (b.clusterSize !== a.clusterSize) return b.clusterSize - a.clusterSize;
-    if (b.openness !== a.openness) return b.openness - a.openness;
-    return a.d - b.d;
-  });
-
-  return { q: candidates[0].q, r: candidates[0].r };
 }
 
 function createFactionTestUnit(scene, q, r, unitType, player, playerIndex) {
@@ -708,6 +700,7 @@ function createFactionTestUnit(scene, q, r, unitType, player, playerIndex) {
   unit.owner = unit.playerName;
   unit.name = unit.playerName;
   unit.playerIndex = playerIndex;
+  unit.ownerSlot = playerIndex;
 
   const st = createUnitState({
     type: def.id,
@@ -723,12 +716,18 @@ function createFactionTestUnit(scene, q, r, unitType, player, playerIndex) {
   unit.unitName = def.name;
   applyUnitStateToPhaserUnit(unit, st);
   unit.faction = st.faction;
-  unit.playerName = player?.name || unit.playerName || 'Player';
-  unit.ownerName = unit.playerName;
-  unit.owner = unit.playerName;
-  unit.name = unit.playerName;
   unit.facingAngle = 0;
   unit.isLocalPlayer = false;
+
+  stampLegacyPlayerOwnership(unit, player, playerIndex);
+
+  if (Number.isFinite(unit.mp)) {
+    unit.movementPoints = unit.mp;
+  }
+  if (Number.isFinite(unit.mpMax)) {
+    unit.maxMovementPoints = unit.mpMax;
+    unit.movementPointsMax = unit.mpMax;
+  }
 
   if (!unit.id && !unit.unitId) {
     unit.id = `u_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
@@ -740,8 +739,7 @@ function createFactionTestUnit(scene, q, r, unitType, player, playerIndex) {
 function spawnEliminationSquadForPlayer(scene, tile, player, playerIndex) {
   const factionName = player?.faction || 'Admiralty';
   const preset = getEliminationPresetForFaction(factionName);
-  const anchor = pickBestSquadAnchor(scene, tile, preset.length) || tile;
-  const spots = findFreeClusterTiles(scene, anchor.q, anchor.r, preset.length);
+  const spots = findFreeClusterTiles(scene, tile.q, tile.r, preset.length);
 
   if (spots.length < preset.length) {
     console.warn('[Units] Not enough free hexes for elimination squad', {
@@ -750,7 +748,6 @@ function spawnEliminationSquadForPlayer(scene, tile, player, playerIndex) {
       requested: preset.length,
       found: spots.length,
       origin: tile,
-      anchor,
     });
   }
 
@@ -759,6 +756,7 @@ function spawnEliminationSquadForPlayer(scene, tile, player, playerIndex) {
     const unit = createFactionTestUnit(scene, spots[i].q, spots[i].r, preset[i], player, playerIndex);
     spawned.push(unit);
   }
+
   return spawned;
 }
 
