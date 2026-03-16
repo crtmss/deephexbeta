@@ -385,6 +385,68 @@ function createMobileBase(scene, spawnTile, player, _color, playerIndex) {
 }
 
 /**
+ * Creates a Transporter.
+ *
+ * ✅ NEW: Uses directional badge, icon 📦, icon stays upright.
+ */
+function createTransporter(scene, q, r, ownerLike) {
+  const pos = scene.axialToWorld(q, r);
+
+  const size = (typeof scene.hexSize === 'number') ? scene.hexSize : 22;
+  const s = Math.max(24, Math.round(size * 1.20));
+
+  const ownerSlot = Number.isFinite(ownerLike?.playerIndex)
+    ? ownerLike.playerIndex
+    : (Number.isFinite(ownerLike?.ownerSlot) ? ownerLike.ownerSlot : 0);
+
+  const { cont } = createDirectionalUnitBadge(
+    scene,
+    pos.x,
+    pos.y,
+    ownerSlot,
+    '📦',
+    s,
+    UNIT_Z.player
+  );
+
+  const unit = cont;
+
+  unit.q = q;
+  unit.r = r;
+
+  unit.type = 'transporter';
+  unit.isPlayer = true;
+  unit.isEnemy = false;
+
+  unit.playerId = ownerLike?.playerId || null;
+  unit.playerName = ownerLike?.playerName || ownerLike?.name || 'Player';
+  unit.name = unit.playerName;
+  unit.playerIndex = ownerSlot;
+
+  const def = getUnitDef('transporter');
+  const st = createUnitState({
+    type: 'transporter',
+    ownerId: unit.playerId,
+    ownerSlot,
+    controller: 'player',
+    faction: `player${ownerSlot}`,
+    q, r,
+    facing: 0,
+  });
+  unit.unitName = def.name;
+  applyUnitStateToPhaserUnit(unit, st);
+  unit.faction = st.faction;
+
+  unit.facingAngle = 0;
+
+  if (!unit.id && !unit.unitId) {
+    unit.id = `tr_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+  }
+
+  return unit;
+}
+
+/**
  * Creates a Raider.
  * If controller='ai', unit is enemy.
  *
@@ -957,26 +1019,27 @@ export async function spawnUnitsAndEnemies() {
 
       stampLegacyPlayerOwnership(unit, player, idx);
 
-      // IMPORTANT:
-      // The existing scene logic still treats scene.players as the authoritative
-      // collection for controllable player pieces in several places.
-      // For elimination test squads, every spawned combat unit must live in BOTH
-      // scene.units and scene.players (same pattern as old mobile bases).
       scene.units.push(unit);
+
+      // FIX:
+      // In the current project movement / selection / turn logic still expects
+      // controllable player units to be present in scene.players.
+      // For Elimination each spawned squad member must therefore also be registered there.
       scene.players.push(unit);
     }
   });
 
-// Elimination mission: no camps/enemies/resources, only players
-if (scene.isEliminationMission || scene.missionType === 'elimination') {
-  scene.enemies = scene.enemies || [];
-  scene.enemies.length = 0;
-  scene.raiderCamp = null;
-  console.log('[Units] Elimination mission: skipping enemy/camp spawns.');
-  console.log('[Units] Spawn complete: ' + scene.players.length + ' players, 0 enemies.');
-  return;
-}
-// =========================================================
+  // Elimination mission: no camps/enemies/resources, only players
+  if (scene.isEliminationMission || scene.missionType === 'elimination') {
+    scene.enemies = scene.enemies || [];
+    scene.enemies.length = 0;
+    scene.raiderCamp = null;
+    console.log('[Units] Elimination mission: skipping enemy/camp spawns.');
+    console.log('[Units] Spawn complete: ' + scene.players.length + ' players, 0 enemies.');
+    return;
+  }
+
+  // =========================================================
   // ✅ PATCH: Enemy spawning logic changed:
   // - NO aiSlots spawning
   // - NO neutral enemies spawning
@@ -1038,61 +1101,18 @@ function spawnUnitNearBase(scene, base, unitType) {
   if (!scene || !base) return null;
   const spot = findFreeNeighbor(scene, base.q, base.r);
   if (!spot) {
-    console.warn('[UNITS] No free adjacent tile to spawn', unitType);
+    console.warn('[UNITS] No free adjacent LAND hex to spawn unit near base.');
     return null;
   }
 
   let unit = null;
-  if (unitType === 'transporter') {
-    const pos = scene.axialToWorld(spot.q, spot.r);
-    const size = (typeof scene.hexSize === 'number') ? scene.hexSize : 22;
-    const s = Math.max(24, Math.round(size * 1.20));
-
-    const ownerKey = normalizeOwnerKey(base.playerIndex ?? base.ownerSlot ?? 0, 0);
-
-    const { cont } = createDirectionalUnitBadge(
-      scene,
-      pos.x,
-      pos.y,
-      ownerKey,
-      '📦',
-      s,
-      UNIT_Z.player
-    );
-
-    unit = cont;
-    unit.q = spot.q;
-    unit.r = spot.r;
-    unit.type = 'transporter';
-    unit.isPlayer = true;
-    unit.isEnemy = false;
-    unit.playerId = base.playerId || null;
-    unit.playerName = base.playerName || base.name || 'Player';
-    unit.name = unit.playerName;
-    unit.playerIndex = Number.isFinite(base.playerIndex) ? base.playerIndex : (base.ownerSlot ?? 0);
-
-    const st = createUnitState({
-      type: 'transporter',
-      ownerId: unit.playerId,
-      ownerSlot: unit.playerIndex,
-      controller: 'player',
-      faction: `player${unit.playerIndex || 0}`,
-      q: spot.q,
-      r: spot.r,
-      facing: 0,
-    });
-    unit.unitName = getUnitDef('transporter').name;
-    applyUnitStateToPhaserUnit(unit, st);
-    unit.faction = st.faction;
-    unit.facingAngle = 0;
-  } else if (unitType === 'raider') {
-    unit = createRaider(scene, spot.q, spot.r, {
-      controller: 'player',
-      ownerSlot: base.playerIndex ?? base.ownerSlot ?? 0,
-      playerId: base.playerId || null,
-      playerName: base.playerName || base.name || 'Player',
-    });
-  }
+  if (unitType === 'transporter') unit = createTransporter(scene, spot.q, spot.r, base);
+  else if (unitType === 'raider') unit = createRaider(scene, spot.q, spot.r, {
+    controller: 'player',
+    ownerId: base.playerId,
+    ownerSlot: base.playerIndex ?? base.ownerSlot ?? 0,
+    ownerName: base.playerName || base.name
+  });
 
   if (!unit) return null;
 
@@ -1146,3 +1166,80 @@ export function buildRaiderAtSelectedUnit() {
   scene.refreshResourcesPanel?.();
   return unit;
 }
+
+/* =========================================================
+   AI / Raiders helpers used by WorldScene
+   ========================================================= */
+
+export function findNearestPlayerUnit(scene, fromQ, fromR) {
+  const allPlayers = []
+    .concat(scene.players || [])
+    .concat(scene.units || [])
+    .filter(u => u && !u.isDead && !u.isEnemy && u.controller !== 'ai');
+
+  if (!allPlayers.length) return null;
+
+  let best = null;
+  let bestD = Infinity;
+
+  for (const u of allPlayers) {
+    const d = axialDistance(fromQ, fromR, u.q, u.r);
+    if (d < bestD) {
+      bestD = d;
+      best = u;
+    }
+  }
+
+  return best;
+}
+
+export function isInsideRaiderCampRadius(scene, q, r) {
+  const camp = scene.raiderCamp;
+  if (!camp) return false;
+  return axialDistance(q, r, camp.q, camp.r) <= camp.radius;
+}
+
+export function queueRaiderRespawn(scene, dueTurn) {
+  if (!scene.raiderCamp) return;
+  scene.raiderCamp.respawnQueue.push({ dueTurn });
+}
+
+export function processQueuedRaiderRespawns(scene, currentTurn) {
+  const camp = scene.raiderCamp;
+  if (!camp) return;
+
+  const ready = [];
+  const pending = [];
+
+  for (const item of camp.respawnQueue) {
+    if ((item?.dueTurn ?? Infinity) <= currentTurn) ready.push(item);
+    else pending.push(item);
+  }
+
+  camp.respawnQueue = pending;
+
+  for (const _item of ready) {
+    const spawn = findFreeNeighbor(scene, camp.q, camp.r) || pickRandomFreeLandTile(scene);
+    if (!spawn) continue;
+
+    const u = spawnEnemyRaiderAt(scene, spawn.q, spawn.r);
+    u.homeQ = camp.q;
+    u.homeR = camp.r;
+    u.aiProfile = 'camp_raider';
+  }
+}
+
+/* =========================================================
+   Convenience default export
+   ========================================================= */
+
+export default {
+  spawnUnitsAndEnemies,
+  updateUnitOrientation,
+  buildTransporterAtSelectedUnit,
+  buildRaiderAtSelectedUnit,
+  findNearestPlayerUnit,
+  isInsideRaiderCampRadius,
+  queueRaiderRespawn,
+  processQueuedRaiderRespawns,
+};
