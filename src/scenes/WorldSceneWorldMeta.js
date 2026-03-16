@@ -207,30 +207,19 @@ import {
 import { ensureUnitCombatFields } from '../units/UnitActions.js';
 import { applyElectricityOnEndTurn } from './WorldSceneElectricity.js';
 
+export function getNextPlayer(players, currentName) {
+  if (!players || players.length === 0) return null;
+
+  const norm = players.map(p => (typeof p === 'string' ? { name: p } : p));
+  const idx = norm.findIndex(p => p.name === currentName);
+
+  if (idx === -1) return norm[0].name;
+  return norm[(idx + 1) % norm.length].name;
+}
+
 function unitOwnerName(u) {
   if (typeof u === 'string') return u;
   return u?.playerName || u?.ownerName || u?.owner || u?.name || null;
-}
-
-function uniqueTurnOwners(players) {
-  const out = [];
-  const seen = new Set();
-  for (const p of (players || [])) {
-    const name = unitOwnerName(p);
-    if (!name || seen.has(name)) continue;
-    seen.add(name);
-    out.push(name);
-  }
-  return out;
-}
-
-export function getNextPlayer(players, currentName) {
-  const owners = uniqueTurnOwners(players);
-  if (owners.length === 0) return null;
-
-  const idx = owners.findIndex(name => name === currentName);
-  if (idx === -1) return owners[0];
-  return owners[(idx + 1) % owners.length];
 }
 
 export function resetUnitsForNewTurn(scene) {
@@ -242,20 +231,25 @@ export function resetUnitsForNewTurn(scene) {
 
   for (const u of all) {
     if (!u || u.isDead) continue;
+
     ensureUnitCombatFields(u);
 
-    const uOwner = u.playerName || u.name || null;
+    const uOwner = unitOwnerName(u);
 
     // AI/enemies: always reset on their turn cycle
     if (u.isEnemy || u.controller === 'ai') {
       u.mp = u.mpMax;
       u.ap = u.apMax;
       u.tempArmorBonus = 0;
+
       if (u.status) {
         u.status.defending = false;
         u.status.attackedThisTurn = false;
       }
+
       if (Number.isFinite(u.movementPoints)) u.movementPoints = u.mp;
+      if (Number.isFinite(u.maxMovementPoints)) u.maxMovementPoints = u.mpMax;
+      if (Number.isFinite(u.movementPointsMax)) u.movementPointsMax = u.mpMax;
       continue;
     }
 
@@ -264,11 +258,15 @@ export function resetUnitsForNewTurn(scene) {
       u.mp = u.mpMax;
       u.ap = u.apMax;
       u.tempArmorBonus = 0;
+
       if (u.status) {
         u.status.defending = false;
         u.status.attackedThisTurn = false;
       }
+
       if (Number.isFinite(u.movementPoints)) u.movementPoints = u.mp;
+      if (Number.isFinite(u.maxMovementPoints)) u.maxMovementPoints = u.mpMax;
+      if (Number.isFinite(u.movementPointsMax)) u.movementPointsMax = u.mpMax;
     }
   }
 
@@ -355,13 +353,18 @@ export function endTurn(scene) {
 
   // 2) Advance to next owner FIRST (so that "resetUnitsForNewTurn" applies to the correct side)
   const playersArr = scene.players || [];
-  const turnOwners = uniqueTurnOwners(playersArr);
-  const idx = turnOwners.findIndex(name => name === scene.turnOwner);
+  const idx = playersArr.findIndex(p =>
+    (typeof p === 'string' ? p : (p.playerName || p.name)) === scene.turnOwner
+  );
 
   const nextIdx =
-    (idx === -1) ? 0 : ((idx + 1) % Math.max(1, turnOwners.length));
+    (idx === -1) ? 0 : ((idx + 1) % Math.max(1, playersArr.length));
 
-  const nextOwner = turnOwners[nextIdx] || scene.turnOwner;
+  const pNext = playersArr[nextIdx];
+  const nextOwner =
+    (typeof pNext === 'string')
+      ? pNext
+      : (pNext?.playerName || pNext?.name || scene.turnOwner);
 
   scene.turnOwner = nextOwner;
   scene.turnNumber += 1;
