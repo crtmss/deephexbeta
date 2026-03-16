@@ -419,134 +419,91 @@ function createRaider(scene, q, r, opts = {}) {
 
   unit.q = q;
   unit.r = r;
-  unit.type = (controller === 'ai') ? 'enemy_raider' : 'raider';
-  unit.isEnemy = (controller === 'ai');
-  unit.isPlayer = (controller !== 'ai');
 
-  unit.playerId = (controller === 'ai') ? null : (opts.ownerId ?? null);
-  unit.playerName = (controller === 'ai') ? 'AI' : (opts.ownerName ?? 'Player');
-  unit.name = unit.playerName;
-  unit.playerIndex = (controller === 'ai') ? null : (opts.ownerSlot ?? 0);
+  unit.type = 'raider';
+  unit.isEnemy = controller === 'ai';
+  unit.isPlayer = controller !== 'ai';
 
-  const def = getUnitDef('raider');
+  if (controller === 'ai') {
+    unit.controller = 'ai';
+    unit.aiFaction = String(opts.aiFaction || ownerKey || 'ai0');
+    unit.name = String(opts.name || unit.aiFaction);
+  } else {
+    unit.controller = 'player';
+    unit.playerId = opts.playerId || null;
+    unit.playerName = opts.playerName || 'Player';
+    unit.name = unit.playerName;
+    unit.playerIndex = Number.isFinite(opts.ownerSlot) ? opts.ownerSlot : 0;
+  }
+
   const st = createUnitState({
     type: 'raider',
-    ownerId: unit.playerId,
-    ownerSlot: unit.playerIndex,
-    controller: controller,
-    faction: (controller === 'ai') ? 'raiders' : `player${opts.ownerSlot ?? 0}` ,
+    ownerId: unit.playerId ?? null,
+    ownerSlot: (controller === 'ai') ? null : unit.playerIndex,
+    controller,
+    faction: (controller === 'ai') ? String(opts.aiFaction || ownerKey || 'ai0') : `player${unit.playerIndex || 0}`,
     q,
     r,
     facing: 0,
   });
-  unit.unitName = def.name;
+
+  unit.unitName = getUnitDef('raider').name;
   applyUnitStateToPhaserUnit(unit, st);
   unit.faction = st.faction;
 
   unit.facingAngle = 0;
 
-  if (controller === 'ai') {
-    unit.controller = 'ai';
-    unit.aiProfile = 'aggressive';
-    unit._ownerKey = ownerKey;
-  } else {
-    unit._ownerKey = ownerKey;
-  }
-
-  // Ensure stable id for respawn tracking
+  // Keep stable id
   if (!unit.id && !unit.unitId) {
-    unit.id = `u_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+    unit.id = `${controller === 'ai' ? 'er' : 'r'}_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
   }
 
   return unit;
 }
 
+export function updateUnitOrientation(scene, unit, fromQ, fromR, toQ, toR) {
+  if (!unit) return;
+
+  const from = scene.axialToWorld(fromQ, fromR);
+  const to = scene.axialToWorld(toQ, toR);
+
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+
+  // Angle of motion in screen space
+  let angle = Math.atan2(dy, dx);
+
+  // If your dash frame artwork points RIGHT by default, no offset is needed.
+  // If you later discover it points UP, set ROTATION_OFFSET = Math.PI / 2, etc.
+  const ROTATION_OFFSET = 0;
+
+  const finalAngle = angle + ROTATION_OFFSET;
+
+  // Rotate background only; icon stays upright.
+  if (unit._dirBg) {
+    unit._dirBg.rotation = finalAngle;
+  } else {
+    // fallback if someone passes the old badge/graphics container
+    unit.rotation = finalAngle;
+  }
+
+  unit.facingAngle = finalAngle;
+}
+
 /**
- * Creates a simple enemy unit.
- * (kept for compatibility, but we no longer spawn these globally)
+ * Create enemy raider near camp.
+ * Uses AI ownerKey ai0 so it has its own distinct tint.
  */
-function createEnemyUnit(scene, spawnTile) {
-  const u = createRaider(scene, spawnTile.q, spawnTile.r, {
+function spawnEnemyRaiderAt(scene, q, r, ownerKey = 'ai0') {
+  const unit = createRaider(scene, q, r, {
     controller: 'ai',
-    ownerKey: 'ai0',
-  });
-  u.type = 'enemy_raider';
-  u.isEnemy = true;
-  u.isPlayer = false;
-  u.controller = 'ai';
-  u.aiProfile = 'aggressive';
-  return u;
-}
-
-/**
- * Exported helper for AI respawn system (Raider Camp).
- */
-export function spawnEnemyRaiderAt(scene, q, r) {
-  // If you later add a second AI faction, pass ownerKey:'ai1' from camp logic.
-  const u = createRaider(scene, q, r, { controller: 'ai', ownerKey: 'ai0' });
-  u.type = 'enemy_raider';
-  u.isEnemy = true;
-  u.isPlayer = false;
-  u.controller = 'ai';
-  u.aiProfile = 'camp_raider';
-
-  scene.units = scene.units || [];
-  scene.enemies = scene.enemies || [];
-  scene.units.push(u);
-  scene.enemies.push(u);
-
-  return u;
-}
-
-/**
- * Creates a player-controlled Transporter.
- * Now uses a directional badge (icon 🚚), icon does not rotate.
- */
-function createTransporter(scene, q, r, owner) {
-  const pos = scene.axialToWorld(q, r);
-  const size = (typeof scene.hexSize === 'number') ? scene.hexSize : 22;
-  const s = Math.max(22, Math.round(size * 1.10));
-
-  const slot = owner?.playerIndex ?? owner?.ownerSlot ?? 0;
-  const ownerKey = normalizeOwnerKey(slot, 0);
-
-  const { cont } = createDirectionalUnitBadge(
-    scene,
-    pos.x,
-    pos.y,
     ownerKey,
-    '🚚',
-    s,
-    UNIT_Z.player
-  );
-
-  const unit = cont;
-
-  unit.q = q;
-  unit.r = r;
-  unit.type = 'transporter';
-  unit.isPlayer = true;
-  unit.isEnemy = false;
-
-  unit.playerId = owner?.playerId ?? owner?.ownerId ?? null;
-  unit.playerName = owner?.playerName ?? owner?.name ?? 'Player';
-  unit.name = unit.playerName;
-  unit.playerIndex = slot;
-
-  const def = getUnitDef('transporter');
-  const st = createUnitState({
-    type: 'transporter',
-    ownerId: unit.playerId,
-    ownerSlot: slot,
-    controller: 'player',
-    q,
-    r,
-    facing: 0,
+    aiFaction: ownerKey,
+    name: ownerKey,
   });
-  unit.unitName = def.name;
-  applyUnitStateToPhaserUnit(unit, st);
-  unit.faction = st.faction;
 
+  scene.enemies.push(unit);
+  scene.units.push(unit);
   return unit;
 }
 
@@ -974,47 +931,41 @@ export async function spawnUnitsAndEnemies() {
     else aiSlots.push({ player, idx });
   });
 
-connectedPlayers.forEach(({ player, idx }) => {
-  const tile = spawnTiles[idx] || spawnTiles[spawnTiles.length - 1];
-  const color = PLAYER_COLORS[idx % PLAYER_COLORS.length];
+  connectedPlayers.forEach(({ player, idx }) => {
+    const tile = spawnTiles[idx] || spawnTiles[spawnTiles.length - 1];
+    const color = PLAYER_COLORS[idx % PLAYER_COLORS.length];
 
-  // hard safety
-  if (!isLandTile(tile)) {
-    console.warn('[Units] Picked spawn tile is not land, searching neighbor/fallback…', tile);
-    const fallback = (scene.mapData || []).find(isLandTile);
-    if (!fallback) return;
-    tile.q = fallback.q;
-    tile.r = fallback.r;
-  }
+    // hard safety
+    if (!isLandTile(tile)) {
+      console.warn('[Units] Picked spawn tile is not land, searching neighbor/fallback…', tile);
+      const fallback = (scene.mapData || []).find(isLandTile);
+      if (!fallback) return;
+      tile.q = fallback.q;
+      tile.r = fallback.r;
+    }
 
-  const spawnedUnits = (scene.isEliminationMission || scene.missionType === 'elimination')
-    ? spawnEliminationSquadForPlayer(scene, tile, player, idx)
-    : [createMobileBase(scene, tile, player, color, idx)];
+    const spawnedUnits = (scene.isEliminationMission || scene.missionType === 'elimination')
+      ? spawnEliminationSquadForPlayer(scene, tile, player, idx)
+      : [createMobileBase(scene, tile, player, color, idx)];
 
-  let representative = null;
+    for (const unit of spawnedUnits) {
+      if (!unit) continue;
 
-  for (const unit of spawnedUnits) {
-    if (!unit) continue;
+      unit.isLocalPlayer =
+        (localPlayerId && player.id === localPlayerId) ||
+        (!localPlayerId && player.name === localName);
 
-    unit.isLocalPlayer =
-      (localPlayerId && player.id === localPlayerId) ||
-      (!localPlayerId && player.name === localName);
+      stampLegacyPlayerOwnership(unit, player, idx);
 
-    stampLegacyPlayerOwnership(unit, player, idx);
-
-    scene.units.push(unit);
-
-    // scene.players должен содержать 1 representative per player,
-    // иначе ломается часть старой turn/move логики.
-    if (!representative) representative = unit;
-  }
-
-  if (representative) {
-    scene.players.push(representative);
-  }
-});
-
-  
+      // IMPORTANT:
+      // The existing scene logic still treats scene.players as the authoritative
+      // collection for controllable player pieces in several places.
+      // For elimination test squads, every spawned combat unit must live in BOTH
+      // scene.units and scene.players (same pattern as old mobile bases).
+      scene.units.push(unit);
+      scene.players.push(unit);
+    }
+  });
 
 // Elimination mission: no camps/enemies/resources, only players
 if (scene.isEliminationMission || scene.missionType === 'elimination') {
@@ -1087,27 +1038,64 @@ function spawnUnitNearBase(scene, base, unitType) {
   if (!scene || !base) return null;
   const spot = findFreeNeighbor(scene, base.q, base.r);
   if (!spot) {
-    console.warn('[UNITS] No free adjacent LAND hex to spawn unit near base.');
+    console.warn('[UNITS] No free adjacent tile to spawn', unitType);
     return null;
   }
 
   let unit = null;
-  if (unitType === 'transporter') unit = createTransporter(scene, spot.q, spot.r, base);
-  else if (unitType === 'raider') unit = createRaider(scene, spot.q, spot.r, {
-    controller: 'player',
-    ownerId: base.playerId,
-    ownerSlot: base.playerIndex ?? base.ownerSlot ?? 0,
-    ownerName: base.playerName || base.name
-  });
+  if (unitType === 'transporter') {
+    const pos = scene.axialToWorld(spot.q, spot.r);
+    const size = (typeof scene.hexSize === 'number') ? scene.hexSize : 22;
+    const s = Math.max(24, Math.round(size * 1.20));
+
+    const ownerKey = normalizeOwnerKey(base.playerIndex ?? base.ownerSlot ?? 0, 0);
+
+    const { cont } = createDirectionalUnitBadge(
+      scene,
+      pos.x,
+      pos.y,
+      ownerKey,
+      '📦',
+      s,
+      UNIT_Z.player
+    );
+
+    unit = cont;
+    unit.q = spot.q;
+    unit.r = spot.r;
+    unit.type = 'transporter';
+    unit.isPlayer = true;
+    unit.isEnemy = false;
+    unit.playerId = base.playerId || null;
+    unit.playerName = base.playerName || base.name || 'Player';
+    unit.name = unit.playerName;
+    unit.playerIndex = Number.isFinite(base.playerIndex) ? base.playerIndex : (base.ownerSlot ?? 0);
+
+    const st = createUnitState({
+      type: 'transporter',
+      ownerId: unit.playerId,
+      ownerSlot: unit.playerIndex,
+      controller: 'player',
+      faction: `player${unit.playerIndex || 0}`,
+      q: spot.q,
+      r: spot.r,
+      facing: 0,
+    });
+    unit.unitName = getUnitDef('transporter').name;
+    applyUnitStateToPhaserUnit(unit, st);
+    unit.faction = st.faction;
+    unit.facingAngle = 0;
+  } else if (unitType === 'raider') {
+    unit = createRaider(scene, spot.q, spot.r, {
+      controller: 'player',
+      ownerSlot: base.playerIndex ?? base.ownerSlot ?? 0,
+      playerId: base.playerId || null,
+      playerName: base.playerName || base.name || 'Player',
+    });
+  }
 
   if (!unit) return null;
 
-  if (!unit.id && !unit.unitId) {
-    unit.id = unit.unitId || `u_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
-  }
-
-  scene.units = scene.units || [];
-  scene.players = scene.players || [];
   scene.units.push(unit);
   scene.players.push(unit);
   return unit;
@@ -1156,258 +1144,5 @@ export function buildRaiderAtSelectedUnit() {
   const unit = spawnUnitNearBase(scene, base, 'raider');
   scene.updateResourceUI?.();
   scene.refreshResourcesPanel?.();
-  scene.refreshUnitActionPanel?.();
   return unit;
-}
-
-/* =========================================================
-   AI (very simple, host-authoritative)
-   ========================================================= */
-
-const WEAPONS = {
-  hmg: { id: 'hmg', name: 'HMG', damage: 10, range: 3, vs: { LIGHT: 1.0, MEDIUM: 1.25, HEAVY: 0.75, NONE: 1.0 } },
-  lmg: { id: 'lmg', name: 'LMG', damage: 4, range: 2, vs: { LIGHT: 1.25, MEDIUM: 0.75, HEAVY: 0.5, NONE: 1.0 } },
-  smg: { id: 'smg', name: 'SMG', damage: 3, range: 2, vs: { LIGHT: 1.25, MEDIUM: 0.75, HEAVY: 0.5, NONE: 1.0 } },
-  cutter: { id: 'cutter', name: 'Cutter', damage: 6, range: 1, vs: { LIGHT: 0.5, MEDIUM: 1.0, HEAVY: 1.25, NONE: 1.0 } },
-};
-
-function armorClassOf(u) {
-  const c = String(u?.armorClass || 'NONE').toUpperCase();
-  return (c === 'LIGHT' || c === 'MEDIUM' || c === 'HEAVY') ? c : 'NONE';
-}
-
-function resolveDamage(attacker, defender, weaponId, dist) {
-  const w = WEAPONS[weaponId] || WEAPONS.smg;
-  const ac = armorClassOf(defender);
-  const multAC = (w.vs && w.vs[ac] != null) ? w.vs[ac] : 1.0;
-
-  let multDist = 1.0;
-  if (weaponId === 'smg') {
-    if (dist <= 1) multDist = 1.25;
-    else if (dist >= 2) multDist = 0.75;
-  }
-
-  const armorPts = Math.max(0, Number(defender?.armorPoints || 0));
-  const multArmorPts = Math.max(0, 1.0 - 0.05 * armorPts);
-
-  const raw = w.damage * multAC * multDist * multArmorPts;
-  const final = Math.max(1, Math.round(raw));
-  return {
-    weapon: w,
-    dist,
-    multAC,
-    multDist,
-    multArmorPts,
-    damage: final,
-  };
-}
-
-function applyDamageToUnit(scene, defender, dmg) {
-  defender.hp = Math.max(0, (defender.hp || 0) - dmg);
-  if (defender.status) defender.status.defending = false;
-
-  if (defender.hp <= 0) {
-    defender.isDead = true;
-    scene.units = (scene.units || []).filter(u => u !== defender);
-    scene.players = (scene.players || []).filter(u => u !== defender);
-    scene.enemies = (scene.enemies || []).filter(u => u !== defender);
-    try { defender.destroy?.(); } catch (e) {}
-    try { defender.container?.destroy?.(); } catch (e) {}
-  }
-}
-
-function getAttackableTargets(scene, attacker) {
-  const targets = [];
-  const enemies = (attacker.isEnemy || attacker.controller === 'ai')
-    ? (scene.players || [])
-    : (scene.enemies || []);
-
-  const aq = attacker.q, ar = attacker.r;
-
-  for (const t of enemies) {
-    if (!t || t.isDead) continue;
-    const d = axialDistance(aq, ar, t.q, t.r);
-    targets.push({ unit: t, dist: d });
-  }
-  targets.sort((a, b) => a.dist - b.dist);
-  return targets;
-}
-
-function pickBestWeapon(attacker, dist) {
-  const wlist = Array.isArray(attacker.weapons) ? attacker.weapons : [];
-  let best = null;
-  for (const wid of wlist) {
-    const w = WEAPONS[wid];
-    if (!w) continue;
-    if (dist <= w.range) {
-      if (!best || w.damage > best.damage) best = w;
-    }
-  }
-  return best ? best.id : null;
-}
-
-function tryAttack(scene, attacker) {
-  const targets = getAttackableTargets(scene, attacker);
-  if (!targets.length) return false;
-
-  for (const { unit: defender, dist } of targets) {
-    const wid = pickBestWeapon(attacker, dist);
-    if (!wid) continue;
-    const r = resolveDamage(attacker, defender, wid, dist);
-    applyDamageToUnit(scene, defender, r.damage);
-    console.log(`[AI] ${attacker.unitName || attacker.type} attacks ${defender.unitName || defender.type} with ${wid} for ${r.damage} (dist=${dist})`);
-    return true;
-  }
-
-  return false;
-}
-
-function stepTowards(scene, unit, targetQ, targetR) {
-  const neigh = neighborsOddR(unit.q, unit.r);
-  let best = null;
-  let bestD = Infinity;
-
-  for (const [dq, dr] of neigh) {
-    const nq = unit.q + dq;
-    const nr = unit.r + dr;
-    if (nq < 0 || nr < 0 || nq >= (scene.mapWidth || 0) || nr >= (scene.mapHeight || 0)) continue;
-    if (isBlockedForUnit(scene, nq, nr)) continue;
-
-    const t = getTile(scene, nq, nr);
-    if (!isLandTile(t)) continue;
-
-    const d = axialDistance(nq, nr, targetQ, targetR);
-    if (d < bestD) {
-      bestD = d;
-      best = { q: nq, r: nr };
-    }
-  }
-
-  if (!best) return false;
-
-  // ✅ IMPORTANT: Face the tile BEFORE we "teleport" / setPosition
-  updateUnitOrientation(scene, unit, unit.q, unit.r, best.q, best.r);
-
-  unit.q = best.q;
-  unit.r = best.r;
-  unit.mp = Math.max(0, (unit.mp || unit.movementPoints || 0) - 1);
-  unit.movementPoints = unit.mp;
-
-  const pos = scene.axialToWorld(best.q, best.r);
-  try { unit.setPosition?.(Math.round(pos.x), Math.round(pos.y)); } catch (e) { unit.x = Math.round(pos.x); unit.y = Math.round(pos.y); }
-  return true;
-}
-
-export function applyEnemyAIOnEndTurn(scene) {
-  if (!scene || !scene.isHost) return;
-  const enemies = scene.enemies || [];
-  const players = scene.players || [];
-  if (!enemies.length || !players.length) return;
-
-  for (const e of enemies.slice()) {
-    if (!e || e.isDead) continue;
-
-    if (Number.isFinite(e.mpMax)) e.mp = e.mpMax;
-    if (Number.isFinite(e.apMax)) e.ap = e.apMax;
-    e.movementPoints = e.mp;
-
-    const didAttack = tryAttack(scene, e);
-    if (didAttack) continue;
-
-    const targets = getAttackableTargets(scene, e);
-    const nearest = targets[0];
-    if (!nearest) continue;
-
-    let steps = Math.max(0, Math.floor(e.mp || e.movementPoints || 0));
-    while (steps-- > 0) {
-      const moved = stepTowards(scene, e, nearest.unit.q, nearest.unit.r);
-      if (!moved) break;
-      if (tryAttack(scene, e)) break;
-    }
-  }
-}
-
-/**
- * Update unit orientation based on movement direction.
- *
- * Your grid uses ODD-R neighbors (see neighborsOddR).
- * Phaser's rotation is clockwise-positive because Y grows downward.
- *
- * What was wrong before:
- * - We assumed "dir index * 60°" would map to NE/NW/...
- *   but on screen, +60° from east points DOWN-RIGHT (SE), not UP-RIGHT (NE).
- * - That makes diagonal turns appear mirrored:
- *     right-up ↔ right-down, left-up ↔ left-down.
- *
- * Fix:
- * - We still identify the direction index by matching (dq,dr) against neighborsOddR(fromR parity)
- * - But we map those 6 dirs to SCREEN angles with a lookup that swaps the vertical diagonals:
- *     logical order from neighborsOddR: [E, NE, NW, W, SW, SE]
- *     screen rotation steps (clockwise): [0, 5, 4, 3, 2, 1] * 60°
- *   This exactly swaps NE<->SE and NW<->SW, matching your request.
- *
- * NEW:
- * - If unit has a directional background (unit._dirBg), we rotate ONLY that bg.
- * - Icon (unit._unitIcon) remains unrotated.
- */
-export function updateUnitOrientation(scene, unit, fromQ, fromR, toQ, toR) {
-  if (!unit) return;
-
-  const dq = toQ - fromQ;
-  const dr = toR - fromR;
-  if (dq === 0 && dr === 0) return;
-
-  // Match against odd-r neighbor deltas for THIS row parity
-  const neigh = neighborsOddR(fromQ, fromR);
-  let dir = -1;
-  for (let i = 0; i < neigh.length; i++) {
-    const [ndq, ndr] = neigh[i];
-    if (ndq === dq && ndr === dr) {
-      dir = i;
-      break;
-    }
-  }
-
-  // If somehow not a direct neighbor (teleport), fall back to "closest axial-ish angle"
-  if (dir === -1) {
-    if (Math.abs(dq) >= Math.abs(dr)) dir = (dq >= 0) ? 0 : 3;
-    else dir = (dr >= 0) ? 5 : 2;
-  }
-
-  // ✅ Screen-correct angle mapping (fixes mirrored diagonals)
-  // neighborsOddR dir order: 0:E, 1:NE, 2:NW, 3:W, 4:SW, 5:SE
-  // screen clockwise steps:  0,   5,    4,    3,    2,    1
-  const STEP_BY_DIR = [0, 5, 4, 3, 2, 1];
-  const step = STEP_BY_DIR[dir] ?? 0;
-  const angle = step * (Math.PI / 3);
-
-  // Rotate ONLY directional bg when present
-  if (unit._dirBg && typeof unit._dirBg.rotation === 'number') {
-    unit._dirBg.rotation = angle;
-    // keep icon stable
-    if (unit._unitIcon && typeof unit._unitIcon.rotation === 'number') {
-      unit._unitIcon.rotation = 0;
-    }
-  } else if (typeof unit.rotation === 'number') {
-    // fallback for legacy objects (circles, etc.)
-    unit.rotation = angle;
-  }
-
-  // Optional flip for sprite-based units (if any) — keep behavior
-  if (typeof unit.setFlipX === 'function') {
-    const westish = (dir === 3 || dir === 2 || dir === 4);
-    unit.setFlipX(westish);
-  }
-
-  unit.facing = dir;
-  unit.facingAngle = angle;
-}
-
-/**
- * Placeholder for future real-time sync subscription.
- */
-export async function subscribeToGameUpdates(_scene, _roomCode) {
-  return {
-    unsubscribe() { /* no-op for now */ }
-  };
 }
