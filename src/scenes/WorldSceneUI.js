@@ -42,43 +42,6 @@ function ensureAbilityController(scene) {
   return scene.abilityController;
 }
 
-function getUnitOwnerName(scene, unit) {
-  if (!unit) return null;
-
-  if (typeof unit.playerName === 'string' && unit.playerName) return unit.playerName;
-  if (typeof unit.ownerName === 'string' && unit.ownerName) return unit.ownerName;
-  if (typeof unit.owner === 'string' && unit.owner) return unit.owner;
-
-  const n = (typeof unit.name === 'string' && unit.name) ? unit.name : null;
-  if (n && (n === scene?.turnOwner || n === scene?.playerName)) return n;
-
-  return n;
-}
-
-function syncMovementAliases(unit) {
-  if (!unit) return;
-
-  if (Number.isFinite(unit.mp) && !Number.isFinite(unit.movementPoints)) {
-    unit.movementPoints = unit.mp;
-  }
-  if (Number.isFinite(unit.movementPoints) && !Number.isFinite(unit.mp)) {
-    unit.mp = unit.movementPoints;
-  }
-
-  if (Number.isFinite(unit.mpMax)) {
-    if (!Number.isFinite(unit.maxMovementPoints)) {
-      unit.maxMovementPoints = unit.mpMax;
-    }
-    if (!Number.isFinite(unit.movementPointsMax)) {
-      unit.movementPointsMax = unit.mpMax;
-    }
-  }
-
-  if (Number.isFinite(unit.maxMovementPoints) && !Number.isFinite(unit.mpMax)) {
-    unit.mpMax = unit.maxMovementPoints;
-  }
-}
-
 /* ---------------- Camera controls (unused unless called) ---------------- */
 
 function findUnitAtHex(scene, q, r) {
@@ -333,8 +296,13 @@ export function updateTurnText(scene, explicitTurnNumber = null) {
   scene.turnText?.setText(`Player Turn: ${scene.turnOwner} (Turn ${n})`);
 }
 
-/* ---------------- (MOVED OUT) Movement / path preview helpers ---------------- */
-// Moved to WorldSceneActions.js
+/* ---------------- World input setup ---------------- */
+
+export function setupWorldInputUI(scene) {
+  scene.pathPreviewTiles = scene.pathPreviewTiles || [];
+  scene.pathPreviewLabels = scene.pathPreviewLabels || [];
+  setupPlayerControls(scene);
+}
 
 /* ---------------- Selection highlight helpers ---------------- */
 export function updateSelectionHighlight(scene) {
@@ -387,89 +355,163 @@ function getUnitAtHex(scene, q, r) {
   );
 }
 
-function stepMoveCost(prevTile, tile) {
-  if (!tile) return Infinity;
-  if (tile.type === 'water' || tile.type === 'mountain') return Infinity;
+function stepMoveCost(fromTile, toTile) {
+  if (!fromTile || !toTile) return Infinity;
 
-  const typeCost = (tile.type === 'forest') ? 2 : 1;
+  const e0 = Number.isFinite(fromTile.visualElevation) ? fromTile.visualElevation
+           : Number.isFinite(fromTile.elevation) ? fromTile.elevation
+           : Number.isFinite(fromTile.baseElevation) ? fromTile.baseElevation : 0;
 
-  const prevElev = Number(prevTile?.elevation ?? prevTile?.visualElevation ?? prevTile?.baseElevation ?? 0);
-  const elev = Number(tile.elevation ?? tile.visualElevation ?? tile.baseElevation ?? 0);
-  const elevDiff = Math.abs(elev - prevElev);
+  const e1 = Number.isFinite(toTile.visualElevation) ? toTile.visualElevation
+           : Number.isFinite(toTile.elevation) ? toTile.elevation
+           : Number.isFinite(toTile.baseElevation) ? toTile.baseElevation : 0;
 
-  return typeCost + elevDiff;
+  if (Math.abs(e1 - e0) > 1) return Infinity;
+
+  let cost = 1;
+  if (toTile.hasForest) cost += 1;
+  if (e1 > e0) cost += 1;
+
+  return cost;
 }
 
-function splitPathByMP(scene, unit, fullPath, blockedFn) {
+function drawPathLine(scene, path, { color = 0x00ffff, alpha = 1, width = 3, depth = 50 } = {}) {
+  if (!Array.isArray(path) || path.length < 2) return;
+
+  const g = scene.add.graphics().setDepth(depth);
+  g.lineStyle(width, color, alpha);
+
+  for (let i = 0; i < path.length - 1; i++) {
+    const a = scene.axialToWorld(path[i].q, path[i].r);
+    const b = scene.axialToWorld(path[i + 1].q, path[i + 1].r);
+
+    g.beginPath();
+    g.moveTo(a.x, a.y);
+    g.lineTo(b.x, b.y);
+    g.strokePath();
+  }
+
+  scene.pathPreviewTiles.push(g);
+}
+
+function splitPathByMP(scene, unit, fullPath, blockedPred) {
   const mp = getMP(unit);
-  let costSum = 0;
   const within = [];
   const beyond = [];
-
-  for (let i = 0; i < fullPath.length; i++) {
-    const step = fullPath[i];
-    const tile = getTile(scene, step.q, step.r);
-    const prevTile = (i > 0) ? getTile(scene, fullPath[i - 1].q, fullPath[i - 1].r) : null;
-    const stepCost = (i === 0) ? 0 : stepMoveCost(prevTile, tile);
-
-    if (!Number.isFinite(stepCost) || stepCost === Infinity || (i > 0 && blockedFn(tile))) {
-      break;
-    }
-
-    if (i === 0 || costSum + stepCost <= mp) {
-      within.push(step);
-      if (i > 0) costSum += stepCost;
-    } else {
-      beyond.push(step);
-    }
-  }
-
-  const usablePath = (within.length > 1) ? within : [];
+  const usablePath = [];
   const costs = [];
   const cum = [];
-  let run = 0;
 
-  for (let i = 0; i < usablePath.length; i++) {
-    if (i === 0) {
-      costs.push(0);
-      cum.push(0);
-      continue;
-    }
-    const prevTile = getTile(scene, usablePath[i - 1].q, usablePath[i - 1].r);
-    const tile = getTile(scene, usablePath[i].q, usablePath[i].r);
-    const c = stepMoveCost(prevTile, tile);
-    run += c;
-    costs.push(c);
-    cum.push(run);
+  if (!Array.isArray(fullPath) || fullPath.length === 0) {
+    return { within, beyond, usablePath, costs, cum, cutIndex: 0, mp };
   }
 
-  return { within, beyond, usablePath, costs, cum, mp };
+  let sum = 0;
+  usablePath.push(fullPath[0]);
+  costs.push(0);
+  cum.push(0);
+
+  for (let i = 1; i < fullPath.length; i++) {
+    const prev = fullPath[i - 1];
+    const cur = fullPath[i];
+    const prevTile = getTile(scene, prev.q, prev.r);
+    const curTile = getTile(scene, cur.q, cur.r);
+
+    if (blockedPred && blockedPred(curTile)) break;
+
+    const stepCost = stepMoveCost(prevTile, curTile);
+    if (!Number.isFinite(stepCost) || stepCost === Infinity) break;
+
+    const occ = getUnitAtHex(scene, cur.q, cur.r);
+    if (occ && occ !== unit) break;
+
+    sum += stepCost;
+    usablePath.push(cur);
+    costs.push(stepCost);
+    cum.push(sum);
+  }
+
+  let cutIndex = 0;
+  for (let i = 0; i < usablePath.length; i++) {
+    if (cum[i] <= mp) cutIndex = i;
+    else break;
+  }
+
+  for (let i = 0; i <= cutIndex; i++) within.push(usablePath[i]);
+
+  if (usablePath.length > 1 && cutIndex < usablePath.length - 1) {
+    const startBeyond = Math.max(0, cutIndex);
+    for (let i = startBeyond; i < usablePath.length; i++) beyond.push(usablePath[i]);
+  }
+
+  return { within, beyond, usablePath, costs, cum, cutIndex, mp };
 }
 
-function computePathWithAStar(scene, unit, targetHex, blockedFn) {
-  if (!scene || !unit || !targetHex) return null;
+function computeTurnMarkers(scene, unit, usablePath, costs) {
+  const markers = [];
+  if (!Array.isArray(usablePath) || usablePath.length < 2) return markers;
 
-  try {
-    return aStarFindPath(
-      scene,
-      { q: unit.q, r: unit.r },
-      { q: targetHex.q, r: targetHex.r },
-      blockedFn
-    );
-  } catch (e) {
-    console.warn('[PATH] A* failed:', e);
-    return null;
+  const maxMP =
+    Number.isFinite(unit?.mpMax) ? unit.mpMax :
+    Number.isFinite(unit?.maxMovementPoints) ? unit.maxMovementPoints :
+    0;
+
+  if (!(maxMP > 0)) return markers;
+
+  let sum = 0;
+  let currentTurn = 1;
+
+  for (let i = 1; i < usablePath.length; i++) {
+    const stepCost = costs[i] ?? 0;
+    if (sum + stepCost > maxMP) {
+      markers.push({
+        q: usablePath[i - 1].q,
+        r: usablePath[i - 1].r,
+        turnIndex: currentTurn,
+      });
+      currentTurn += 1;
+      sum = 0;
+    }
+    sum += stepCost;
   }
+
+  markers.push({
+    q: usablePath[usablePath.length - 1].q,
+    r: usablePath[usablePath.length - 1].r,
+    turnIndex: currentTurn,
+  });
+
+  return markers;
+}
+
+function computePathWithAStar(scene, unit, targetHex, blockedPred) {
+  const mapData = scene.mapData || [];
+  if (!Array.isArray(mapData) || mapData.length === 0) return null;
+
+  const start = { q: unit.q, r: unit.r };
+  const goal = { q: targetHex.q, r: targetHex.r };
+
+  const path = aStarFindPath(start, goal, mapData, blockedPred, {
+    getMoveCost: stepMoveCost,
+  });
+
+  return path;
 }
 
 function setAutoMoveTarget(unit, q, r) {
   if (!unit) return;
-  unit.autoMove = { active: true, target: { q, r } };
+  unit.autoMove = {
+    active: true,
+    target: { q, r },
+  };
 }
 
 function cancelAutoMove(unit) {
   if (!unit) return;
-  unit.autoMove = { active: false, target: null };
+  unit.autoMove = {
+    active: false,
+    target: null,
+  };
 }
 
 function isPointerOverHistoryPanel(pointer) {
@@ -497,22 +539,9 @@ export function setupPlayerControls(scene) {
   ensureAttackController(scene);
   ensureAbilityController(scene);
 
-  // Small floating UI for movement preview cost (screen-space, not world-space)
-  scene.pathCostText = scene.add.text(0, 0, '', {
-    fontSize: '14px',
-    fill: '#ffffff',
-    backgroundColor: 'rgba(0,0,0,0.65)',
-    padding: { x: 6, y: 4 }
-  })
-    .setScrollFactor(0)
-    .setDepth(10000)
-    .setVisible(false);
-
-  if (!scene.pathCostText.setOrigin) {
-    // no-op safety for odd Phaser typings/builds
-  } else {
-    scene.pathCostText.setOrigin(0.5, 1.0);
-  }
+  // Clear previous preview containers if any
+  scene.pathPreviewTiles = [];
+  scene.pathPreviewLabels = [];
 
   const trySendAttackIntent = (scene, attacker, target) => {
     try {
@@ -562,6 +591,69 @@ export function setupPlayerControls(scene) {
     scene.refreshUnitActionPanel?.();
   };
 
+  // Stage B: hotkeys (A=attack mode, D=defence, ESC=cancel mode)
+  scene.input.keyboard?.on('keydown', (ev) => {
+    if (!scene || scene.logisticsInputLocked) return;
+
+    const ae = (typeof document !== 'undefined') ? document.activeElement : null;
+    const tag = ae?.tagName ? String(ae.tagName).toLowerCase() : '';
+    if (tag === 'input' || tag === 'textarea') return;
+
+    const key = String(ev.key || '').toLowerCase();
+
+    if (key === 'escape') {
+      if (scene.unitCommandMode) {
+        scene.unitCommandMode = null;
+        scene.clearPathPreview?.();
+        clearCombatPreview(scene);
+        console.log('[UNITS] Command mode cleared');
+        return;
+      }
+
+      if (scene.selectedUnit && isControllable(scene.selectedUnit)) {
+        cancelAutoMove(scene.selectedUnit);
+        console.log('[MOVE] Auto-move cancelled');
+        scene.refreshUnitActionPanel?.();
+      }
+      return;
+    }
+
+    if (!scene.selectedUnit) return;
+    if (!isControllable(scene.selectedUnit)) return;
+
+    const ownerName = scene.selectedUnit.playerName || scene.selectedUnit.name;
+    if (scene.turnOwner && ownerName !== scene.turnOwner) {
+      return;
+    }
+
+    if (key === 'a') {
+      scene.unitCommandMode = (scene.unitCommandMode === 'attack') ? null : 'attack';
+      scene.clearPathPreview?.();
+
+      if (scene.unitCommandMode === 'attack') {
+        updateCombatPreview(scene);
+      } else {
+        clearCombatPreview(scene);
+      }
+
+      scene.refreshUnitActionPanel?.();
+      return;
+    }
+
+    if (key === 'd') {
+      const res = applyDefence(scene.selectedUnit);
+      if (!res.ok) {
+        console.log('[DEFENCE] failed:', res.reason);
+        return;
+      }
+      console.log('[DEFENCE] applied to', scene.selectedUnit.name || scene.selectedUnit.unitId);
+      try { scene.selectedUnit.setAlpha?.(0.85); } catch (e) {}
+      scene.updateSelectionHighlight?.();
+      scene.refreshUnitActionPanel?.();
+      return;
+    }
+  });
+
   scene.input.on('pointerdown', pointer => {
     if (scene.logisticsInputLocked) return;
     if (scene.isDragging) return;
@@ -582,7 +674,7 @@ export function setupPlayerControls(scene) {
 
     const clickedUnit = getUnitAtHex(scene, q, r);
     if (scene.unitCommandMode === 'attack' && scene.selectedUnit && clickedUnit && isEnemy(clickedUnit)) {
-      const ownerName = getUnitOwnerName(scene, scene.selectedUnit);
+      const ownerName = scene.selectedUnit.playerName || scene.selectedUnit.name;
       if (scene.turnOwner && ownerName !== scene.turnOwner) return;
 
       const sent = trySendAttackIntent(scene, scene.selectedUnit, clickedUnit);
@@ -659,7 +751,7 @@ export function setupPlayerControls(scene) {
         return;
       }
 
-      const ownerName = getUnitOwnerName(scene, scene.selectedUnit);
+      const ownerName = scene.selectedUnit.playerName || scene.selectedUnit.name;
       if (scene.turnOwner && ownerName !== scene.turnOwner) {
         return;
       }
@@ -677,7 +769,6 @@ export function setupPlayerControls(scene) {
       if (fullPath && fullPath.length > 1) {
         setAutoMoveTarget(scene.selectedUnit, rounded.q, rounded.r);
 
-        syncMovementAliases(scene.selectedUnit);
         const movementPoints = getMP(scene.selectedUnit);
         const trimmedPath = [];
         let costSum = 0;
@@ -743,7 +834,19 @@ export function setupPlayerControls(scene) {
       clearCombatPreview(scene);
     }
 
+    if (!isControllable(scene.selectedUnit)) {
+      scene.clearPathPreview?.();
+      return;
+    }
+
+    const ownerName = scene.selectedUnit.playerName || scene.selectedUnit.name;
+    if (scene.turnOwner && ownerName !== scene.turnOwner) {
+      scene.clearPathPreview?.();
+      return;
+    }
+
     const rounded = scene.worldToAxial(pointer.worldX, pointer.worldY);
+
     if (
       rounded.q < 0 ||
       rounded.r < 0 ||
@@ -751,21 +854,6 @@ export function setupPlayerControls(scene) {
       rounded.r >= scene.mapHeight
     ) {
       scene.clearPathPreview?.();
-      scene.pathCostText?.setVisible(false);
-      return;
-    }
-
-    const ownerName = getUnitOwnerName(scene, scene.selectedUnit);
-    if (scene.turnOwner && ownerName !== scene.turnOwner) {
-      scene.clearPathPreview?.();
-      scene.pathCostText?.setVisible(false);
-      return;
-    }
-
-    const clickedUnit = getUnitAtHex(scene, rounded.q, rounded.r);
-    if (clickedUnit && clickedUnit !== scene.selectedUnit) {
-      scene.clearPathPreview?.();
-      scene.pathCostText?.setVisible(false);
       return;
     }
 
@@ -778,198 +866,63 @@ export function setupPlayerControls(scene) {
     };
 
     const fullPath = computePathWithAStar(scene, scene.selectedUnit, rounded, blocked);
-    if (!fullPath || fullPath.length <= 1) {
-      scene.clearPathPreview?.();
-      scene.pathCostText?.setVisible(false);
-      return;
-    }
 
-    syncMovementAliases(scene.selectedUnit);
+    scene.clearPathPreview?.();
 
-    const {
-      within,
-      beyond,
-      usablePath,
-      costs,
-      cum,
-      mp: movementPoints,
-    } = splitPathByMP(scene, scene.selectedUnit, fullPath, blocked);
+    if (fullPath && fullPath.length > 1) {
+      const {
+        within,
+        beyond,
+        usablePath,
+        costs,
+        cum,
+        mp: movementPoints,
+      } = splitPathByMP(scene, scene.selectedUnit, fullPath, blocked);
 
-    scene.drawPathPreview?.(within, beyond);
+      if (usablePath.length <= 1) return;
 
-    // Movement cost tooltip
-    if (scene.pathCostText) {
-      const totalCost = cum.length ? cum[cum.length - 1] : 0;
-      const reachable = usablePath.length > 1;
-      const txt = reachable
-        ? `Move cost: ${totalCost} / ${movementPoints}`
-        : `Blocked`;
+      const withinColor = 0x00ffff; // cyan
+      const beyondColor = 0x8a8a8a; // grey
 
-      scene.pathCostText
-        .setText(txt)
-        .setPosition(pointer.x, pointer.y - 14)
-        .setVisible(true);
+      if (within.length > 1) {
+        drawPathLine(scene, within, { color: withinColor, alpha: 0.95, width: 3, depth: 50 });
+      }
+      if (beyond.length > 1) {
+        drawPathLine(scene, beyond, { color: beyondColor, alpha: 0.85, width: 3, depth: 50 });
+      }
+
+      const markers = computeTurnMarkers(scene, scene.selectedUnit, usablePath, costs);
+
+      for (const m of markers) {
+        const { x, y } = scene.axialToWorld(m.q, m.r);
+
+        const idx = usablePath.findIndex(p => p.q === m.q && p.r === m.r);
+        const c = (idx >= 0) ? (cum[idx] ?? 0) : 0;
+        const labelColor = (c <= movementPoints) ? '#00ffff' : '#b0b0b0';
+
+        const label = scene.add.text(x, y - 10, `${m.turnIndex}`, {
+          fontSize: '12px',
+          color: labelColor,
+          fontStyle: 'bold',
+          backgroundColor: 'rgba(0,0,0,0.35)',
+          padding: { x: 4, y: 2 },
+        }).setOrigin(0.5).setDepth(52);
+
+        scene.pathPreviewLabels.push(label);
+      }
     }
   });
 
   scene.input.on('pointerout', () => {
     scene.clearPathPreview?.();
-    scene.pathCostText?.setVisible(false);
-  });
-
-  scene.input.keyboard?.on('keydown-ESC', () => {
-    scene.unitCommandMode = null;
-    scene.clearPathPreview?.();
     clearCombatPreview(scene);
-    scene.attackableHexes = null;
-    scene.refreshUnitActionPanel?.();
   });
 }
 
-/* ---------------- Action panel / selected unit HUD ---------------- */
-
-function getSelectedOwnerName(scene) {
-  return getUnitOwnerName(scene, scene.selectedUnit);
-}
-
-export function refreshUnitActionPanel(scene) {
-  if (!scene.actionPanel) return;
-
-  const panel = scene.actionPanel;
-  panel.removeAll(true);
-
-  if (!scene.selectedUnit) {
-    panel.setVisible(false);
-    return;
-  }
-
-  const u = scene.selectedUnit;
-  ensureUnitCombatFields(u);
-
-  panel.setVisible(true);
-
-  const ownerName = getSelectedOwnerName(scene);
-  const isMyTurn = !scene.turnOwner || ownerName === scene.turnOwner;
-
-  let y = 0;
-
-  const title = scene.add.text(0, y, `Selected: ${u.unitName || u.type || 'Unit'}`, {
-    fontSize: '16px',
-    fill: '#ffffff',
-  });
-  panel.add(title);
-  y += 24;
-
-  const stats = scene.add.text(0, y,
-    `HP ${u.hp}/${u.maxHp ?? u.hpMax ?? '?'}   MP ${getMP(u)}/${u.mpMax ?? u.maxMovementPoints ?? '?'}   AP ${u.ap}/${u.apMax}`,
-    { fontSize: '14px', fill: '#d7ecff' }
-  );
-  panel.add(stats);
-  y += 24;
-
-  const modeText = scene.unitCommandMode ? `Mode: ${scene.unitCommandMode}` : 'Mode: move/select';
-  const modeLabel = scene.add.text(0, y, modeText, {
-    fontSize: '13px',
-    fill: '#ffe8a3',
-  });
-  panel.add(modeLabel);
-  y += 26;
-
-  const mkBtn = (label, onClick, enabled = true, color = '#355c7d') => {
-    const btn = scene.add.text(0, y, label, {
-      fontSize: '14px',
-      fill: enabled ? '#fff' : '#888',
-      backgroundColor: enabled ? color : '#333',
-      padding: { x: 8, y: 4 },
-    }).setInteractive({ useHandCursor: enabled });
-
-    if (enabled) btn.on('pointerdown', onClick);
-    panel.add(btn);
-    y += 28;
-    return btn;
-  };
-
-  // Attack button
-  const hasWeapon = Array.isArray(u.weapons) && u.weapons.length > 0;
-  const canAttack = isMyTurn && hasWeapon && (u.ap || 0) > 0;
-
-  mkBtn('Attack', () => {
-    if (!canAttack) return;
-    scene.unitCommandMode = (scene.unitCommandMode === 'attack') ? null : 'attack';
-
-    if (scene.unitCommandMode === 'attack') {
-      ensureAttackController(scene).enter(u);
-      updateCombatPreview(scene);
-    } else {
-      ensureAttackController(scene).exit();
-      clearCombatPreview(scene);
-    }
-
-    scene.refreshUnitActionPanel?.();
-  }, canAttack, scene.unitCommandMode === 'attack' ? '#b23a48' : '#355c7d');
-
-  // Defence button
-  const canDefend = isMyTurn && (u.ap || 0) > 0;
-  mkBtn('Defend', () => {
-    if (!canDefend) return;
-    applyDefence(u);
-    scene.refreshUnitActionPanel?.();
-  }, canDefend, '#3f6b3f');
-
-  // Weapon switch
-  const canSwitch = isMyTurn && Array.isArray(u.weapons) && u.weapons.length > 1;
-  mkBtn('Switch Weapon', () => {
-    if (!canSwitch) return;
-    u.activeWeaponIndex = ((u.activeWeaponIndex || 0) + 1) % u.weapons.length;
-    scene.refreshUnitActionPanel?.();
-    if (scene.unitCommandMode === 'attack') {
-      updateCombatPreview(scene);
-    }
-  }, canSwitch, '#6f4e7c');
-
-  // Ability buttons
-  const abilities = Array.isArray(u.activeAbilities) ? u.activeAbilities : [];
-  for (const abilityId of abilities) {
-    const abilityDef = abilityId ? ensureAbilityController(scene).getAbilityDefSafe?.(abilityId) : null;
-    const label = abilityDef?.name || abilityId;
-    const canUse = isMyTurn && (u.ap || 0) > 0;
-
-    mkBtn(`Ability: ${label}`, () => {
-      if (!canUse) return;
-
-      const abilityController = ensureAbilityController(scene);
-      const currentMode = String(scene.unitCommandMode || '');
-      const nextMode = `ability:${abilityId}`;
-
-      if (currentMode === nextMode) {
-        abilityController.exit('toggle_off');
-        scene.unitCommandMode = null;
-        clearCombatPreview(scene);
-      } else {
-        // Exit attack mode if entering ability mode
-        ensureAttackController(scene).exit();
-        clearCombatPreview(scene);
-
-        scene.unitCommandMode = nextMode;
-        abilityController.enter(u, abilityId);
-      }
-
-      scene.refreshUnitActionPanel?.();
-    }, canUse, '#2a6273');
-  }
-
-  panel.setPosition(20, scene.scale.height - Math.min(y + 20, 240));
-}
-
-/* ---------------- Selection panel root ---------------- */
-
-export function setupUnitActionPanel(scene) {
-  scene.actionPanel = scene.add.container(20, scene.scale.height - 220).setScrollFactor(0).setDepth(9999);
-  refreshUnitActionPanel(scene);
-}
-
-export function setupWorldInputUI(scene) {
-  setupTurnUI(scene);
-  setupUnitActionPanel(scene);
-  setupPlayerControls(scene);
-}
+/* Optional default export for convenience (doesn't break named imports) */
+export default {
+  setupCameraControls,
+  setupTurnUI,
+  updateTurnText,
+  setupWorldInputUI,
+};
