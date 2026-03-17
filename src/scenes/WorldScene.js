@@ -1,12 +1,9 @@
 // src/scenes/WorldScene.js
+import Phaser from 'phaser';
 
-import HexMap from '../engine/HexMap.js';
-import { findPath as aStarFindPath } from '../engine/AStar.js';
-
-import { drawLocationsAndRoads } from './WorldSceneMapLocations.js';
-import { setupWorldMenus, attachSelectionHighlight } from './WorldSceneMenus.js';
-import { setupUnitActionPanel } from './WorldSceneUnitPanel.js';
-import { startHexTransformTool } from './HexTransformTool.js';
+// Menus / panels
+import { setupWorldMenus, attachSelectionHighlight, setupUnitActionPanel } from './WorldSceneMenus.js';
+import { setupHexInfoPanel } from './WorldSceneHexInfo.js';
 import { setupBuildingsUI } from './WorldSceneBuildingsUI.js';
 import { setupEnergyPanel } from './WorldSceneEnergyUI.js';
 import { setupLogisticsPanel } from './WorldSceneLogistics.js';
@@ -39,6 +36,7 @@ import {
   axialToWorld,
   worldToAxial,
   refreshAllIconWorldPositions,
+  resetUnitsForNewTurn,
   endTurn as endTurnImpl,
   getNextPlayer as getNextPlayerImpl,
 } from './WorldSceneWorldMeta.js';
@@ -52,375 +50,150 @@ import { generateRuinLoreForTile } from './LoreGeneration.js';
 // Abilities + Effects runtime (data-driven)
 import { getAbilityDef } from '../abilities/AbilityDefs.js';
 import { resolveDirectDamage } from '../units/CombatResolver.js';
-import { getEffectDef, EFFECT_IDS } from '../effects/EffectDefs.js';
 import {
-  ensureHexEffectsState,
-  ensureUnitEffectsState,
   addUnitEffect,
   placeHexEffect,
-  tickUnitEffects,
   tickHexEffects,
+  tickUnitEffects,
   decrementUnitEffectDurations,
   decrementHexEffectDurations,
   cleanupExpiredUnitEffects,
   cleanupExpiredHexEffects,
+  ensureUnitEffectsState,
   ensurePassiveEffects,
-  hexKey as hexKeyEff,
+  findHexEffectsAt,
+  removeHexEffectsAt,
+  getUnitEffectStacks,
+  hexKey,
+  TICK_PHASE,
 } from '../effects/EffectEngine.js';
-import { TICK_PHASE } from '../effects/EffectDefs.js';
-import { ensureUnitCombatFields, canSpendAp, spendAp } from '../units/UnitActions.js';
 
-// ✅ NEW: preload split-out
-import { preloadWorldSceneUI, STATUS_ICON_KEYS } from './WorldScenePreload.js';
+// ✅ NEW: roads are lore-driven now
+import { applyRoadPlansToMap } from './WorldSceneMapLocations.js';
+import { preloadWorldSceneUI } from './WorldScenePreload.js';
 
-function unitHasEffect(unit, effectId) {
-  const arr = Array.isArray(unit?.effects) ? unit.effects : [];
-  if (!arr.length) return false;
-  const key = String(effectId || '').trim();
-  if (!key) return false;
-  return arr.some(e => e && (e.defId === key || e.defId === key.toUpperCase() || e.defId === key.toLowerCase()));
+// ✅ NEW: turn-combat helpers for STATUS checks
+import { ensureUnitCombatFields } from '../units/UnitActions.js';
+
+// Buildings / map transform
+import { placeBuildingAtSelectedHex } from './WorldSceneBuildings.js';
+import { startBridgePlacementMode, placeBridgeAtSelectedHex } from './WorldSceneBridges.js';
+import { startHexTransformTool, transformHexAtSelected } from './HexTransformTool.js';
+
+// Map gen
+import { HexMap } from '../engine/HexMap.js';
+
+// Utility: if missing statuses array / effects array on a unit, init it
+function ensureUnitStatusState(u) {
+  if (!u) return;
+  if (!Array.isArray(u.statuses)) u.statuses = [];
+  if (!Array.isArray(u.effects)) u.effects = [];
 }
 
-/* ---------------------------
-   Auto-move helpers (Civ-style)
-   --------------------------- */
-
-function getTile(scene, q, r) {
-  return (scene.mapData || []).find(h => h.q === q && h.r === r);
+// Utility: check if unit has effect by id (case-insensitive-ish)
+function unitHasEffect(u, effectId) {
+  if (!u || !Array.isArray(u.effects)) return false;
+  return u.effects.some(e => {
+    const id = (e?.defId ?? e?.id ?? '').toString().toLowerCase();
+    return id === String(effectId).toLowerCase();
+  });
 }
 
-function getUnitAtHex(scene, q, r) {
-  const units = scene.units || [];
-  const players = scene.players || [];
-  const enemies = scene.enemies || [];
-  const haulers = scene.haulers || [];
-  const ships = scene.ships || [];
-  return (
-    units.find(u => u && u.q === q && u.r === r) ||
-    players.find(u => u && u.q === q && u.r === r) ||
-    enemies.find(e => e && e.q === q && e.r === r) ||
-    haulers.find(h => h && h.q === q && h.r === r) ||
-    ships.find(s => s && s.q === q && s.r === r) ||
-    null
-  );
-}
-
-function isControllable(u) {
-  if (!u) return false;
-  if (u.isDead) return false;
-  if (u.isEnemy || u.controller === 'ai') return false;
-
-  // canonical
-  if (u.isPlayer) return true;
-
-  // support objects without isPlayer (e.g., raiders/mobile base/etc.)
-  if (Number.isFinite(u.mpMax) || Number.isFinite(u.mp) || Number.isFinite(u.movementPoints)) return true;
-
-  return false;
-}
-
-function getOwnerName(scene, u) {
-  if (!u) return null;
-
-  // Most common
-  if (typeof u.playerName === 'string' && u.playerName) return u.playerName;
-  if (typeof u.ownerName === 'string' && u.ownerName) return u.ownerName;
-  if (typeof u.owner === 'string' && u.owner) return u.owner;
-  if (typeof u.faction === 'string' && u.faction) return u.faction;
-
-  // Some units only have "name", but that might be a unit type.
-  // We only use it as owner if it matches a known player or current turn owner.
-  const n = (typeof u.name === 'string' && u.name) ? u.name : null;
-  if (n && (n === scene.turnOwner || n === scene.playerName)) return n;
-
-  // If it's a controllable object with no owner fields, assume it belongs to local player
-  // (this fixes "raider/mobile base doesn't move on end turn" in singleplayer/local dev).
-  if (isControllable(u) && scene?.playerName) return scene.playerName;
-
-  return null;
-}
-
-function tileElevation(t) {
-  if (!t) return 0;
-  if (Number.isFinite(t.visualElevation)) return t.visualElevation;
-  if (Number.isFinite(t.elevation)) return t.elevation;
-  if (Number.isFinite(t.baseElevation)) return t.baseElevation;
-  return 0;
-}
-
-// Must match WorldSceneUI.js rules
-function stepMoveCost(fromTile, toTile) {
-  if (!fromTile || !toTile) return Infinity;
-
-  const e0 = tileElevation(fromTile);
-  const e1 = tileElevation(toTile);
-
-  if (Math.abs(e1 - e0) > 1) return Infinity;
-
-  let cost = 1;
-  if (toTile.hasForest) cost += 1;
-  if (e1 > e0) cost += 1;
-
-  // NOTE: road movement advantage will be added later in Unit movement cost,
-  // but road building itself is handled via lore + A* here.
-  return cost;
-}
-
-function getMP(unit) {
-  const mpA = Number.isFinite(unit.movementPoints) ? unit.movementPoints : null;
-  const mpB = Number.isFinite(unit.mp) ? unit.mp : null;
-  return (mpB != null) ? mpB : (mpA != null ? mpA : 0);
-}
-
-function setMP(unit, val) {
-  const v = Math.max(0, Number.isFinite(val) ? val : 0);
-  unit.mp = v;
-  if (Number.isFinite(unit.movementPoints)) unit.movementPoints = v;
-}
-
-function computePath(scene, unit, target, blockedPred) {
-  const start = { q: unit.q, r: unit.r };
-  const goal = { q: target.q, r: target.r };
-  if (start.q === goal.q && start.r === goal.r) return [start];
-
-  const isBlocked = (tile) => {
-    if (!tile) return true;
-    return blockedPred ? blockedPred(tile) : false;
-  };
-
-  // If AStar ignores options, OK — we still validate cost in split.
-  return aStarFindPath(start, goal, scene.mapData, isBlocked, { getMoveCost: stepMoveCost });
-}
-
-/**
- * Validates the full path (stops at first illegal/blocked/occupied step) and
- * returns a segment that fits in current MP.
- */
-function buildMoveSegmentForThisTurn(scene, unit, fullPath, blockedPred) {
-  const mp = getMP(unit);
-  if (!Array.isArray(fullPath) || fullPath.length < 2) {
-    return { segment: [], costSum: 0 };
+// Utility: add a status icon entry if not present (simple, non-destructive)
+function addStatusMarker(u, statusId) {
+  if (!u) return;
+  ensureUnitStatusState(u);
+  const key = String(statusId || '').toLowerCase();
+  if (!u.statuses.some(s => String(s?.id || s).toLowerCase() === key)) {
+    u.statuses.push({ id: statusId });
   }
-
-  const usable = [fullPath[0]];
-  let sum = 0;
-
-  for (let i = 1; i < fullPath.length; i++) {
-    const prev = usable[usable.length - 1];
-    const cur = fullPath[i];
-
-    const prevTile = getTile(scene, prev.q, prev.r);
-    const curTile = getTile(scene, cur.q, cur.r);
-
-    if (blockedPred && blockedPred(curTile)) break;
-
-    const stepCost = stepMoveCost(prevTile, curTile);
-    if (!Number.isFinite(stepCost) || stepCost === Infinity) break;
-
-    const occ = getUnitAtHex(scene, cur.q, cur.r);
-    if (occ && occ !== unit) break;
-
-    if (sum + stepCost > mp) break;
-
-    sum += stepCost;
-    usable.push(cur);
-  }
-
-  if (usable.length < 2) return { segment: [], costSum: 0 };
-  return { segment: usable, costSum: sum };
 }
 
-/* ---------------------------
-   ✅ Road application (Lore -> Tiles)
-   --------------------------- */
-
-function ensureRoadLinks(tile) {
-  if (!tile) return;
-  if (!(tile.roadLinks instanceof Set)) tile.roadLinks = new Set();
-}
-
-function roadKey(q, r) {
-  return `${q},${r}`;
-}
-
-function applyRoadLinkBetween(a, b) {
-  if (!a || !b) return;
-  ensureRoadLinks(a);
-  ensureRoadLinks(b);
-
-  a.roadLinks.add(roadKey(b.q, b.r));
-  b.roadLinks.add(roadKey(a.q, a.r));
-  a.hasRoad = true;
-  b.hasRoad = true;
-}
-
-function isMountainTile(tile) {
-  if (!tile) return false;
-  const type = String(tile.type || '').toLowerCase();
-  const gt = String(tile.groundType || '').toLowerCase();
-  if (type === 'mountain') return true;
-  if (gt === 'mountain') return true;
-  // legacy
-  if (tile.elevation === 7 && type !== 'water') return true;
-  return false;
-}
-
-function isRoadBlocked(tile) {
-  if (!tile) return true;
-  const type = String(tile.type || '').toLowerCase();
-  if (type === 'water') return true;
-  if (isMountainTile(tile)) return true;
-  return false;
-}
-
-/**
- * Applies loreState.roadPlans onto mapData as:
- *  - tile.hasRoad = true
- *  - tile.roadLinks = Set("q,r")
- *
- * Safe to call multiple times (rebuilds from scratch).
- */
-function applyRoadPlansToMap(scene) {
-  const plans = scene?.loreState?.roadPlans;
-  if (!Array.isArray(plans) || plans.length === 0) {
-    // clear any stale roads if present
-    if (Array.isArray(scene.mapData)) {
-      for (const t of scene.mapData) {
-        if (!t) continue;
-        t.hasRoad = false;
-        if (t.roadLinks instanceof Set) t.roadLinks.clear();
-        else t.roadLinks = new Set();
-      }
-    }
-    scene.__roadsAppliedFromLore = true;
-    return;
-  }
-
-  if (!Array.isArray(scene.mapData) || scene.mapData.length === 0) return;
-
-  // Clear current roads (authoritative rebuild from lore)
-  for (const t of scene.mapData) {
-    if (!t) continue;
-    t.hasRoad = false;
-    if (t.roadLinks instanceof Set) t.roadLinks.clear();
-    else t.roadLinks = new Set();
-  }
-
-  const getT = (q, r) => (scene.mapData || []).find(h => h && h.q === q && h.r === r);
-
-  // For each plan, carve a path using A*
-  for (const rp of plans) {
-    if (!rp || !rp.from || !rp.to) continue;
-    const from = { q: rp.from.q, r: rp.from.r };
-    const to = { q: rp.to.q, r: rp.to.r };
-
-    if (!Number.isFinite(from.q) || !Number.isFinite(from.r)) continue;
-    if (!Number.isFinite(to.q) || !Number.isFinite(to.r)) continue;
-
-    const tA = getT(from.q, from.r);
-    const tB = getT(to.q, to.r);
-    if (!tA || !tB) continue;
-    if (isRoadBlocked(tA) || isRoadBlocked(tB)) continue;
-
-    const blockedPred = (tile) => isRoadBlocked(tile);
-
-    let path = null;
-    try {
-      path = aStarFindPath(from, to, scene.mapData, blockedPred, { getMoveCost: stepMoveCost });
-    } catch (e) {
-      console.warn('[ROADS] A* failed for roadPlan:', rp, e);
-      path = null;
-    }
-
-    if (!Array.isArray(path) || path.length < 2) continue;
-
-    // Apply links along the path
-    for (let i = 1; i < path.length; i++) {
-      const p0 = path[i - 1];
-      const p1 = path[i];
-      const a = getT(p0.q, p0.r);
-      const b = getT(p1.q, p1.r);
-      if (!a || !b) break;
-      if (isRoadBlocked(a) || isRoadBlocked(b)) break;
-      applyRoadLinkBetween(a, b);
-    }
-  }
-
-  scene.__roadsAppliedFromLore = true;
+function removeStatusMarker(u, statusId) {
+  if (!u || !Array.isArray(u.statuses)) return;
+  const key = String(statusId || '').toLowerCase();
+  u.statuses = u.statuses.filter(s => String(s?.id || s).toLowerCase() !== key);
 }
 
 /* =========================================================
-   Elimination mission: flat circular arena (no POI/resources/camps)
+   Elimination mission helpers
    ========================================================= */
 
-function applyEliminationArenaMap(scene) {
-  const w = scene.mapWidth;
-  const h = scene.mapHeight;
-  if (!Array.isArray(scene.mapData) || scene.mapData.length === 0) return;
+function fillTileAsStonePlatform(t) {
+  if (!t) return;
+  t.type = 'stone';
+  t.groundType = 'stone';
+  t.isUnderWater = false;
+  t.isWater = false;
+  t.isCoveredByWater = false;
+  t.waterDepth = 0;
+  t.baseElevation = 1;
+  t.elevation = 1;
+  t.visualElevation = 1;
+  t.hasForest = false;
+  t.hasRoad = false;
+}
 
+function fillTileAsDeepWater(t) {
+  if (!t) return;
+  t.type = 'water';
+  t.groundType = 'water';
+  t.isUnderWater = true;
+  t.isWater = true;
+  t.isCoveredByWater = true;
+  t.waterDepth = 3;
+  t.baseElevation = 0;
+  t.elevation = 0;
+  t.visualElevation = 0;
+  t.hasForest = false;
+  t.hasRoad = false;
+}
+
+function applyEliminationArenaMap(scene) {
+  const map = scene.mapData || [];
+  if (!map.length) return;
+
+  const w = scene.mapWidth || 0;
+  const h = scene.mapHeight || 0;
+  if (!w || !h) return;
+
+  // Center and radius for a circular stone arena
   const cx = (w - 1) / 2;
   const cy = (h - 1) / 2;
-  const radius = Math.floor(Math.min(w, h) * 0.42); // ~12 for 29x29
 
-  const isInside = (q, r) => {
-    const dx = q - cx;
-    const dy = r - cy;
-    // Euclidean works fine for a "round" arena in axial coords
-    return Math.sqrt(dx * dx + dy * dy) <= radius;
-  };
+  // Radius chosen to leave a visible water border
+  const radius = Math.max(5, Math.floor(Math.min(w, h) * 0.34));
 
-  for (const t of scene.mapData) {
+  for (const t of map) {
     if (!t) continue;
 
-    // wipe world clutter flags
-    t.hasForest = false;
-    t.forestDensity = 0;
-    t.hasRoad = false;
-    if (t.roadLinks instanceof Set) t.roadLinks.clear();
+    const dq = t.q - cx;
+    const dr = t.r - cy;
+    const dist = Math.sqrt(dq * dq + dr * dr);
 
-    // clear any lore / POI markers so drawLocations doesn't render anything
-    t.poi = null;
-    t.poiType = null;
-    t.poiEmoji = null;
-    t.ruin = null;
-    t.city = null;
-    t.camp = null;
-    t.location = null;
-
-    if (isInside(t.q, t.r)) {
-      // Flat land
-      t.type = 'grassland';
-      t.groundType = 'grassland';
-      t.baseElevation = 4;
-      t.elevation = 4;
-      t.visualElevation = 1;
-      t.isWater = false;
-      t.isUnderWater = false;
-      t.isCoveredByWater = false;
-      t.waterDepth = 0;
+    if (dist <= radius) {
+      fillTileAsStonePlatform(t);
     } else {
-      // Water outside arena
-      t.type = 'water';
-      t.groundType = 'water';
-      t.baseElevation = 1;
-      t.elevation = 1;
-      t.visualElevation = 0;
-      t.isWater = true;
-      t.isUnderWater = true;
-      t.isCoveredByWater = true;
-      t.waterDepth = 1;
+      fillTileAsDeepWater(t);
     }
   }
 
-  // Ensure any mapInfo objects (geos, POI props) are removed
-  if (scene.mapInfo && Array.isArray(scene.mapInfo.objects)) scene.mapInfo.objects = [];
-  if (scene.hexMap) scene.hexMap.objects = [];
+  // Remove resources/roads/locations on elimination map
+  for (const t of map) {
+    if (!t) continue;
+    t.resourceType = null;
+    t.hasFish = false;
+    t.hasCrudeOil = false;
+    t.hasRoad = false;
+    t.roadType = null;
+    t.isLocation = false;
+    t.locationType = null;
+    t.locationName = null;
+  }
 
-  // Disable lore-driven systems for this mission
-  scene.__worldLoreGenerated = true;
-  scene.__roadsAppliedFromLore = true;
-  scene.loreState = scene.loreState || {};
-  scene.loreState.roadPlans = [];
+  // Keep water level deterministic with the arena
+  scene.worldWaterLevel = 1;
+  scene.waterLevel = 1;
 
   console.log(`[MISSION] Elimination arena applied: radius=${radius} (${w}x${h})`);
 }
@@ -466,417 +239,371 @@ export default class WorldScene extends Phaser.Scene {
 
   initEffectsRuntime() {
     // Store hex effects on lobbyState (Supabase JSON friendly)
+    // and mirror to scene for convenience.
     if (!this.lobbyState) this.lobbyState = {};
-    ensureHexEffectsState(this.lobbyState);
+    if (!Array.isArray(this.lobbyState.hexEffects)) this.lobbyState.hexEffects = [];
+    if (!Array.isArray(this.hexEffects)) this.hexEffects = this.lobbyState.hexEffects;
 
-    // Ensure every existing unit has an effects array
-    for (const u of this.getAllRuntimeUnits()) {
+    // Ensure units arrays exist and every unit has effects/statuses arrays
+    this.getAllRuntimeUnits().forEach(u => {
+      ensureUnitStatusState(u);
       ensureUnitEffectsState(u);
-      ensureUnitCombatFields(u);
-    }
+    });
 
-    // Apply passive abilities as infinite-duration effects (if unit defines passives)
-    // Convention: unit.passives = ['thick_plating', ...] (AbilityDefs ids)
-    for (const u of this.getAllRuntimeUnits()) {
+    // Attach passive effects once at scene init.
+    this.getAllRuntimeUnits().forEach(u => {
       try {
         ensurePassiveEffects(u, getAbilityDef);
       } catch (e) {
-        console.warn('[EFF] ensurePassiveEffects failed:', u?.id, e);
+        console.warn('[EFF] ensurePassiveEffects failed for unit', u?.id, e);
       }
-    }
-
-    if (typeof window !== 'undefined') {
-      // Toggle at runtime: window.__TRACE_EFF__ = true/false
-      // Toggle at runtime: window.__TRACE_ABIL__ = true/false
-      if (window.__TRACE_ABIL__ === undefined) window.__TRACE_ABIL__ = true;
-    }
+    });
   }
 
   getAllRuntimeUnits() {
-    // Keep this central so effects + AI + UI all use the same source of truth.
-    // Include everything that can have HP/effects: players + enemies + units + haulers + ships.
-    const all = []
+    return []
+      .concat(this.units || [])
       .concat(this.players || [])
       .concat(this.enemies || [])
-      .concat(this.units || [])
       .concat(this.haulers || [])
       .concat(this.ships || []);
-
-    // De-dupe by id if possible
-    const out = [];
-    const seen = new Set();
-    for (const u of all) {
-      if (!u) continue;
-      const id = u.id ?? u.unitId ?? null;
-      if (id && seen.has(id)) continue;
-      if (id) seen.add(id);
-      out.push(u);
-    }
-    return out;
   }
 
-  traceAbility(tag, data) {
-    const on = (typeof window !== 'undefined') ? (window.__TRACE_ABIL__ ?? true) : true;
-    if (!on) return;
-    try { console.log(`[ABIL:${tag}]`, data); } catch (_) {}
-  }
-
-  runEffectPhase(phase) {
-    // Phase: TICK_PHASE.TURN_START or TICK_PHASE.TURN_END
-    const allUnits = this.getAllRuntimeUnits();
-    const ctx = {
-      turnOwner: this.turnOwner,
-      turnNumber: this.turnNumber,
-      roomCode: this.roomCode,
-    };
+  /**
+   * Run a phase tick for all unit + hex effects.
+   * Phases: TICK_PHASE.TURN_START | TURN_END | ABILITY_USED | MOVED | DEATH
+   *
+   * Context should contain:
+   *  - sourceUnit, targetUnit, extra
+   */
+  runEffectPhase(phase, ctx = {}) {
+    const units = this.getAllRuntimeUnits();
 
     // Unit effects
-    for (const u of allUnits) {
+    for (const u of units) {
       try {
         ensureUnitEffectsState(u);
-        tickUnitEffects(u, phase, ctx);
+        tickUnitEffects(u, phase, { scene: this, ...ctx });
       } catch (e) {
-        console.warn('[EFF] tickUnitEffects failed:', u?.id, phase, e);
+        console.warn('[EFF] tickUnitEffects failed', { phase, unitId: u?.id }, e);
       }
     }
 
     // Hex effects
     try {
-      ensureHexEffectsState(this.lobbyState);
-      tickHexEffects(this.lobbyState, allUnits, phase, ctx);
+      tickHexEffects(this, phase, { scene: this, ...ctx });
     } catch (e) {
-      console.warn('[EFF] tickHexEffects failed:', phase, e);
+      console.warn('[EFF] tickHexEffects failed', { phase }, e);
     }
   }
 
+  /**
+   * Advance durations at the end of a full turn cycle.
+   * We do this once inside endTurn() after END effects tick.
+   */
   advanceEffectsOnTurnEnd() {
-    // Decrement durations and cleanup after TURN_END tick.
-    const allUnits = this.getAllRuntimeUnits();
-
-    for (const u of allUnits) {
+    const units = this.getAllRuntimeUnits();
+    for (const u of units) {
       try {
         decrementUnitEffectDurations(u);
         cleanupExpiredUnitEffects(u);
       } catch (e) {
-        console.warn('[EFF] unit cleanup failed:', u?.id, e);
+        console.warn('[EFF] decrement/cleanup unit failed', u?.id, e);
       }
     }
 
     try {
-      ensureHexEffectsState(this.lobbyState);
-      decrementHexEffectDurations(this.lobbyState);
-      cleanupExpiredHexEffects(this.lobbyState);
+      decrementHexEffectDurations(this);
+      cleanupExpiredHexEffects(this);
     } catch (e) {
-      console.warn('[EFF] hex cleanup failed:', e);
+      console.warn('[EFF] decrement/cleanup hex failed', e);
     }
   }
-
-  /* ------------------------------------------------------------------------
-     Ability casting (local runtime helper)
-     - In multiplayer, host should turn this into an event and broadcast it.
-     - This helper is still useful for local dev and for host-side resolution.
-     ------------------------------------------------------------------------ */
 
   /**
-   * Cast an ability from a unit.
-   * @param {any} caster
-   * @param {string} abilityId
-   * @param {{targetUnit?: any, targetHex?: {q:number,r:number}}} target
+   * Deterministic local application of an ability cast.
+   * For now we support:
+   *  - direct multi-type damage
+   *  - direct healing
+   *  - applyUnitEffects to self / target
+   *  - placeHexEffects on target hex / self hex
+   *
+   * More advanced motion/transport logic can be extended later without
+   * changing the payload shape.
    */
-  castAbility(caster, abilityId, target = {}) {
-    const a = getAbilityDef(abilityId);
-    if (!a || a.kind !== 'active') {
-      this.traceAbility('fail:bad_ability', { abilityId, casterId: caster?.id });
-      return { ok: false, reason: 'bad_ability' };
+  applyAbilityCastLocal(payload) {
+    if (!payload || payload.kind !== 'ability:cast') return false;
+
+    const caster = this.getAllRuntimeUnits().find(u => (u?.id ?? u?.unitId) === payload.casterId);
+    if (!caster) {
+      console.warn('[ABILITY] caster not found', payload.casterId);
+      return false;
     }
 
+    const ability = getAbilityDef(payload.abilityId);
+    if (!ability || ability.kind !== 'active' || !ability.active) {
+      console.warn('[ABILITY] invalid active ability', payload.abilityId);
+      return false;
+    }
+
+    const targetQ = Number.isFinite(payload.targetQ) ? payload.targetQ : caster.q;
+    const targetR = Number.isFinite(payload.targetR) ? payload.targetR : caster.r;
+
+    const targetUnit =
+      payload.targetUnitId
+        ? this.getAllRuntimeUnits().find(u => (u?.id ?? u?.unitId) === payload.targetUnitId) || null
+        : this.getAllRuntimeUnits().find(u => u && !u.isDead && u.q === targetQ && u.r === targetR) || null;
+
+    // Spend AP once on successful cast (if still available)
     ensureUnitCombatFields(caster);
-    ensureUnitEffectsState(caster);
+    const apCost = Number.isFinite(ability.active.apCost) ? ability.active.apCost : 1;
+    const mpCost = Number.isFinite(ability.active.mpCost) ? ability.active.mpCost : 0;
 
-    if (unitHasEffect(caster, EFFECT_IDS.EnergyShock) || unitHasEffect(caster, 'ENERGY_SHOCK')) {
-      this.traceAbility('fail:shocked', { abilityId, casterId: caster?.id });
-      return { ok: false, reason: 'shocked' };
+    if ((caster.ap ?? 0) < apCost) {
+      console.warn('[ABILITY] not enough AP', { casterId: caster.id, ap: caster.ap, apCost });
+      return false;
+    }
+    if ((caster.mp ?? 0) < mpCost) {
+      console.warn('[ABILITY] not enough MP', { casterId: caster.id, mp: caster.mp, mpCost });
+      return false;
     }
 
-    const apCost = Number.isFinite(a.active?.apCost) ? a.active.apCost : 1;
-    const mpCost = Number.isFinite(a.active?.mpCost) ? a.active.mpCost : 0;
-    if (!canSpendAp(caster, apCost)) {
-      this.traceAbility('fail:no_ap', { abilityId, casterId: caster?.id, ap: caster?.ap, apCost });
-      return { ok: false, reason: 'no_ap' };
-    }
-    if ((Number(caster.mp) || 0) < mpCost) {
-      this.traceAbility('fail:no_mp', { abilityId, casterId: caster?.id, mp: caster?.mp, mpCost });
-      return { ok: false, reason: 'no_mp' };
+    caster.ap = Math.max(0, (caster.ap ?? 0) - apCost);
+    if (Number.isFinite(caster.mp)) caster.mp = Math.max(0, caster.mp - mpCost);
+    if (Number.isFinite(caster.movementPoints)) caster.movementPoints = caster.mp;
+
+    // Trigger "ability used" phase (for effects like Volatile Ignition)
+    this.runEffectPhase?.(TICK_PHASE.ABILITY_USED, {
+      sourceUnit: caster,
+      targetUnit,
+      abilityId: payload.abilityId,
+      payload,
+    });
+
+    // ---------- direct healing ----------
+    const healAmount =
+      Number.isFinite(payload.healAmount)
+        ? payload.healAmount
+        : (Number.isFinite(ability.active.healAmount) ? ability.active.healAmount : 0);
+
+    if (healAmount > 0) {
+      const healTarget = targetUnit || caster;
+      ensureUnitCombatFields(healTarget);
+      const maxHp = Number.isFinite(healTarget.maxHp) ? healTarget.maxHp : (healTarget.hp || 1);
+      healTarget.hp = Math.min(maxHp, (healTarget.hp || 0) + healAmount);
+      console.log('[ABILITY] heal', { abilityId: ability.id, targetId: healTarget.id, amount: healAmount, hp: healTarget.hp, maxHp });
     }
 
-    const resolved = this.resolveAbilityTarget(a, caster, target);
-    if (!resolved.ok) {
-      this.traceAbility('fail:bad_target', { abilityId, casterId: caster?.id, ...resolved });
-      return resolved;
-    }
+    // ---------- direct multi-type damage ----------
+    const dmgProfile =
+      payload.damageProfile ||
+      ability.active.damageProfile ||
+      null;
 
-    if (Array.isArray(a.active?.allowedTargetArmorClasses) && a.active.allowedTargetArmorClasses.length && resolved.targetUnit) {
-      if (!a.active.allowedTargetArmorClasses.includes(String(resolved.targetUnit.armorClass || '').toUpperCase())) {
-        return { ok: false, reason: 'bad_target_armor' };
+    if (dmgProfile && targetUnit) {
+      ensureUnitCombatFields(targetUnit);
+
+      const dmgRes = resolveDirectDamage(caster, targetUnit, dmgProfile);
+      const amount = Number.isFinite(dmgRes.finalDamage) ? dmgRes.finalDamage : 0;
+
+      if (amount > 0) {
+        this.applyCombatEvent({
+          type: 'combat:attack',
+          attackerId: caster.id ?? caster.unitId,
+          defenderId: targetUnit.id ?? targetUnit.unitId,
+          damage: amount,
+          weaponId: `ability:${ability.id}`,
+        });
       }
     }
 
-    spendAp(caster, apCost);
-    if (mpCost) {
-      caster.mp = Math.max(0, (Number(caster.mp) || 0) - mpCost);
-      if (Number.isFinite(caster.movementPoints)) caster.movementPoints = caster.mp;
-    }
+    // ---------- apply unit effects ----------
+    const applySpecs = Array.isArray(ability.active.applyUnitEffects)
+      ? ability.active.applyUnitEffects
+      : [];
 
-    if (unitHasEffect(caster, EFFECT_IDS.ThermalVolatileIgnition) || unitHasEffect(caster, 'THERMAL_VOLATILE_IGNITION')) {
-      const before = Number.isFinite(caster.hp) ? caster.hp : 0;
-      caster.hp = Math.max(0, before - 4);
-      this.traceAbility('status:volatile_ignition', { casterId: caster?.id, hpBefore: before, hpAfter: caster.hp, dmg: 4 });
-    }
+    for (const spec of applySpecs) {
+      const recipient =
+        spec.applyTo === 'self' ? caster :
+        spec.applyTo === 'target' ? targetUnit :
+        null;
 
-    const applied = [];
-    const placed = [];
-    const removedHex = [];
-    const healed = [];
-    const damaged = [];
-    const specials = [];
+      if (!recipient) continue;
 
-    const active = a.active || {};
-    const targetHex = resolved.targetHex || { q: caster.q, r: caster.r };
-    const targetUnit = resolved.targetUnit || null;
-
-    const unitsInRadius = (centerQ, centerR, radius = 0) => {
-      const hs = this.getHexesInRadius(centerQ, centerR, radius);
-      const out = [];
-      for (const h of hs) {
-        const u = this.getUnitAtHex ? this.getUnitAtHex(h.q, h.r) : getUnitAtHex(this, h.q, h.r);
-        if (u && !u.isDead) out.push(u);
-      }
-      return out;
-    };
-
-    const applyHeal = (unit, amount) => {
-      if (!unit || !amount) return;
-      ensureUnitCombatFields(unit);
-      const hp0 = Number(unit.hp) || 0;
-      const maxHp = Number(unit.maxHp) || hp0;
-      unit.hp = Math.min(maxHp, hp0 + amount);
-      healed.push({ unitId: unit.id, amount: unit.hp - hp0 });
-    };
-
-    const applyDamageMap = (unit, damageMap) => {
-      if (!unit || !damageMap) return;
-      ensureUnitCombatFields(unit);
-      const hp0 = Number(unit.hp) || 0;
-      const res = resolveDirectDamage(caster, unit, damageMap);
-      const dmg = Math.max(0, Number(res.finalDamage) || 0);
-      unit.hp = Math.max(0, hp0 - dmg);
-      damaged.push({ unitId: unit.id, amount: dmg, hpAfter: unit.hp, channels: res.breakdown?.channels || {} });
-      if (unit.hp <= 0) unit.isDead = true;
-    };
-
-    if (active.heal?.amount) {
-      const healTarget = active.heal.applyTo === 'self' ? caster : targetUnit;
-      applyHeal(healTarget, Number(active.heal.amount) || 0);
-    }
-
-    if (active.selfMpDelta) {
-      caster.mp = Math.max(0, (Number(caster.mp) || 0) + Number(active.selfMpDelta || 0));
-      if (Number.isFinite(caster.movementPoints)) caster.movementPoints = caster.mp;
-    }
-    if (active.selfApDelta) {
-      caster.ap = Math.max(0, (Number(caster.ap) || 0) + Number(active.selfApDelta || 0));
-    }
-    if (active.targetMpDelta && targetUnit) {
-      targetUnit.mp = Math.max(0, (Number(targetUnit.mp) || 0) + Number(active.targetMpDelta || 0));
-      if (Number.isFinite(targetUnit.movementPoints)) targetUnit.movementPoints = targetUnit.mp;
-    }
-    if (active.targetApDelta && targetUnit) {
-      targetUnit.ap = Math.max(0, (Number(targetUnit.ap) || 0) + Number(active.targetApDelta || 0));
-    }
-
-    if (active.damage) {
-      if (targetUnit) {
-        applyDamageMap(targetUnit, active.damage);
-      } else if (active.runtime?.applyToUnitsInRadius || Number.isFinite(active.aoeRadius)) {
-        const radius = active.runtime?.applyDamageInRadius ?? active.aoeRadius ?? 0;
-        for (const u of unitsInRadius(targetHex.q, targetHex.r, radius)) {
-          if (u === caster && active.target !== 'self') continue;
-          applyDamageMap(u, active.damage);
-        }
-      }
-    }
-
-    const unitSpecs = Array.isArray(active.applyUnitEffects) ? active.applyUnitEffects : [];
-    for (const spec of unitSpecs) {
-      let destinations = [];
-      if (spec.applyTo === 'self') destinations = [caster];
-      else if (active.runtime?.applyToUnitsInRadius || active.runtime?.applyToUnitsInRadiusFromCaster) {
-        const radius = active.runtime?.applyToUnitsInRadiusFromCaster || active.aoeRadius || 1;
-        const cq = active.runtime?.applyToUnitsInRadiusFromCaster ? caster.q : targetHex.q;
-        const cr = active.runtime?.applyToUnitsInRadiusFromCaster ? caster.r : targetHex.r;
-        destinations = unitsInRadius(cq, cr, radius);
-      } else if (active.runtime?.canTargetUnitOnHex && !targetUnit) {
-        const maybe = this.getUnitAtHex ? this.getUnitAtHex(targetHex.q, targetHex.r) : getUnitAtHex(this, targetHex.q, targetHex.r);
-        if (maybe) destinations = [maybe];
-      } else if (targetUnit) destinations = [targetUnit];
-
-      for (const dest of destinations) {
-        if (!dest) continue;
-        ensureUnitEffectsState(dest);
-        addUnitEffect(dest, spec.effectId, {
+      try {
+        ensureUnitEffectsState(recipient);
+        addUnitEffect(recipient, spec.effectId, {
           duration: spec.duration,
           stacks: spec.stacks,
-          params: spec.params,
-          sourceUnitId: caster.id,
+          sourceUnitId: caster.id ?? caster.unitId,
           sourceFaction: caster.faction,
+          ...spec.params,
         });
-        applied.push({ to: dest.id, effectId: spec.effectId });
+        addStatusMarker(recipient, spec.effectId);
+      } catch (e) {
+        console.warn('[ABILITY] addUnitEffect failed', spec, e);
       }
     }
 
-    const hexSpecs = Array.isArray(active.placeHexEffects) ? active.placeHexEffects : [];
+    // ---------- place hex effects ----------
+    const hexSpecs = Array.isArray(ability.active.placeHexEffects)
+      ? ability.active.placeHexEffects
+      : [];
+
     for (const spec of hexSpecs) {
-      let centers = [targetHex];
-      if (spec.placeOn === 'aoe') {
-        const center = active.target === 'self' ? { q: caster.q, r: caster.r } : targetHex;
-        centers = this.getHexesInRadius(center.q, center.r, Number(active.aoeRadius) || 0);
-      }
-      for (const h of centers) {
-        placeHexEffect(this.lobbyState, h.q, h.r, spec.effectId, {
-          duration: spec.duration,
-          stacks: spec.stacks,
-          params: spec.params,
-          sourceUnitId: caster.id,
-          sourceFaction: caster.faction,
-        });
-        placed.push({ q: h.q, r: h.r, effectId: spec.effectId });
-      }
-    }
-
-    if (Array.isArray(active.removeHexEffects) && active.removeHexEffects.length) {
-      ensureHexEffectsState(this.lobbyState);
-      const hs = this.getHexesInRadius(targetHex.q, targetHex.r, Number(active.aoeRadius) || 0);
-      for (const h of hs) {
-        const key = hexKeyEff(h.q, h.r);
-        const list = Array.isArray(this.lobbyState?.hexEffects?.[key]) ? this.lobbyState.hexEffects[key] : [];
-        const kept = list.filter(inst => !active.removeHexEffects.includes(inst?.defId));
-        if (this.lobbyState.hexEffects[key]?.length !== kept.length) removedHex.push({ q: h.q, r: h.r });
-        if (kept.length) this.lobbyState.hexEffects[key] = kept;
-        else delete this.lobbyState.hexEffects[key];
-      }
-    }
-
-    if (Array.isArray(active.convertHexEffects) && active.convertHexEffects.length) {
-      ensureHexEffectsState(this.lobbyState);
-      const hs = this.getHexesInRadius(targetHex.q, targetHex.r, Number(active.aoeRadius) || 0);
-      for (const h of hs) {
-        const key = hexKeyEff(h.q, h.r);
-        const list = Array.isArray(this.lobbyState?.hexEffects?.[key]) ? this.lobbyState.hexEffects[key] : [];
-        for (const conv of active.convertHexEffects) {
-          const hasFrom = list.some(inst => inst?.defId === conv.from);
-          if (!hasFrom) continue;
-          this.lobbyState.hexEffects[key] = list.filter(inst => inst?.defId !== conv.from);
-          placeHexEffect(this.lobbyState, h.q, h.r, conv.to, { duration: conv.duration, sourceUnitId: caster.id, sourceFaction: caster.faction });
-          placed.push({ q: h.q, r: h.r, effectId: conv.to, convertedFrom: conv.from });
+      try {
+        if (spec.placeOn === 'targetHex' || spec.placeOn === 'aoe') {
+          placeHexEffect(this, targetQ, targetR, spec.effectId, {
+            duration: spec.duration,
+            stacks: spec.stacks,
+            sourceUnitId: caster.id ?? caster.unitId,
+            sourceFaction: caster.faction,
+            radius: spec.radius ?? ability.active.aoeRadius ?? 0,
+            ...spec.params,
+          });
+        } else if (spec.placeOn === 'selfHex') {
+          placeHexEffect(this, caster.q, caster.r, spec.effectId, {
+            duration: spec.duration,
+            stacks: spec.stacks,
+            sourceUnitId: caster.id ?? caster.unitId,
+            sourceFaction: caster.faction,
+            radius: spec.radius ?? 0,
+            ...spec.params,
+          });
         }
+      } catch (e) {
+        console.warn('[ABILITY] placeHexEffect failed', spec, e);
       }
     }
 
-    if (active.runtime?.action) {
-      specials.push({ action: active.runtime.action, data: active.runtime });
-    }
+    // Best-effort UI refresh
+    this.refreshUnitActionPanel?.();
+    this.refreshUnitStatusIcons?.();
+    this.redrawWorld?.();
 
-    this.traceAbility('cast', { abilityId: a.id, casterId: caster.id, apAfter: caster.ap, mpAfter: caster.mp, applied, placed, removedHex, healed, damaged, specials });
-    return { ok: true, applied, placed, removedHex, healed, damaged, specials };
+    return true;
   }
 
-  resolveAbilityTarget(abilityDef, caster, target) {
-    const t = abilityDef?.active?.target;
+  /**
+   * Simple multiplayer-friendly publication:
+   * - host applies immediately
+   * - non-host writes a JSON action into lobbyState.pendingAbilityActions
+   *
+   * This mirrors the pattern already used elsewhere without requiring
+   * a new networking subsystem right now.
+   */
+  async queueAbilityCast(payload) {
+    if (!payload) return false;
 
-    if (t === 'self') {
-      return { ok: true, targetUnit: caster, targetHex: { q: caster.q, r: caster.r } };
+    // Host can apply immediately
+    if (this.isHost) {
+      return this.applyAbilityCastLocal(payload);
     }
 
-    if (t === 'unit') {
-      const tu = target?.targetUnit || null;
-      if (!tu || !Number.isFinite(tu.q) || !Number.isFinite(tu.r)) return { ok: false, reason: 'no_target_unit' };
-      return { ok: true, targetUnit: tu, targetHex: { q: tu.q, r: tu.r } };
+    // Non-host: append to pending action queue in lobby state
+    if (!this.supabase || !this.roomCode) {
+      console.warn('[ABILITY] no supabase/roomCode; applying locally as fallback');
+      return this.applyAbilityCastLocal(payload);
     }
 
-    // hex / hex_aoe
-    const th = target?.targetHex || null;
-    if (!th || !Number.isFinite(th.q) || !Number.isFinite(th.r)) return { ok: false, reason: 'no_target_hex' };
-    return { ok: true, targetUnit: null, targetHex: { q: th.q, r: th.r } };
+    try {
+      const pending = Array.isArray(this.lobbyState?.pendingAbilityActions)
+        ? this.lobbyState.pendingAbilityActions.slice()
+        : [];
+
+      pending.push(payload);
+
+      const newState = {
+        ...(this.lobbyState || {}),
+        pendingAbilityActions: pending,
+      };
+
+      const { error } = await this.supabase
+        .from('lobbies')
+        .update({ state: newState })
+        .eq('code', this.roomCode);
+
+      if (error) {
+        console.warn('[ABILITY] failed to queue action in Supabase; applying locally fallback', error);
+        return this.applyAbilityCastLocal(payload);
+      }
+
+      this.lobbyState = newState;
+      return true;
+    } catch (e) {
+      console.warn('[ABILITY] queueAbilityCast exception; applying locally fallback', e);
+      return this.applyAbilityCastLocal(payload);
+    }
   }
 
-  // Axial distance helpers (odd-r layout already used elsewhere; distance is axial-cube)
-  hexDistance(q1, r1, q2, r2) {
-    const dq = q2 - q1;
-    const dr = r2 - r1;
-    const ds = -dq - dr;
-    return (Math.abs(dq) + Math.abs(dr) + Math.abs(ds)) / 2;
-  }
+  /**
+   * Host drains pending ability actions each frame / or on turn boundaries.
+   * We call it opportunistically after sync events / endTurn.
+   */
+  async processPendingAbilityActions() {
+    if (!this.isHost) return;
+    const pending = Array.isArray(this.lobbyState?.pendingAbilityActions)
+      ? this.lobbyState.pendingAbilityActions.slice()
+      : [];
 
-  getHexesInRadius(cq, cr, radius) {
-    const out = [];
-    const r = Math.max(0, Math.trunc(radius));
-    for (let dq = -r; dq <= r; dq++) {
-      for (let dr = Math.max(-r, -dq - r); dr <= Math.min(r, -dq + r); dr++) {
-        const q = cq + dq;
-        const rr = cr + dr;
-        out.push({ q, r: rr });
+    if (!pending.length) return;
+
+    for (const payload of pending) {
+      try {
+        this.applyAbilityCastLocal(payload);
+      } catch (e) {
+        console.warn('[ABILITY] processPendingAbilityActions failed for payload', payload, e);
       }
     }
-    return out;
+
+    // clear queue in DB/state
+    const newState = {
+      ...(this.lobbyState || {}),
+      pendingAbilityActions: [],
+    };
+
+    this.lobbyState = newState;
+
+    if (this.supabase && this.roomCode) {
+      try {
+        await this.supabase
+          .from('lobbies')
+          .update({ state: newState })
+          .eq('code', this.roomCode);
+      } catch (e) {
+        console.warn('[ABILITY] failed clearing pending ability queue', e);
+      }
+    }
   }
 
-  async create() {
+  create(data) {
+    this.playerName = data.playerName || 'Player';
+    this.roomCode = data.roomCode || null;
+    this.playerId = data.playerId || null;
+    this.isHost = !!data.isHost;
+    this.supabase = data.supabase || sharedSupabase;
+    this.lobbyState = data.lobbyState || null;
+
+    // ✅ NEW: mission parsing
+    this.missionType = String(data.missionType || data.mode || this.lobbyState?.missionType || '').toLowerCase();
+    this.isEliminationMission = this.missionType === 'elimination';
+
+    this.seed = data.seed || this.lobbyState?.seed || 'default-seed';
+    this.mapWidth = 25;
+    this.mapHeight = 25;
     this.hexSize = 22;
-    this.mapWidth = 29;
-    this.mapHeight = 29;
-
-    this.input.setDefaultCursor('grab');
-    this.isDragging = false;
-    this.isUnitMoving = false;
-
-    this.LIFT_PER_LVL = LIFT_PER_LVL;
-
-    startHexTransformTool(this, { defaultType: 'water', defaultLevel: 1 });
+    this.mapOffsetX = 60;
+    this.mapOffsetY = 60;
 
     this.units = [];
-    this.enemies = [];
     this.players = [];
-    this.buildings = [];
+    this.enemies = [];
     this.haulers = [];
     this.ships = [];
     this.resources = [];
-
-    this.historyEntries = [];
-
-    this.selectedUnit = null;
-    this.selectedHex = null;
+    this.buildings = [];
     this.pathPreviewTiles = [];
     this.pathPreviewLabels = [];
-
-    this.uiLocked = false;
-
-    const { seed, playerName, roomCode, isHost, supabase, lobbyState, missionType } =
-      this.scene.settings.data || {};
-
-    this.seed = seed || '000000';
-    this.playerName = playerName || 'Player';
-    this.roomCode = roomCode || this.seed;
-
-    // local/dev: if not provided, act as host so AI runs.
-    this.isHost = (typeof isHost === 'undefined') ? true : !!isHost;
-
-    this.supabase = supabase || sharedSupabase || null;
-    this.lobbyState = lobbyState || { units: {}, enemies: [] };
-
-    // Mission type affects map generation/spawns
-    this.missionType = missionType || this.lobbyState?.missionType || 'big_construction';
-    this.isEliminationMission = (this.missionType === 'elimination');
-
     this.turnOwner = null;
     this.turnNumber = 1;
 
@@ -1050,6 +777,32 @@ export default class WorldScene extends Phaser.Scene {
     // If players array is empty, still allow singleplayer turnOwner
     this.turnOwner = this.players[0]?.playerName || this.players[0]?.name || this.playerName || null;
 
+    // IMPORTANT:
+    // Run an initial reset for the first active side so player units start with
+    // valid MP/AP even if some spawn path or legacy field sync left runtime MP at 0.
+    try {
+      const allUnits = []
+        .concat(this.units || [])
+        .concat(this.players || [])
+        .concat(this.enemies || []);
+
+      for (const u of allUnits) {
+        if (!u || u.isDead) continue;
+
+        if (!Number.isFinite(u.mp) && Number.isFinite(u.movementPoints)) u.mp = u.movementPoints;
+        if (!Number.isFinite(u.movementPoints) && Number.isFinite(u.mp)) u.movementPoints = u.mp;
+
+        if (!Number.isFinite(u.mpMax) && Number.isFinite(u.maxMovementPoints)) u.mpMax = u.maxMovementPoints;
+        if (!Number.isFinite(u.maxMovementPoints) && Number.isFinite(u.mpMax)) u.maxMovementPoints = u.mpMax;
+
+        if (!Number.isFinite(u.movementPointsMax) && Number.isFinite(u.mpMax)) u.movementPointsMax = u.mpMax;
+      }
+
+      resetUnitsForNewTurn?.(this);
+    } catch (e) {
+      console.warn('[WORLD] Initial turn reset failed:', e);
+    }
+
     // UI setup
     attachSelectionHighlight(this);
     setupWorldMenus(this);
@@ -1080,84 +833,210 @@ export default class WorldScene extends Phaser.Scene {
           const res = await this.supabase
             .from('lobbies')
             .select('state')
-            .eq('room_code', this.roomCode)
+            .eq('code', this.roomCode)
             .single();
 
-          if (!res.data || !res.data.state || !Array.isArray(res.data.state.players)) return;
+          if (res.error) throw res.error;
 
-          const state = res.data.state;
-          const nextPlayer = this.getNextPlayer(state.players, this.playerName);
+          const lobbyState = res.data?.state || this.lobbyState || {};
+          const moves = Array.isArray(lobbyState.moves) ? lobbyState.moves.slice() : [];
 
-          await this.supabase
+          moves.push({
+            playerName: this.playerName,
+            unitId: unit.id ?? unit.unitId,
+            q: unit.q,
+            r: unit.r,
+            ts: Date.now(),
+          });
+
+          const update = await this.supabase
             .from('lobbies')
-            .update({
-              state: {
-                ...state,
-                players: state.players.map(p =>
-                  p === this.playerName || p?.name === this.playerName
-                    ? { ...(typeof p === 'string' ? { name: p } : p), q: unit.q, r: unit.r }
-                    : p
-                ),
-                currentTurn: nextPlayer,
-              },
-            })
-            .eq('room_code', this.roomCode);
+            .update({ state: { ...lobbyState, moves } })
+            .eq('code', this.roomCode);
+
+          if (update.error) throw update.error;
         } catch (err) {
-          console.error('[Supabase syncPlayerMove] Error:', err);
+          console.warn('[SYNC] Failed to sync player move:', err);
         }
       };
+
+      this.processRemoteMoves = () => {
+        const moves = Array.isArray(this.lobbyState?.moves) ? this.lobbyState.moves : [];
+        if (!moves.length) return;
+
+        for (const mv of moves) {
+          const allUnits = []
+            .concat(this.units || [])
+            .concat(this.players || [])
+            .concat(this.enemies || [])
+            .concat(this.haulers || [])
+            .concat(this.ships || []);
+
+          const u = allUnits.find(x => (x.id ?? x.unitId) === mv.unitId);
+          if (!u) continue;
+
+          u.q = mv.q;
+          u.r = mv.r;
+
+          const pos = this.axialToWorld(mv.q, mv.r);
+          if (typeof u.setPosition === 'function') u.setPosition(pos.x, pos.y);
+          else { u.x = pos.x; u.y = pos.y; }
+        }
+
+        // Clear queue locally after processing
+        this.lobbyState.moves = [];
+      };
     }
-
-    this.printTurnSummary?.();
-
-    // If you start a turn already having queued auto-moves (e.g. loaded state), run them:
-    this.runAutoMovesForTurnOwner?.();
   }
 
   addWorldMetaBadge() {
-    const { geography, biome } = getWorldSummaryForSeed(
-      String(this.seed),
-      this.mapWidth,
-      this.mapHeight
-    );
+    const { geography, biome } = getWorldSummaryForSeed(this.seed, this.mapWidth, this.mapHeight);
 
-    const text = `Seed: ${this.seed}
-Water: ~${geography.waterTiles}
-Forest: ~${geography.forestTiles}
-Mountains: ~${geography.mountainTiles}
-Roughness: ${geography.roughness}
-Elev.Var: ${geography.elevationVar}
-Biomes: ${biome}`;
+    const lines = [
+      `Seed: ${this.seed}`,
+      `Biome: ${biome}`,
+      `Water: ${geography.waterTiles}`,
+      `Forest: ${geography.forestTiles}`,
+      `Mountains: ${geography.mountainTiles}`,
+    ];
 
-    const pad = { x: 8, y: 6 };
-    const x = 320;
-    const y = 16;
+    this.metaBadgeBg = this.add.rectangle(
+      18, 18,
+      260, 110,
+      0x092033, 0.82
+    ).setOrigin(0, 0).setScrollFactor(0).setDepth(300);
 
-    const tempText = this.add.text(0, 0, text, {
-      fontFamily: 'monospace',
-      fontSize: '11px',
-      color: '#d0f2ff',
-    }).setVisible(false);
+    this.metaBadgeText = this.add.text(28, 24, lines.join('\n'), {
+      fontFamily: 'Arial',
+      fontSize: '13px',
+      color: '#d7ecff',
+      lineSpacing: 4,
+    }).setScrollFactor(0).setDepth(301);
+  }
 
-    const bounds = tempText.getBounds();
-    tempText.destroy();
+  getHexesInRadius(q, r, radius) {
+    const out = [];
+    for (let dq = -radius; dq <= radius; dq++) {
+      for (let dr = Math.max(-radius, -dq - radius); dr <= Math.min(radius, -dq + radius); dr++) {
+        const nq = q + dq;
+        const nr = r + dr;
+        if (nq < 0 || nr < 0 || nq >= this.mapWidth || nr >= this.mapHeight) continue;
+        out.push({ q: nq, r: nr });
+      }
+    }
+    return out;
+  }
 
-    const bgWidth = bounds.width + pad.x * 2;
-    const bgHeight = bounds.height + pad.y * 2;
+  /**
+   * Run queued auto-moves for the active side.
+   * This remains best-effort and deterministic because it only uses stored targets.
+   */
+  runAutoMovesForTurnOwner() {
+    const owner = this.turnOwner;
+    if (!owner) return;
 
-    const graphics = this.add.graphics();
-    graphics.fillStyle(0x050f1a, 0.85);
-    graphics.fillRoundedRect(x, y, bgWidth, bgHeight, 8);
-    graphics.lineStyle(1, 0x34d2ff, 0.9);
-    graphics.strokeRoundedRect(x, y, bgWidth, bgHeight, 8);
-    graphics.setDepth(100);
+    const allUnits = this.getAllRuntimeUnits()
+      .filter(u => u && !u.isDead && !u.isEnemy && (u.playerName || u.name) === owner);
 
-    const label = this.add.text(x + pad.x, y + pad.y, text, {
-      fontFamily: 'monospace',
-      fontSize: '11px',
-      color: '#d0f2ff',
-    });
-    label.setDepth(101);
+    for (const unit of allUnits) {
+      if (!unit?.autoMove?.active || !unit.autoMove.target) continue;
+
+      const target = unit.autoMove.target;
+      if (unit.q === target.q && unit.r === target.r) {
+        unit.autoMove.active = false;
+        continue;
+      }
+
+      // We intentionally don't replicate A* here; movement execution is handled through UI pathing.
+      // This hook is kept for future deterministic queued movement logic.
+    }
+  }
+
+  placeAbilityHexEffect(q, r, effectId, opts = {}) {
+    try {
+      placeHexEffect(this, q, r, effectId, opts);
+      this.redrawWorld?.();
+    } catch (e) {
+      console.warn('[WORLD] placeAbilityHexEffect failed', { q, r, effectId, opts }, e);
+    }
+  }
+
+  removeAbilityHexEffect(q, r, effectId = null) {
+    try {
+      removeHexEffectsAt(this, q, r, effectId ? [effectId] : null);
+      this.redrawWorld?.();
+    } catch (e) {
+      console.warn('[WORLD] removeAbilityHexEffect failed', { q, r, effectId }, e);
+    }
+  }
+
+  getHexEffectsAt(q, r) {
+    try {
+      return findHexEffectsAt(this, q, r);
+    } catch (e) {
+      console.warn('[WORLD] getHexEffectsAt failed', { q, r }, e);
+      return [];
+    }
+  }
+
+  /**
+   * Utility for direct cast from UI / controllers
+   */
+  castAbility(payload) {
+    return this.queueAbilityCast(payload);
+  }
+
+  /**
+   * Visual refresh placeholder (status icons / UI)
+   */
+  refreshUnitStatusIcons() {
+    this.refreshUnitActionPanel?.();
+  }
+
+  drawPathPreview(within = [], beyond = []) {
+    this.clearPathPreview();
+
+    const drawLine = (path, color, alpha) => {
+      if (!path || path.length < 2) return;
+      const g = this.add.graphics();
+      g.lineStyle(3, color, alpha);
+
+      for (let i = 0; i < path.length - 1; i++) {
+        const a = this.axialToWorld(path[i].q, path[i].r);
+        const b = this.axialToWorld(path[i + 1].q, path[i + 1].r);
+        g.beginPath();
+        g.moveTo(a.x, a.y);
+        g.lineTo(b.x, b.y);
+        g.strokePath();
+      }
+
+      g.setDepth(100);
+      this.pathPreviewTiles.push(g);
+    };
+
+    drawLine(within, 0x00ffff, 0.95);
+    drawLine(beyond, 0x8a8a8a, 0.85);
+
+    const createTurnMarker = (hex, text, reachable = true) => {
+      const { x, y } = this.axialToWorld(hex.q, hex.r);
+      const label = this.add.text(x, y - 10, String(text), {
+        fontFamily: 'Arial',
+        fontSize: '12px',
+        color: reachable ? '#00ffff' : '#b0b0b0',
+        fontStyle: 'bold',
+        backgroundColor: 'rgba(0,0,0,0.35)',
+        padding: { x: 4, y: 2 },
+      }).setOrigin(0.5);
+      label.setDepth(101);
+      this.pathPreviewLabels.push(label);
+    };
+
+    if (within.length > 1) {
+      createTurnMarker(within[within.length - 1], 1, true);
+    }
+    if (beyond.length > 1) {
+      createTurnMarker(beyond[beyond.length - 1], 2, false);
+    }
   }
 
   clearPathPreview() {
@@ -1172,191 +1051,136 @@ Biomes: ${biome}`;
   }
 
   startStepMovement(unit, path, onComplete) {
-    if (!path || path.length < 2) {
+    if (!unit || !path || path.length < 2) {
       if (onComplete) onComplete();
       return;
     }
 
+    // Keep movement aliases in sync before we start tweening.
+    if (!Number.isFinite(unit.mp) && Number.isFinite(unit.movementPoints)) unit.mp = unit.movementPoints;
+    if (!Number.isFinite(unit.movementPoints) && Number.isFinite(unit.mp)) unit.movementPoints = unit.mp;
+    if (!Number.isFinite(unit.mpMax) && Number.isFinite(unit.maxMovementPoints)) unit.mpMax = unit.maxMovementPoints;
+    if (!Number.isFinite(unit.maxMovementPoints) && Number.isFinite(unit.mpMax)) unit.maxMovementPoints = unit.mpMax;
+    if (!Number.isFinite(unit.movementPointsMax) && Number.isFinite(unit.mpMax)) unit.movementPointsMax = unit.mpMax;
+
     this.isUnitMoving = true;
     const scene = this;
     let index = 1;
+
+    function finishMove() {
+      scene.isUnitMoving = false;
+      scene.updateSelectionHighlight?.();
+      scene.refreshUnitActionPanel?.();
+      if (onComplete) onComplete();
+    }
 
     function stepNext() {
       if (index >= path.length) {
         const last = path[path.length - 1];
         unit.q = last.q;
         unit.r = last.r;
-        scene.isUnitMoving = false;
-        scene.updateSelectionHighlight?.();
-        if (onComplete) onComplete();
+        finishMove();
         return;
       }
 
       const nextStep = path[index];
 
-      // ✅ turn BEFORE moving
       try {
         updateUnitOrientation(scene, unit, unit.q, unit.r, nextStep.q, nextStep.r);
       } catch (e) {}
 
       const { x, y } = scene.axialToWorld(nextStep.q, nextStep.r);
 
-      scene.tweens.add({
-        targets: unit,
-        x,
-        y,
-        duration: 160,
-        ease: 'Sine.easeInOut',
-        onComplete: () => {
-          unit.q = nextStep.q;
-          unit.r = nextStep.r;
-
-          // STATUS HOOK: Corrosive bial — takes corrosive damage when moving
-          if (unitHasEffect(unit, 'CorrosiveCorrosivebial') || unitHasEffect(unit, 'CORROSIVE_BIAL')) {
-            const before = Number.isFinite(unit.hp) ? unit.hp : 0;
-            const dmg = 2;
-            unit.hp = Math.max(0, before - dmg);
-            // Optional: mark for UI refresh
-            this.refreshUnitActionPanel?.();
-            if (typeof console !== 'undefined') {
-              console.log('[STATUS] Corrosive bial move dmg', { unitId: unit.id, dmg, hpBefore: before, hpAfter: unit.hp });
-            }
-          }
-
-          index += 1;
-          stepNext();
+      // Fallback for odd cases where the tween manager silently refuses a target.
+      const moveInstantly = () => {
+        if (typeof unit.setPosition === 'function') unit.setPosition(x, y);
+        else {
+          unit.x = x;
+          unit.y = y;
         }
-      });
+
+        unit.q = nextStep.q;
+        unit.r = nextStep.r;
+
+        if (unitHasEffect(unit, 'CorrosiveCorrosivebial') || unitHasEffect(unit, 'CORROSIVE_BIAL')) {
+          const before = Number.isFinite(unit.hp) ? unit.hp : 0;
+          const dmg = 2;
+          unit.hp = Math.max(0, before - dmg);
+          scene.refreshUnitActionPanel?.();
+          if (typeof console !== 'undefined') {
+            console.log('[STATUS] Corrosive bial move dmg', { unitId: unit.id, dmg, hpBefore: before, hpAfter: unit.hp });
+          }
+        }
+
+        index += 1;
+        stepNext();
+      };
+
+      try {
+        scene.tweens.add({
+          targets: unit,
+          x,
+          y,
+          duration: 160,
+          ease: 'Sine.easeInOut',
+          onComplete: () => {
+            unit.q = nextStep.q;
+            unit.r = nextStep.r;
+
+            if (unitHasEffect(unit, 'CorrosiveCorrosivebial') || unitHasEffect(unit, 'CORROSIVE_BIAL')) {
+              const before = Number.isFinite(unit.hp) ? unit.hp : 0;
+              const dmg = 2;
+              unit.hp = Math.max(0, before - dmg);
+              scene.refreshUnitActionPanel?.();
+              if (typeof console !== 'undefined') {
+                console.log('[STATUS] Corrosive bial move dmg', { unitId: unit.id, dmg, hpBefore: before, hpAfter: unit.hp });
+              }
+            }
+
+            index += 1;
+            stepNext();
+          },
+          onStop: moveInstantly,
+        });
+      } catch (e) {
+        console.warn('[MOVE] Tween failed, using instant fallback:', e);
+        moveInstantly();
+      }
     }
 
     stepNext();
   }
 
   /**
-   * Civ-style auto move:
-   * any controllable object with unit.autoMove = { active:true, target:{q,r} }
-   * will move up to its MP at the start of its owner's turn.
-   *
-   * Runs sequentially to avoid tween overlap.
+   * Recompute water overlay from current worldWaterLevel.
+   * This preserves original groundType in each tile and only changes visual/runtime walkability.
    */
-  runAutoMovesForTurnOwner() {
-    if (this.uiLocked) return;
-    if (this.isUnitMoving) return;
-
-    const owner = this.turnOwner || null;
-    if (!owner) return;
-
-    // Include *all* potentially controllable collections
-    const all = []
-      .concat(this.units || [])
-      .concat(this.players || [])
-      .concat(this.haulers || [])
-      .concat(this.ships || []);
-
-    const queue = all.filter(u => {
-      if (!isControllable(u)) return false;
-
-      const uOwner = getOwnerName(this, u);
-      if (!uOwner) return false;
-
-      if (uOwner !== owner) return false;
-
-      const am = u.autoMove;
-      return !!(am && am.active && am.target && Number.isFinite(am.target.q) && Number.isFinite(am.target.r));
-    });
-
-    const runNext = () => {
-      if (queue.length === 0) {
-        this.refreshUnitActionPanel?.();
-        return;
-      }
-
-      const unit = queue.shift();
-      if (!isControllable(unit)) return runNext();
-
-      const mp = getMP(unit);
-      if (mp <= 0) return runNext();
-
-      const target = unit.autoMove.target;
-      if (unit.q === target.q && unit.r === target.r) {
-        unit.autoMove.active = false;
-        return runNext();
-      }
-
-      const blocked = (t) => {
-        if (!t) return true;
-        if (t.type === 'water' || t.type === 'mountain') return true;
-        const occ = getUnitAtHex(this, t.q, t.r);
-        if (occ && occ !== unit) return true;
-        return false;
-      };
-
-      const fullPath = computePath(this, unit, target, blocked);
-      if (!fullPath || fullPath.length < 2) {
-        // No path: cancel auto-move to avoid infinite attempts
-        unit.autoMove.active = false;
-        return runNext();
-      }
-
-      const { segment, costSum } = buildMoveSegmentForThisTurn(this, unit, fullPath, blocked);
-      if (!segment || segment.length < 2) {
-        // Can't advance this turn (blocked or not enough MP)
-        return runNext();
-      }
-
-      this.startStepMovement(unit, segment, () => {
-        const mpBefore = getMP(unit);
-        setMP(unit, mpBefore - costSum);
-
-        // If you sync per-unit in multiplayer, keep it here.
-        this.syncPlayerMove?.(unit);
-
-        if (unit.q === target.q && unit.r === target.r) {
-          unit.autoMove.active = false;
-        }
-
-        runNext();
-      });
-    };
-
-    runNext();
-  }
-
-  recomputeWaterFromLevel(opts = null) {
-    if (!Array.isArray(this.mapData)) return;
-
-    const lvlRaw = (typeof this.worldWaterLevel === 'number') ? this.worldWaterLevel : 3;
-    const lvl = Math.max(0, Math.min(7, lvlRaw));
-    this.worldWaterLevel = lvl;
+  recomputeWaterFromLevel(opts = {}) {
+    const lvl = Number.isFinite(this.worldWaterLevel) ? this.worldWaterLevel : 3;
     this.waterLevel = lvl;
+
+    if (!Array.isArray(this.mapData)) return;
 
     for (const t of this.mapData) {
       if (!t) continue;
 
-      let base = (typeof t.baseElevation === 'number')
-        ? t.baseElevation
-        : (typeof t.elevation === 'number' ? t.elevation : 0);
-      if (base <= 0) base = 1;
-      t.baseElevation = base;
-      t.elevation = base;
-
-      if (!t.groundType) {
-        if (t.type && t.type !== 'water') t.groundType = t.type;
-        else t.groundType = 'grassland';
+      if (!Number.isFinite(t.baseElevation)) {
+        if (Number.isFinite(t.elevation)) t.baseElevation = t.elevation;
+        else t.baseElevation = 0;
       }
 
-      const under = (lvl > 0) && (base <= lvl);
+      if (!t.groundType) {
+        t.groundType = (t.type && t.type !== 'water') ? t.type : 'grassland';
+      }
 
-      if (under) {
+      const base = t.baseElevation;
+
+      if (base <= lvl) {
         t.type = 'water';
         t.isUnderWater = true;
         t.isWater = true;
         t.isCoveredByWater = true;
-
-        let depth = base;
-        if (depth < 1) depth = 1;
-        if (depth > 3) depth = 3;
-        t.waterDepth = depth;
+        t.waterDepth = Math.max(1, lvl - base + 1);
 
         t.visualElevation = 0;
       } else {
@@ -1459,28 +1283,18 @@ WorldScene.prototype.getNextHistoryYear = function () {
    ========================================================= */
 
 WorldScene.prototype.selectHexFromHistory = function (q, r) {
-  // 1) clear hover highlight (if exists)
-  try {
-    if (this.historyHoverGraphics) {
-      this.historyHoverGraphics.clear();
-      this.historyHoverGraphics.visible = false;
-    }
-  } catch (_e) {}
-
-  // 2) deselect unit so the hex-inspect is allowed
-  this.setSelectedUnit?.(null);
-
-  // 3) set selected hex & open the same panel used for units (read-only)
   this.selectedHex = { q, r };
+  this.selectedUnit = null;
   this.selectedBuilding = null;
 
   this.clearPathPreview?.();
-  this.openHexInspectPanel?.(q, r);
-
-  // 4) refresh highlight visuals
   this.updateSelectionHighlight?.();
-  this.debugHex?.(q, r);
 
-  // 5) close history panel
-  this.closeHistoryPanel?.();
+  if (typeof this.openHexInspectPanel === 'function') {
+    this.openHexInspectPanel(q, r);
+  }
+
+  try {
+    this.debugHex?.(q, r);
+  } catch (_) {}
 };
