@@ -745,3 +745,551 @@ export default class WorldScene extends Phaser.Scene {
           if (idx >= 0) defender.effects.splice(idx, 1);
         }
       }
+
+              if (defender && (unitHasEffect(defender, 'CryoShatter') || unitHasEffect(defender, 'CRYO_SHATTER'))) {
+          const before = Number.isFinite(defender.hp) ? defender.hp : 0;
+          const bonus = 4;
+          defender.hp = Math.max(0, before - bonus);
+          // remove one instance by defId (best-effort)
+          if (Array.isArray(defender.effects)) {
+            const idx = defender.effects.findIndex(e => e && (e.defId === 'CryoShatter' || e.defId === 'CRYO_SHATTER'));
+            if (idx >= 0) defender.effects.splice(idx, 1);
+          }
+          console.log('[STATUS] Shatter bonus dmg', { defenderId: defender.id, bonus, hpBefore: before, hpAfter: defender.hp });
+        }
+
+        // STATUS HOOK: Radiation Irradiated — on death, apply effects to adjacent units.
+        // Table: "On death, apply 'Mutant stress' and 'Irradiated' to adjacent units".
+        // We'll re-apply Irradiated; MutantStress will be a no-op until EffectDefs defines it.
+        const all = this.getAllRuntimeUnits();
+        for (const u of all) {
+          if (!u || u.isDead) continue;
+          if (Number.isFinite(u.hp) && u.hp <= 0) {
+            // Mark as dead in a compatible way (if the runtime didn't already)
+            u.isDead = true;
+
+            if (unitHasEffect(u, 'RadiationIrradiated') || unitHasEffect(u, 'RADIATION_IRRADIATED') || unitHasEffect(u, 'IRRADIATED')) {
+              const neigh = this.getHexesInRadius(u.q, u.r, 1).filter(h => !(h.q === u.q && h.r === u.r));
+              for (const h of neigh) {
+                const v = (this.units || []).find(x => x && x.q === h.q && x.r === h.r) ||
+                          (this.players || []).find(x => x && x.q === h.q && x.r === h.r) ||
+                          (this.enemies || []).find(x => x && x.q === h.q && x.r === h.r) ||
+                          (this.haulers || []).find(x => x && x.q === h.q && x.r === h.r) ||
+                          (this.ships || []).find(x => x && x.q === h.q && x.r === h.r) ||
+                          null;
+                if (!v || v.isDead) continue;
+
+                ensureUnitEffectsState(v);
+                // Best-effort: add by id string; actual def must exist in EffectDefs.
+                addUnitEffect(v, 'RadiationIrradiated', { duration: 2, stacks: 1, sourceUnitId: u.id, sourceFaction: u.faction });
+                addUnitEffect(v, 'MutantStress', { duration: 2, stacks: 1, sourceUnitId: u.id, sourceFaction: u.faction });
+              }
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('[COMBAT] post-status hooks failed:', e);
+      }
+
+      return res;
+    };
+    this.moveEnemies = () => moveEnemiesImpl(this);
+
+    // Wrap endTurn so that we can:
+    // 1) tick effects at end of the current turn
+    // 2) advance turn owner + reset (endTurnImpl)
+    // 3) tick effects at start of the next turn
+    // 4) run auto-moves for the new active side
+    this.endTurn = () => {
+      // Effect END phase (before ownership changes)
+      try {
+        this.runEffectPhase?.(TICK_PHASE.TURN_END);
+        this.advanceEffectsOnTurnEnd?.();
+      } catch (e) {
+        console.warn('[EFF] endTurn phase failed:', e);
+      }
+
+      endTurnImpl(this);
+
+      // If endTurnImpl early-returned due to lock, don't do anything.
+      if (this.uiLocked) return;
+
+      // Effect START phase (after reset, for new owner)
+      try {
+        this.runEffectPhase?.(TICK_PHASE.TURN_START);
+      } catch (e) {
+        console.warn('[EFF] startTurn phase failed:', e);
+      }
+
+      this.runAutoMovesForTurnOwner?.();
+    };
+
+    this.getNextPlayer = (players, currentName) => getNextPlayerImpl(players, currentName);
+
+    // ✅ IMPORTANT CHANGE:
+    // We need water-level recompute BEFORE lore (so "water"/land is final),
+    // but we must NOT redraw until AFTER we apply lore road plans.
+    if (!this.isEliminationMission) {
+      this.recomputeWaterFromLevel({ skipRedraw: true });
+    }
+
+    // ✅ Generate lore/POI now that water is correct
+    if (!this.isEliminationMission) {
+      this.ensureLoreReadyBeforeFirstDraw();
+    }
+
+    // ✅ Apply road plans from lore (roads now exist ONLY if there were secondary road events)
+    if (!this.isEliminationMission) {
+      applyRoadPlansToMap(this);
+    }
+
+    // ✅ Now draw world once (hexmap + locations/roads + resources)
+    this.redrawWorld();
+    this.refreshAllIconWorldPositions();
+
+    // Spawn
+    await spawnUnitsAndEnemies.call(this);
+
+    this.players = this.players && this.players.length ? this.players : this.units.filter(u => u.isPlayer);
+    this.enemies = this.enemies && this.enemies.length ? this.enemies : this.units.filter(u => u.isEnemy);
+
+    // Effects runtime (must run after units exist)
+    this.initEffectsRuntime?.();
+
+    // If players array is empty, still allow singleplayer turnOwner
+    this.turnOwner = this.players[0]?.playerName || this.players[0]?.name || this.playerName || null;
+
+    // UI setup
+    attachSelectionHighlight(this);
+    setupWorldMenus(this);
+
+    // ✅ CRITICAL: without this, openUnitActionPanel/refreshUnitActionPanel never exist
+    setupUnitActionPanel(this);
+
+    setupBuildingsUI(this);
+
+    setupTurnUI(this);
+    setupLogisticsPanel(this);
+    setupEnergyPanel(this);
+    setupHistoryUI(this);
+
+    updateTurnText(this, this.turnNumber);
+
+    this.addWorldMetaBadge();
+
+    setupWorldInputUI(this);
+    initDebugMenu(this);
+
+    this.refreshAllIconWorldPositions();
+
+    /* Supabase sync bridge stub */
+    if (this.supabase && this.roomCode && this.playerName) {
+      this.syncPlayerMove = async unit => {
+        try {
+          const res = await this.supabase
+            .from('lobbies')
+            .select('state')
+            .eq('room_code', this.roomCode)
+            .single();
+
+          if (!res.data || !res.data.state || !Array.isArray(res.data.state.players)) return;
+
+          const state = res.data.state;
+          const nextPlayer = this.getNextPlayer(state.players, this.playerName);
+
+          await this.supabase
+            .from('lobbies')
+            .update({
+              state: {
+                ...state,
+                players: state.players.map(p =>
+                  p === this.playerName || p?.name === this.playerName
+                    ? { ...(typeof p === 'string' ? { name: p } : p), q: unit.q, r: unit.r }
+                    : p
+                ),
+                currentTurn: nextPlayer,
+              },
+            })
+            .eq('room_code', this.roomCode);
+        } catch (err) {
+          console.error('[Supabase syncPlayerMove] Error:', err);
+        }
+      };
+    }
+
+    this.printTurnSummary?.();
+
+    // If you start a turn already having queued auto-moves (e.g. loaded state), run them:
+    this.runAutoMovesForTurnOwner?.();
+  }
+
+  addWorldMetaBadge() {
+    const { geography, biome } = getWorldSummaryForSeed(
+      String(this.seed),
+      this.mapWidth,
+      this.mapHeight
+    );
+
+    const text = `Seed: ${this.seed}
+Water: ~${geography.waterTiles}
+Forest: ~${geography.forestTiles}
+Mountains: ~${geography.mountainTiles}
+Roughness: ${geography.roughness}
+Elev.Var: ${geography.elevationVar}
+Biomes: ${biome}`;
+
+    const pad = { x: 8, y: 6 };
+    const x = 320;
+    const y = 16;
+
+    const tempText = this.add.text(0, 0, text, {
+      fontFamily: 'monospace',
+      fontSize: '11px',
+      color: '#d0f2ff',
+    }).setVisible(false);
+
+    const bounds = tempText.getBounds();
+    tempText.destroy();
+
+    const bgWidth = bounds.width + pad.x * 2;
+    const bgHeight = bounds.height + pad.y * 2;
+
+    const graphics = this.add.graphics();
+    graphics.fillStyle(0x050f1a, 0.85);
+    graphics.fillRoundedRect(x, y, bgWidth, bgHeight, 8);
+    graphics.lineStyle(1, 0x34d2ff, 0.9);
+    graphics.strokeRoundedRect(x, y, bgWidth, bgHeight, 8);
+    graphics.setDepth(100);
+
+    const label = this.add.text(x + pad.x, y + pad.y, text, {
+      fontFamily: 'monospace',
+      fontSize: '11px',
+      color: '#d0f2ff',
+    });
+    label.setDepth(101);
+  }
+
+  clearPathPreview() {
+    if (this.pathPreviewTiles) {
+      this.pathPreviewTiles.forEach(g => g.destroy());
+      this.pathPreviewTiles = [];
+    }
+    if (this.pathPreviewLabels) {
+      this.pathPreviewLabels.forEach(l => l.destroy());
+      this.pathPreviewLabels = [];
+    }
+  }
+
+  startStepMovement(unit, path, onComplete) {
+    if (!path || path.length < 2) {
+      if (onComplete) onComplete();
+      return;
+    }
+
+    this.isUnitMoving = true;
+    const scene = this;
+    let index = 1;
+
+    function stepNext() {
+      if (index >= path.length) {
+        const last = path[path.length - 1];
+        unit.q = last.q;
+        unit.r = last.r;
+        scene.isUnitMoving = false;
+        scene.updateSelectionHighlight?.();
+        if (onComplete) onComplete();
+        return;
+      }
+
+      const nextStep = path[index];
+
+      // ✅ turn BEFORE moving
+      try {
+        updateUnitOrientation(scene, unit, unit.q, unit.r, nextStep.q, nextStep.r);
+      } catch (e) {}
+
+      const { x, y } = scene.axialToWorld(nextStep.q, nextStep.r);
+
+      scene.tweens.add({
+        targets: unit,
+        x,
+        y,
+        duration: 160,
+        ease: 'Sine.easeInOut',
+        onComplete: () => {
+          unit.q = nextStep.q;
+          unit.r = nextStep.r;
+
+          // STATUS HOOK: Corrosive bial — takes corrosive damage when moving
+          if (unitHasEffect(unit, 'CorrosiveCorrosivebial') || unitHasEffect(unit, 'CORROSIVE_BIAL')) {
+            const before = Number.isFinite(unit.hp) ? unit.hp : 0;
+            const dmg = 2;
+            unit.hp = Math.max(0, before - dmg);
+            // Optional: mark for UI refresh
+            this.refreshUnitActionPanel?.();
+            if (typeof console !== 'undefined') {
+              console.log('[STATUS] Corrosive bial move dmg', { unitId: unit.id, dmg, hpBefore: before, hpAfter: unit.hp });
+            }
+          }
+
+          index += 1;
+          stepNext();
+        }
+      });
+    }
+
+    stepNext();
+  }
+
+  /**
+   * Civ-style auto move:
+   * any controllable object with unit.autoMove = { active:true, target:{q,r} }
+   * will move up to its MP at the start of its owner's turn.
+   *
+   * Runs sequentially to avoid tween overlap.
+   */
+  runAutoMovesForTurnOwner() {
+    if (this.uiLocked) return;
+    if (this.isUnitMoving) return;
+
+    const owner = this.turnOwner || null;
+    if (!owner) return;
+
+    // Include *all* potentially controllable collections
+    const all = []
+      .concat(this.units || [])
+      .concat(this.players || [])
+      .concat(this.haulers || [])
+      .concat(this.ships || []);
+
+    const queue = all.filter(u => {
+      if (!isControllable(u)) return false;
+
+      const uOwner = getOwnerName(this, u);
+      if (!uOwner) return false;
+
+      if (uOwner !== owner) return false;
+
+      const am = u.autoMove;
+      return !!(am && am.active && am.target && Number.isFinite(am.target.q) && Number.isFinite(am.target.r));
+    });
+
+    const runNext = () => {
+      if (queue.length === 0) {
+        this.refreshUnitActionPanel?.();
+        return;
+      }
+
+      const unit = queue.shift();
+      if (!isControllable(unit)) return runNext();
+
+      const mp = getMP(unit);
+      if (mp <= 0) return runNext();
+
+      const target = unit.autoMove.target;
+      if (unit.q === target.q && unit.r === target.r) {
+        unit.autoMove.active = false;
+        return runNext();
+      }
+
+      const blocked = (t) => {
+        if (!t) return true;
+        if (t.type === 'water' || t.type === 'mountain') return true;
+        const occ = getUnitAtHex(this, t.q, t.r);
+        if (occ && occ !== unit) return true;
+        return false;
+      };
+
+      const fullPath = computePath(this, unit, target, blocked);
+      if (!fullPath || fullPath.length < 2) {
+        // No path: cancel auto-move to avoid infinite attempts
+        unit.autoMove.active = false;
+        return runNext();
+      }
+
+      const { segment, costSum } = buildMoveSegmentForThisTurn(this, unit, fullPath, blocked);
+      if (!segment || segment.length < 2) {
+        // Can't advance this turn (blocked or not enough MP)
+        return runNext();
+      }
+
+      this.startStepMovement(unit, segment, () => {
+        const mpBefore = getMP(unit);
+        setMP(unit, mpBefore - costSum);
+
+        // If you sync per-unit in multiplayer, keep it here.
+        this.syncPlayerMove?.(unit);
+
+        if (unit.q === target.q && unit.r === target.r) {
+          unit.autoMove.active = false;
+        }
+
+        runNext();
+      });
+    };
+
+    runNext();
+  }
+
+  recomputeWaterFromLevel(opts = null) {
+    if (!Array.isArray(this.mapData)) return;
+
+    const lvlRaw = (typeof this.worldWaterLevel === 'number') ? this.worldWaterLevel : 3;
+    const lvl = Math.max(0, Math.min(7, lvlRaw));
+    this.worldWaterLevel = lvl;
+    this.waterLevel = lvl;
+
+    for (const t of this.mapData) {
+      if (!t) continue;
+
+      let base = (typeof t.baseElevation === 'number')
+        ? t.baseElevation
+        : (typeof t.elevation === 'number' ? t.elevation : 0);
+      if (base <= 0) base = 1;
+      t.baseElevation = base;
+      t.elevation = base;
+
+      if (!t.groundType) {
+        if (t.type && t.type !== 'water') t.groundType = t.type;
+        else t.groundType = 'grassland';
+      }
+
+      const under = (lvl > 0) && (base <= lvl);
+
+      if (under) {
+        t.type = 'water';
+        t.isUnderWater = true;
+        t.isWater = true;
+        t.isCoveredByWater = true;
+
+        let depth = base;
+        if (depth < 1) depth = 1;
+        if (depth > 3) depth = 3;
+        t.waterDepth = depth;
+
+        t.visualElevation = 0;
+      } else {
+        t.type = t.groundType || 'grassland';
+        t.isUnderWater = false;
+        t.isWater = false;
+        t.isCoveredByWater = false;
+        t.waterDepth = 0;
+
+        const eff = base - lvl;
+        t.visualElevation = eff > 0 ? eff : 0;
+      }
+    }
+
+    // IMPORTANT:
+    // During initial create() we call this with {skipRedraw:true}
+    // so lore + road plans can be applied before first draw.
+    if (opts && opts.skipRedraw) return;
+
+    this.redrawWorld();
+    this.refreshAllIconWorldPositions();
+  }
+
+  redrawWorld() {
+    // ✅ Safety: any external redraw (water-level changes etc.)
+    // must not happen before lore exists, otherwise POIs/history can desync.
+    if (!this.isEliminationMission) {
+      this.ensureLoreReadyBeforeFirstDraw();
+    }
+
+    // Ensure roads are applied (safe if already applied)
+    if (!this.__roadsAppliedFromLore) {
+      if (!this.isEliminationMission) {
+        applyRoadPlansToMap(this);
+      }
+    }
+
+    drawHexMap.call(this);
+    drawLocationsAndRoads.call(this);
+    spawnFishResources.call(this);
+    spawnCrudeOilResources.call(this);
+  }
+}
+
+/* ===== prototypes left as-is ===== */
+
+WorldScene.prototype.setSelectedUnit = function (unit) {
+  this.selectedUnit = unit;
+  this.updateSelectionHighlight?.();
+
+  if (unit) {
+    this.openUnitActionPanel?.(unit);
+    if (!(unit.isEnemy || unit.controller === 'ai')) {
+      this.openRootUnitMenu?.(unit);
+    }
+  } else {
+    this.closeUnitActionPanel?.();
+    this.closeAllMenus?.();
+  }
+};
+
+WorldScene.prototype.toggleSelectedUnitAtHex = function (q, r) {
+  if (this.selectedUnit && this.selectedUnit.q === q && this.selectedUnit.r === r) {
+    this.setSelectedUnit(null);
+    return;
+  }
+
+  const unit =
+    (this.units || []).find(u => u.q === q && u.r === r) ||
+    (this.players || []).find(u => u.q === q && u.r === r) ||
+    (this.enemies || []).find(u => u.q === q && u.r === r) ||
+    (this.haulers || []).find(h => h.q === q && h.r === r) ||
+    (this.ships || []).find(s => s.q === q && s.r === r) ||
+    null;
+
+  this.setSelectedUnit(unit || null);
+};
+
+WorldScene.prototype.printTurnSummary = function () {
+  console.log(`[WORLD] Turn ${this.turnNumber} – Current player: ${this.turnOwner}`);
+};
+
+WorldScene.prototype.addHistoryEntry = function (entry) {
+  if (!this.historyEntries) this.historyEntries = [];
+  this.historyEntries.push(entry);
+  this.historyEntries.sort((a, b) => a.year - b.year);
+  this.refreshHistoryPanel?.();
+};
+
+WorldScene.prototype.getNextHistoryYear = function () {
+  const baseYear = 5000;
+  if (!this.historyEntries || this.historyEntries.length === 0) return baseYear;
+  const last = this.historyEntries[this.historyEntries.length - 1];
+  return (typeof last.year === 'number' ? last.year : baseYear) + 3;
+};
+
+/* =========================================================
+   ✅ NEW: Select hex from History (no camera pan)
+   Used by WorldSceneHistory.js (and any future UI).
+   ========================================================= */
+
+WorldScene.prototype.selectHexFromHistory = function (q, r) {
+  // 1) clear hover highlight (if exists)
+  try {
+    if (this.historyHoverGraphics) {
+      this.historyHoverGraphics.clear();
+      this.historyHoverGraphics.visible = false;
+    }
+  } catch (_e) {}
+
+  // 2) deselect unit so the hex-inspect is allowed
+  this.setSelectedUnit?.(null);
+
+  // 3) set selected hex & open the same panel used for units (read-only)
+  this.selectedHex = { q, r };
+  this.selectedBuilding = null;
+
+  this.clearPathPreview?.();
+  this.openHexInspectPanel?.(q, r);
+
+  // 4) refresh highlight visuals
+  this.updateSelectionHighlight?.();
+  this.debugHex?.(q, r);
+
+  // 5) close history panel
+  this.closeHistoryPanel?.();
+};
