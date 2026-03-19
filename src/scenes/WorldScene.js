@@ -1,4 +1,3 @@
-import Phaser from 'phaser';
 import { HexMap } from '../engine/HexMap.js';
 import { generateRuinLoreForTile } from './LoreGeneration.js';
 import { preloadWorldSceneUI } from './WorldScenePreload.js';
